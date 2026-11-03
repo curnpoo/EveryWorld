@@ -26,7 +26,6 @@ pub struct WorldMaterials {
     pub matte: Handle<StandardMaterial>,
     pub water: Handle<StandardMaterial>,
     pub ocean: Handle<StandardMaterial>,
-    pub cloud: Handle<StandardMaterial>,
 }
 
 fn repeat_sampler() -> ImageSampler {
@@ -168,14 +167,6 @@ fn setup_materials(
             base_color: Color::srgb(0.24, 0.45, 0.55),
             perceptual_roughness: 0.06,
             reflectance: 0.6,
-            ..default()
-        }),
-        cloud: mats.add(StandardMaterial {
-            base_color: Color::WHITE,
-            perceptual_roughness: 1.0,
-            reflectance: 0.0,
-            // Sky light from the atmosphere env map keeps bellies soft.
-            emissive: LinearRgba::rgb(0.0, 0.0, 0.0),
             ..default()
         }),
         ocean: mats.add(StandardMaterial {
