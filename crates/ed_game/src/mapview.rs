@@ -11,7 +11,7 @@
 use crate::config::Config;
 use crate::spawn::{SpawnHeight, SpawnRequest};
 use bevy::asset::RenderAssetUsages;
-use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
+use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::tasks::AsyncComputeTaskPool;
@@ -67,6 +67,10 @@ const MAX_IN_FLIGHT: usize = 8;
 pub struct MapState {
     /// Fractional zoom (0 = whole world in one 256 px tile).
     pub zoom: f64,
+    /// Zoom the scroll wheel asked for; `zoom` eases toward it.
+    target_zoom: f64,
+    /// Cursor (canvas px from center) the zoom is anchored on.
+    zoom_anchor: Vec2,
     /// Center in Web-Mercator world coordinates (0..1).
     pub center: (f64, f64),
     pub selected: Option<Geodetic>,
@@ -84,6 +88,8 @@ impl MapState {
     fn new(tx: Sender<maprender::MapTile>, rx: Receiver<maprender::MapTile>) -> Self {
         Self {
             zoom: 2.0,
+            target_zoom: 2.0,
+            zoom_anchor: Vec2::ZERO,
             center: (0.5, 0.42),
             selected: None,
             tiles: HashMap::new(),
@@ -101,6 +107,7 @@ impl MapState {
     pub fn focus(&mut self, g: Geodetic, zoom: f64) {
         self.center = to_world(g);
         self.zoom = zoom;
+        self.target_zoom = zoom;
     }
 }
 
@@ -120,11 +127,22 @@ fn world_px(zoom: f64) -> f64 {
     256.0 * 2f64.powf(zoom)
 }
 
+/// Scroll this frame in wheel notches. Trackpads report pixels (tens per
+/// frame), so convert and cap to keep zooming gentle.
+pub(crate) fn scroll_notches(scroll: &AccumulatedMouseScroll) -> f32 {
+    let n = match scroll.unit {
+        MouseScrollUnit::Line => scroll.delta.y,
+        MouseScrollUnit::Pixel => scroll.delta.y / 80.0,
+    };
+    n.clamp(-1.0, 1.0)
+}
+
 fn canvas_size(node: &ComputedNode) -> Vec2 {
     node.size() * node.inverse_scale_factor()
 }
 
 fn map_input(
+    time: Res<Time>,
     mut st: ResMut<MapState>,
     canvases: Query<(&RelativeCursorPosition, &ComputedNode, &InheritedVisibility), With<MapCanvas>>,
     buttons: Res<ButtonInput<MouseButton>>,
@@ -137,6 +155,17 @@ fn map_input(
         return;
     };
     let size = canvas_size(node);
+    // Ease toward the target zoom, keeping the world point under the anchor fixed.
+    if (st.target_zoom - st.zoom).abs() > 1e-4 {
+        let k = 1.0 - (-4.5 * time.delta_secs_f64()).exp();
+        let nz = st.zoom + (st.target_zoom - st.zoom) * k;
+        let (wp, nwp) = (world_px(st.zoom), world_px(nz));
+        let a = st.zoom_anchor;
+        st.center = (st.center.0 + a.x as f64 * (1.0 / wp - 1.0 / nwp), st.center.1 + a.y as f64 * (1.0 / wp - 1.0 / nwp));
+        st.zoom = nz;
+    } else {
+        st.zoom = st.target_zoom;
+    }
     let over_popup = popup.iter().any(|p| p.cursor_over);
     let Some(norm) = rel.normalized.filter(|_| rel.cursor_over && !over_popup) else {
         if !buttons.pressed(MouseButton::Left) {
@@ -150,11 +179,12 @@ fn map_input(
     let wp = world_px(st.zoom);
     let cur_world = (st.center.0 + cur.x as f64 / wp, st.center.1 + cur.y as f64 / wp);
     // Zoom around the cursor.
-    if scroll.delta.y != 0.0 {
-        let nz = (st.zoom + scroll.delta.y as f64 * 0.35).clamp(1.0, 17.0);
-        let nwp = world_px(nz);
-        st.center = (cur_world.0 - cur.x as f64 / nwp, cur_world.1 - cur.y as f64 / nwp);
-        st.zoom = nz;
+    if scroll_notches(&scroll) != 0.0 {
+        // Cap one frame's scroll (trackpads/free-spin wheels spike) and keep the
+        // target within ~2 levels of what's on screen so zoom never runs away.
+        let step = scroll_notches(&scroll) as f64 * 0.15;
+        st.target_zoom = (st.target_zoom + step).clamp(st.zoom - 2.0, st.zoom + 2.0).clamp(1.0, 17.0);
+        st.zoom_anchor = cur;
     }
     // Drag to pan; a press-release with little movement is a click.
     if buttons.just_pressed(MouseButton::Left) {

@@ -12,8 +12,9 @@ use bevy::prelude::*;
 use bevy::tasks::AsyncComputeTaskPool;
 use crossbeam_channel::{Receiver, Sender};
 use ed_geo::tile::TileId;
-use ed_world::lod::{self, LodParams};
+use ed_world::bparts::Mat;
 use ed_world::buildings::BuildingMeshes;
+use ed_world::lod::{self, LodParams};
 use ed_world::tilegen::{self, DetailSet, TileBuild, TileJob};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -27,16 +28,82 @@ impl Plugin for StreamingPlugin {
         app.insert_resource(TileManager { tx, rx, ..default_manager() })
             .insert_resource(DetailManager { tx: dtx, rx: drx, tiles: HashMap::new(), in_flight: 0, last: -1.0 })
             .add_systems(Startup, resolve_vector_template)
-            .add_systems(Update, (select_tiles, receive_tiles, retire_tiles, stream_detail, receive_detail).chain());
+            .add_systems(
+                Update,
+                (
+                    // The main menu is just a map: don't load the world until a spawn is chosen.
+                    select_tiles.run_if(not(in_state(crate::menu::GameState::Menu))),
+                    receive_tiles,
+                    retire_tiles,
+                    stream_detail.run_if(not(in_state(crate::menu::GameState::Menu))),
+                    receive_detail,
+                )
+                    .chain(),
+            );
     }
 }
 
-const MAX_IN_FLIGHT: usize = 12;
+/// Tile builds are CPU-heavy; keep some cores free for the render and main threads.
+const MAX_IN_FLIGHT: usize = 4;
+
+/// Building geometry already converted to Bevy meshes/colliders, so the main
+/// thread only has to register assets (trimesh BVH builds are slow).
+struct BuildingBatch {
+    buckets: Vec<(Mat, Mesh)>,
+    collider: Option<Collider>,
+}
+
+fn prepare_batch(b: &BuildingMeshes, with_collider: bool) -> BuildingBatch {
+    let buckets = b.out.meshes.iter().filter(|(_, m)| !m.is_empty()).map(|(mat, m)| (*mat, to_mesh(m))).collect();
+    let collider = (with_collider && !b.collider.is_empty()).then(|| {
+        let col = &b.collider;
+        let verts: Vec<Vec3> = col.positions.iter().map(|p| Vec3::from(*p)).collect();
+        let tris: Vec<[u32; 3]> = col.indices.chunks_exact(3).map(|t| [t[0], t[1], t[2]]).collect();
+        Collider::trimesh(verts, tris)
+    });
+    BuildingBatch { buckets, collider }
+}
+
+#[derive(Clone, Copy)]
+enum Part {
+    Terrain,
+    Water,
+    Roads,
+    Foliage,
+    Rocks,
+    Props,
+}
+
+/// A finished tile with every Bevy-side asset built off the main thread.
+struct ReadyTile {
+    build: TileBuild,
+    collider: Option<Collider>,
+    parts: Vec<(Part, Mesh)>,
+    lod: Vec<((u8, u8), BuildingBatch)>,
+}
+
+fn ready_tile(mut b: TileBuild) -> ReadyTile {
+    let collider = b.collider.take().map(|(verts, tris)| Collider::trimesh(verts, tris));
+    let parts = [
+        (Part::Terrain, &b.terrain),
+        (Part::Water, &b.water),
+        (Part::Roads, &b.roads),
+        (Part::Foliage, &b.foliage),
+        (Part::Rocks, &b.rocks),
+        (Part::Props, &b.street_props),
+    ]
+    .into_iter()
+    .filter(|(_, m)| !m.is_empty())
+    .map(|(p, m)| (p, to_mesh(m)))
+    .collect();
+    let lod = std::mem::take(&mut b.building_lod).into_iter().map(|(c, m)| (c, prepare_batch(&m, true))).collect();
+    ReadyTile { build: b, collider, parts, lod }
+}
 
 #[derive(Resource)]
 pub struct TileManager {
-    tx: Sender<TileBuild>,
-    rx: Receiver<TileBuild>,
+    tx: Sender<ReadyTile>,
+    rx: Receiver<ReadyTile>,
     template: Option<String>,
     template_resolved: bool,
     pub loaded: HashMap<TileId, Entity>,
@@ -83,8 +150,8 @@ pub struct WorldTile(pub TileId);
 /// Full-detail building chunks near the player.
 #[derive(Resource)]
 pub struct DetailManager {
-    tx: Sender<(TileId, (u8, u8), BuildingMeshes)>,
-    rx: Receiver<(TileId, (u8, u8), BuildingMeshes)>,
+    tx: Sender<(TileId, (u8, u8), BuildingBatch)>,
+    rx: Receiver<(TileId, (u8, u8), BuildingBatch)>,
     tiles: HashMap<TileId, TileDetail>,
     in_flight: usize,
     last: f32,
@@ -104,12 +171,9 @@ const DETAIL_OUT_M: f32 = 320.0;
 const DETAIL_IN_FLIGHT: usize = 2;
 
 /// Spawn one entity per material bucket under `parent`.
-fn spawn_buckets(commands: &mut Commands, meshes: &mut Assets<Mesh>, bm: &BuildingMaterials, b: &BuildingMeshes, parent: Entity) {
-    for (mat, mesh) in &b.out.meshes {
-        if mesh.is_empty() {
-            continue;
-        }
-        commands.spawn((Mesh3d(meshes.add(to_mesh(mesh))), MeshMaterial3d(bm.get(*mat)), Transform::default(), ChildOf(parent)));
+fn spawn_buckets(commands: &mut Commands, meshes: &mut Assets<Mesh>, bm: &BuildingMaterials, b: BuildingBatch, parent: Entity) {
+    for (mat, mesh) in b.buckets {
+        commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(bm.get(mat)), Transform::default(), ChildOf(parent)));
     }
 }
 
@@ -166,7 +230,7 @@ fn select_tiles(
         let job = TileJob { tile, frame: origin.frame, cache: cfg.cache.clone(), vector_template: mgr.template.clone() };
         let tx = mgr.tx.clone();
         pool.spawn(async move {
-            let _ = tx.send(tilegen::build(&job));
+            let _ = tx.send(ready_tile(tilegen::build(&job)));
         })
         .detach();
     }
@@ -209,8 +273,8 @@ fn receive_tiles(
 ) {
     let focus_pos = focus.iter().next().map(|t| t.translation());
     // Bound per-frame upload work.
-    for _ in 0..3 {
-        let Ok(b) = mgr.rx.try_recv() else { break };
+    for _ in 0..2 {
+        let Ok(ReadyTile { build: b, collider, parts, lod }) = mgr.rx.try_recv() else { break };
         mgr.pending.remove(&b.tile);
         for e in &b.errors {
             debug!("tile {:?}: {e}", b.tile);
@@ -234,39 +298,33 @@ fn receive_tiles(
             Visibility::default(),
             Name::new(format!("tile {}", b.tile.path())),
         ));
-        if let Some((verts, tris)) = b.collider {
-            parent.insert((RigidBody::Static, Collider::trimesh(verts, tris)));
+        if let Some(collider) = collider {
+            parent.insert((RigidBody::Static, collider));
         }
         let parent_id = parent.id();
-        let mut child = |mesh: &ed_world::mesh::MeshData, mat: &Handle<StandardMaterial>, shadows: bool| {
-            if mesh.is_empty() {
-                return;
-            }
-            let mut e = commands.spawn((Mesh3d(meshes.add(to_mesh(mesh))), MeshMaterial3d(mat.clone()), Transform::default()));
+        let near = b.tile.z >= 13;
+        for (part, mesh) in parts {
+            let (mat, shadows) = match part {
+                Part::Terrain => (&mats.terrain, near),
+                Part::Water => (&mats.water, false),
+                Part::Roads => (&mats.matte, false),
+                Part::Foliage | Part::Rocks | Part::Props => (&mats.matte, true),
+            };
+            let mut e = commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(mat.clone()), Transform::default()));
             if !shadows {
                 e.insert(bevy::light::NotShadowCaster);
             }
             e.insert(ChildOf(parent_id));
-        };
-        let near = b.tile.z >= 13;
-        child(&b.terrain, &mats.terrain, near);
-        child(&b.water, &mats.water, false);
-        child(&b.roads, &mats.matte, false);
-        child(&b.foliage, &mats.matte, true);
-        child(&b.rocks, &mats.matte, true);
-        child(&b.street_props, &mats.matte, true);
+        }
         // Distant buildings, one entity per detail chunk, with physics shells.
         let mut lod_entities = HashMap::new();
-        for (chunk, bmesh) in &b.building_lod {
+        for (chunk, mut batch) in lod {
             let e = commands.spawn((Transform::default(), Visibility::default(), ChildOf(parent_id))).id();
-            spawn_buckets(&mut commands, &mut meshes, &bmats, bmesh, e);
-            if !bmesh.collider.is_empty() {
-                let col = &bmesh.collider;
-                let verts: Vec<Vec3> = col.positions.iter().map(|p| Vec3::from(*p)).collect();
-                let tris: Vec<[u32; 3]> = col.indices.chunks_exact(3).map(|t| [t[0], t[1], t[2]]).collect();
-                commands.spawn((RigidBody::Static, Collider::trimesh(verts, tris), Transform::default(), ChildOf(parent_id)));
+            if let Some(col) = batch.collider.take() {
+                commands.spawn((RigidBody::Static, col, Transform::default(), ChildOf(parent_id)));
             }
-            lod_entities.insert(*chunk, e);
+            spawn_buckets(&mut commands, &mut meshes, &bmats, batch, e);
+            lod_entities.insert(chunk, e);
         }
         if let Some(set) = &b.building_detail {
             dm.tiles.insert(b.tile, TileDetail { set: set.clone(), root: parent_id, lod: lod_entities, loaded: HashMap::new(), pending: HashSet::new() });
@@ -352,7 +410,7 @@ fn stream_detail(
         let set = td.set.clone();
         dm.in_flight += 1;
         pool.spawn(async move {
-            let _ = tx.send((tid, chunk, set.build_chunk(chunk)));
+            let _ = tx.send((tid, chunk, prepare_batch(&set.build_chunk(chunk), false)));
         })
         .detach();
     }
@@ -370,7 +428,7 @@ fn receive_detail(
     let Some(td) = dm.tiles.get_mut(&tid) else { return };
     td.pending.remove(&chunk);
     let e = commands.spawn((Transform::default(), Visibility::default(), ChildOf(td.root))).id();
-    spawn_buckets(&mut commands, &mut meshes, &bmats, &bmesh, e);
+    spawn_buckets(&mut commands, &mut meshes, &bmats, bmesh, e);
     td.loaded.insert(chunk, e);
     if let Some(l) = td.lod.get(&chunk).and_then(|e| vis.get_mut(*e).ok()) {
         *l.into_inner() = Visibility::Hidden;

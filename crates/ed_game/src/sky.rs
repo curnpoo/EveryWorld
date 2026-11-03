@@ -62,7 +62,7 @@ fn setup_sky(
         Sun,
         DirectionalLight { illuminance: lux::RAW_SUNLIGHT, shadow_maps_enabled: true, ..default() },
         SunDisk::EARTH,
-        CascadeShadowConfigBuilder { first_cascade_far_bound: 60.0, maximum_distance: 3_000.0, num_cascades: 4, ..default() }.build(),
+        CascadeShadowConfigBuilder { first_cascade_far_bound: 60.0, maximum_distance: 1_500.0, num_cascades: 3, ..default() }.build(),
         Transform::default(),
     ));
     if cfg.atmosphere {

@@ -65,6 +65,8 @@ pub struct Player {
     pub cam_yaw: f32,
     pub cam_pitch: f32,
     pub cam_dist: f32,
+    /// Distance the scroll wheel asked for; `cam_dist` eases toward it.
+    pub cam_dist_goal: f32,
     pub first_person: bool,
     pub grounded: bool,
     pub ground_dist: f32,
@@ -115,6 +117,7 @@ impl Player {
             cam_yaw: yaw,
             cam_pitch: -0.25,
             cam_dist: 6.0,
+            cam_dist_goal: 6.0,
             first_person: false,
             grounded: true,
             ground_dist: RIDE_HEIGHT,
@@ -181,6 +184,7 @@ fn ground_probe(spatial: SpatialQuery, origin: Res<WorldOrigin>, mut q: Query<(E
 
 fn player_input(
     keys: Res<ButtonInput<KeyCode>>,
+    time: Res<Time>,
     mouse: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
     settings: Res<ControlSettings>,
@@ -192,9 +196,13 @@ fn player_input(
     let dy = if settings.invert_y { -mouse.delta.y } else { mouse.delta.y };
     p.cam_yaw -= mouse.delta.x * k;
     p.cam_pitch = (p.cam_pitch - dy * k).clamp(-1.45, 1.35);
-    if scroll.delta.y != 0.0 {
-        p.cam_dist = (p.cam_dist * 0.85f32.powf(scroll.delta.y)).clamp(2.0, 60.0);
+    let notches = crate::mapview::scroll_notches(&scroll);
+    if notches != 0.0 {
+        p.cam_dist_goal = (p.cam_dist_goal * 0.92f32.powf(notches)).clamp(2.0, 60.0);
     }
+    // Ease in log space so zooming feels even at every distance.
+    let k = 1.0 - (-5.0 * time.delta_secs()).exp();
+    p.cam_dist = (p.cam_dist.ln() + (p.cam_dist_goal.ln() - p.cam_dist.ln()) * k).exp();
     if keys.just_pressed(KeyCode::KeyV) {
         p.first_person = !p.first_person;
     }
