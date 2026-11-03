@@ -9,10 +9,13 @@ mod config;
 mod engine_audio;
 mod hud;
 mod lookdev;
+mod mapview;
+mod menu;
 mod meshconv;
 mod origin;
 mod player;
 mod sky;
+mod spawn;
 mod streaming;
 mod vehicles;
 
@@ -45,7 +48,7 @@ fn main() {
         app.insert_resource(lookdev::Lookdev { out_dir: dir.clone(), only: cfg.lookdev_only.clone() })
             .add_plugins((lookdev::LookdevPlugin, body::BodyPlugin));
     } else {
-        app.add_plugins((streaming::StreamingPlugin, capture::CapturePlugin, hud::HudPlugin));
+        app.add_plugins((streaming::StreamingPlugin, capture::CapturePlugin, hud::HudPlugin, spawn::SpawnPlugin, mapview::MapViewPlugin, menu::MenuPlugin));
         if !cfg.fly {
             app.add_plugins((player::PlayerPlugin, body::BodyPlugin, vehicles::VehiclesPlugin, engine_audio::EngineAudioPlugin));
         }

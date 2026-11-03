@@ -33,7 +33,7 @@ fn capture(
     st.frames += 1;
     if mgr.idle() { st.idle_frames += 1 } else { st.idle_frames = 0 }
     match st.shot_at {
-        None if (st.frames >= cfg.screenshot_frames && st.idle_frames >= 20) || time.elapsed_secs() > 480.0 => {
+        None if (st.frames >= cfg.screenshot_frames && (st.idle_frames >= 20 || std::env::args().any(|a| a == "--no-wait"))) || time.elapsed_secs() > 480.0 => {
             info!(
                 "capturing {} ({} tiles, {} buildings, {} trees, {} tris)",
                 path.display(),

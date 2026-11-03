@@ -7,9 +7,10 @@
 //! (see `body.rs`), driven by what the physics actually does.
 //!
 //! Modes: Walk, Fall, RocketShoes, Skydive, Parachute.
-//! Keys: WASD move, Shift sprint/boost, Space jump / hold for rocket shoes
-//! (in air), F parachute (while skydiving), V first/third person, R respawn
-//! high (skydive drop), C crouch.
+//! Controls: mouse look, WASD move, Space jump, Shift sprint. In the air,
+//! hold Shift to fire the rocket boots toward where you're looking (WASD
+//! steers the thrust), and hold Space with Shift to boost harder. F opens
+//! the parachute, V switches first/third person, C crouches.
 
 use crate::config::Config;
 use crate::origin::{Focus, Rebased, WorldOrigin};
@@ -24,9 +25,10 @@ pub struct PlayerPlugin;
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<SonicBoom>()
+            .init_resource::<ControlSettings>()
             .add_systems(Startup, spawn_player)
-            .add_systems(FixedUpdate, (ground_probe, drive_player).chain())
-            .add_systems(Update, (player_input, camera_follow).chain());
+            .add_systems(FixedUpdate, (ground_probe, drive_player).chain().run_if(in_state(crate::menu::GameState::Playing)))
+            .add_systems(Update, (player_input.run_if(in_state(crate::menu::GameState::Playing)), camera_follow).chain());
     }
 }
 
@@ -79,6 +81,26 @@ pub struct Player {
     pub jump: bool,
     pub thrust_held: bool,
     pub shake: f32,
+    /// Raw inputs this frame.
+    pub shift: bool,
+    pub space_held: bool,
+    pub strafe: f32,
+    pub fwd_in: f32,
+    /// Seconds Space has been held while boosting (climbs boost stages).
+    pub boost_time: f32,
+}
+
+/// Mouse look sensitivity and other control settings.
+#[derive(Resource, Clone)]
+pub struct ControlSettings {
+    pub mouse_sensitivity: f32,
+    pub invert_y: bool,
+}
+
+impl Default for ControlSettings {
+    fn default() -> Self {
+        Self { mouse_sensitivity: 1.0, invert_y: false }
+    }
 }
 
 #[derive(Message)]
@@ -107,6 +129,11 @@ impl Player {
             jump: false,
             thrust_held: false,
             shake: 0.0,
+            shift: false,
+            space_held: false,
+            strafe: 0.0,
+            fwd_in: 0.0,
+            boost_time: 0.0,
         }
     }
 }
@@ -156,58 +183,41 @@ fn player_input(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
-    buttons: Res<ButtonInput<MouseButton>>,
+    settings: Res<ControlSettings>,
     mut q: Query<&mut Player>,
 ) {
     let Ok(mut p) = q.single_mut() else { return };
-    if buttons.pressed(MouseButton::Right) || buttons.pressed(MouseButton::Left) || p.first_person {
-        p.cam_yaw -= mouse.delta.x * 0.0035;
-        p.cam_pitch = (p.cam_pitch - mouse.delta.y * 0.0035).clamp(-1.45, 1.35);
-    }
+    // Mouse look is always on while playing (the cursor is captured).
+    let k = 0.0025 * settings.mouse_sensitivity;
+    let dy = if settings.invert_y { -mouse.delta.y } else { mouse.delta.y };
+    p.cam_yaw -= mouse.delta.x * k;
+    p.cam_pitch = (p.cam_pitch - dy * k).clamp(-1.45, 1.35);
     if scroll.delta.y != 0.0 {
         p.cam_dist = (p.cam_dist * 0.85f32.powf(scroll.delta.y)).clamp(2.0, 60.0);
     }
     if keys.just_pressed(KeyCode::KeyV) {
         p.first_person = !p.first_person;
     }
-    let mut wish = Vec3::ZERO;
+    let axis = |pos: KeyCode, neg: KeyCode| keys.pressed(pos) as i32 as f32 - keys.pressed(neg) as i32 as f32;
+    p.fwd_in = axis(KeyCode::KeyW, KeyCode::KeyS);
+    p.strafe = axis(KeyCode::KeyD, KeyCode::KeyA);
     let (s, c) = p.cam_yaw.sin_cos();
     let fwd = Vec3::new(-s, 0.0, -c);
     let right = Vec3::new(c, 0.0, -s);
-    if keys.pressed(KeyCode::KeyW) {
-        wish += fwd;
-    }
-    if keys.pressed(KeyCode::KeyS) {
-        wish -= fwd;
-    }
-    if keys.pressed(KeyCode::KeyD) {
-        wish += right;
-    }
-    if keys.pressed(KeyCode::KeyA) {
-        wish -= right;
-    }
-    p.wish = wish.normalize_or_zero();
-    p.sprint = keys.pressed(KeyCode::ShiftLeft);
+    p.wish = (fwd * p.fwd_in + right * p.strafe).normalize_or_zero();
+    p.shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+    p.space_held = keys.pressed(KeyCode::Space);
+    p.sprint = p.shift;
     p.crouch = keys.pressed(KeyCode::KeyC);
     if keys.just_pressed(KeyCode::Space) {
         p.jump = true;
     }
-    p.thrust_held = keys.pressed(KeyCode::Space);
     if keys.just_pressed(KeyCode::KeyF) {
         p.mode = match p.mode {
             MoveMode::Skydive | MoveMode::Fall => MoveMode::Parachute,
             MoveMode::Parachute => MoveMode::Skydive,
             m => m,
         };
-    }
-    // Boost stages climb while Shift is held in rocket mode.
-    if p.mode == MoveMode::RocketShoes {
-        if keys.just_pressed(KeyCode::ShiftLeft) {
-            p.boost_stage = (p.boost_stage + 1).min(3);
-        }
-        if keys.just_pressed(KeyCode::ControlLeft) {
-            p.boost_stage = p.boost_stage.saturating_sub(1);
-        }
     }
 }
 
@@ -229,17 +239,27 @@ fn drive_player(
 
         // Mode transitions.
         let grounded = p.grounded && p.ground_dist < RIDE_HEIGHT + 0.25 && v.dot(up) < 3.0;
+        // Boots fire while Shift is held in the air (also lifts you off the
+        // ground if you hold it right after a jump).
+        p.thrust_held = p.shift && (!grounded || p.mode == MoveMode::RocketShoes);
         p.mode = match p.mode {
             _ if grounded && p.mode != MoveMode::RocketShoes => MoveMode::Walk,
             MoveMode::RocketShoes if grounded && !p.thrust_held => MoveMode::Walk,
             MoveMode::Walk if !p.grounded => MoveMode::Fall,
-            MoveMode::Fall if p.thrust_held && !p.jump => MoveMode::RocketShoes,
-            MoveMode::Skydive if p.thrust_held && !p.jump => MoveMode::RocketShoes,
+            MoveMode::Fall | MoveMode::Skydive | MoveMode::Parachute if p.shift => MoveMode::RocketShoes,
             MoveMode::RocketShoes if !p.thrust_held && p.agl > 300.0 => MoveMode::Skydive,
             MoveMode::RocketShoes if !p.thrust_held => MoveMode::Fall,
             MoveMode::Fall if p.agl > 300.0 && v.dot(up) < -25.0 => MoveMode::Skydive,
             m => m,
         };
+        // Boost stages: Shift alone = cruise; Shift + Space climbs a stage
+        // every 1.2 s held.
+        if p.mode == MoveMode::RocketShoes && p.space_held {
+            p.boost_time += dt;
+        } else {
+            p.boost_time = 0.0;
+        }
+        p.boost_stage = if p.mode == MoveMode::RocketShoes && p.space_held { (1 + (p.boost_time / 1.2) as usize).min(3) } else { 0 };
 
         // Face where we're going (or where the camera looks when thrusting).
         let target_yaw = if p.wish.length_squared() > 0.01 { (-p.wish.x).atan2(-p.wish.z) } else { p.yaw };
@@ -274,10 +294,13 @@ fn drive_player(
                 }
             }
             MoveMode::RocketShoes => {
-                // Thrust along camera look, pitched up a bit, with superpower stages.
+                // Thrust follows the camera's look direction; WASD steers it.
                 let (s, c) = p.cam_yaw.sin_cos();
-                let look = Vec3::new(-s * p.cam_pitch.cos(), (p.cam_pitch + 0.35).sin().max(0.15), -c * p.cam_pitch.cos()).normalize();
-                let facing = (base * look).normalize();
+                let (sp, cp) = p.cam_pitch.sin_cos();
+                let look = Vec3::new(-s * cp, sp, -c * cp);
+                let right = Vec3::new(c, 0.0, -s);
+                let dir = (look * (1.0 + 0.3 * p.fwd_in) + right * (0.5 * p.strafe)).normalize_or(look);
+                let facing = (base * dir).normalize();
                 let g = 9.81;
                 let a = SuperRocket::ROCKET_SHOES.accel(
                     DVec3::from(v.as_dvec3()),

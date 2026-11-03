@@ -23,7 +23,7 @@ pub struct VehiclesPlugin;
 impl Plugin for VehiclesPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Driving>()
-            .add_systems(Update, (spawn_vehicles, enter_exit, vehicle_camera))
+            .add_systems(Update, (spawn_vehicles, enter_exit, vehicle_camera).run_if(in_state(crate::menu::GameState::Playing)))
             .add_systems(FixedUpdate, (car_physics, plane_physics));
     }
 }

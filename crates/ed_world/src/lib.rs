@@ -16,6 +16,7 @@ pub mod buildings;
 pub mod clouds;
 pub mod foliage;
 pub mod lod;
+pub mod maprender;
 pub mod mesh;
 pub mod meshkit;
 pub mod missions;
