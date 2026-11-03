@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Engine sound demo</title>
+<style>
+  body { margin: 0; padding: 24px; background: #0b0c0f; color: #e8eaed; font: 16px/1.5 system-ui, sans-serif; }
+  select, button { font: inherit; padding: 10px 14px; border-radius: 10px; border: 1px solid #2a2e37; background: #1a1d24; color: inherit; }
+  #read { font: 600 28px/1.3 ui-monospace, monospace; margin: 20px 0; }
+  .keys { color: #9aa0aa; }
+</style>
+</head>
+<body>
+<p><select id="car"></select> <button id="start">Start engine</button></p>
+<div id="read">–</div>
+<p class="keys">Hold Space: throttle · B: brake · R: rev (stopped) · S: sport on/off</p>
+<script type="module">
+import { CARS, resolveCar } from './cars.js';
+import { Drivetrain } from './drivetrain.js';
+import { EngineAudio } from './audio.js';
+
+const cars = CARS.map(c => resolveCar(c));
+let car = cars.find(c => c.id === 'huracan') || cars[0];
+const dt = new Drivetrain(car.engine);
+dt.intensity = 0.75;
+const audio = new EngineAudio();
+audio.prepare(car, cars);   // silent warm-up now, before the tap
+
+const sel = document.getElementById('car');
+for (const c of cars) sel.add(new Option(c.name, c.id, false, c === car));
+sel.onchange = () => { car = cars.find(c => c.id === sel.value); dt.setEngine(car.engine); audio.setCar(car); if (running) dt.start(); };
+
+let running = false;
+const keys = { gas: 0, brake: 0, rev: false };
+document.getElementById('start').onclick = async () => {
+  if (running) { running = false; dt.stop(); audio.stop(); return; }
+  await audio.start(car, cars);
+  audio.setVolume(0.8);
+  dt.start();
+  running = true;
+};
+addEventListener('keydown', e => {
+  if (e.code === 'Space') { keys.gas = 1; e.preventDefault(); }
+  if (e.code === 'KeyB') keys.brake = 1;
+  if (e.code === 'KeyR') keys.rev = true;
+  if (e.code === 'KeyS') dt.sport = !dt.sport;
+});
+addEventListener('keyup', e => {
+  if (e.code === 'Space') keys.gas = 0;
+  if (e.code === 'KeyB') keys.brake = 0;
+  if (e.code === 'KeyR') keys.rev = false;
+});
+
+let last = performance.now();
+setInterval(() => {
+  const now = performance.now(), s = Math.min(0.1, (now - last) / 1000);
+  last = now;
+  const sim = dt.simulate(s, keys.gas, keys.brake);
+  const o = dt.update(s, { speed: sim.v, accel: sim.a, throttle: keys.gas, rev: keys.rev });
+  if (!running) return;
+  audio.params({ rpm: o.rpm, load: o.load, overrun: o.overrun, cut: o.cut, starter: o.starter, shaft: o.shaft, horn: o.horn, pullAway: o.pullAway });
+  for (const amt of dt.clicks.splice(0)) audio.click(amt);
+  for (const ev of dt.events.splice(0)) audio.event(ev.type, ev.strength);
+  document.getElementById('read').textContent =
+    `${Math.round(sim.v * 2.237)} mph · gear ${o.gear} · ${Math.round(o.rpm)} rpm · boost ${Math.round(audio.boost * 100)}%${dt.sport ? ' · sport' : ''}`;
+}, 1000 / 60);
+</script>
+</body>
+</html>
