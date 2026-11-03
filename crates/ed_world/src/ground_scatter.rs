@@ -89,7 +89,7 @@ impl Kind {
             Kind::Rosette => 0.9,
             Kind::Pebble => 0.32,
             Kind::Rock => 1.6,
-            Kind::Moss => 0.75,
+            Kind::Moss => 0.5,
             Kind::Scrub => 1.5,
             Kind::Twig => 1.1,
             Kind::Fern => 1.3,
@@ -126,7 +126,7 @@ impl Kind {
             Kind::Tuft => {
                 set(Ground::Grass, 0.95);
                 set(Ground::Moss, 0.2);
-                set(Ground::ForestFloor, 0.12);
+                set(Ground::ForestFloor, 0.04);
                 set(Ground::Dirt, 0.12);
                 set(Ground::Farmland, 0.06);
                 set(Ground::Gravel, 0.06);
@@ -190,12 +190,13 @@ impl Kind {
             Kind::Twig => set(Ground::ForestFloor, 0.55),
             Kind::Fern => {
                 if !dry {
-                    set(Ground::ForestFloor, 0.35);
-                    set(Ground::Moss, 0.15);
+                    set(Ground::ForestFloor, 0.5);
+                    set(Ground::Moss, 0.2);
                 }
             }
-            Kind::SnowLump => set(Ground::Snow, 0.55),
-            Kind::Ripple => set(Ground::Sand, 0.6),
+            Kind::SnowLump => set(Ground::Snow, 0.3),
+            // Ripples live in the sand texture; geometry read as slivers.
+            Kind::Ripple => {}
         }
         a
     }
@@ -690,11 +691,11 @@ pub fn library() -> &'static Library {
                 Kind::Rosette => v(4, &rosette),
                 Kind::Pebble => v(8, &|s| stone(s, 1, 3, 0.5, 0.55, 0.0)),
                 Kind::Rock => v(8, &|s| stone(s, 2, 5, 0.35, 0.6, 1.0)),
-                Kind::Moss => v(5, &|s| cushion(s, 0.35, 0.8, [1.15, 1.15, 0.9], [0.55, 0.6, 0.45])),
+                Kind::Moss => v(5, &|s| cushion(s, 0.6, 1.3, [1.15, 1.15, 0.9], [0.55, 0.6, 0.45])),
                 Kind::Scrub => v(5, &|s| scrub(s, false)),
                 Kind::Twig => v(5, &|s| twig(s, 0.35, 0.008, true)),
                 Kind::Fern => v(4, &fern),
-                Kind::SnowLump => v(5, &|s| cushion(s, 0.22, 0.5, [1.0, 1.0, 1.0], [0.82, 0.86, 0.92])),
+                Kind::SnowLump => v(5, &|s| cushion(s, 0.3, 1.1, [1.0, 1.0, 1.0], [0.82, 0.86, 0.92])),
                 Kind::Ripple => v(5, &ripple),
             });
         }
@@ -908,8 +909,8 @@ impl GroundSource {
                 (pick(protos), Vec3::new(s, s * (0.8 + 0.4 * r), s * (0.75 + 0.5 * r2)), self.stone_color(r))
             }
             Kind::Moss => {
-                let s = 0.08 + 0.12 * r2;
-                (pick(protos), Vec3::new(s, s, s * (0.7 + 0.5 * r)), veg(if r < 0.5 { 0x5f8030 } else { 0x7a9038 }, 1.0))
+                let s = 0.05 + 0.1 * r2;
+                (pick(protos), Vec3::new(s, s * 1.4, s * (0.7 + 0.5 * r)), veg(if r < 0.5 { 0x5f8030 } else { 0x7a9038 }, 1.0))
             }
             Kind::Scrub => {
                 let leafy = biome == Biome::Mediterranean || (biome == Biome::Savanna && r2 > 0.5);
@@ -919,8 +920,8 @@ impl GroundSource {
             Kind::Twig => (pick(protos), u(0.6 + 0.8 * r2), [0.30, 0.22, 0.15]),
             Kind::Fern => (pick(protos), u(0.7 + 0.6 * r2), veg(if biome == Biome::Boreal { 0x4f7a34 } else { 0x5a8f36 }, 1.0)),
             Kind::SnowLump => {
-                let s = 0.35 + 0.6 * r2;
-                (pick(protos), Vec3::new(s, s * 0.8, s * (0.6 + 0.6 * r)), [0.92, 0.94, 0.97])
+                let s = 0.12 + 0.25 * r2;
+                (pick(protos), Vec3::new(s, s * 0.6, s * (0.6 + 0.6 * r)), [0.92, 0.94, 0.97])
             }
             Kind::Ripple => {
                 let c = Ground::Sand.mean_color();

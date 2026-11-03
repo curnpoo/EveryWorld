@@ -31,6 +31,8 @@ pub fn bumpiness(g: Ground) -> f32 {
         Ground::Paving => 1.4,
         Ground::Rock => 2.2,
         Ground::Gravel => 2.0,
+        Ground::Grass | Ground::DryGrass => 0.7,
+        Ground::ForestFloor | Ground::Moss => 1.0,
         _ => 1.6,
     }
 }
@@ -171,7 +173,7 @@ pub fn layer(g: Ground, size: u32) -> LayerTexture {
     match g {
         Ground::Grass | Ground::DryGrass => {
             let dry = g == Ground::DryGrass;
-            let soil = if dry { lin(0x8a7350) } else { lin(0x4a5a28) };
+            let soil = if dry { lin(0xa08a5c) } else { lin(0x587030) };
             cv.fill(|s, t| {
                 let clump = fbm(s * 6.0, t * 6.0, seed, 4, per(6));
                 let h = 0.12 * clump;
@@ -183,17 +185,17 @@ pub fn layer(g: Ground, size: u32) -> LayerTexture {
             } else {
                 [0x6fa23b, 0x5d9132, 0x82b247, 0x4f7f2a, 0x93b850, 0x6a8f35].iter().map(|&h| lin(h)).collect()
             };
-            let count = (n * n) as f32 * if dry { 0.11 } else { 0.24 };
+            let count = (n * n) as f32 * if dry { 0.2 } else { 0.28 };
             for _ in 0..count as usize {
                 let (x, y) = (rng.f() * n as f32, rng.f() * n as f32);
                 // Clumpy: skip some strokes where the clump noise is low.
                 let cl = fbm(x as f64 / n as f64 * 6.0, y as f64 / n as f64 * 6.0, seed, 4, 6);
-                if rng.f() > 0.6 + 0.6 * cl {
+                if rng.f() > 0.85 + 0.3 * cl {
                     continue;
                 }
                 let len = rng.range(0.03, if dry { 0.10 } else { 0.07 }) * px_per_m;
                 let col = palette[(rng.f() * palette.len() as f32) as usize % palette.len()];
-                let col = mul3(col, 0.88 + 0.2 * cl);
+                let col = mul3(col, 0.93 + 0.12 * cl);
                 cv.stroke(x, y, rng.f() * std::f32::consts::TAU, len, rng.range(1.0, 2.2), rng.range(0.4, 1.0), col, 0.8);
             }
         }
@@ -232,16 +234,16 @@ pub fn layer(g: Ground, size: u32) -> LayerTexture {
                 (0.1 * f, mix3(lin(0x2f2418), lin(0x4a3a26), f), 0.95)
             });
             let leaf_cols: Vec<[f32; 3]> = [0x8a5a2b, 0x6b4a2a, 0xa06a2c, 0x7a6a35, 0x5a4024, 0xb07a3a, 0x6c5a30].iter().map(|&h| lin(h)).collect();
-            for i in 0..(n * n / 90) {
+            for i in 0..(n * n / 45) {
                 let (x, y) = (rng.f() * n as f32, rng.f() * n as f32);
-                let hgt = 0.2 + 0.8 * (i as f32 / (n * n / 90) as f32); // later = on top
-                if rng.f() < 0.25 {
+                let hgt = 0.2 + 0.8 * (i as f32 / (n * n / 45) as f32); // later = on top
+                if rng.f() < 0.4 {
                     // Needles / twigs.
                     let len = rng.range(0.03, 0.09) * px_per_m;
                     cv.stroke(x, y, rng.f() * 6.283, len, 0.8, hgt, mul3(lin(0x7a5a34), rng.range(0.6, 1.1)), 0.8);
                 } else {
-                    let r = rng.range(0.02, 0.045) * px_per_m;
-                    let col = mul3(leaf_cols[(rng.f() * 7.0) as usize % 7], rng.range(0.7, 1.15));
+                    let r = rng.range(0.012, 0.03) * px_per_m;
+                    let col = mul3(mix3(leaf_cols[(rng.f() * 7.0) as usize % 7], lin(0x5a4a30), 0.35), rng.range(0.75, 1.1));
                     cv.blob(x, y, r, r * rng.range(0.45, 0.7), rng.f() * 6.283, hgt, col, 0.75, 0.25);
                 }
             }

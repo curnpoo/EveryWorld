@@ -53,7 +53,7 @@ fn displaced(local: vec3<f32>, uv: vec2<f32>, pivot: vec4<f32>, world_from_local
         let f = fade(d, reach);
         s = clamp((f - rank) / max(0.15 * f, 0.015), 0.0, 1.0);
         // Keep blades out of the lens when crouching or lying in the grass.
-        s = s * smoothstep(0.25, 0.8, d);
+        s = s * smoothstep(0.6, 1.3, d);
         // Grass gets a little bolder far away so thinning reads as texture.
         if uv.x > 0.9 {
             s = s * (1.0 + 0.6 * smoothstep(12.0, 60.0, d));

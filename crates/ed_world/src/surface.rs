@@ -103,7 +103,7 @@ impl Ground {
             Ground::Grass => 0x6e9a3c,
             Ground::DryGrass => 0xb8a05c,
             Ground::Moss => 0x5b7a30,
-            Ground::ForestFloor => 0x6a5236,
+            Ground::ForestFloor => 0x5c4d33,
             Ground::Dirt => 0x8a6c4c,
             Ground::Farmland => 0x7a5f44,
             Ground::Sand => 0xdcc493,
@@ -142,7 +142,7 @@ fn recipe(c: Cover, b: Biome) -> Vec<(Ground, f32)> {
             Biome::TropicalRainforest => vec![(ForestFloor, 0.6), (Moss, 0.2), (Mud, 0.2)],
             Biome::Mediterranean | Biome::Savanna | Biome::HotDesert => vec![(ForestFloor, 0.5), (DryGrass, 0.3), (Dirt, 0.2)],
             Biome::Boreal | Biome::Alpine | Biome::Tundra => vec![(ForestFloor, 0.45), (Moss, 0.4), (Grass, 0.15)],
-            _ => vec![(ForestFloor, 0.6), (Moss, 0.2), (Grass, 0.2)],
+            _ => vec![(ForestFloor, 0.5), (Moss, 0.25), (Grass, 0.25)],
         },
         Cover::Grass => if dry { vec![(DryGrass, 0.8), (Dirt, 0.2)] } else { vec![(Grass, 0.85), (DryGrass, 0.1), (Dirt, 0.05)] },
         // Parks and pitches are watered, even in dry places.
@@ -151,7 +151,7 @@ fn recipe(c: Cover, b: Biome) -> Vec<(Ground, f32)> {
         Cover::Farmland => vec![(Farmland, 0.85), (Dirt, 0.15)],
         Cover::Wetland => vec![(Mud, 0.4), (Moss, 0.3), (Grass, 0.3)],
         Cover::Sand => vec![(Sand, 1.0)],
-        Cover::Rock => vec![(Rock, 0.7), (Gravel, 0.3)],
+        Cover::Rock => if b == Biome::HotDesert { vec![(Rock, 0.4), (Gravel, 0.3), (Sand, 0.3)] } else { vec![(Rock, 0.7), (Gravel, 0.3)] },
         Cover::Ice => vec![(Snow, 1.0)],
         Cover::Residential => if dry {
             vec![(DryGrass, 0.3), (Dirt, 0.2), (Paving, 0.3), (Gravel, 0.2)]

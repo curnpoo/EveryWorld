@@ -385,7 +385,7 @@ fn camera_spot(place: Place, grid: &TerrainGrid, tp: &TileProjector) -> (f64, f6
                     let h = grid.sample(u, v);
                     let e = 1.0 / 64.0;
                     let s = (grid.sample(u + e, v) - grid.sample(u - e, v)).abs() + (grid.sample(u, v + e) - grid.sample(u, v - e)).abs();
-                    let score = (h - 1560.0).abs() + s * 2.0 + ((u - 0.5).abs() + (v - 0.5).abs()) as f32 * 300.0;
+                    let score = (h - 1380.0).abs() + s * 2.0 + ((u - 0.5).abs() + (v - 0.5).abs()) as f32 * 300.0;
                     if score < best.2 {
                         best = (u, v, score);
                     }
@@ -397,10 +397,13 @@ fn camera_spot(place: Place, grid: &TerrainGrid, tp: &TileProjector) -> (f64, f6
             let gv = (grid.sample(u, v + e) - grid.sample(u, v - e)) as f64;
             let l = (gu * gu + gv * gv).sqrt().max(1e-6);
             let _ = tp;
-            (u, v, (gu / l, gv / l))
+            // Look along the slope (contour), a bit downhill, so the sunlit
+            // flank and the snow edge are both in frame.
+            let (cu, cv) = (-gv / l, gu / l);
+            (u, v, (cu * 0.9 - gu / l * 0.45, cv * 0.9 - gv / l * 0.45))
         }
         // Look from the park toward the street (east).
-        Place::UrbanPark => (0.44, 0.5, (1.0, 0.0)),
+        Place::UrbanPark => (0.535, 0.5, (0.9, -0.44)),
         _ => (0.5, 0.5, (0.0, -1.0)),
     }
 }
