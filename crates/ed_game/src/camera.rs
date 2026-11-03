@@ -40,7 +40,7 @@ fn spawn_camera(mut commands: Commands, cfg: Res<Config>, origin: Res<WorldOrigi
         Camera3d::default(),
         Hdr,
         Projection::Perspective(PerspectiveProjection { fov: 60f32.to_radians(), near: 0.1, far: 1.0e13, ..default() }),
-        Tonemapping::AgX,
+        Tonemapping::BlenderFilmic,
         Bloom::NATURAL,
         Exposure { ev100: 14.2 },
         Msaa::Off,

@@ -341,7 +341,7 @@ fn run_shots(
     }
     let (eye, target, name, want_tm) = {
         let shot = &list.shots[list.idx];
-        (shot.eye, shot.target, shot.name.clone(), shot.tonemap.unwrap_or(Tonemapping::AgX))
+        (shot.eye, shot.target, shot.name.clone(), shot.tonemap.unwrap_or(Tonemapping::BlenderFilmic))
     };
     if *tm != want_tm {
         *tm = want_tm;

@@ -98,7 +98,7 @@ Adding "Kyoto machiya" or "Lagos compound" is one table entry. These tables move
 - HDR camera, physically based **Atmosphere** (sky, sunsets, aerial perspective from space down to the street)
 - **AtmosphereEnvironmentMapLight**: the sky generates the environment map, so ambient light and reflections match time of day
 - Real-lux sun at its true position (NOAA algorithm) with cascaded shadows; Moon lit by the same sun, so phases are correct
-- SSAO, TAA, bloom, **AgX** tone mapping
+- SSAO, TAA, bloom, **Blender Filmic** tone mapping (picked in lookdev round 1)
 - Next: irradiance-volume light probes for interiors and street canyons, screen-space reflections on water and glass, volumetric clouds driven by weather
 
 ## Characters, vehicles, physics
