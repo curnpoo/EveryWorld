@@ -24,6 +24,7 @@ crates/
   ed_world   terrain, ground cover, buildings, roads, trees, missions      (no engine)
   ed_flight  atmosphere, drag, Mach, gravity, "superpower" rockets         (no engine)
   ed_space   Moon + planet positions (real ephemeris), body catalog        (no engine)
+  ed_engine_audio  engine sound kit port: engine voices, mixer, game adapter  (no engine)
   ed_game    the Bevy app: streaming, rendering, player, vehicles, HUD
 ```
 
@@ -107,7 +108,7 @@ Adding "Kyoto machiya" or "Lagos compound" is one table entry. These tables move
 - **Rocket shoes / ships**: real forces (gravity falls off with altitude, ISA atmosphere, quadratic drag, Mach from real speed of sound) with "superpower" thrust stages and inertial-damper assist. Breaking Mach 1 fires a boom, vapor cone and camera shake.
 - **Cars**: raycast suspension per wheel (spring + damper), tire friction model, engine torque curve.
 - **Planes**: lift/drag from angle of attack per surface, thrust, control surfaces.
-- **Engine audio** (`ed_audio`, planned): real-time synthesis firing each cylinder in its firing order through an exhaust resonator; V8, I4, flat-6, turbine and rocket profiles.
+- **Engine audio** (`ed_engine_audio`): the owner's engine sound kit (`vendor/engine-sound-kit`) ported to Rust: every cylinder fires in its firing order through header delays, tailpipe waveguides, muffler and body resonances, with turbo, blow-off, pops and bangs; 31 vehicles including a jet. `ed_game/src/engine_audio.rs` streams the nearest six on the audio thread with distance gain and pan. See `docs/lookdev/round2/engine-audio/NOTES.md`.
 
 ## Space
 

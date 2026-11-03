@@ -25,7 +25,7 @@ Phases are ordered so there's always something playable. Each item is sized to b
 ## Phase 2: Vehicles
 
 1. Car: raycast suspension, tire model, torque curve, gearbox; 3 body styles
-2. `ed_audio`: per-cylinder engine synthesis (firing order, exhaust resonator, intake), I4/V8/flat-6/turbine/rocket profiles
+2. Engine audio: done (`ed_engine_audio`, the engine sound kit port); next: Doppler, a rocket generator, per-car gearing
 3. Plane: per-surface lift/drag, thrust, flaps, landing gear; runways from OSM aeroways
 4. Helicopter
 5. Rocket ship with superpower stages; launch from real launch sites
