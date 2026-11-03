@@ -217,8 +217,8 @@ pub fn build(job: &TileJob) -> TileBuild {
             out.stats.rocks = rocks.len();
             // Finest tiles get a chunk grid so the game can swap in full
             // detail near the camera; coarser tiles are one far-LOD chunk.
-            let grid = if tile.z >= 14 { 12 } else { 1 };
-            out.trees = trees::bake_tile(trees, up, proj.tile.width_m() as f32, grid);
+            let chunk_grid = if tile.z >= 14 { 12 } else { 1 };
+            out.trees = trees::bake_tile(trees, up, proj.tile.width_m() as f32, chunk_grid);
             out.rocks = props::bake_rocks(&rocks, up);
             if tile.z >= 14 {
                 out.ground = Some(std::sync::Arc::new(crate::ground_scatter::GroundSource {

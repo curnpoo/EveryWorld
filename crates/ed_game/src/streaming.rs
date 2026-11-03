@@ -68,7 +68,7 @@ fn prepare_batch(b: &BuildingMeshes, with_collider: bool) -> BuildingBatch {
 enum Part {
     Terrain,
     Water,
-    Foliage,
+    Roads,
     Rocks,
     Props,
 }
@@ -306,8 +306,16 @@ fn receive_tiles(
         let parent_id = parent.id();
         let near = b.tile.z >= 13;
         for (part, mesh) in parts {
+            if matches!(part, Part::Terrain) {
+                let mut e = commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(mats.terrain.clone()), Transform::default()));
+                if !near {
+                    e.insert(bevy::light::NotShadowCaster);
+                }
+                e.insert(ChildOf(parent_id));
+                continue;
+            }
             let (mat, shadows) = match part {
-                Part::Terrain => (&mats.terrain, near),
+                Part::Terrain => unreachable!(),
                 Part::Water => (&mats.water, false),
                 Part::Roads => (&mats.matte, false),
                 Part::Rocks | Part::Props => (&mats.matte, true),

@@ -279,7 +279,7 @@ pub(super) fn build(
                 .into_iter()
                 .filter(|t| spot.is_none_or(|(su, sv, _)| t.pos.distance(tp.local(su, sv, grid_t.sample(su, sv) as f64)) > 4.5))
                 .collect();
-            add(commands, meshes, root, &props::bake_trees(&trees, tp.up()), mats.matte.clone());
+            let _ = &trees; // tree meshes: see lookdev trees shots (v2 trees stream via foliage.rs)
             if !center {
                 continue;
             }
@@ -456,11 +456,6 @@ fn urban_extras(
     };
     add(commands, meshes, &r.mesh, &mats.matte);
     add(commands, meshes, &props::bake_street_props(&r.props, tp.up()), &mats.matte);
-    let ctx = BuildingContext { proj: tp, grid, surface, biome: surface.biome };
-    let bm = buildings::generate_in_region(&vt, &ctx, region);
-    add(commands, meshes, &bm.facades, &mats.facade);
-    add(commands, meshes, &bm.glass, &mats.glass);
-    add(commands, meshes, &bm.storefronts, &mats.storefront);
-    add(commands, meshes, &bm.roofs, &mats.matte);
+    let _ = (region, tp, grid);
     Occupancy::from_vector(&vt, 512)
 }
