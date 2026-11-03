@@ -11,6 +11,7 @@
 
 pub mod archkit;
 pub mod biome;
+pub mod bparts;
 pub mod buildings;
 pub mod clouds;
 pub mod foliage;

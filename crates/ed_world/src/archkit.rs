@@ -158,7 +158,8 @@ pub struct Variant {
     pub window: WindowDesign,
     pub ground: GroundFloor,
     pub balcony: Balcony,
-    /// Floors (1-based above ground) that get balconies; 0 = all upper.
+    /// Floor indices (ground = 0) that get balconies; `&[0]` means every
+    /// upper floor.
     pub balcony_floors: &'static [u8],
     pub balcony_odds: f32,
     pub cornice: Cornice,
@@ -556,7 +557,7 @@ static PARIS: &[Variant] = &[
         window: WindowDesign { surround: true, ..win(1.15, 2.2, 0.15, Arch::Flat, 2, 3, WHITE_FRAME, Lintel::Hood) },
         ground: GroundFloor::Shops,
         balcony: Balcony::Iron,
-        balcony_floors: &[1, 4],
+        balcony_floors: &[2, 5],
         balcony_odds: 1.0,
         cornice: Cornice::Classical,
         string_courses: true,
