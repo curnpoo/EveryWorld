@@ -1,0 +1,13 @@
+[package]
+name = "ed_engine_audio"
+version.workspace = true
+edition.workspace = true
+description = "Rust port of the engine sound kit (vendor/engine-sound-kit): procedural engine voices, multi-voice mixer, game adapters. Engine-free."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+crossbeam-channel = "0.5"
+
+# The DSP loop is per-sample float math: keep it optimized even in dev/test
+# builds so tests and renders run at real-time speeds.
