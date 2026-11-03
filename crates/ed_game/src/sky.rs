@@ -15,6 +15,9 @@ use glam::{DAffine3, DVec3};
 
 pub struct SkyPlugin;
 
+/// Planet visuals and navigation markers are reserved for spaceflight.
+pub const SPACE_ALTITUDE_M: f64 = 100_000.0;
+
 impl Plugin for SkyPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(Clock { unix_s: 0.0, rate: 1.0 })
@@ -127,11 +130,16 @@ fn update_bodies(
     clock: Res<Clock>,
     origin: Res<WorldOrigin>,
     focus: Query<&GlobalTransform, With<Focus>>,
-    mut bodies: Query<(&CelestialBody, &mut Transform)>,
+    mut bodies: Query<(&CelestialBody, &mut Transform, &mut Visibility)>,
 ) {
     let snap = Snapshot::at(clock.unix_s);
-    let cam = focus.iter().next().map(|f| f.translation().as_dvec3()).unwrap_or_default();
-    for (b, mut t) in &mut bodies {
+    let focus_pos = focus.iter().next().map(|f| f.translation());
+    let in_space = focus_pos
+        .map(|p| origin.to_geodetic(p).alt_m >= SPACE_ALTITUDE_M)
+        .unwrap_or(false);
+    let cam = focus_pos.map(|p| p.as_dvec3()).unwrap_or_default();
+    for (b, mut t, mut visibility) in &mut bodies {
+        *visibility = if in_space { Visibility::Visible } else { Visibility::Hidden };
         let p = origin.ecef_to_render(snap.ecef(b.0));
         let info = ed_space::info(b.0);
         let dist = (p - cam).length();
