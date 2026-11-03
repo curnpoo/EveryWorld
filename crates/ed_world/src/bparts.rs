@@ -28,6 +28,9 @@ pub enum Mat {
     Paving,
     /// Plants on roofs and balconies.
     Plant,
+    /// Distant building walls: windows come from a texture laid out in
+    /// (bays, floors) UV space.
+    LodWall,
 }
 
 #[derive(Debug, Default)]
@@ -50,7 +53,7 @@ impl Out {
 }
 
 const IRON: u32 = 0x23262b;
-const GLASS_TINT: u32 = 0x9fb4c0;
+const GLASS_TINT: u32 = 0x34414c;
 
 fn v(x: f32, y: f32, z: f32) -> Vec3 {
     Vec3::new(x, y, z)
@@ -68,7 +71,7 @@ pub fn bar(o: &mut Out, k: Mat, a: Vec3, b: Vec3, s: f32, up_hint: Vec3, c: [f32
     // Sweep a centered square profile; its local y axis is `up`.
     let h = s * 0.5;
     let prof = [Vec2::new(-h, -h), Vec2::new(h, -h), Vec2::new(h, h), Vec2::new(-h, h), Vec2::new(-h, -h)];
-    mk::sweep(o.m(k), &prof, &[a, b], false, up, c);
+    mk::sweep_ex(o.m(k), &prof, &[a, b], false, up, c, false);
 }
 
 // ---------------------------------------------------------------- windows
@@ -137,9 +140,9 @@ pub fn window(o: &mut Out, b: &Basis, op: &Opening, d: &WindowDesign, trim: [f32
         for (sx0, sx1) in [(x0 - sw - 0.02, x0 - 0.02), (x0 + w + 0.02, x0 + w + sw + 0.02)] {
             blk(o, Mat::Trim, b, v(sx0, y0, 0.01), v(sx1, y0 + glazed_h, 0.05), 0.008, scale_color(sc, 0.9));
             // Louvers: angled slats across the panel.
-            let n = ((glazed_h - 0.16) / 0.065) as usize;
+            let n = ((glazed_h - 0.16) / 0.1) as usize;
             for k in 0..n {
-                let y = y0 + 0.08 + k as f32 * 0.065;
+                let y = y0 + 0.08 + k as f32 * 0.1;
                 let p = [b.p(sx0 + 0.05, y, 0.05), b.p(sx1 - 0.05, y, 0.05), b.p(sx1 - 0.05, y + 0.05, 0.075), b.p(sx0 + 0.05, y + 0.05, 0.075)];
                 o.m(Mat::Trim).quad(p, [[0.0; 2]; 4], sc);
             }
@@ -151,18 +154,18 @@ pub fn window(o: &mut Out, b: &Basis, op: &Opening, d: &WindowDesign, trim: [f32
 pub fn flower_box(o: &mut Out, b: &Basis, x0: f32, w: f32, y: f32, seed: u64) {
     blk(o, Mat::Trim, b, v(x0 - 0.05, y - 0.22, 0.05), v(x0 + w + 0.05, y - 0.02, 0.3), 0.02, rgb(0x6b4a2f));
     let colors = [0xd62828, 0xf77f00, 0xe5383b, 0xff70a6, 0xfcbf49, 0xc77dff];
-    let n = ((w / 0.18) as usize).max(2);
+    let n = ((w / 0.4) as usize).max(2);
     for i in 0..n {
         let x = x0 + (i as f32 + 0.5) * w / n as f32;
         let c = rgb(colors[(crate::hash01(seed, i as u64) * colors.len() as f32) as usize % colors.len()]);
-        bush(o, b.p(x, y + 0.02, 0.17), 0.13, 0.11, c, seed ^ i as u64);
+        bush(o, b.p(x, y + 0.02, 0.17), 0.22, 0.16, c, seed ^ i as u64);
     }
 }
 
 /// A lumpy foliage mass (noise-displaced, multi-lobed), for planters and flowers.
 pub fn bush(o: &mut Out, center: Vec3, r: f32, h: f32, c: [f32; 4], seed: u64) {
     let m = o.m(Mat::Plant);
-    let (rings, seg) = (5usize, 9usize);
+    let (rings, seg) = (4usize, 7usize);
     let base = m.positions.len() as u32;
     for j in 0..=rings {
         let phi = j as f32 / rings as f32 * std::f32::consts::PI;
@@ -260,7 +263,7 @@ pub fn shopfront(o: &mut Out, b: &Basis, op: &Opening, frame: [f32; 4], sign: [f
     // Kick plate.
     blk(o, Mat::Trim, b, v(x0, y0, -r - 0.05), v(x0 + w, glass_y0, -r), 0.01, scale_color(frame, 0.8));
     let g = [b.p(x0, glass_y0, -r), b.p(x0 + w, glass_y0, -r), b.p(x0 + w, y0 + h, -r), b.p(x0, y0 + h, -r)];
-    mk::polygon(o.m(Mat::Glass), &g, &[], b.z, 1.0, rgb(0xb0c4cc));
+    mk::polygon(o.m(Mat::Glass), &g, &[], b.z, 1.0, rgb(0x46545e));
     // Mullions; one bay is a door.
     let n = ((w / 1.2) as usize).max(2);
     for i in 1..n {
@@ -274,7 +277,8 @@ pub fn shopfront(o: &mut Out, b: &Basis, op: &Opening, frame: [f32; 4], sign: [f
     let letters = 3 + (crate::hash01(seed, 3) * 6.0) as usize;
     for k in 0..letters {
         let lx = x0 + w * 0.15 + k as f32 * w * 0.7 / letters as f32;
-        blk(o, Mat::Trim, b, v(lx, y0 + h + 0.2, 0.12), v(lx + w * 0.5 / letters as f32, y0 + h + 0.45, 0.14), 0.0, rgb(0xf4f2ec));
+        let p = [b.p(lx, y0 + h + 0.2, 0.125), b.p(lx + w * 0.5 / letters as f32, y0 + h + 0.2, 0.125), b.p(lx + w * 0.5 / letters as f32, y0 + h + 0.45, 0.125), b.p(lx, y0 + h + 0.45, 0.125)];
+        o.m(Mat::Trim).quad(p, [[0.0; 2]; 4], rgb(0xf4f2ec));
     }
     if let Some(c) = awning {
         awning_at(o, b, x0 - 0.05, w + 0.1, y0 + h + 0.02, 1.2, c);
@@ -396,7 +400,7 @@ pub fn balcony(o: &mut Out, b: &Basis, kind: Balcony, x0: f32, w: f32, floor_y: 
                 let lower = [w2[0] + b.y * 0.08, w2[1] + b.y * 0.08];
                 bar(o, Mat::Metal, lower[0], lower[1], 0.03, b.y, rgb(IRON));
                 let len = w2[0].distance(w2[1]);
-                let n = (len / 0.11) as usize;
+                let n = (len / 0.14) as usize;
                 for i in 0..=n {
                     let p = w2[0].lerp(w2[1], i as f32 / n.max(1) as f32);
                     bar(o, Mat::Metal, p + b.y * 0.08, p + b.y * rail_h, 0.016, b.z, rgb(IRON));
@@ -418,9 +422,10 @@ pub fn ac_unit(o: &mut Out, b: &Basis, x_center: f32, y_sill: f32) {
     let body = rgb(0xe3ded2);
     blk(o, Mat::Trim, b, v(x_center - w * 0.5, y_sill - h - 0.02, -0.05), v(x_center + w * 0.5, y_sill - 0.02, d), 0.03, body);
     // Front grille slats.
-    for k in 0..7 {
-        let y = y_sill - h + 0.04 + k as f32 * 0.045;
-        blk(o, Mat::Trim, b, v(x_center - w * 0.42, y, d), v(x_center + w * 0.42, y + 0.02, d + 0.015), 0.0, scale_color(body, 0.75));
+    for k in 0..4 {
+        let y = y_sill - h + 0.06 + k as f32 * 0.08;
+        let p = [b.p(x_center - w * 0.42, y, d + 0.004), b.p(x_center + w * 0.42, y, d + 0.004), b.p(x_center + w * 0.42, y + 0.03, d + 0.004), b.p(x_center - w * 0.42, y + 0.03, d + 0.004)];
+        o.m(Mat::Trim).quad(p, [[0.0; 2]; 4], scale_color(body, 0.7));
     }
     // Support bracket.
     for x in [x_center - w * 0.35, x_center + w * 0.35] {
@@ -435,9 +440,7 @@ pub fn condenser(o: &mut Out, b: &Basis, x_center: f32, y: f32) {
     blk(o, Mat::Trim, b, v(x_center - w * 0.5, y, 0.05), v(x_center + w * 0.5, y + h, 0.05 + d), 0.03, body);
     // Fan grille: concentric rings.
     let c = b.p(x_center - w * 0.15, y + h * 0.5, 0.05 + d + 0.005);
-    for (r0, r1) in [(0.06, 0.08), (0.14, 0.16), (0.22, 0.24)] {
-        mk::lathe(o.m(Mat::Metal), c, b.z, &[Vec2::new(r0, 0.0), Vec2::new(r1, 0.0), Vec2::new(r1, 0.01), Vec2::new(r0, 0.01)], 16, rgb(0x4a4d52));
-    }
+    mk::lathe(o.m(Mat::Metal), c, b.z, &[Vec2::new(0.0, 0.0), Vec2::new(0.2, 0.0), Vec2::new(0.24, 0.015), Vec2::new(0.24, 0.025)], 10, rgb(0x4a4d52));
     for x in [x_center - w * 0.4, x_center + w * 0.4] {
         bar(o, Mat::Metal, b.p(x, y, 0.0), b.p(x, y, d + 0.05), 0.03, b.y, rgb(0x6a6e74));
     }
@@ -451,9 +454,10 @@ pub fn fire_escape(o: &mut Out, b: &Basis, x0: f32, x1: f32, floor_ys: &[f32]) {
     for (k, &y) in floor_ys.iter().enumerate() {
         // Grated platform: frame + slats.
         blk(o, Mat::Metal, b, v(x0, y - 0.06, 0.0), v(x1, y, depth), 0.0, iron);
-        for i in 0..((x1 - x0) / 0.12) as usize {
-            let x = x0 + 0.06 + i as f32 * 0.12;
-            blk(o, Mat::Metal, b, v(x, y, 0.02), v(x + 0.03, y + 0.015, depth - 0.02), 0.0, scale_color(iron, 1.2));
+        for i in 0..((x1 - x0) / 0.2) as usize {
+            let x = x0 + 0.1 + i as f32 * 0.2;
+            let p = [b.p(x, y + 0.01, depth - 0.02), b.p(x + 0.04, y + 0.01, depth - 0.02), b.p(x + 0.04, y + 0.01, 0.02), b.p(x, y + 0.01, 0.02)];
+            o.m(Mat::Metal).quad(p, [[0.0; 2]; 4], scale_color(iron, 1.3));
         }
         // Railing on three sides.
         let r = 1.0;
@@ -533,10 +537,10 @@ pub fn water_tank_nyc(o: &mut Out, base: Vec3, up: Vec3) {
     bar(o, Mat::Metal, base + (side + side2) * r * 0.7, base + (-side - side2) * r * 0.7 + up * legs_h, 0.05, up, steel);
     bar(o, Mat::Metal, base + (side - side2) * r * 0.7, base + (-side + side2) * r * 0.7 + up * legs_h, 0.05, up, steel);
     let t0 = base + up * legs_h;
-    mk::lathe(o.m(Mat::Trim), t0, up, &[Vec2::new(0.0, 0.0), Vec2::new(r * 1.05, 0.0), Vec2::new(r * 1.05, 0.12), Vec2::new(r, 0.15), Vec2::new(r, 3.2), Vec2::new(r * 1.06, 3.25), Vec2::new(r * 0.08, 4.5), Vec2::new(0.0, 4.6)], 20, wood);
+    mk::lathe(o.m(Mat::Trim), t0, up, &[Vec2::new(0.0, 0.0), Vec2::new(r * 1.05, 0.0), Vec2::new(r * 1.05, 0.12), Vec2::new(r, 0.15), Vec2::new(r, 3.2), Vec2::new(r * 1.06, 3.25), Vec2::new(r * 0.08, 4.5), Vec2::new(0.0, 4.6)], 14, wood);
     // Steel hoops.
     for h in [0.5, 1.2, 1.9, 2.6] {
-        mk::lathe(o.m(Mat::Metal), t0 + up * h, up, &[Vec2::new(r + 0.005, 0.0), Vec2::new(r + 0.03, 0.02), Vec2::new(r + 0.03, 0.07), Vec2::new(r + 0.005, 0.09)], 20, steel);
+        mk::lathe(o.m(Mat::Metal), t0 + up * h, up, &[Vec2::new(r + 0.005, 0.0), Vec2::new(r + 0.03, 0.02), Vec2::new(r + 0.03, 0.07), Vec2::new(r + 0.005, 0.09)], 12, steel);
     }
 }
 
@@ -560,8 +564,8 @@ pub fn hvac(o: &mut Out, b: &Basis, size: f32) {
         blk(o, Mat::Trim, b, v(-size * 0.55, y, size * 0.45), v(size * 0.55, y + 0.03, size * 0.47), 0.0, scale_color(body, 0.7));
     }
     let c = b.p(0.0, size * 0.7 + 0.005, 0.0);
-    mk::lathe(o.m(Mat::Metal), c, b.y, &[Vec2::new(size * 0.3, 0.0), Vec2::new(size * 0.33, 0.0), Vec2::new(size * 0.33, 0.12), Vec2::new(size * 0.3, 0.12)], 20, rgb(0x5a5f66));
-    mk::lathe(o.m(Mat::Metal), c, b.y, &[Vec2::new(0.0, 0.02), Vec2::new(size * 0.3, 0.02)], 20, rgb(0x2a2c30));
+    mk::lathe(o.m(Mat::Metal), c, b.y, &[Vec2::new(size * 0.3, 0.0), Vec2::new(size * 0.33, 0.0), Vec2::new(size * 0.33, 0.12), Vec2::new(size * 0.3, 0.12)], 12, rgb(0x5a5f66));
+    mk::lathe(o.m(Mat::Metal), c, b.y, &[Vec2::new(0.0, 0.02), Vec2::new(size * 0.3, 0.02)], 12, rgb(0x2a2c30));
 }
 
 /// Stair bulkhead: small roofed box with a door.

@@ -13,6 +13,8 @@ use crate::{foliage, props, roads, water};
 use ed_data::{DiskCache, elevation, vector};
 use ed_geo::{EnuFrame, tile::TileId};
 use glam::{DVec3, Vec3};
+use std::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct TileJob {
@@ -42,7 +44,11 @@ pub struct TileBuild {
     pub collider: Option<(Vec<Vec3>, Vec<[u32; 3]>)>,
     pub water: MeshData,
     pub roads: MeshData,
-    pub buildings: Option<BuildingMeshes>,
+    /// Distant building versions, one per detail chunk (always shown unless
+    /// the chunk's full-detail version is loaded).
+    pub building_lod: Vec<((u8, u8), BuildingMeshes)>,
+    /// Inputs for building full-detail chunks on demand near the player.
+    pub building_detail: Option<Arc<DetailSet>>,
     pub foliage: MeshData,
     pub rocks: MeshData,
     pub street_props: MeshData,
@@ -56,6 +62,29 @@ pub struct TileBuild {
 /// Elevation zoom for a terrain tile.
 fn elevation_zoom(z: u8) -> u8 {
     z.min(13)
+}
+
+/// Everything needed to build any detail chunk of a tile later.
+#[derive(Debug)]
+pub struct DetailSet {
+    pub ctx: buildings::DetailCtx,
+    pub chunks: HashMap<(u8, u8), Vec<buildings::BuildingSpec>>,
+}
+
+impl DetailSet {
+    /// Chunk center in the tile's local space (relative to the tile anchor).
+    pub fn chunk_center(&self, c: (u8, u8)) -> Vec3 {
+        let n = buildings::CHUNKS as f64;
+        let (u, v) = ((c.0 as f64 + 0.5) / n, (c.1 as f64 + 0.5) / n);
+        self.ctx.proj.local(u, v, self.ctx.grid.sample(u, v) as f64)
+    }
+
+    pub fn build_chunk(&self, c: (u8, u8)) -> BuildingMeshes {
+        match self.chunks.get(&c) {
+            Some(specs) => buildings::build_detail(specs.iter(), &self.ctx),
+            None => BuildingMeshes::default(),
+        }
+    }
 }
 
 pub fn build(job: &TileJob) -> TileBuild {
@@ -124,7 +153,8 @@ pub fn build(job: &TileJob) -> TileBuild {
         collider,
         water: MeshData::default(),
         roads: MeshData::default(),
-        buildings: None,
+        building_lod: Vec::new(),
+        building_detail: None,
         foliage: MeshData::default(),
         rocks: MeshData::default(),
         street_props: MeshData::default(),
@@ -158,10 +188,21 @@ pub fn build(job: &TileJob) -> TileBuild {
             let r = roads::generate(vt, &proj, &grid, &surface, region);
             out.street_props = props::bake_street_props(&r.props, up);
             out.stats.props = r.props.len();
+            let ctx = BuildingContext { proj: &proj, grid: &grid, surface: &surface, biome, roads: &r.centerlines };
+            let specs = buildings::prepare(vt, &ctx, region);
+            out.stats.buildings = specs.len();
+            let mut chunks: HashMap<(u8, u8), Vec<buildings::BuildingSpec>> = HashMap::new();
+            for s in specs {
+                chunks.entry(s.chunk).or_default().push(s);
+            }
+            let mut lod: Vec<((u8, u8), BuildingMeshes)> = chunks.iter().map(|(c, v)| (*c, buildings::build_lod(v.iter(), up))).collect();
+            lod.sort_by_key(|(c, _)| *c);
+            out.building_lod = lod;
+            out.building_detail = Some(Arc::new(DetailSet {
+                ctx: buildings::DetailCtx { proj, grid: grid.clone(), roads: r.centerlines.clone() },
+                chunks,
+            }));
             out.roads = r.mesh;
-            let b = buildings::generate(vt, &BuildingContext { proj: &proj, grid: &grid, surface: &surface, biome });
-            out.stats.buildings = b.count;
-            out.buildings = Some(b);
         }
         if tile.z >= 13 {
             let occ = foliage::Occupancy::from_vector(vt, 512);
@@ -179,9 +220,7 @@ pub fn build(job: &TileJob) -> TileBuild {
         + out.foliage.triangle_count()
         + out.rocks.triangle_count()
         + out.street_props.triangle_count()
-        + out.buildings.as_ref().map_or(0, |b| {
-            b.facades.triangle_count() + b.glass.triangle_count() + b.storefronts.triangle_count() + b.roofs.triangle_count()
-        });
+        + out.building_lod.iter().map(|(_, b)| b.triangle_count()).sum::<usize>();
     out
 }
 
@@ -213,6 +252,16 @@ mod tests {
                 b.stats.triangles, b.airports.len(), t0.elapsed(), b.errors
             );
             assert!(b.stats.triangles > 1000);
+            if let Some(d) = &b.building_detail {
+                let (u, v) = tile.geodetic_to_uv(lat, lon);
+                let c = ((u * buildings::CHUNKS as f64) as u8, (v * buildings::CHUNKS as f64) as u8);
+                let t1 = std::time::Instant::now();
+                let m = d.build_chunk(c);
+                eprintln!("    detail chunk {c:?}: {} buildings, {} tris, {:?}", m.count, m.triangle_count(), t1.elapsed());
+                let mut per: Vec<_> = m.out.meshes.iter().map(|(k, v)| (format!("{k:?}"), v.triangle_count())).collect();
+                per.sort_by_key(|p| std::cmp::Reverse(p.1));
+                eprintln!("      {per:?}");
+            }
         }
     }
 }
