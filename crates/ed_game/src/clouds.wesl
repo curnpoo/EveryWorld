@@ -7,10 +7,12 @@
 // continuous across floating-origin rebases.
 
 import bevy_pbr::render::mesh_view_bindings as vb;
+import bevy_pbr::prepass::io as pio;
 
 struct CloudUniform {
     noise_from_render: mat3x3<f32>,
     cam_noise: vec4<f32>,
+    cam_pos: vec4<f32>,
     cam_up: vec4<f32>,
     planet: vec4<f32>,
     cu: vec4<f32>,
@@ -33,6 +35,10 @@ struct CloudUniform {
 @group(3) @binding(4) var detail_smp: sampler;
 
 const PI: f32 = 3.14159265;
+
+// Set by the shadow caster: stratus decks dim the sun globally instead of
+// casting patchy shadows.
+var<private> g_shadow_pass: bool = false;
 const SHAPE_PERIOD: f32 = 8192.0;
 const DETAIL_PERIOD: f32 = 1024.0;
 const WEATHER_PERIOD: f32 = 65536.0;
@@ -41,13 +47,15 @@ const WEATHER_PERIOD: f32 = 65536.0;
 const SIGMA: f32 = 0.036;
 // Vertical optical depth of the clear atmosphere at sea level.
 const TAU_RAYLEIGH: vec3<f32> = vec3<f32>(0.0464, 0.1080, 0.2650);
-const TAU_MIE: f32 = 0.006;
+// Includes a moderate aerosol load (AOD ~0.06) so low sun goes deep orange.
+const TAU_MIE: f32 = 0.06;
 const TAU_OZONE: vec3<f32> = vec3<f32>(0.0140, 0.0420, 0.0020);
 
 struct VOut {
     @builtin(position) pos: vec4<f32>,
 };
 
+@if(!PREPASS_PIPELINE)
 @vertex
 fn vertex(@location(0) position: vec3<f32>) -> VOut {
     var o: VOut;
@@ -124,7 +132,7 @@ fn sun_transmittance(h: f32, mu_s: f32) -> vec3<f32> {
         }
     }
     let am_r = air_column(max(h, 0.0), mu_s, 8000.0);
-    let am_m = air_column(max(h, 0.0), mu_s, 1200.0);
+    let am_m = air_column(max(h, 0.0), mu_s, 1500.0);
     let am_o = air_column(max(h, 0.0), mu_s, 8000.0);
     return exp(-(TAU_RAYLEIGH * am_r + vec3<f32>(TAU_MIE * am_m) + TAU_OZONE * am_o));
 }
@@ -218,7 +226,7 @@ fn density(p: vec3<f32>, pn: vec3<f32>, pw: vec3<f32>, h: f32, t: f32, detail: b
 
     // --- Stratus / stratocumulus deck ---
     let amount = cl.st.z;
-    if amount > 0.0 {
+    if amount > 0.0 && !g_shadow_pass {
         let fs = (h - cl.st.x) / max(cl.st.y - cl.st.x, 1.0);
         if fs > 0.0 && fs < 1.0 {
             // Lumpy top, flatter base, broad rolls from the low-frequency shape.
@@ -250,13 +258,17 @@ fn density(p: vec3<f32>, pn: vec3<f32>, pw: vec3<f32>, h: f32, t: f32, detail: b
         let cap = 1.0 - smoothstep(0.95, 1.0, fh);
         let foot = saturate((h - cu_base) / 120.0);
         // The anvil is a thinner, more translucent sheet than the tower.
-        let v = solid * cap * foot * mix(1.4, 0.3 * smoothstep(0.1, -0.7, e) + 0.06, storm.z);
+        let v = solid * cap * foot * mix(1.4, 0.12 * smoothstep(0.1, -0.5, e) + 0.14, storm.z);
         if v > d {
             d = v;
             hf = fh;
         }
     }
 
+    // Light march: average erosion instead of sampling detail.
+    if !detail && d > 0.0 {
+        d = saturate(remap(d, 0.14, 1.0, 0.0, 1.0));
+    }
     // --- Detail erosion: wispy at the base, billowy at the top ---
     if detail && d > 0.0 {
         let fade = saturate(1.0 - t / 40000.0);
@@ -370,6 +382,7 @@ fn rain_shafts(ro: vec3<f32>, rd: vec3<f32>, h_c: f32, mu: f32, t_a: f32, t_b: f
     return vec4<f32>(col, T);
 }
 
+@if(!PREPASS_PIPELINE)
 @fragment
 fn fragment(in: VOut) -> @location(0) vec4<f32> {
     let frag = in.pos;
@@ -496,7 +509,7 @@ fn fragment(in: VOut) -> @location(0) vec4<f32> {
         let sun_t = sun_transmittance(h, mu_s);
         let sun_col = cl.sun.w * mix(sun_t, vec3<f32>(dot(sun_t, vec3<f32>(0.2126, 0.7152, 0.0722))), cl.planet.z);
         let od = light_depth(p, pn, h, ts);
-        let ms = ph0 * exp(-od) + 0.8 * ph1 * exp(-od * 0.3) + 0.6 * ph2 * exp(-od * 0.1) + 0.5 * ph3 * exp(-od * 0.06);
+        let ms = ph0 * exp(-od) + 0.8 * ph1 * exp(-od * 0.35) + 0.6 * ph2 * exp(-od * 0.15) + 0.5 * ph3 * exp(-od * 0.08);
         // Powder: thin edges facing away from the sun are darker.
         let powder = mix(1.0, 1.0 - exp(-sigma_e * 120.0 - od * 0.8), 0.5 * saturate(0.6 - cos_v * 0.6));
         var direct = sun_col * ms * powder * 2.0;
@@ -539,4 +552,65 @@ fn fragment(in: VOut) -> @location(0) vec4<f32> {
         return vec4<f32>(0.0);
     }
     return vec4<f32>(col * view.exposure, alpha);
+}
+
+// ---------------------------------------------------------------------------
+// Cloud shadows. A horizontal caster plane follows the camera on a render
+// layer only the sun sees; this alpha-mask prepass shader keeps the texels
+// whose column of cloud toward the sun is optically thick, so cumulus throw
+// patchy shadows into the cascaded shadow map.
+// ---------------------------------------------------------------------------
+
+fn shadow_discard(p: vec3<f32>) -> bool {
+    g_shadow_pass = true;
+    // Under a solid deck the sun is dimmed globally instead (see sun_fraction).
+    if cl.st.z > 0.5 {
+        return true;
+    }
+    let up = cl.cam_up.xyz;
+    let sun = cl.sun.xyz;
+    let mu_s = dot(sun, up);
+    if mu_s < 0.05 {
+        return true;
+    }
+    let rel = p - cl.cam_pos.xyz;
+    let h_plane = cl.cam_up.w + dot(rel, up);
+    let lo = cl.shell.x + 150.0;
+    let hi = min(cl.shell.y, lo + 4000.0);
+    let up_n = cl.noise_from_render * up;
+    let n = 10;
+    let dh = (hi - lo) / f32(n);
+    var od = 0.0;
+    for (var k = 0; k < n; k++) {
+        let hk = lo + dh * (f32(k) + 0.5);
+        let q = p + sun * ((hk - h_plane) / mu_s);
+        let qn = cl.cam_noise.xyz + cl.noise_from_render * (q - cl.cam_pos.xyz);
+        let qw = qn - up_n * (hk - cl.cam_up.w);
+        od += density(q, qn, qw, hk, 0.0, true).density * dh / mu_s;
+    }
+    return od * SIGMA < 2.0;
+}
+
+@if(PREPASS_PIPELINE && PREPASS_FRAGMENT)
+@fragment
+fn fragment(in: pio::VertexOutput) -> pio::FragmentOutput {
+    if shadow_discard(in.world_position.xyz) {
+        discard;
+    }
+    var out: pio::FragmentOutput;
+    @if(NORMAL_PREPASS)
+    out.normal = vec4<f32>(0.5, 1.0, 0.5, 1.0);
+    @if(MOTION_VECTOR_PREPASS)
+    out.motion_vector = vec2<f32>(0.0);
+    @if(UNCLIPPED_DEPTH_ORTHO_EMULATION)
+    out.frag_depth = in.unclipped_depth;
+    return out;
+}
+
+@if(PREPASS_PIPELINE && !PREPASS_FRAGMENT)
+@fragment
+fn fragment(in: pio::VertexOutput) {
+    if shadow_discard(in.world_position.xyz) {
+        discard;
+    }
 }

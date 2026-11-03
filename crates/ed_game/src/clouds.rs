@@ -24,7 +24,8 @@ use crate::sky::{Clock, CurrentWeather, Sun};
 use bevy::asset::{RenderAssetUsages, embedded_asset};
 use bevy::camera::visibility::NoFrustumCulling;
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
-use bevy::light::NotShadowCaster;
+use bevy::camera::visibility::RenderLayers;
+use bevy::light::{NotShadowCaster, NotShadowReceiver};
 use bevy::mesh::{MeshVertexBufferLayoutRef, PrimitiveTopology};
 use bevy::pbr::{Material, MaterialPipeline, MaterialPipelineKey, MaterialPlugin};
 use bevy::prelude::*;
@@ -47,7 +48,7 @@ impl Plugin for CloudsPlugin {
             .init_resource::<CloudState>()
             .init_resource::<CloudOverride>()
             .add_systems(Startup, setup_clouds)
-            .add_systems(Update, (pick_quality, apply_lookdev_presets, update_climate).chain())
+            .add_systems(Update, (pick_quality, apply_lookdev_presets, update_climate, sun_sees_cloud_shadows).chain())
             .add_systems(PostUpdate, update_uniforms.after(TransformSystems::Propagate));
     }
 }
@@ -152,6 +153,8 @@ pub struct CloudUniform {
     pub noise_from_render: Mat3,
     /// Camera position in noise space (ECEF minus drift, modulo period).
     pub cam_noise: Vec4,
+    /// Camera position in render space.
+    pub cam_pos: Vec4,
     /// xyz: local up at the camera, w: camera altitude (m above sea level).
     pub cam_up: Vec4,
     /// x: planet radius, y: max distance, z: sun white balance (0 = physical), w: brightness gain.
@@ -183,7 +186,10 @@ pub struct CloudUniform {
 pub const MAX_STORMS: usize = 8;
 
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
+#[bind_group_data(CloudKey)]
 pub struct CloudMaterial {
+    /// The sky layer (false) or the shadow-only caster plane (true).
+    pub shadow_caster: bool,
     #[uniform(0)]
     pub u: CloudUniform,
     #[texture(1, dimension = "3d")]
@@ -194,6 +200,17 @@ pub struct CloudMaterial {
     pub detail: Handle<Image>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CloudKey {
+    shadow_caster: bool,
+}
+
+impl From<&CloudMaterial> for CloudKey {
+    fn from(m: &CloudMaterial) -> Self {
+        Self { shadow_caster: m.shadow_caster }
+    }
+}
+
 impl Material for CloudMaterial {
     fn vertex_shader() -> ShaderRef {
         "embedded://earthdrop/clouds.wesl".into()
@@ -201,21 +218,21 @@ impl Material for CloudMaterial {
     fn fragment_shader() -> ShaderRef {
         "embedded://earthdrop/clouds.wesl".into()
     }
+    fn prepass_fragment_shader() -> ShaderRef {
+        "embedded://earthdrop/clouds.wesl".into()
+    }
     fn alpha_mode(&self) -> AlphaMode {
-        AlphaMode::Premultiplied
-    }
-    fn enable_prepass() -> bool {
-        false
-    }
-    fn enable_shadows() -> bool {
-        false
+        if self.shadow_caster { AlphaMode::Mask(0.5) } else { AlphaMode::Premultiplied }
     }
     fn specialize(
         _pipeline: &MaterialPipeline,
         descriptor: &mut RenderPipelineDescriptor,
         _layout: &MeshVertexBufferLayoutRef,
-        _key: MaterialPipelineKey<Self>,
+        key: MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
+        if key.bind_group_data.shadow_caster {
+            return Ok(());
+        }
         // A screen-covering triangle: never culled, never depth tested
         // (the shader clips the march against the depth prepass itself).
         descriptor.primitive.cull_mode = None;
@@ -271,11 +288,14 @@ fn setup_clouds(
         (a.join().unwrap(), b.join().unwrap())
     });
     info!("clouds: noise volumes built in {:.2} s", t0.elapsed().as_secs_f32());
-    let mat = mats.add(CloudMaterial {
+    let sky = CloudMaterial {
+        shadow_caster: false,
         u: CloudUniform::default(),
         shape: images.add(noise_image(SHAPE_RES, shape)),
         detail: images.add(noise_image(DETAIL_RES, detail)),
-    });
+    };
+    let caster = CloudMaterial { shadow_caster: true, ..sky.clone() };
+    let mat = mats.add(sky);
     let mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, vec![[-1.0f32, -1.0, 0.0], [3.0, -1.0, 0.0], [-1.0, 3.0, 0.0]]);
     commands.spawn((
@@ -287,6 +307,37 @@ fn setup_clouds(
         NoFrustumCulling,
         NotShadowCaster,
     ));
+    // Shadow caster: a big flat quad that follows the camera at cloud base,
+    // on a render layer only the sun sees (see `shadow_discard` in the shader).
+    let h = CLOUD_SHADOW_PLANE_HALF_M;
+    let quad = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, vec![[-h, 0.0, -h], [-h, 0.0, h], [h, 0.0, h], [h, 0.0, -h]])
+        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0f32, 1.0, 0.0]; 4])
+        .with_inserted_indices(bevy::mesh::Indices::U32(vec![0, 1, 2, 0, 2, 3]));
+    commands.spawn((
+        CloudShadowCaster,
+        Name::new("cloud shadow caster"),
+        Mesh3d(meshes.add(quad)),
+        MeshMaterial3d(mats.add(caster)),
+        Transform::default(),
+        NoFrustumCulling,
+        NotShadowReceiver,
+        RenderLayers::layer(CLOUD_SHADOW_LAYER),
+    ));
+}
+
+/// Render layer seen only by the sun (for the cloud shadow caster).
+pub const CLOUD_SHADOW_LAYER: usize = 7;
+const CLOUD_SHADOW_PLANE_HALF_M: f32 = 20_000.0;
+
+#[derive(Component)]
+struct CloudShadowCaster;
+
+/// Let the sun see the shadow-caster layer as well as the default one.
+fn sun_sees_cloud_shadows(mut commands: Commands, sun: Query<Entity, (With<Sun>, Without<RenderLayers>)>) {
+    for e in &sun {
+        commands.entity(e).insert(RenderLayers::from_layers(&[0, CLOUD_SHADOW_LAYER]));
+    }
 }
 
 /// Pick the target climate from weather (or an override) and ease toward it.
@@ -337,9 +388,9 @@ fn sky_light(sun_elev_deg: f32, sun_lux: f32) -> (Vec3, Vec3, Vec3, f32) {
     let day = smooth(-7.0, 40.0, e);
     let golden = smooth(-4.0, 3.0, e) * (1.0 - smooth(4.0, 12.0, e));
     // Sky irradiance: ~20 klx at high sun, ~1 klx at sunset, a little twilight.
-    let sky_lux = 20_000.0 * day.powf(1.4) + 400.0 * smooth(-10.0, 0.0, e);
+    let sky_lux = 20_000.0 * day.powf(1.4) + 2_500.0 * smooth(-10.0, 0.0, e) * (1.0 - smooth(5.0, 20.0, e));
     let blue = Vec3::new(0.60, 0.74, 1.0);
-    let dusk = Vec3::new(0.85, 0.70, 0.78);
+    let dusk = Vec3::new(0.95, 0.72, 0.80);
     let sky_col = blue.lerp(dusk, golden * 0.7);
     let sky = sky_col / sky_col.max_element() * sky_lux;
     // Ground bounce: sun on the ground times a green-brown albedo.
@@ -360,11 +411,11 @@ fn update_uniforms(
     mut st: ResMut<CloudState>,
     cams: Query<&GlobalTransform, With<Camera3d>>,
     sun: Query<&GlobalTransform, With<Sun>>,
-    layer: Query<&MeshMaterial3d<CloudMaterial>, With<CloudLayer>>,
+    layers: Query<&MeshMaterial3d<CloudMaterial>>,
+    mut caster: Query<&mut Transform, With<CloudShadowCaster>>,
     mut mats: ResMut<Assets<CloudMaterial>>,
 ) {
     let Ok(cam) = cams.single() else { return };
-    let Ok(handle) = layer.single() else { return };
     let cam_pos = cam.translation();
     let geo = origin.to_geodetic(cam_pos);
     let p = st.params;
@@ -384,10 +435,7 @@ fn update_uniforms(
     let wind_en = [we * p.wind_speed_ms, wn * p.wind_speed_ms];
     st.storm_drift_deg = wc::advect_deg(geo.lat_deg, st.storm_drift_deg, wind_en, dt);
 
-    let cam_ecef = r2e.transform_point3(cam_pos.as_dvec3());
-    let period = wc::NOISE_PERIOD_M;
-    let n = cam_ecef - st.drift_ecef;
-    let cam_noise = DVec3::new(n.x.rem_euclid(period), n.y.rem_euclid(period), n.z.rem_euclid(period));
+    let cam_noise = wc::noise_coord(r2e.transform_point3(cam_pos.as_dvec3()), st.drift_ecef);
 
     // Storm cells near the camera, nearest first.
     let cells = match &over.storms {
@@ -416,6 +464,7 @@ fn update_uniforms(
     let u = CloudUniform {
         noise_from_render: Mat3::from(r2e.matrix3.as_mat3()),
         cam_noise: cam_noise.as_vec3().extend(0.0),
+        cam_pos: cam_pos.extend(1.0),
         cam_up: up.extend(geo.alt_m as f32),
         planet: Vec4::new(6_371_000.0, q.max_distance_m, 0.45 * smoothstep(4.0, 25.0, sun_elev), 1.0),
         cu: Vec4::new(p.cumulus_base_m, p.cumulus_top_m, p.coverage, p.density),
@@ -430,8 +479,16 @@ fn update_uniforms(
         storm_pos,
         storm_up,
     };
-    if let Some(mut m) = mats.get_mut(&handle.0) {
-        m.u = u;
+    for handle in &layers {
+        if let Some(mut m) = mats.get_mut(&handle.0) {
+            m.u = u.clone();
+        }
+    }
+    // Keep the shadow caster under the cloud base, centered on the camera.
+    if let Ok(mut t) = caster.single_mut() {
+        let plane_alt = floor.max(0.0) + 150.0;
+        t.translation = cam_pos + up * (plane_alt - geo.alt_m as f32);
+        t.rotation = Quat::from_rotation_arc(Vec3::Y, up);
     }
 }
 
@@ -449,12 +506,14 @@ pub struct CloudShot {
     pub height_m: f32,
 }
 
-pub const LOOKDEV_SHOTS: [CloudShot; 5] = [
+pub const LOOKDEV_SHOTS: [CloudShot; 7] = [
     CloudShot { name: "clouds_fair_cumulus", heading_deg: 75.0, pitch_deg: 16.0, height_m: 2.0 },
     CloudShot { name: "clouds_overcast_stratus", heading_deg: 20.0, pitch_deg: 14.0, height_m: 2.0 },
     CloudShot { name: "clouds_distant_thunderstorm", heading_deg: 110.0, pitch_deg: 10.0, height_m: 2.0 },
-    CloudShot { name: "clouds_sunset", heading_deg: 238.0, pitch_deg: 9.0, height_m: 2.0 },
+    CloudShot { name: "clouds_sunset", heading_deg: 75.0, pitch_deg: 14.0, height_m: 2.0 },
+    CloudShot { name: "clouds_sunset_backlit", heading_deg: 238.0, pitch_deg: 9.0, height_m: 2.0 },
     CloudShot { name: "clouds_above_deck_4000m", heading_deg: 100.0, pitch_deg: -16.0, height_m: 4_000.0 },
+    CloudShot { name: "clouds_ground_shadows", heading_deg: 285.0, pitch_deg: -27.0, height_m: 650.0 },
 ];
 
 /// Render-space view direction for a compass heading and pitch (x = east,
@@ -480,7 +539,16 @@ struct ShotPreset {
 
 fn preset_for(shot: &str) -> Option<ShotPreset> {
     let p = match shot {
-        "clouds_fair_cumulus" => ShotPreset { weather: "fair", time: ShotTime::Hour(15.0), tweak: |_| {}, storm_at_m: None },
+        "clouds_ground_shadows" => ShotPreset {
+            weather: "fair",
+            time: ShotTime::Hour(13.0),
+            tweak: |p| {
+                p.coverage = 0.42;
+                p.cumulus_base_m = 1_100.0;
+            },
+            storm_at_m: None,
+        },
+        "clouds_fair_cumulus" => ShotPreset { weather: "fair", time: ShotTime::Hour(14.0), tweak: |_| {}, storm_at_m: None },
         "clouds_overcast_stratus" => ShotPreset { weather: "overcast", time: ShotTime::Hour(13.0), tweak: |_| {}, storm_at_m: None },
         "clouds_distant_thunderstorm" => ShotPreset {
             weather: "fair",
@@ -492,11 +560,11 @@ fn preset_for(shot: &str) -> Option<ShotPreset> {
             },
             storm_at_m: Some(40_000.0),
         },
-        "clouds_sunset" => ShotPreset {
+        "clouds_sunset" | "clouds_sunset_backlit" => ShotPreset {
             weather: "fair",
-            time: ShotTime::SunElevation(3.0),
+            time: ShotTime::SunElevation(5.0),
             tweak: |p| {
-                p.coverage = 0.3;
+                p.coverage = 0.26;
                 p.cumulus_top_m = 3_800.0;
             },
             storm_at_m: None,
@@ -546,6 +614,7 @@ pub fn apply_lookdev_presets(
     origin: Res<WorldOrigin>,
     mut clock: ResMut<Clock>,
     mut over: ResMut<CloudOverride>,
+    mut state: ResMut<CloudState>,
     mut saved_clock: Local<Option<f64>>,
 ) {
     let Some(shot) = shot else { return };
@@ -562,6 +631,11 @@ pub fn apply_lookdev_presets(
         return;
     };
     let def = LOOKDEV_SHOTS.iter().find(|s| s.name == shot.0).expect("preset without a shot");
+    // Same cloud field every run: no wind drift carried over from the clock
+    // jumps between shots.
+    state.drift_ecef = DVec3::ZERO;
+    state.storm_drift_deg = [0.0; 2];
+    state.last_clock = None;
     let stage = origin.frame.origin;
     saved_clock.get_or_insert(clock.unix_s);
     clock.unix_s = match preset.time {

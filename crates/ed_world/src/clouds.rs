@@ -24,6 +24,15 @@ pub const DETAIL_PERIOD_M: f32 = 1_024.0;
 /// Large-scale coverage variation (where the cloud fields are).
 pub const WEATHER_PERIOD_M: f32 = 65_536.0;
 
+/// Planet-anchored noise coordinate of an ECEF point: the point minus the
+/// wind drift, wrapped into one noise period per axis. The renderer adds
+/// render-space offsets (rotated into ECEF axes) to the camera's coordinate,
+/// so the field is the same whichever floating-origin frame drew it.
+pub fn noise_coord(ecef: glam::DVec3, drift: glam::DVec3) -> glam::DVec3 {
+    let n = ecef - drift;
+    glam::DVec3::new(n.x.rem_euclid(NOISE_PERIOD_M), n.y.rem_euclid(NOISE_PERIOD_M), n.z.rem_euclid(NOISE_PERIOD_M))
+}
+
 /// Cloud climate for the renderer. Heights are meters above sea level.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CloudParams {
@@ -234,12 +243,14 @@ impl CloudParams {
         [to.sin(), to.cos()]
     }
 
-    /// How much direct sun reaches the ground on average (0..1). Used to dim
-    /// the sun under an overcast deck so the ground lighting goes flat.
+    /// How much direct sun reaches the ground through the stratus deck
+    /// (0..1). Used to dim the sun under overcast so the ground lighting goes
+    /// flat; cumulus and storms cast real (patchy) shadows instead.
     pub fn sun_fraction(&self) -> f32 {
-        let deck = self.stratus * (0.85 + 0.15 * self.darkness);
-        let cu = self.coverage * 0.5;
-        ((1.0 - deck) * (1.0 - cu)).clamp(0.08, 1.0)
+        let deck = self.stratus * (0.8 + 0.12 * self.darkness);
+        // Floor: the renderer's sky light doesn't know about the bright
+        // cloud deck, so keep some sun as stand-in diffuse light.
+        (1.0 - deck).clamp(0.25, 1.0)
     }
 
     /// Highest point any cloud reaches.
@@ -502,6 +513,41 @@ pub fn detail_noise(size: usize) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The floating origin re-anchors the render frame every 8 km. A cloud
+    /// sample must land on the same noise coordinate (modulo the texture
+    /// periods) from either frame, using the same f32 math as the shader.
+    #[test]
+    fn noise_coords_survive_rebase() {
+        use ed_geo::{EnuFrame, Geodetic};
+        use glam::{DVec3, Vec3};
+        let drift = DVec3::new(1234.5, -987.0, 4321.0);
+        let cam_geo = Geodetic::new(40.80, -73.95, 1500.0);
+        let a = EnuFrame::new(Geodetic::new(40.77, -73.97, 0.0));
+        let b = EnuFrame::new(Geodetic::new(40.84, -73.90, 0.0));
+        // A cloud 30 km north-east of the camera, 1 km up.
+        let target = Geodetic::new(40.99, -73.70, 2500.0);
+        let sample = |f: &EnuFrame| {
+            let cam_r = f.geodetic_to_render(cam_geo);
+            let tgt_r = f.geodetic_to_render(target);
+            let r2e = f.render_to_ecef();
+            let cam_noise = noise_coord(r2e.transform_point3(cam_r), drift).as_vec3();
+            // Shader side: f32 offset rotated into noise axes.
+            let off = (tgt_r - cam_r).as_vec3();
+            let m = r2e.matrix3.as_mat3();
+            cam_noise + m * off
+        };
+        let (pa, pb) = (sample(&a), sample(&b));
+        let wrap = |v: f32, p: f32| ((v % p) + p) % p;
+        for period in [SHAPE_PERIOD_M, DETAIL_PERIOD_M, WEATHER_PERIOD_M] {
+            for k in 0..3 {
+                let (x, y) = (wrap(pa[k], period), wrap(pb[k], period));
+                let d = (x - y).abs().min(period - (x - y).abs());
+                assert!(d < 0.5, "axis {k} period {period}: {x} vs {y}");
+            }
+        }
+        let _ = Vec3::ZERO;
+    }
 
     #[test]
     fn noise_tiles_seamlessly() {
