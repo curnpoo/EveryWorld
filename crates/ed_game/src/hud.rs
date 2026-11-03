@@ -1,8 +1,8 @@
-//! HUD: compass strip (top), mode pill (bottom), debug line, and target
-//! rings that track the Moon, planets and waypoints across the screen with
-//! name + distance, so you always know where you're headed.
+//! HUD: compass strip (top), mode pill (bottom), debug line, and spaceflight
+//! target rings that track the Moon and planets across the screen with name
+//! and distance.
 
-use crate::origin::WorldOrigin;
+use crate::origin::{Focus, WorldOrigin};
 use crate::player::{MoveMode, Player};
 use crate::sky::{CelestialBody, Clock, CurrentWeather};
 use crate::streaming::TileManager;
@@ -197,12 +197,23 @@ fn update_text(
 #[allow(clippy::type_complexity)]
 fn update_markers(
     cams: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    focus: Query<&GlobalTransform, With<Focus>>,
+    origin: Res<WorldOrigin>,
     bodies: Query<(&CelestialBody, &GlobalTransform)>,
     mut rings: Query<(&Marker, &mut Node, &mut Visibility), Without<MarkerLabel>>,
     mut labels: Query<(&MarkerLabel, &mut Node, &mut Text, &mut Visibility), Without<Marker>>,
 ) {
     let Ok((cam, cgt)) = cams.single() else { return };
+    let observer = focus.iter().next().map(|f| f.translation()).unwrap_or(cgt.translation());
+    let in_space = origin.to_geodetic(observer).alt_m >= crate::sky::SPACE_ALTITUDE_M;
     for (m, mut node, mut vis) in &mut rings {
+        if !in_space {
+            *vis = Visibility::Hidden;
+            if let Some((_, _, _, mut lv)) = labels.iter_mut().find(|l| l.0.0 == m.0) {
+                *lv = Visibility::Hidden;
+            }
+            continue;
+        }
         let Some((_, bgt)) = bodies.iter().find(|(b, _)| b.0 == m.0) else { continue };
         let p = bgt.translation();
         let in_front = (p - cgt.translation()).dot(cgt.forward().as_vec3()) > 0.0;
