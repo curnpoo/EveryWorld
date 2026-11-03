@@ -1,0 +1,5 @@
+/target
+*.png
+!docs/**/*.png
+.earthdrop-cache/
+.DS_Store

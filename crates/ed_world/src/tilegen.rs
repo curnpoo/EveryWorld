@@ -1,0 +1,218 @@
+//! One tile, start to finish: fetch elevation + vector data, then generate
+//! terrain, ground cover, water, roads, buildings, trees, rocks and street
+//! props. Runs on a worker thread; output is plain data.
+
+use crate::biome::Biome;
+use crate::buildings::{self, BuildingContext, BuildingMeshes};
+use crate::mesh::MeshData;
+use crate::project::TileProjector;
+use crate::style::Region;
+use crate::surface::SurfaceMap;
+use crate::terrain::{self, TerrainGrid};
+use crate::{foliage, props, roads, water};
+use ed_data::{DiskCache, elevation, vector};
+use ed_geo::{EnuFrame, tile::TileId};
+use glam::{DVec3, Vec3};
+
+#[derive(Debug, Clone)]
+pub struct TileJob {
+    pub tile: TileId,
+    pub frame: EnuFrame,
+    pub cache: DiskCache,
+    /// OpenFreeMap tile URL template (None = offline / not resolved yet).
+    pub vector_template: Option<String>,
+}
+
+#[derive(Debug, Default)]
+pub struct TileStats {
+    pub buildings: usize,
+    pub trees: usize,
+    pub rocks: usize,
+    pub props: usize,
+    pub triangles: usize,
+}
+
+#[derive(Debug)]
+pub struct TileBuild {
+    pub tile: TileId,
+    pub frame: EnuFrame,
+    /// Render-space anchor (in `frame`) that all meshes are relative to.
+    pub anchor: DVec3,
+    pub terrain: MeshData,
+    pub collider: Option<(Vec<Vec3>, Vec<[u32; 3]>)>,
+    pub water: MeshData,
+    pub roads: MeshData,
+    pub buildings: Option<BuildingMeshes>,
+    pub foliage: MeshData,
+    pub rocks: MeshData,
+    pub street_props: MeshData,
+    /// (name, IATA, local position) of airports in this tile.
+    pub airports: Vec<(String, String, Vec3)>,
+    pub min_max_height: (f32, f32),
+    pub stats: TileStats,
+    pub errors: Vec<String>,
+}
+
+/// Elevation zoom for a terrain tile.
+fn elevation_zoom(z: u8) -> u8 {
+    z.min(13)
+}
+
+pub fn build(job: &TileJob) -> TileBuild {
+    let tile = job.tile;
+    let proj = TileProjector::new(tile, job.frame);
+    let mut errors = Vec::new();
+
+    // --- Elevation (falls back to coarser zooms, then sea level) ---
+    let mut grid = None;
+    let segs = if tile.z >= 13 { 64 } else if tile.z >= 9 { 32 } else { 24 };
+    let mut ez = elevation_zoom(tile.z);
+    while grid.is_none() {
+        let src_id = tile.ancestor(ez).0;
+        match elevation::fetch(&job.cache, src_id) {
+            Ok(h) => grid = Some(TerrainGrid::from_heights(tile, &h, segs)),
+            Err(e) if ez > 0 && ez + 3 > elevation_zoom(tile.z) => {
+                errors.push(format!("elevation z{ez}: {e}"));
+                ez -= 1;
+            }
+            Err(e) => {
+                errors.push(format!("elevation: {e}"));
+                grid = Some(TerrainGrid::flat(tile, segs, 0.0));
+            }
+        }
+    }
+    let mut grid = grid.unwrap();
+    let (hmin, hmax) = grid.min_max();
+    let center = tile.center();
+    let biome = Biome::classify(center.lat_deg, center.lon_deg, ((hmin + hmax) * 0.5).max(0.0) as f64);
+
+    // --- Vector data ---
+    let vt = if tile.z >= 7 {
+        job.vector_template.as_ref().and_then(|tpl| {
+            let vz = tile.z.min(vector::MAX_ZOOM);
+            let vid = tile.ancestor(vz).0;
+            match vector::fetch(&job.cache, tpl, vid) {
+                Ok(t) => Some((vid, t)),
+                Err(e) => {
+                    errors.push(format!("vector: {e}"));
+                    None
+                }
+            }
+        })
+    } else {
+        None
+    };
+    let surface = match &vt {
+        Some((vid, t)) => SurfaceMap::from_vector(tile, *vid, t, biome, if tile.z >= 13 { 192 } else { 64 }),
+        None => SurfaceMap::uniform(tile, biome),
+    };
+
+    let uncarved = grid.clone();
+    if vt.is_some() {
+        water::carve_terrain(&mut grid, &surface, 2.5);
+    }
+    let skirt = (tile.width_m() as f32 * 0.02).clamp(5.0, 3_000.0);
+    let terrain_mesh = terrain::build_mesh(&grid, &proj, &surface, skirt);
+    let collider = (tile.z >= 13).then(|| terrain::build_collider(&grid, &proj));
+    let up = proj.up();
+
+    let mut out = TileBuild {
+        tile,
+        frame: job.frame,
+        anchor: proj.anchor,
+        terrain: terrain_mesh,
+        collider,
+        water: MeshData::default(),
+        roads: MeshData::default(),
+        buildings: None,
+        foliage: MeshData::default(),
+        rocks: MeshData::default(),
+        street_props: MeshData::default(),
+        airports: Vec::new(),
+        min_max_height: (hmin, hmax),
+        stats: TileStats::default(),
+        errors,
+    };
+
+    if let Some((vid, vt)) = &vt {
+        // Airports (labels exist at lower zooms too).
+        if let Some(l) = vt.layer("aerodrome_label") {
+            let ext = l.extent as f64;
+            for f in &l.features {
+                if let Some(p) = f.rings.first().and_then(|r| r.first()) {
+                    let (u, v) = (p[0] as f64 / ext, p[1] as f64 / ext);
+                    if *vid == tile && (0.0..1.0).contains(&u) && (0.0..1.0).contains(&v) {
+                        out.airports.push((
+                            f.str("name:en").or(f.str("name")).unwrap_or("Airport").to_string(),
+                            f.str("iata").unwrap_or("").to_string(),
+                            proj.local(u, v, grid.sample(u, v) as f64),
+                        ));
+                    }
+                }
+            }
+        }
+        if tile.z >= 14 && *vid == tile {
+            let (gmin, gmax) = (hmin, hmax);
+            let region = Region::locate(center.lat_deg, center.lon_deg, ((gmin + gmax) * 0.5) as f64, buildings::tile_is_dense(vt));
+            out.water = water::generate(vt, &proj, &uncarved);
+            let r = roads::generate(vt, &proj, &grid, &surface, region);
+            out.street_props = props::bake_street_props(&r.props, up);
+            out.stats.props = r.props.len();
+            out.roads = r.mesh;
+            let b = buildings::generate(vt, &BuildingContext { proj: &proj, grid: &grid, surface: &surface, biome });
+            out.stats.buildings = b.count;
+            out.buildings = Some(b);
+        }
+        if tile.z >= 13 {
+            let occ = foliage::Occupancy::from_vector(vt, 512);
+            let max = if tile.z >= 14 { 9_000 } else { 4_000 };
+            let (trees, rocks) = foliage::scatter(&proj, &grid, &surface, Some(&occ), max);
+            out.stats.trees = trees.len();
+            out.stats.rocks = rocks.len();
+            out.foliage = props::bake_trees(&trees, up);
+            out.rocks = props::bake_rocks(&rocks, up);
+        }
+    }
+    out.stats.triangles = out.terrain.triangle_count()
+        + out.water.triangle_count()
+        + out.roads.triangle_count()
+        + out.foliage.triangle_count()
+        + out.rocks.triangle_count()
+        + out.street_props.triangle_count()
+        + out.buildings.as_ref().map_or(0, |b| {
+            b.facades.triangle_count() + b.glass.triangle_count() + b.storefronts.triangle_count() + b.roofs.triangle_count()
+        });
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ed_geo::Geodetic;
+
+    /// Real data, real places. `cargo test -p ed_world tilegen -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn real_places() {
+        let cache = DiskCache::new(std::env::temp_dir().join("ed-net-test"));
+        let tpl = vector::tile_template(&cache).ok();
+        for (name, lat, lon) in [
+            ("Central Park", 40.7812, -73.9665),
+            ("Zermatt", 46.0207, 7.7491),
+            ("Aix-en-Provence", 43.5297, 5.4474),
+            ("Marrakech", 31.6295, -7.9811),
+            ("Shibuya", 35.6595, 139.7005),
+        ] {
+            let tile = TileId::containing(lat, lon, 14);
+            let job = TileJob { tile, frame: EnuFrame::new(Geodetic::new(lat, lon, 0.0)), cache: cache.clone(), vector_template: tpl.clone() };
+            let t0 = std::time::Instant::now();
+            let b = build(&job);
+            eprintln!(
+                "{name:16} {:?} h={:.0}..{:.0} bldg={} trees={} rocks={} props={} tris={} airports={} {:?} errors={:?}",
+                tile, b.min_max_height.0, b.min_max_height.1, b.stats.buildings, b.stats.trees, b.stats.rocks, b.stats.props,
+                b.stats.triangles, b.airports.len(), t0.elapsed(), b.errors
+            );
+            assert!(b.stats.triangles > 1000);
+        }
+    }
+}

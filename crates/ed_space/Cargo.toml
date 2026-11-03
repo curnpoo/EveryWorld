@@ -1,0 +1,8 @@
+[package]
+name = "ed_space"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ed_geo = { path = "../ed_geo" }
+glam = { workspace = true }

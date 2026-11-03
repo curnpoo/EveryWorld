@@ -1,0 +1,16 @@
+[package]
+name = "ed_data"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ed_geo = { path = "../ed_geo" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+ureq = { version = "3", features = ["gzip", "platform-verifier"] }
+png = "0.18"
+image-webp = "0.2"
+flate2 = "1"
+dirs = "6"

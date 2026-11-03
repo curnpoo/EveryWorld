@@ -1,0 +1,12 @@
+[package]
+name = "ed_world"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ed_geo = { path = "../ed_geo" }
+ed_data = { path = "../ed_data" }
+glam = { workspace = true }
+serde = { workspace = true }
+log = { workspace = true }
+earcutr = "0.5"
