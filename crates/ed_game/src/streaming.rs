@@ -182,7 +182,7 @@ fn receive_tiles(
     let focus_pos = focus.iter().next().map(|t| t.translation());
     // Bound per-frame upload work.
     for _ in 0..3 {
-        let Ok(b) = mgr.rx.try_recv() else { break };
+        let Ok(mut b) = mgr.rx.try_recv() else { break };
         mgr.pending.remove(&b.tile);
         for e in &b.errors {
             debug!("tile {:?}: {e}", b.tile);
@@ -209,7 +209,17 @@ fn receive_tiles(
         if let Some((verts, tris)) = b.collider {
             parent.insert((RigidBody::Static, Collider::trimesh(verts, tris)));
         }
+        if let Some(g) = b.ground.take() {
+            parent.insert(crate::ground_scatter::GroundCover(g));
+        }
         let parent_id = parent.id();
+        let near = b.tile.z >= 13;
+        if !b.terrain.is_empty() {
+            let mut t = commands.spawn((Mesh3d(meshes.add(to_mesh(&b.terrain))), MeshMaterial3d(mats.terrain.clone()), Transform::default(), ChildOf(parent_id)));
+            if !near {
+                t.insert(bevy::light::NotShadowCaster);
+            }
+        }
         let mut child = |mesh: &ed_world::mesh::MeshData, mat: &Handle<StandardMaterial>, shadows: bool| {
             if mesh.is_empty() {
                 return;
@@ -220,8 +230,6 @@ fn receive_tiles(
             }
             e.insert(ChildOf(parent_id));
         };
-        let near = b.tile.z >= 13;
-        child(&b.terrain, &mats.terrain, near);
         child(&b.water, &mats.water, false);
         child(&b.roads, &mats.matte, false);
         child(&b.foliage, &mats.matte, true);

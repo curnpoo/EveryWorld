@@ -7,7 +7,7 @@
 
 use crate::mesh::MeshData;
 use crate::project::TileProjector;
-use crate::surface::SurfaceMap;
+use crate::surface::{SurfaceMap, pack_splat};
 use ed_data::elevation::HeightTile;
 use ed_geo::tile::TileId;
 use glam::Vec3;
@@ -48,7 +48,7 @@ impl TerrainGrid {
     }
 
     #[inline]
-    fn h(&self, i: usize, j: usize) -> f32 {
+    pub fn h(&self, i: usize, j: usize) -> f32 {
         let n = self.segments + 1;
         self.heights[j.min(self.segments) * n + i.min(self.segments)]
     }
@@ -74,37 +74,69 @@ impl TerrainGrid {
     }
 }
 
-/// Build the render mesh. Vertex colors come from the surface map (land
-/// cover + biome + slope + snowline). `skirt_m` hangs a curtain off each edge
-/// to hide cracks between neighbouring tiles at different LODs.
+/// Render-mesh subdivision per grid quad. Finer tiles get extra vertices so
+/// the per-vertex ground splat can follow the ~9 m land-cover grid. The
+/// extra vertices lie exactly on the grid's triangles (same diagonal), so
+/// the render surface still matches the collider and `sample`.
+pub fn subdivision_for(grid: &TerrainGrid, surface: &SurfaceMap) -> usize {
+    let want = if grid.tile.z >= 14 { 3 } else if grid.tile.z == 13 { 2 } else { 1 };
+    want.min((surface.res / grid.segments.max(1)).max(1))
+}
+
+/// Build the render mesh. Vertex colors carry the regional vegetation tint
+/// (+ wetness in alpha) and `MeshData::splat` the ground-layer weights from
+/// the surface map (land cover + biome + slope + snowline). `skirt_m` hangs
+/// a curtain off each edge to hide cracks between neighbouring tiles at
+/// different LODs.
 pub fn build_mesh(grid: &TerrainGrid, proj: &TileProjector, surface: &SurfaceMap, skirt_m: f32) -> MeshData {
-    let seg = grid.segments;
+    build_mesh_sub(grid, proj, surface, skirt_m, subdivision_for(grid, surface))
+}
+
+pub fn build_mesh_sub(grid: &TerrainGrid, proj: &TileProjector, surface: &SurfaceMap, skirt_m: f32, sub: usize) -> MeshData {
+    let gseg = grid.segments;
+    let gn = gseg + 1;
+    let sub = sub.max(1);
+    let seg = gseg * sub;
     let n = seg + 1;
     let mut m = MeshData::default();
-    let mut pos = Vec::with_capacity(n * n);
-    for j in 0..n {
-        for i in 0..n {
-            let (u, v) = (i as f64 / seg as f64, j as f64 / seg as f64);
-            pos.push(proj.local(u, v, grid.h(i, j) as f64));
-        }
-    }
-    // Smooth normals from the grid.
+    // Smooth normals on the coarse grid, bilinearly spread to sub-vertices.
+    let gpos: Vec<Vec3> = (0..gn * gn)
+        .map(|k| {
+            let (i, j) = (k % gn, k / gn);
+            proj.local(i as f64 / gseg as f64, j as f64 / gseg as f64, grid.h(i, j) as f64)
+        })
+        .collect();
     let up = proj.up();
-    let normal = |i: usize, j: usize| -> Vec3 {
-        let l = pos[j * n + i.saturating_sub(1)];
-        let r = pos[j * n + (i + 1).min(seg)];
-        let t = pos[j.saturating_sub(1) * n + i];
-        let b = pos[(j + 1).min(seg) * n + i];
-        let nrm = (r - l).cross(t - b).normalize_or_zero();
-        if nrm.dot(up) < 0.0 { -nrm } else { nrm }
+    let gnormal: Vec<Vec3> = (0..gn * gn)
+        .map(|k| {
+            let (i, j) = (k % gn, k / gn);
+            let l = gpos[j * gn + i.saturating_sub(1)];
+            let r = gpos[j * gn + (i + 1).min(gseg)];
+            let t = gpos[j.saturating_sub(1) * gn + i];
+            let b = gpos[(j + 1).min(gseg) * gn + i];
+            let nrm = (r - l).cross(t - b).normalize_or_zero();
+            if nrm.dot(up) < 0.0 { -nrm } else { nrm }
+        })
+        .collect();
+    let normal_at = |fx: f64, fy: f64| -> Vec3 {
+        let (i, j) = ((fx.floor() as usize).min(gseg.saturating_sub(1)), (fy.floor() as usize).min(gseg.saturating_sub(1)));
+        let (tx, ty) = ((fx - i as f64) as f32, (fy - j as f64) as f32);
+        let a = gnormal[j * gn + i].lerp(gnormal[j * gn + i + 1], tx);
+        let b = gnormal[(j + 1) * gn + i].lerp(gnormal[(j + 1) * gn + i + 1], tx);
+        a.lerp(b, ty).normalize_or_zero()
     };
+    m.positions.reserve(n * n);
+    m.splat.reserve(n * n);
     for j in 0..n {
         for i in 0..n {
             let (u, v) = (i as f64 / seg as f64, j as f64 / seg as f64);
-            let nrm = normal(i, j);
+            let h = if i % sub == 0 && j % sub == 0 { grid.h(i / sub, j / sub) } else { grid.sample(u, v) };
+            let p = if sub == 1 { gpos[j * gn + i] } else { proj.local(u, v, h as f64) };
+            let nrm = normal_at(u * gseg as f64, v * gseg as f64);
             let slope = 1.0 - nrm.dot(up).clamp(0.0, 1.0);
-            let color = surface.ground_color(u, v, grid.h(i, j), slope);
-            m.vertex(pos[j * n + i].to_array(), nrm.to_array(), [u as f32, v as f32], color);
+            let w = surface.splat(u, v, h, slope);
+            m.vertex(p.to_array(), nrm.to_array(), [u as f32, v as f32], surface.tint(u, v));
+            m.splat.push(pack_splat(&w));
         }
     }
     for j in 0..seg {
@@ -132,6 +164,7 @@ pub fn build_mesh(grid: &TerrainGrid, proj: &TileProjector, surface: &SurfaceMap
                 let top = k as u32;
                 let p = Vec3::from(m.positions[k]) - up * skirt_m;
                 let bot = m.vertex(p.to_array(), m.normals[k], m.uvs[k], m.colors[k]);
+                m.splat.push(m.splat[k]);
                 if let Some((pt, pb)) = prev {
                     // Double-sided so winding doesn't matter on any edge.
                     m.tri(pt, top, bot);
@@ -201,8 +234,9 @@ mod tests {
         let proj = TileProjector::new(tile, frame);
         let g = TerrainGrid::flat(tile, 8, 1600.0);
         let surface = SurfaceMap::uniform(tile, crate::biome::Biome::Alpine);
-        let m = build_mesh(&g, &proj, &surface, 0.0);
+        let m = build_mesh_sub(&g, &proj, &surface, 0.0, 1);
         assert_eq!(m.triangle_count(), 8 * 8 * 2);
+        assert_eq!(m.splat.len(), m.positions.len());
         let up = proj.up();
         // First triangle's geometric normal must face up (CCW from above).
         let [a, b, c] = [m.indices[0], m.indices[1], m.indices[2]].map(|i| Vec3::from(m.positions[i as usize]));
@@ -211,5 +245,62 @@ mod tests {
         // Tile spans ~1.7 km at this latitude.
         let w = Vec3::from(m.positions[8]).distance(Vec3::from(m.positions[0]));
         assert!((1600.0..1800.0).contains(&w), "{w}");
+    }
+
+    #[test]
+    fn subdivided_mesh_lies_on_grid_triangles() {
+        let tile = TileId::containing(46.02, 7.75, 14);
+        let frame = EnuFrame::new(Geodetic::new(46.02, 7.75, 0.0));
+        let proj = TileProjector::new(tile, frame);
+        let mut g = TerrainGrid::flat(tile, 4, 0.0);
+        for (k, h) in g.heights.iter_mut().enumerate() {
+            *h = 1500.0 + (k * 37 % 11) as f32 * 9.0;
+        }
+        let mut surface = SurfaceMap::uniform(tile, crate::biome::Biome::Alpine);
+        surface.res = 12;
+        surface.cover = vec![crate::surface::Cover::Grass; 144];
+        let m = build_mesh(&g, &proj, &surface, 3.0);
+        let n = 4 * 3 + 1;
+        assert_eq!(m.splat.len(), m.positions.len());
+        for j in 0..n {
+            for i in 0..n {
+                let (u, v) = (i as f64 / 12.0, j as f64 / 12.0);
+                let want = proj.local(u, v, g.sample(u, v) as f64);
+                let got = Vec3::from(m.positions[j * n + i]);
+                assert!(got.distance(want) < 0.05, "({i},{j}) {got:?} vs {want:?}");
+                let s: u32 = m.splat[j * n + i].iter().map(|&b| b as u32).sum();
+                assert!((250..=262).contains(&s), "splat sum {s}");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod sub_tests {
+    use super::*;
+    use ed_geo::{EnuFrame, Geodetic};
+
+    #[test]
+    fn no_long_triangles_any_subdivision() {
+        let tile = TileId::containing(40.78, -73.97, 15);
+        let proj = TileProjector::new(tile, EnuFrame::new(Geodetic::new(40.78, -73.97, 0.0)));
+        for (segs, res) in [(24usize, 48usize), (64, 192), (8, 8)] {
+            let mut g = TerrainGrid::flat(tile, segs, 120.0);
+            for (k, h) in g.heights.iter_mut().enumerate() {
+                *h = 120.0 + (k % 7) as f32;
+            }
+            let mut s = SurfaceMap::uniform(tile, crate::biome::Biome::TemperateForest);
+            s.res = res;
+            s.cover = vec![crate::surface::Cover::Grass; res * res];
+            let m = build_mesh(&g, &proj, &s, 6.0);
+            let max_edge = tile.width_m() as f32 / segs as f32 * 1.6 + 7.0;
+            for t in m.indices.chunks_exact(3) {
+                let p: Vec<Vec3> = t.iter().map(|&i| Vec3::from(m.positions[i as usize])).collect();
+                for k in 0..3 {
+                    let e = p[k].distance(p[(k + 1) % 3]);
+                    assert!(e < max_edge, "segs {segs} res {res}: edge {e} > {max_edge} in {t:?}");
+                }
+            }
+        }
     }
 }

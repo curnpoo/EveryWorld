@@ -7,6 +7,8 @@ mod camera;
 mod capture;
 mod config;
 mod engine_audio;
+mod ground_material;
+mod ground_scatter;
 mod hud;
 mod lookdev;
 mod meshconv;

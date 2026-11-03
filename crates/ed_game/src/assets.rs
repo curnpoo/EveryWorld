@@ -10,13 +10,15 @@ pub struct AssetsPlugin;
 
 impl Plugin for AssetsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(PreStartup, setup_materials);
+        crate::ground_material::register(app);
+        app.add_plugins(crate::ground_scatter::GroundScatterPlugin).add_systems(PreStartup, setup_materials);
     }
 }
 
 #[derive(Resource, Clone)]
 pub struct WorldMaterials {
-    pub terrain: Handle<StandardMaterial>,
+    /// Ground v2 splat material (see `ground_material`).
+    pub terrain: Handle<crate::ground_material::TerrainMaterial>,
     pub facade: Handle<StandardMaterial>,
     pub glass: Handle<StandardMaterial>,
     pub storefront: Handle<StandardMaterial>,
@@ -125,7 +127,15 @@ fn storefront_texture() -> Image {
     })
 }
 
-fn setup_materials(mut commands: Commands, mut mats: ResMut<Assets<StandardMaterial>>, mut images: ResMut<Assets<Image>>) {
+fn setup_materials(
+    mut commands: Commands,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+    mut terrain_mats: ResMut<Assets<crate::ground_material::TerrainMaterial>>,
+    mut scatter_mats: ResMut<Assets<crate::ground_material::ScatterMaterial>>,
+) {
+    let (terrain, ground) = crate::ground_material::create(&mut images, &mut terrain_mats, &mut scatter_mats);
+    commands.insert_resource(ground);
     let facade_tex = images.add(facade_texture());
     let curtain_tex = images.add(curtain_wall_texture());
     let shop_tex = images.add(storefront_texture());
@@ -133,7 +143,7 @@ fn setup_materials(mut commands: Commands, mut mats: ResMut<Assets<StandardMater
         mats.add(StandardMaterial { base_color: Color::WHITE, perceptual_roughness: rough, reflectance: 0.3, ..default() })
     };
     let wm = WorldMaterials {
-        terrain: matte(&mut mats, 0.95),
+        terrain,
         facade: mats.add(StandardMaterial {
             base_color_texture: Some(facade_tex),
             perceptual_roughness: 0.8,
