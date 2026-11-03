@@ -216,13 +216,13 @@ fn drive_player(
     time: Res<Time>,
     origin: Res<WorldOrigin>,
     mut booms: MessageWriter<SonicBoom>,
-    mut q: Query<(&Transform, &mut LinearVelocity, &mut Player, Forces)>,
+    mut q: Query<(&Transform, &mut Player, Forces)>,
 ) {
     let dt = time.delta_secs();
-    for (t, mut vel, mut p, mut forces) in &mut q {
+    for (t, mut p, mut forces) in &mut q {
         let up = origin.up_at(t.translation);
         let mass = 80.0;
-        let v = vel.0;
+        let v = forces.linear_velocity();
         let v_up = up * v.dot(up);
         let v_flat = v - v_up;
         let alt = origin.to_geodetic(t.translation).alt_m;
@@ -264,13 +264,13 @@ fn drive_player(
                 accel += up * (x * 300.0 - v.dot(up) * 28.0);
                 accel += up * 9.81; // cancel gravity while supported
                 if p.jump {
-                    vel.0 += up * 6.5;
+                    *forces.linear_velocity_mut() += up * 6.5;
                 }
             }
             MoveMode::Fall => {
                 accel += (wish * 6.0 - v_flat).clamp_length_max(5.0);
                 if p.jump && p.agl < 2.0 {
-                    vel.0 += up * 6.5;
+                    *forces.linear_velocity_mut() += up * 6.5;
                 }
             }
             MoveMode::RocketShoes => {
