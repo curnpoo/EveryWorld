@@ -8,17 +8,18 @@ use bevy::anti_alias::taa::TemporalAntiAliasing;
 use bevy::camera::Exposure;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
-use bevy::light::{AtmosphereEnvironmentMapLight, AtmosphereSettings};
+use bevy::light::AtmosphereEnvironmentMapLight;
+use bevy::pbr::AtmosphereSettings;
 use bevy::pbr::ScreenSpaceAmbientOcclusion;
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
-use bevy::render::view::Hdr;
+use bevy::camera::Hdr;
 
 pub struct CameraPlugin;
 
 impl Plugin for CameraPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_camera).add_systems(Update, fly_camera.run_if(not(resource_exists::<crate::lookdev::Lookdev>)));
+        app.add_systems(Startup, spawn_camera).add_systems(Update, fly_camera.run_if(|cfg: Res<Config>| cfg.fly && cfg.lookdev.is_none()));
     }
 }
 
@@ -41,15 +42,18 @@ fn spawn_camera(mut commands: Commands, cfg: Res<Config>, origin: Res<WorldOrigi
         Projection::Perspective(PerspectiveProjection { fov: 60f32.to_radians(), near: 0.1, far: 1.0e13, ..default() }),
         Tonemapping::AgX,
         Bloom::NATURAL,
-        Exposure::SUNLIGHT,
+        Exposure { ev100: 14.2 },
         Msaa::Off,
         TemporalAntiAliasing::default(),
         ScreenSpaceAmbientOcclusion::default(),
         Transform::from_translation(pos).with_rotation(Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0)),
         FlyCam { yaw, pitch, speed: 60.0 },
-        Focus,
         Rebased,
     ));
+    // The camera drives streaming in spectator/lookdev modes; otherwise the player does.
+    if cfg.fly || cfg.lookdev.is_some() {
+        cam.insert(Focus);
+    }
     if cfg.atmosphere {
         cam.insert((AtmosphereSettings::default(), AtmosphereEnvironmentMapLight::default()));
     } else {

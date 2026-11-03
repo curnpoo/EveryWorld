@@ -7,7 +7,8 @@
 
 use crate::config::Config;
 use crate::origin::{Focus, GeoAnchored, WorldOrigin};
-use bevy::light::{Atmosphere, CascadeShadowConfigBuilder, ScatteringMedium, SunDisk, light_consts::lux};
+use bevy::light::atmosphere::ScatteringMedium;
+use bevy::light::{Atmosphere, CascadeShadowConfigBuilder, SunDisk, light_consts::lux};
 use bevy::prelude::*;
 use ed_space::{BODIES, BodyId, Snapshot};
 use glam::{DAffine3, DVec3};

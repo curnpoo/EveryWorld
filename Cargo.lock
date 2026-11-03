@@ -2773,6 +2773,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ed_audio"
+version = "0.1.0"
+
+[[package]]
 name = "ed_data"
 version = "0.1.0"
 dependencies = [

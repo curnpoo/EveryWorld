@@ -84,15 +84,14 @@ fn apply_anchors(origin: Res<WorldOrigin>, mut q: Query<(Ref<GeoAnchored>, &mut 
 #[allow(clippy::type_complexity)]
 fn rebase_if_far(
     mut origin: ResMut<WorldOrigin>,
-    focus: Query<&Transform, (With<Focus>, Without<Rebased>)>,
-    focus_rebased: Query<&Transform, (With<Focus>, With<Rebased>)>,
+    focus_static: Query<&Transform, (With<Focus>, Without<Rebased>)>,
     mut movers: Query<
-        (&mut Transform, Option<&mut Position>, Option<&mut Rotation>, Option<&mut LinearVelocity>, Option<&mut AngularVelocity>),
+        (&mut Transform, Has<Focus>, Option<&mut Position>, Option<&mut Rotation>, Option<&mut LinearVelocity>, Option<&mut AngularVelocity>),
         (With<Rebased>, Without<GeoAnchored>),
     >,
 ) {
-    let Some(ft) = focus.iter().chain(focus_rebased.iter()).next() else { return };
-    let p = ft.translation;
+    let focus = movers.iter().find(|m| m.1).map(|m| m.0.translation).or_else(|| focus_static.iter().next().map(|t| t.translation));
+    let Some(p) = focus else { return };
     let horiz = Vec2::new(p.x, p.z).length();
     if horiz < REBASE_DISTANCE_M {
         return;
@@ -102,7 +101,7 @@ fn rebase_if_far(
     // old render -> ECEF -> new render
     let m: DAffine3 = new_frame.ecef_to_render() * origin.frame.render_to_ecef();
     let rot = Quat::from_mat3(&m.matrix3.as_mat3());
-    for (mut t, pos, r, lv, av) in &mut movers {
+    for (mut t, _, pos, r, lv, av) in &mut movers {
         t.translation = m.transform_point3(t.translation.as_dvec3()).as_vec3();
         t.rotation = (rot * t.rotation).normalize();
         if let Some(mut pos) = pos {

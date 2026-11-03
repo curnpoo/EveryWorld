@@ -1,14 +1,18 @@
 //! EarthDrop: drop anywhere on the real Earth.
 
 mod assets;
+mod body;
 mod camera;
 mod capture;
 mod config;
+mod hud;
 mod lookdev;
 mod meshconv;
 mod origin;
+mod player;
 mod sky;
 mod streaming;
+mod vehicles;
 
 use avian3d::prelude::*;
 use bevy::prelude::*;
@@ -37,9 +41,12 @@ fn main() {
     if let Some(dir) = &cfg.lookdev {
         std::fs::create_dir_all(dir).expect("create lookdev dir");
         app.insert_resource(lookdev::Lookdev { out_dir: dir.clone(), only: cfg.lookdev_only.clone() })
-            .add_plugins(lookdev::LookdevPlugin);
+            .add_plugins((lookdev::LookdevPlugin, body::BodyPlugin));
     } else {
-        app.add_plugins((streaming::StreamingPlugin, capture::CapturePlugin));
+        app.add_plugins((streaming::StreamingPlugin, capture::CapturePlugin, hud::HudPlugin));
+        if !cfg.fly {
+            app.add_plugins((player::PlayerPlugin, body::BodyPlugin, vehicles::VehiclesPlugin));
+        }
     }
     app.run();
 }

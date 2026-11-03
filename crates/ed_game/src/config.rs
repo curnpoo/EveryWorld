@@ -31,6 +31,8 @@ pub struct Config {
     /// `--lookdev <dir>`: render art-review boards into this directory.
     pub lookdev: Option<PathBuf>,
     pub lookdev_only: Option<String>,
+    /// Spectator fly camera instead of the robot.
+    pub fly: bool,
 }
 
 impl Config {
@@ -56,11 +58,19 @@ impl Config {
             place_name = format!("{lat:.4}, {lon:.4}");
         }
         let lookdev = get("--lookdev").map(PathBuf::from);
+        // Ground height at the drop point so "--alt" means above ground.
+        if lookdev.is_none() {
+            let t = ed_geo::tile::TileId::containing(start.lat_deg, start.lon_deg, 12);
+            if let Ok(h) = ed_data::elevation::fetch(&cache, t) {
+                let (u, v) = t.geodetic_to_uv(start.lat_deg, start.lon_deg);
+                start.alt_m = h.sample(u, v).max(0.0) as f64;
+            }
+        }
         if lookdev.is_some() && num("--lat").is_none() {
             start = Geodetic::new(40.0, -3.7, 0.0);
             place_name = "Lookdev stage".into();
         }
-        let hour = num("--hour").or(lookdev.as_ref().map(|_| 16.0));
+        let hour = num("--hour").or(lookdev.as_ref().map(|_| 14.5));
         let unix_override = hour.map(|h| {
             // Today's date (UTC), at the requested *local solar* hour.
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
@@ -83,6 +93,7 @@ impl Config {
             cache,
             lookdev,
             lookdev_only: get("--only"),
+            fly: args.iter().any(|a| a == "--fly"),
         }
     }
 

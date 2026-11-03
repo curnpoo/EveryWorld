@@ -7,6 +7,7 @@
 use crate::assets::WorldMaterials;
 use crate::meshconv::to_mesh;
 use crate::origin::{GeoAnchored, WorldOrigin};
+use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 use ed_data::mvt::{self, GeomType, Value};
@@ -39,7 +40,7 @@ pub struct Lookdev {
 }
 
 const GROUND_H: f64 = 50.0;
-const SPACING_PX: f32 = 780.0;
+const SPACING_PX: f32 = 700.0;
 
 fn region_biome(r: Region) -> Biome {
     match r {
@@ -91,7 +92,7 @@ fn vignette_tile(cx: f32, cy: f32, region: Region, seed: u64) -> mvt::Tile {
             let (ya, yb) = if side > 0.0 { (y0, y1) } else { (y1, y0) };
             let mut props: Vec<(&str, Value)> = Vec::new();
             // A few taller landmarks in dense regions.
-            if matches!(region, Region::NorthAmericaCity | Region::EastAsia | Region::Paris) && ed_world::hash01(id, 3) < 0.25 {
+            if matches!(region, Region::NorthAmericaCity | Region::EastAsia) && ed_world::hash01(id, 3) < 0.25 {
                 props.push(("render_height", Value::Double(st.floor_height as f64 * (8.0 + 20.0 * ed_world::hash01(id, 4) as f64))));
             }
             b.push(feat(GeomType::Polygon, &props, vec![[x, ya], [x + w, ya], [x + w, yb], [x, yb]], id));
@@ -110,6 +111,7 @@ struct Shot {
     name: String,
     eye: Vec3,
     target: Vec3,
+    tonemap: Option<Tonemapping>,
 }
 
 #[derive(Resource)]
@@ -138,7 +140,10 @@ fn build_stage(
             commands.spawn((Mesh3d(meshes.add(to_mesh(m))), MeshMaterial3d(mat.clone()), Transform::default(), ChildOf(root)));
         }
     };
+    let anchor_v = proj.anchor.as_vec3();
+    // Mesh space (relative to the tile anchor) and world space (for cameras).
     let to_local = |px: f32, py: f32, h: f64| proj.local(px as f64 / ext as f64, py as f64 / ext as f64, h);
+    let to_world = |px: f32, py: f32, h: f64| to_local(px, py, h) + anchor_v;
     let mut shots = Vec::new();
 
     // --- Ground: one big flat grass field, with swatch grid in one corner ---
@@ -147,7 +152,11 @@ fn build_stage(
     let res = 96usize;
     surface.res = res;
     surface.cover = vec![Cover::Grass; res * res];
-    // Swatches: rows = biomes (Natural cover), plus a row of each cover type.
+    let mut ground = terrain::build_mesh(&grid, &proj, &surface, 0.0);
+    add(&ground, &mats.terrain);
+    ground = MeshData::default();
+    // Crisp swatch tiles: row 0 = biome default ground, row 1 = mapped land
+    // covers, row 2 = the slope/snow rules (flat, steep, high, high+steep).
     let biomes = [
         Biome::TropicalRainforest, Biome::Savanna, Biome::HotDesert, Biome::Mediterranean, Biome::TemperateForest,
         Biome::Grassland, Biome::Boreal, Biome::Tundra, Biome::Alpine, Biome::IceCap,
@@ -156,44 +165,34 @@ fn build_stage(
         Cover::Wood, Cover::Grass, Cover::Farmland, Cover::Wetland, Cover::Sand, Cover::Rock, Cover::Ice,
         Cover::Residential, Cover::Commercial, Cover::Industrial, Cover::Park, Cover::Pitch,
     ];
-    // Bottom-right corner of the tile: cells (72..96, 72..96).
-    for (i, c) in covers.iter().enumerate() {
-        let (x, y) = (72 + (i % 6) * 4, 72 + (i / 6) * 4);
-        for dy in 0..3 {
-            for dx in 0..3 {
-                surface.cover[(y + dy) * res + x + dx] = *c;
-            }
-        }
-    }
-    let mut ground = terrain::build_mesh(&grid, &proj, &surface, 0.0);
-    // Biome swatches need their own SurfaceMap biome; build small patches.
+    let (sx, sy, cell) = (3000.0f32, 3500.0f32, 60.0f32); // px; 60 px ~ 27 m
+    let mut swatch = |col: usize, row: usize, color: [f32; 4]| {
+        let x0 = sx + col as f32 * cell;
+        let y0 = sy + row as f32 * cell;
+        let h = GROUND_H + 0.08;
+        let q = [to_local(x0, y0 + cell * 0.88, h), to_local(x0 + cell * 0.88, y0 + cell * 0.88, h), to_local(x0 + cell * 0.88, y0, h), to_local(x0, y0, h)];
+        ground.quad(q, [[0.0; 2]; 4], color);
+    };
     for (i, b) in biomes.iter().enumerate() {
-        let mut g = TerrainGrid::flat(tile, 4, (GROUND_H + 0.05) as f32);
         let sm = SurfaceMap::uniform(tile, *b);
-        g.segments = 4;
-        let m = terrain::build_mesh(&g, &proj, &sm, 0.0);
-        // Shrink the whole-tile patch down to a 40 m square at the swatch spot.
-        let center = to_local(3000.0 + (i % 5) as f32 * 110.0, 3700.0 + (i / 5) as f32 * 110.0, GROUND_H + 0.05);
-        let mut small = m.clone();
-        let tile_w = tile.width_m() as f32;
-        for p in &mut small.positions {
-            let v = Vec3::from(*p);
-            let flat = v.reject_from_normalized(up) * (40.0 / tile_w);
-            *p = (center + flat + up * 0.0).to_array();
-        }
-        ground.append(&small);
+        swatch(i, 0, sm.ground_color(0.5, 0.5, 200.0, 0.0));
+    }
+    for (i, c) in covers.iter().enumerate() {
+        let mut sm = SurfaceMap::uniform(tile, Biome::TemperateForest);
+        sm.cover = vec![*c];
+        swatch(i, 1, sm.ground_color(0.5, 0.5, 200.0, 0.0));
+    }
+    let alpine = SurfaceMap::uniform(tile, Biome::Alpine);
+    let snowline = Biome::snowline_m(alpine.lat);
+    for (i, (h, slope)) in [(1_500.0, 0.0), (1_500.0, 0.6), (snowline - 200.0, 0.1), (snowline + 300.0, 0.1), (snowline + 300.0, 0.75), (1.0, 0.0)].iter().enumerate() {
+        swatch(i, 2, alpine.ground_color(0.5, 0.5, *h, *slope));
     }
     add(&ground, &mats.terrain);
-    let sw_center = to_local(3200.0, 3720.0, GROUND_H);
-    shots.push(Shot { name: "ground_biomes".into(), eye: sw_center + up * 160.0 + Vec3::new(0.0, 0.0, 170.0), target: sw_center });
-    let cov_center = to_local(72.0 / 96.0 * ext + 260.0, 72.0 / 96.0 * ext + 120.0, GROUND_H);
-    shots.push(Shot { name: "ground_covers".into(), eye: cov_center + up * 170.0 + Vec3::new(0.0, 0.0, 160.0), target: cov_center });
+    let sw_center = to_world(sx + cell * 6.0, sy + cell * 1.5, GROUND_H);
+    shots.push(Shot { name: "ground_swatches".into(), eye: sw_center + up * 150.0 + (to_local(0.0, 150.0, 0.0) - to_local(0.0, 0.0, 0.0)), target: sw_center, tonemap: None });
 
     // --- Region street vignettes ---
-    let mut regions: Vec<Region> = Region::ALL.to_vec();
-    if let Some(only) = &ld.only {
-        regions.retain(|r| format!("{r:?}").to_lowercase().contains(&only.to_lowercase()));
-    }
+    let regions: Vec<Region> = Region::ALL.to_vec();
     for (i, region) in regions.iter().enumerate() {
         let (cx, cy) = (500.0 + (i % 4) as f32 * SPACING_PX, 500.0 + (i / 4) as f32 * SPACING_PX);
         let vt = vignette_tile(cx, cy, *region, i as u64);
@@ -232,15 +231,20 @@ fn build_stage(
             })
             .collect();
         add(&props::bake_trees(&trees, up), &mats.matte);
-        let c = to_local(cx, cy, GROUND_H);
+        let c = to_world(cx, cy, GROUND_H);
         let name = format!("region_{}", format!("{region:?}").to_lowercase());
         // Three-quarter street view from the side street, a bit above head height.
-        shots.push(Shot { name: format!("{name}_street"), eye: to_local(cx + 60.0, cy + 240.0, GROUND_H + 9.0), target: c + up * 6.0 });
-        shots.push(Shot { name: format!("{name}_aerial"), eye: to_local(cx - 180.0, cy + 300.0, GROUND_H + 110.0), target: c });
+        shots.push(Shot { name: format!("{name}_street"), eye: to_world(cx + 60.0, cy + 240.0, GROUND_H + 9.0), target: c + up * 6.0, tonemap: None });
+        if *region == Region::Mediterranean {
+            for (tag, tm) in [("agx", Tonemapping::AgX), ("tony", Tonemapping::TonyMcMapface), ("aces", Tonemapping::AcesFitted), ("blender", Tonemapping::BlenderFilmic)] {
+                shots.push(Shot { name: format!("tonemap_{tag}"), eye: to_world(cx + 60.0, cy + 240.0, GROUND_H + 9.0), target: c + up * 6.0, tonemap: Some(tm) });
+            }
+        }
+        shots.push(Shot { name: format!("{name}_aerial"), eye: to_world(cx - 180.0, cy + 300.0, GROUND_H + 110.0), target: c, tonemap: None });
     }
 
     // --- Tree lineup ---
-    if ld.only.is_none() {
+    {
         let kinds = [
             TreeKind::Broadleaf, TreeKind::Conifer, TreeKind::Birch, TreeKind::Palm,
             TreeKind::Acacia, TreeKind::Cypress, TreeKind::Shrub, TreeKind::Cactus,
@@ -266,8 +270,8 @@ fn build_stage(
             })
             .collect();
         add(&props::bake_trees(&trees, up), &mats.matte);
-        let mid = to_local(lx + 3.5 * 26.0, ly, GROUND_H);
-        shots.push(Shot { name: "trees_lineup".into(), eye: mid + up * 9.0 + to_local(0.0, 120.0, 0.0) - to_local(0.0, 0.0, 0.0), target: mid + up * 5.0 });
+        let mid = to_world(lx + 3.5 * 26.0, ly, GROUND_H);
+        shots.push(Shot { name: "trees_lineup".into(), eye: mid + up * 9.0 + to_local(0.0, 120.0, 0.0) - to_local(0.0, 0.0, 0.0), target: mid + up * 5.0, tonemap: None });
 
         // --- Clouds ---
         let (cx, cy) = (3400.0, 2000.0);
@@ -285,10 +289,31 @@ fn build_stage(
         }
         let cloud_mat = commands_cloud_material(&mats);
         add(&sky, &cloud_mat);
-        let cc = to_local(cx, cy, GROUND_H + 330.0);
-        shots.push(Shot { name: "clouds".into(), eye: to_local(cx, cy + 1400.0, GROUND_H + 120.0), target: cc });
+        let cc = to_world(cx, cy, GROUND_H + 330.0);
+        shots.push(Shot { name: "clouds".into(), eye: to_world(cx, cy + 1400.0, GROUND_H + 120.0), target: cc, tonemap: None });
     }
 
+    // --- Robot courier ---
+    {
+        let spot = to_world(3400.0, 1500.0, GROUND_H);
+        let up_w = origin.up_at(spot);
+        let pos = spot + up_w * crate::player::RIDE_HEIGHT;
+        commands.spawn((
+            crate::player::Player::idle(0.5, crate::player::MoveMode::Walk),
+            avian3d::prelude::LinearVelocity::default(),
+            Transform::from_translation(pos),
+        ));
+        let fwd = Quat::from_rotation_arc(Vec3::Y, up_w) * Quat::from_rotation_y(0.5) * Vec3::NEG_Z;
+        let right = fwd.cross(up_w);
+        shots.push(Shot { name: "character_front".into(), eye: pos + fwd * 3.2 + right * 1.2 + up_w * 0.4, target: pos + up_w * 0.2, tonemap: None });
+        shots.push(Shot { name: "character_back".into(), eye: pos - fwd * 3.0 - right * 1.4 + up_w * 0.9, target: pos + up_w * 0.2, tonemap: None });
+    }
+
+    // `--only a,b`: keep shots whose name contains any of the terms.
+    if let Some(only) = &ld.only {
+        let terms: Vec<String> = only.split(',').map(|t| t.trim().to_lowercase()).collect();
+        shots.retain(|s| terms.iter().any(|t| s.name.contains(t.as_str())));
+    }
     commands.insert_resource(ShotList { shots, idx: 0, frames: 0 });
     let _ = HashMap::<u8, u8>::new();
 }
@@ -302,11 +327,11 @@ fn run_shots(
     ld: Res<Lookdev>,
     list: Option<ResMut<ShotList>>,
     origin: Res<WorldOrigin>,
-    mut cam: Query<&mut Transform, With<Camera3d>>,
+    mut cam: Query<(&mut Transform, &mut Tonemapping), With<Camera3d>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let Some(mut list) = list else { return };
-    let Ok(mut t) = cam.single_mut() else { return };
+    let Ok((mut t, mut tm)) = cam.single_mut() else { return };
     if list.idx >= list.shots.len() {
         list.frames += 1;
         if list.frames > 15 {
@@ -314,16 +339,22 @@ fn run_shots(
         }
         return;
     }
-    let shot = &list.shots[list.idx];
-    let up = origin.up_at(shot.eye);
-    *t = Transform::from_translation(shot.eye).looking_at(shot.target, up);
+    let (eye, target, name, want_tm) = {
+        let shot = &list.shots[list.idx];
+        (shot.eye, shot.target, shot.name.clone(), shot.tonemap.unwrap_or(Tonemapping::AgX))
+    };
+    if *tm != want_tm {
+        *tm = want_tm;
+    }
+    let up = origin.up_at(eye);
+    *t = Transform::from_translation(eye).looking_at(target, up);
     list.frames += 1;
     // Let TAA/auto-exposure/env-map settle on each new view.
-    if list.frames == 45 {
-        let path = ld.out_dir.join(format!("{}.png", shot.name));
+    if list.frames == 12 {
+        let path = ld.out_dir.join(format!("{name}.png"));
         commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
     }
-    if list.frames > 50 {
+    if list.frames > 14 {
         list.idx += 1;
         list.frames = 0;
     }
