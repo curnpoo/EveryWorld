@@ -15,6 +15,7 @@ pub mod clouds;
 pub mod foliage;
 pub mod lod;
 pub mod mesh;
+pub mod meshkit;
 pub mod missions;
 pub mod project;
 pub mod props;
