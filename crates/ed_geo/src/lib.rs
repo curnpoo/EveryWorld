@@ -1,4 +1,4 @@
-//! Earth math for EarthDrop.
+//! Earth math for EveryWorld.
 //!
 //! Everything here is `f64` and engine-agnostic. The game renders in `f32`
 //! relative to a floating origin (see [`EnuFrame`]); this crate is the source

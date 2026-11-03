@@ -1,4 +1,4 @@
-# EarthDrop architecture
+# EveryWorld architecture
 
 Drop anywhere on the real Earth. Walk, rocket-jump, skydive, drive, fly, and launch rockets to the Moon. The world is built from public map data and made to look like *that place* through procedural rules.
 

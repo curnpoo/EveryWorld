@@ -1,4 +1,4 @@
-# EarthDrop
+# EveryWorld
 
 Drop anywhere on the real Earth. Walk, rocket-jump, skydive, drive, fly, and launch to the Moon.
 Built from public map data (OpenStreetMap via OpenMapTiles, Mapterhorn/Copernicus elevation, Open-Meteo weather) and made to look like *that place* with procedural, region-aware rules.

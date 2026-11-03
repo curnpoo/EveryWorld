@@ -4,7 +4,7 @@
 use std::sync::OnceLock;
 use std::time::Duration;
 
-pub const USER_AGENT: &str = concat!("EarthDrop/", env!("CARGO_PKG_VERSION"), " (open-world game; github.com/earthdrop)");
+pub const USER_AGENT: &str = concat!("EveryWorld/", env!("CARGO_PKG_VERSION"), " (open-world game; github.com/curnpoo/everyworld)");
 
 fn agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();

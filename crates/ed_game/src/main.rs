@@ -1,4 +1,4 @@
-//! EarthDrop: drop anywhere on the real Earth.
+//! EveryWorld: drop anywhere on the real Earth.
 
 mod assets;
 mod body;
@@ -20,7 +20,7 @@ use bevy::window::WindowResolution;
 
 fn main() {
     let cfg = config::Config::from_args();
-    let title = format!("EarthDrop - {}", cfg.place_name);
+    let title = format!("EveryWorld - {}", cfg.place_name);
     let mut app = App::new();
     app.add_plugins(
         DefaultPlugins
