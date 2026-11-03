@@ -5,6 +5,7 @@ mod body;
 mod building_materials;
 mod camera;
 mod capture;
+mod clouds;
 mod config;
 mod engine_audio;
 mod hud;
@@ -42,7 +43,8 @@ fn main() {
     .add_plugins(PhysicsPlugins::default())
     .insert_resource(Gravity(Vec3::NEG_Y * 9.81))
     .insert_resource(cfg.clone())
-    .add_plugins((origin::OriginPlugin, assets::AssetsPlugin, building_materials::BuildingMaterialsPlugin, sky::SkyPlugin, camera::CameraPlugin));
+    .add_plugins((origin::OriginPlugin, assets::AssetsPlugin, building_materials::BuildingMaterialsPlugin, sky::SkyPlugin, camera::CameraPlugin))
+    .add_plugins(clouds::CloudsPlugin);
     if let Some(dir) = &cfg.lookdev {
         std::fs::create_dir_all(dir).expect("create lookdev dir");
         app.insert_resource(lookdev::Lookdev { out_dir: dir.clone(), only: cfg.lookdev_only.clone() })

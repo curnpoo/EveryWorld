@@ -85,6 +85,12 @@ fn setup_sky(
 }
 
 fn fetch_weather(mut commands: Commands, cfg: Res<Config>) {
+    // `--weather <preset>` (and lookdev, which must be deterministic) skip the network.
+    if let Some(w) = crate::clouds::weather_override().or_else(|| cfg.lookdev.as_ref().and_then(|_| ed_world::clouds::weather_preset("fair"))) {
+        info!("weather (override): {} {:.0}% clouds", w.describe(), w.cloud_cover_pct);
+        commands.insert_resource(CurrentWeather(Some(w)));
+        return;
+    }
     let w = match ed_data::weather::fetch(&cfg.cache, cfg.start.lat_deg, cfg.start.lon_deg) {
         Ok(w) => {
             info!("weather: {} {:.0}°C, clouds {:.0}%, wind {:.0} m/s", w.describe(), w.temperature_c, w.cloud_cover_pct, w.wind_speed_ms);
@@ -114,6 +120,7 @@ fn update_sun(
     origin: Res<WorldOrigin>,
     focus: Query<&GlobalTransform, With<Focus>>,
     mut sun: Query<(&mut Transform, &mut DirectionalLight), With<Sun>>,
+    clouds: Option<Res<crate::clouds::CloudSunFactor>>,
 ) {
     let Ok((mut t, mut light)) = sun.single_mut() else { return };
     let observer = focus.iter().next().map(|f| origin.to_geodetic(f.translation())).unwrap_or(origin.frame.origin);
@@ -123,7 +130,9 @@ fn update_sun(
     *t = Transform::default().looking_to(-to_sun, Vec3::Y);
     // Atmosphere handles reddening; we just fade the sun out below the horizon.
     let k = ((s.elevation_deg as f32 + 4.0) / 6.0).clamp(0.0, 1.0);
-    light.illuminance = lux::RAW_SUNLIGHT * k + 1.0;
+    // Clouds: an overcast deck takes most of the direct sun off the ground.
+    let cloud = clouds.map_or(1.0, |c| c.0);
+    light.illuminance = lux::RAW_SUNLIGHT * k * cloud + 1.0;
 }
 
 fn update_bodies(

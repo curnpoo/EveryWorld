@@ -14,7 +14,6 @@ use ed_data::mvt::{self, GeomType, Value};
 use ed_geo::tile::TileId;
 use ed_world::biome::Biome;
 use ed_world::buildings::{self, BuildingContext};
-use ed_world::clouds::{self, CloudStyle};
 use ed_world::foliage::{self, TreeInstance, TreeKind};
 use ed_world::mesh::MeshData;
 use ed_world::project::TileProjector;
@@ -281,25 +280,10 @@ fn build_stage(
         let mid = to_world(lx + 3.5 * 26.0, ly, GROUND_H);
         shots.push(Shot { name: "trees_lineup".into(), eye: mid + up * 9.0 + to_local(0.0, 120.0, 0.0) - to_local(0.0, 0.0, 0.0), target: mid + up * 5.0, tonemap: None });
 
-        // --- Clouds ---
-        let (cx, cy) = (3400.0, 2000.0);
-        let mut sky = MeshData::default();
-        let mut place_cloud = |m: MeshData, at: Vec3| {
-            let mut c = m;
-            for p in &mut c.positions {
-                *p = (Vec3::from(*p) + at).to_array();
-            }
-            sky.append(&c);
-        };
-        for (k, style) in [CloudStyle::Puffy, CloudStyle::Towering, CloudStyle::Stratus].iter().enumerate() {
-            let size = match style { CloudStyle::Towering => 160.0, CloudStyle::Stratus => 260.0, CloudStyle::Puffy => 180.0 };
-            place_cloud(clouds::cloud(*style, 7 + k as u64, size), to_local(cx + (k as f32 - 1.0) * 600.0, cy, GROUND_H + 300.0));
-        }
-        let cloud_mat = commands_cloud_material(&mats);
-        add(&sky, &cloud_mat);
-        let cc = to_world(cx, cy, GROUND_H + 330.0);
-        shots.push(Shot { name: "clouds".into(), eye: to_world(cx, cy + 1400.0, GROUND_H + 120.0), target: cc, tonemap: None });
     }
+
+    // --- Clouds (volumetric sky, see clouds.rs for each shot's weather) ---
+    shots.extend(cloud_shots(to_world(3400.0, 2000.0, GROUND_H)));
 
     // --- Robot courier ---
     {
@@ -326,8 +310,21 @@ fn build_stage(
     let _ = HashMap::<u8, u8>::new();
 }
 
-fn commands_cloud_material(mats: &WorldMaterials) -> Handle<StandardMaterial> {
-    mats.cloud.clone()
+/// The shot currently on camera (cloud presets key off its name).
+#[derive(Resource)]
+pub struct ActiveShot(pub String);
+
+/// Volumetric cloud review shots around a stage point. Weather, time of day
+/// and storm placement for each come from `clouds::apply_lookdev_presets`.
+fn cloud_shots(stage: Vec3) -> Vec<Shot> {
+    crate::clouds::LOOKDEV_SHOTS
+        .iter()
+        .map(|s| {
+            let eye = stage + Vec3::Y * s.height_m;
+            let dir = crate::clouds::heading_pitch_dir(s.heading_deg, s.pitch_deg);
+            Shot { name: s.name.into(), eye, target: eye + dir * 1_000.0, tonemap: None }
+        })
+        .collect()
 }
 
 fn run_shots(
@@ -351,6 +348,9 @@ fn run_shots(
         let shot = &list.shots[list.idx];
         (shot.eye, shot.target, shot.name.clone(), shot.tonemap.unwrap_or(Tonemapping::BlenderFilmic))
     };
+    if list.frames == 0 {
+        commands.insert_resource(ActiveShot(name.clone()));
+    }
     if *tm != want_tm {
         *tm = want_tm;
     }
