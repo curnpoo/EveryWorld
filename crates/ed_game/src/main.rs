@@ -5,6 +5,7 @@ mod body;
 mod camera;
 mod capture;
 mod config;
+mod engine_audio;
 mod hud;
 mod lookdev;
 mod meshconv;
@@ -45,7 +46,7 @@ fn main() {
     } else {
         app.add_plugins((streaming::StreamingPlugin, capture::CapturePlugin, hud::HudPlugin));
         if !cfg.fly {
-            app.add_plugins((player::PlayerPlugin, body::BodyPlugin, vehicles::VehiclesPlugin));
+            app.add_plugins((player::PlayerPlugin, body::BodyPlugin, vehicles::VehiclesPlugin, engine_audio::EngineAudioPlugin));
         }
     }
     app.run();

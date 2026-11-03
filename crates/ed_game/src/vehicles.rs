@@ -8,6 +8,9 @@
 //! Plane: lift from angle of attack (linear up to stall at ~15°, then drops),
 //! induced + parasitic drag, thrust, and control torques that scale with
 //! dynamic pressure, so it flies like a plane, not a cursor.
+//!
+//! Sound: every car and plane gets an `engine_audio::EngineSound` when it
+//! spawns (the engine sound kit; `N` in a vehicle cycles the sound).
 
 use crate::origin::{Focus, Rebased, WorldOrigin};
 use crate::player::Player;
@@ -56,6 +59,10 @@ const REST: f32 = 0.45;
 const WHEEL_R: f32 = 0.34;
 const GEARS: [f32; 6] = [3.6, 2.2, 1.5, 1.15, 0.92, 0.76];
 const FINAL_DRIVE: f32 = 3.7;
+// Audio hook: engine_audio.rs reads `Car::{rpm, gear, throttle}` every frame
+// and turns gear changes into shift sounds; it needs these for shaft rpm.
+pub(crate) const CAR_WHEEL_R: f32 = WHEEL_R;
+pub(crate) const CAR_FINAL_DRIVE: f32 = FINAL_DRIVE;
 
 fn spawn_vehicles(
     mut commands: Commands,
@@ -160,10 +167,13 @@ fn car_physics(
     time: Res<Time>,
     driving: Res<Driving>,
     spatial: SpatialQuery,
-    mut cars: Query<(Entity, &Transform, &LinearVelocity, &AngularVelocity, &mut Car, Forces)>,
+    mut cars: Query<(Entity, &Transform, &mut Car, Forces)>,
 ) {
     let dt = time.delta_secs();
-    for (e, t, lv, av, mut car, mut forces) in &mut cars {
+    for (e, t, mut car, mut forces) in &mut cars {
+        // Velocities come through `Forces` (it owns that access in Avian 0.8;
+        // a separate `&LinearVelocity` in the same query panics at startup).
+        let (lv, av) = (LinearVelocity(forces.linear_velocity()), AngularVelocity(forces.angular_velocity()));
         let active = driving.0 == Some(e);
         let (thr, brk, steer_in) = if active {
             let f = keys.pressed(KeyCode::KeyW) as i32 as f32;
@@ -242,9 +252,10 @@ fn plane_physics(
     keys: Res<ButtonInput<KeyCode>>,
     driving: Res<Driving>,
     origin: Res<WorldOrigin>,
-    mut planes: Query<(Entity, &Transform, &LinearVelocity, &AngularVelocity, &mut Plane, Forces)>,
+    mut planes: Query<(Entity, &Transform, &mut Plane, Forces)>,
 ) {
-    for (e, t, lv, av, mut p, mut forces) in &mut planes {
+    for (e, t, mut p, mut forces) in &mut planes {
+        let (lv, av) = (LinearVelocity(forces.linear_velocity()), AngularVelocity(forces.angular_velocity()));
         if driving.0 == Some(e) {
             if keys.pressed(KeyCode::ShiftLeft) {
                 p.throttle = (p.throttle + 0.01).min(1.0);

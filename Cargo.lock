@@ -2773,10 +2773,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ed_audio"
-version = "0.1.0"
-
-[[package]]
 name = "ed_data"
 version = "0.1.0"
 dependencies = [
@@ -2790,6 +2786,15 @@ dependencies = [
  "serde",
  "serde_json",
  "ureq",
+]
+
+[[package]]
+name = "ed_engine_audio"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2808,6 +2813,7 @@ dependencies = [
  "bevy",
  "crossbeam-channel",
  "ed_data",
+ "ed_engine_audio",
  "ed_flight",
  "ed_geo",
  "ed_space",
