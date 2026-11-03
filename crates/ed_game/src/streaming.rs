@@ -68,7 +68,6 @@ fn prepare_batch(b: &BuildingMeshes, with_collider: bool) -> BuildingBatch {
 enum Part {
     Terrain,
     Water,
-    Roads,
     Foliage,
     Rocks,
     Props,
@@ -88,7 +87,6 @@ fn ready_tile(mut b: TileBuild) -> ReadyTile {
         (Part::Terrain, &b.terrain),
         (Part::Water, &b.water),
         (Part::Roads, &b.roads),
-        (Part::Foliage, &b.foliage),
         (Part::Rocks, &b.rocks),
         (Part::Props, &b.street_props),
     ]
@@ -270,6 +268,7 @@ fn receive_tiles(
     bmats: Res<BuildingMaterials>,
     focus: Query<&GlobalTransform, With<Focus>>,
     origin: Res<WorldOrigin>,
+    foliage: Res<crate::foliage::FoliageAssets>,
 ) {
     let focus_pos = focus.iter().next().map(|t| t.translation());
     // Bound per-frame upload work.
@@ -308,7 +307,7 @@ fn receive_tiles(
                 Part::Terrain => (&mats.terrain, near),
                 Part::Water => (&mats.water, false),
                 Part::Roads => (&mats.matte, false),
-                Part::Foliage | Part::Rocks | Part::Props => (&mats.matte, true),
+                Part::Rocks | Part::Props => (&mats.matte, true),
             };
             let mut e = commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(mat.clone()), Transform::default()));
             if !shadows {
@@ -329,6 +328,7 @@ fn receive_tiles(
         if let Some(set) = &b.building_detail {
             dm.tiles.insert(b.tile, TileDetail { set: set.clone(), root: parent_id, lod: lod_entities, loaded: HashMap::new(), pending: HashSet::new() });
         }
+        crate::foliage::spawn_tile_trees(&mut commands, &mut meshes, &foliage, parent_id, &b.trees);
         mgr.totals.buildings += b.stats.buildings;
         mgr.totals.trees += b.stats.trees;
         mgr.totals.triangles += b.stats.triangles;

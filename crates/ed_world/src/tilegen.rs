@@ -9,7 +9,7 @@ use crate::project::TileProjector;
 use crate::style::Region;
 use crate::surface::SurfaceMap;
 use crate::terrain::{self, TerrainGrid};
-use crate::{foliage, props, roads, water};
+use crate::{foliage, props, roads, trees, water};
 use ed_data::{DiskCache, elevation, vector};
 use ed_geo::{EnuFrame, tile::TileId};
 use glam::{DVec3, Vec3};
@@ -49,7 +49,8 @@ pub struct TileBuild {
     pub building_lod: Vec<((u8, u8), BuildingMeshes)>,
     /// Inputs for building full-detail chunks on demand near the player.
     pub building_detail: Option<Arc<DetailSet>>,
-    pub foliage: MeshData,
+    /// Trees and shrubs: per-chunk far-LOD meshes + instances for near detail.
+    pub trees: trees::TileTrees,
     pub rocks: MeshData,
     pub street_props: MeshData,
     /// (name, IATA, local position) of airports in this tile.
@@ -155,7 +156,7 @@ pub fn build(job: &TileJob) -> TileBuild {
         roads: MeshData::default(),
         building_lod: Vec::new(),
         building_detail: None,
-        foliage: MeshData::default(),
+        trees: trees::TileTrees::default(),
         rocks: MeshData::default(),
         street_props: MeshData::default(),
         airports: Vec::new(),
@@ -210,14 +211,17 @@ pub fn build(job: &TileJob) -> TileBuild {
             let (trees, rocks) = foliage::scatter(&proj, &grid, &surface, Some(&occ), max);
             out.stats.trees = trees.len();
             out.stats.rocks = rocks.len();
-            out.foliage = props::bake_trees(&trees, up);
+            // Finest tiles get a chunk grid so the game can swap in full
+            // detail near the camera; coarser tiles are one far-LOD chunk.
+            let grid = if tile.z >= 14 { 12 } else { 1 };
+            out.trees = trees::bake_tile(trees, up, proj.tile.width_m() as f32, grid);
             out.rocks = props::bake_rocks(&rocks, up);
         }
     }
     out.stats.triangles = out.terrain.triangle_count()
         + out.water.triangle_count()
         + out.roads.triangle_count()
-        + out.foliage.triangle_count()
+        + out.trees.triangle_count()
         + out.rocks.triangle_count()
         + out.street_props.triangle_count()
         + out.building_lod.iter().map(|(_, b)| b.triangle_count()).sum::<usize>();

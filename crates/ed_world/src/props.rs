@@ -1,9 +1,8 @@
-//! Procedural low-poly geometry for trees, rocks and street furniture, and
-//! baking instance lists into one merged mesh per tile (one draw call for
-//! thousands of trees). Stylized on purpose: chunky shapes, flat-ish
-//! shading, readable silhouettes.
+//! Procedural geometry for rocks and street furniture, baked into one merged
+//! mesh per tile. Trees and shrubs live in [`crate::trees`] (see
+//! [`crate::trees::bake_tile`]).
 
-use crate::foliage::{RockInstance, TreeInstance, TreeKind};
+use crate::foliage::RockInstance;
 use crate::mesh::{MeshData, rgb, scale_color};
 use crate::roads::{PoleKind, PropKind, SignalLayout, StreetProp};
 use glam::{Quat, Vec3};
@@ -30,18 +29,6 @@ fn cylinder(m: &mut MeshData, base: Vec3, r0: f32, r1: f32, h: f32, seg: usize, 
     }
 }
 
-fn cone(m: &mut MeshData, base: Vec3, r: f32, h: f32, seg: usize, c: [f32; 4]) {
-    let apex = base + Vec3::Y * h;
-    for i in 0..seg {
-        let a0 = i as f32 / seg as f32 * TAU;
-        let a1 = (i + 1) as f32 / seg as f32 * TAU;
-        let p0 = base + Vec3::new(a0.cos(), 0.0, a0.sin()) * r;
-        let p1 = base + Vec3::new(a1.cos(), 0.0, a1.sin()) * r;
-        m.triangle([p1, p0, apex], [[0.0; 2]; 3], c);
-        m.triangle([p0, p1, base], [[0.0; 2]; 3], scale_color(c, 0.7));
-    }
-}
-
 /// Smooth-shaded low-poly ellipsoid (UV sphere, few segments).
 fn blob(m: &mut MeshData, center: Vec3, radii: Vec3, c: [f32; 4]) {
     let (rings, seg) = (5, 8);
@@ -65,69 +52,6 @@ fn blob(m: &mut MeshData, center: Vec3, radii: Vec3, c: [f32; 4]) {
             m.tri(a + 1, b + 1, b);
         }
     }
-}
-
-/// Unit-scale tree model (≈ 8-14 m tall at scale 1).
-pub fn tree_mesh(kind: TreeKind, leaf: [f32; 4]) -> MeshData {
-    let mut m = MeshData::default();
-    let bark = rgb(0x6b4f3a);
-    match kind {
-        TreeKind::Broadleaf => {
-            cylinder(&mut m, Vec3::ZERO, 0.35, 0.25, 4.0, 5, bark);
-            blob(&mut m, Vec3::new(0.0, 6.5, 0.0), Vec3::new(3.6, 3.2, 3.6), leaf);
-            blob(&mut m, Vec3::new(1.4, 7.8, 0.6), Vec3::splat(2.2), scale_color(leaf, 1.08));
-        }
-        TreeKind::Conifer => {
-            cylinder(&mut m, Vec3::ZERO, 0.3, 0.2, 2.5, 5, bark);
-            for (k, (y, r, h)) in [(1.5, 3.2, 5.0), (4.2, 2.5, 4.5), (6.8, 1.7, 4.2)].iter().enumerate() {
-                cone(&mut m, Vec3::new(0.0, *y, 0.0), *r, *h, 7, scale_color(leaf, 0.9 + 0.08 * k as f32));
-            }
-        }
-        TreeKind::Birch => {
-            cylinder(&mut m, Vec3::ZERO, 0.2, 0.14, 6.0, 5, rgb(0xe8e4dc));
-            blob(&mut m, Vec3::new(0.0, 7.5, 0.0), Vec3::new(2.0, 3.4, 2.0), leaf);
-        }
-        TreeKind::Palm => {
-            // Gently curved trunk + drooping fronds.
-            let mut p = Vec3::ZERO;
-            for k in 0..5 {
-                let next = p + Vec3::new(0.25, 2.0, 0.0);
-                cylinder(&mut m, p, 0.28 - k as f32 * 0.03, 0.25 - k as f32 * 0.03, 2.05, 6, rgb(0x8a6e4f));
-                p = next;
-            }
-            for i in 0..7 {
-                let a = i as f32 / 7.0 * TAU;
-                let d = Vec3::new(a.cos(), 0.0, a.sin());
-                let s = d.cross(Vec3::Y) * 0.6;
-                let mid = p + d * 2.4 + Vec3::Y * 0.6;
-                let tip = p + d * 4.2 - Vec3::Y * 1.2;
-                m.triangle([p, mid + s, mid - s], [[0.0; 2]; 3], leaf);
-                m.triangle([p, mid - s, mid + s], [[0.0; 2]; 3], leaf);
-                m.triangle([mid - s, mid + s, tip], [[0.0; 2]; 3], scale_color(leaf, 0.9));
-                m.triangle([mid + s, mid - s, tip], [[0.0; 2]; 3], scale_color(leaf, 0.9));
-            }
-        }
-        TreeKind::Acacia => {
-            cylinder(&mut m, Vec3::ZERO, 0.3, 0.2, 4.5, 5, bark);
-            blob(&mut m, Vec3::new(0.0, 5.5, 0.0), Vec3::new(4.2, 1.1, 4.2), leaf);
-        }
-        TreeKind::Cypress => {
-            cylinder(&mut m, Vec3::ZERO, 0.2, 0.15, 1.2, 5, bark);
-            blob(&mut m, Vec3::new(0.0, 6.0, 0.0), Vec3::new(1.3, 5.5, 1.3), leaf);
-        }
-        TreeKind::Shrub => {
-            blob(&mut m, Vec3::new(0.0, 0.7, 0.0), Vec3::new(1.4, 1.0, 1.4), leaf);
-        }
-        TreeKind::Cactus => {
-            let g = rgb(0x5f8a54);
-            cylinder(&mut m, Vec3::ZERO, 0.35, 0.35, 4.0, 7, g);
-            cylinder(&mut m, Vec3::new(0.35, 1.6, 0.0), 0.22, 0.22, 0.4, 6, g);
-            cylinder(&mut m, Vec3::new(0.75, 1.6, 0.0), 0.22, 0.22, 1.5, 6, g);
-            cylinder(&mut m, Vec3::new(-0.35, 2.2, 0.0), 0.2, 0.2, 0.35, 6, g);
-            cylinder(&mut m, Vec3::new(-0.7, 2.2, 0.0), 0.2, 0.2, 1.2, 6, g);
-        }
-    }
-    m
 }
 
 fn rock_mesh(c: [f32; 4]) -> MeshData {
@@ -170,34 +94,6 @@ fn place(dst: &mut MeshData, src: &MeshData, pos: Vec3, up: Vec3, yaw: f32, scal
         dst.vertex(p.to_array(), n.to_array(), src.uvs[i], c);
     }
     dst.indices.extend(src.indices.iter().map(|i| i + base));
-}
-
-/// Merge all trees of a tile into one mesh.
-pub fn bake_trees(trees: &[TreeInstance], up: Vec3) -> MeshData {
-    use std::collections::HashMap;
-    let mut cache: HashMap<TreeKind, MeshData> = HashMap::new();
-    let mut out = MeshData::default();
-    for t in trees {
-        // Model uses white leaves; per-instance tint colors them.
-        let model = cache.entry(t.kind).or_insert_with(|| tree_mesh(t.kind, [1.0; 4]));
-        let leaf_tinted: MeshData;
-        let src = if t.kind == TreeKind::Cactus {
-            model
-        } else {
-            // Tint only near-white (leaf) vertices; keep bark color.
-            let mut m = model.clone();
-            for c in &mut m.colors {
-                if c[0] > 0.6 && c[1] > 0.6 && c[2] > 0.6 && (c[0] - c[2]).abs() < 0.01 {
-                    let k = c[0];
-                    *c = [t.tint[0] * k, t.tint[1] * k, t.tint[2] * k, 1.0];
-                }
-            }
-            leaf_tinted = m;
-            &leaf_tinted
-        };
-        place(&mut out, src, t.pos, up, t.yaw, Vec3::splat(t.scale), None);
-    }
-    out
 }
 
 pub fn bake_rocks(rocks: &[RockInstance], up: Vec3) -> MeshData {
@@ -273,17 +169,4 @@ pub fn bake_street_props(props: &[StreetProp], up: Vec3) -> MeshData {
         place(&mut out, model, p.pos, up, yaw, Vec3::ONE, None);
     }
     out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn every_tree_kind_builds() {
-        for k in [TreeKind::Broadleaf, TreeKind::Conifer, TreeKind::Birch, TreeKind::Palm, TreeKind::Acacia, TreeKind::Cypress, TreeKind::Shrub, TreeKind::Cactus] {
-            let m = tree_mesh(k, [0.3, 0.6, 0.2, 1.0]);
-            assert!(m.triangle_count() > 10 && m.triangle_count() < 800, "{k:?}: {}", m.triangle_count());
-        }
-    }
 }

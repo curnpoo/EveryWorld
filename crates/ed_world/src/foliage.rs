@@ -1,5 +1,6 @@
-//! Trees and rocks. Density comes from land cover, species from biome, and
-//! an occupancy mask keeps them off roads and out of buildings.
+//! Trees, shrubs and rocks. Density comes from land cover, species from
+//! biome, and an occupancy mask keeps them off roads and out of buildings.
+//! Geometry lives in [`crate::trees`].
 
 use crate::biome::Biome;
 use crate::mesh::{rgb, scale_color};
@@ -9,6 +10,8 @@ use crate::terrain::TerrainGrid;
 use ed_data::mvt::{self, GeomType};
 use glam::Vec3;
 
+/// Plant species. The first eight names are kept from v1 (Broadleaf is an
+/// oak-like tree, Conifer a spruce, Palm a coconut palm, Cactus a saguaro).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TreeKind {
     Broadleaf,
@@ -19,6 +22,83 @@ pub enum TreeKind {
     Cypress,
     Shrub,
     Cactus,
+    Maple,
+    PlaneTree,
+    Fir,
+    Pine,
+    DatePalm,
+    Olive,
+    Baobab,
+    Banana,
+    PricklyPear,
+    Boxwood,
+    Juniper,
+    Oleander,
+    Fern,
+    GrassTussock,
+    FloweringBush,
+}
+
+impl TreeKind {
+    pub const ALL: &'static [TreeKind] = &[
+        TreeKind::Broadleaf,
+        TreeKind::Conifer,
+        TreeKind::Birch,
+        TreeKind::Palm,
+        TreeKind::Acacia,
+        TreeKind::Cypress,
+        TreeKind::Shrub,
+        TreeKind::Cactus,
+        TreeKind::Maple,
+        TreeKind::PlaneTree,
+        TreeKind::Fir,
+        TreeKind::Pine,
+        TreeKind::DatePalm,
+        TreeKind::Olive,
+        TreeKind::Baobab,
+        TreeKind::Banana,
+        TreeKind::PricklyPear,
+        TreeKind::Boxwood,
+        TreeKind::Juniper,
+        TreeKind::Oleander,
+        TreeKind::Fern,
+        TreeKind::GrassTussock,
+        TreeKind::FloweringBush,
+    ];
+
+    /// Trees (vs shrubs and ground plants).
+    pub const TREES: &'static [TreeKind] = &[
+        TreeKind::Broadleaf,
+        TreeKind::Maple,
+        TreeKind::PlaneTree,
+        TreeKind::Birch,
+        TreeKind::Conifer,
+        TreeKind::Fir,
+        TreeKind::Pine,
+        TreeKind::Palm,
+        TreeKind::DatePalm,
+        TreeKind::Cypress,
+        TreeKind::Olive,
+        TreeKind::Acacia,
+        TreeKind::Baobab,
+        TreeKind::Banana,
+        TreeKind::Cactus,
+        TreeKind::PricklyPear,
+    ];
+
+    pub const SHRUBS: &'static [TreeKind] = &[
+        TreeKind::Shrub,
+        TreeKind::Boxwood,
+        TreeKind::Juniper,
+        TreeKind::Oleander,
+        TreeKind::FloweringBush,
+        TreeKind::Fern,
+        TreeKind::GrassTussock,
+    ];
+
+    pub fn is_shrub(self) -> bool {
+        Self::SHRUBS.contains(&self)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -99,32 +179,71 @@ impl Occupancy {
     }
 }
 
-fn species(biome: Biome, cover: Cover, r: f32, lat: f64) -> TreeKind {
+/// Pick from a weighted mix with a roll in [0,1).
+fn pick(mix: &[(TreeKind, f32)], r: f32) -> TreeKind {
+    let total: f32 = mix.iter().map(|m| m.1).sum();
+    let mut acc = 0.0;
+    for (k, w) in mix {
+        acc += w / total;
+        if r < acc {
+            return *k;
+        }
+    }
+    mix.last().unwrap().0
+}
+
+/// Species mix by biome and land cover. Woods get trees with an understory
+/// of shrubs/ferns; parks and towns get street trees and garden shrubs.
+pub fn species(biome: Biome, cover: Cover, r: f32, lat: f64) -> TreeKind {
     use TreeKind::*;
+    let urban = matches!(cover, Cover::Residential | Cover::Commercial | Cover::Industrial | Cover::Park);
     match biome {
-        Biome::TropicalRainforest => if r < 0.25 { Palm } else { Broadleaf },
-        Biome::Savanna => if r < 0.7 { Acacia } else { Shrub },
-        Biome::HotDesert => if r < 0.5 { Shrub } else if lat.abs() < 35.0 && r < 0.75 { Palm } else { Cactus },
-        Biome::Mediterranean => if r < 0.3 { Cypress } else if r < 0.45 && cover != Cover::Wood { Palm } else { Broadleaf },
-        Biome::TemperateForest | Biome::Grassland => if r < 0.2 { Conifer } else if r < 0.3 { Birch } else { Broadleaf },
-        Biome::Boreal => if r < 0.75 { Conifer } else { Birch },
-        Biome::Alpine => if r < 0.85 { Conifer } else { Shrub },
-        Biome::Tundra | Biome::IceCap => Shrub,
+        Biome::TropicalRainforest => {
+            if urban {
+                pick(&[(Palm, 4.0), (Banana, 2.0), (FloweringBush, 2.0), (Broadleaf, 2.0), (Fern, 1.0)], r)
+            } else {
+                pick(&[(Broadleaf, 5.0), (Palm, 2.0), (Banana, 2.0), (Fern, 2.5), (Shrub, 1.0)], r)
+            }
+        }
+        Biome::Savanna => pick(&[(Acacia, 6.0), (Baobab, if lat.abs() < 25.0 { 0.6 } else { 0.0 }), (GrassTussock, 3.0), (Shrub, 1.5)], r),
+        Biome::HotDesert => {
+            let palms = if lat.abs() < 35.0 { 2.0 } else { 0.5 };
+            if urban {
+                pick(&[(DatePalm, 5.0), (Oleander, 2.0), (Olive, 1.0), (PricklyPear, 1.0)], r)
+            } else {
+                pick(&[(Shrub, 3.0), (GrassTussock, 2.0), (DatePalm, palms), (Cactus, 1.5), (PricklyPear, 1.5)], r)
+            }
+        }
+        Biome::Mediterranean => {
+            if cover == Cover::Wood {
+                pick(&[(Pine, 4.0), (Olive, 2.0), (Cypress, 1.0), (Juniper, 1.5), (Oleander, 0.5)], r)
+            } else if urban {
+                pick(&[(PlaneTree, 3.0), (Cypress, 2.0), (Palm, 1.5), (DatePalm, 1.0), (Olive, 1.5), (Oleander, 2.0), (Boxwood, 1.0)], r)
+            } else {
+                pick(&[(Olive, 4.0), (Cypress, 2.0), (Pine, 1.5), (Juniper, 1.5), (Oleander, 1.0), (GrassTussock, 1.0)], r)
+            }
+        }
+        Biome::TemperateForest | Biome::Grassland => {
+            if urban {
+                pick(&[(PlaneTree, 3.0), (Maple, 2.0), (Broadleaf, 2.0), (Birch, 1.0), (Boxwood, 1.5), (FloweringBush, 1.5), (Shrub, 1.0)], r)
+            } else if cover == Cover::Wood {
+                pick(&[(Broadleaf, 4.0), (Maple, 2.5), (Birch, 1.5), (Conifer, 1.5), (Pine, 1.0), (Fern, 1.5), (Shrub, 1.0)], r)
+            } else {
+                pick(&[(Broadleaf, 3.0), (Maple, 1.5), (Birch, 1.0), (Conifer, 1.0), (Shrub, 2.0), (GrassTussock, 1.5)], r)
+            }
+        }
+        Biome::Boreal => pick(&[(Conifer, 5.0), (Fir, 2.5), (Pine, 2.0), (Birch, 2.0), (Juniper, 1.0), (Fern, 0.7)], r),
+        Biome::Alpine => pick(&[(Conifer, 3.0), (Fir, 3.0), (Pine, 1.5), (Juniper, 2.0), (GrassTussock, 1.5)], r),
+        Biome::Tundra | Biome::IceCap => pick(&[(Juniper, 2.0), (GrassTussock, 3.0), (Shrub, 1.0)], r),
     }
 }
 
+/// Per-instance tint hint (kept for callers; v2 models carry their own
+/// per-variant colors, so this is near white with a little variation).
 pub fn foliage_color(kind: TreeKind, biome: Biome, r: f32) -> [f32; 4] {
-    let base = match kind {
-        TreeKind::Broadleaf => [0x5f9e3f, 0x6aa84f, 0x4f8f3a, 0x78b04a][(r * 4.0) as usize % 4],
-        TreeKind::Conifer => [0x2f6b45, 0x3b7a4c, 0x2d5f3f][(r * 3.0) as usize % 3],
-        TreeKind::Birch => 0x8fbf5a,
-        TreeKind::Palm => 0x6aa84f,
-        TreeKind::Acacia => 0x7f9b48,
-        TreeKind::Cypress => 0x3d5f36,
-        TreeKind::Shrub => if biome == Biome::HotDesert { 0x9a9a62 } else { 0x6f8f4a },
-        TreeKind::Cactus => 0x5f8a54,
-    };
-    scale_color(rgb(base), 0.9 + 0.2 * r)
+    let dry = matches!(biome, Biome::HotDesert | Biome::Savanna) && !matches!(kind, TreeKind::Cactus | TreeKind::PricklyPear);
+    let base = if dry { [1.06, 1.0, 0.86, 1.0] } else { [1.0; 4] };
+    scale_color(base, 0.94 + 0.12 * r)
 }
 
 /// Scatter trees and rocks over a tile. Roughly one candidate per 8x8 m cell.
@@ -140,6 +259,16 @@ pub fn scatter(
     let cell_area_ha = (width / cells as f32).powi(2) / 10_000.0;
     let tkey = (proj.tile.x as u64) << 32 | proj.tile.y as u64 | (proj.tile.z as u64) << 58;
     let snowline = Biome::snowline_m(surface.lat);
+    // Expected tree count, so a busy tile is thinned evenly instead of
+    // filling up row by row and leaving its southern part bare.
+    let mut expected = 0.0f32;
+    for j in (0..cells).step_by(4) {
+        for i in (0..cells).step_by(4) {
+            let (u, v) = ((i as f64 + 0.5) / cells as f64, (j as f64 + 0.5) / cells as f64);
+            expected += (surface.tree_density(u, v) * cell_area_ha).min(0.95) * 16.0;
+        }
+    }
+    let thin = (max_trees as f32 / expected.max(1.0)).min(1.0);
     let mut trees = Vec::new();
     let mut rocks = Vec::new();
     for j in 0..cells {
@@ -162,15 +291,13 @@ pub fn scatter(
                 continue;
             }
             let p_tree = (surface.tree_density(u, v) * cell_area_ha).min(0.95)
+                * thin
                 * (1.0 - ((h - (snowline - 800.0)) / 600.0).clamp(0.0, 1.0));
             if roll < p_tree && trees.len() < max_trees {
                 let r = crate::hash01(tkey, key * 7 + 5);
                 let kind = species(surface.biome, cover, r, surface.lat);
-                let scale = match kind {
-                    TreeKind::Shrub => 0.6 + r * 0.6,
-                    TreeKind::Cactus => 0.7 + r * 0.5,
-                    _ => 0.75 + r * 0.6,
-                };
+                let r2 = crate::hash01(tkey, key * 7 + 6);
+                let scale = if kind.is_shrub() { 0.7 + r2 * 0.6 } else { 0.8 + r2 * 0.45 };
                 trees.push(TreeInstance {
                     kind,
                     pos: proj.local(u, v, h as f64),
