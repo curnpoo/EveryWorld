@@ -3,6 +3,7 @@
 //! (a coarse tile stays until every finer tile covering it has arrived).
 
 use crate::assets::WorldMaterials;
+use crate::building_materials::BuildingMaterials;
 use crate::config::Config;
 use crate::meshconv::to_mesh;
 use crate::origin::{Focus, GeoAnchored, WorldOrigin};
@@ -12,17 +13,21 @@ use bevy::tasks::AsyncComputeTaskPool;
 use crossbeam_channel::{Receiver, Sender};
 use ed_geo::tile::TileId;
 use ed_world::lod::{self, LodParams};
-use ed_world::tilegen::{self, TileBuild, TileJob};
+use ed_world::buildings::BuildingMeshes;
+use ed_world::tilegen::{self, DetailSet, TileBuild, TileJob};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 pub struct StreamingPlugin;
 
 impl Plugin for StreamingPlugin {
     fn build(&self, app: &mut App) {
         let (tx, rx) = crossbeam_channel::unbounded();
+        let (dtx, drx) = crossbeam_channel::unbounded();
         app.insert_resource(TileManager { tx, rx, ..default_manager() })
+            .insert_resource(DetailManager { tx: dtx, rx: drx, tiles: HashMap::new(), in_flight: 0, last: -1.0 })
             .add_systems(Startup, resolve_vector_template)
-            .add_systems(Update, (select_tiles, receive_tiles, retire_tiles).chain());
+            .add_systems(Update, (select_tiles, receive_tiles, retire_tiles, stream_detail, receive_detail).chain());
     }
 }
 
@@ -74,6 +79,39 @@ fn default_manager() -> TileManager {
 
 #[derive(Component)]
 pub struct WorldTile(pub TileId);
+
+/// Full-detail building chunks near the player.
+#[derive(Resource)]
+pub struct DetailManager {
+    tx: Sender<(TileId, (u8, u8), BuildingMeshes)>,
+    rx: Receiver<(TileId, (u8, u8), BuildingMeshes)>,
+    tiles: HashMap<TileId, TileDetail>,
+    in_flight: usize,
+    last: f32,
+}
+
+struct TileDetail {
+    set: Arc<DetailSet>,
+    root: Entity,
+    lod: HashMap<(u8, u8), Entity>,
+    loaded: HashMap<(u8, u8), Entity>,
+    pending: HashSet<(u8, u8)>,
+}
+
+/// Detail is built inside this radius and dropped beyond the outer one.
+const DETAIL_IN_M: f32 = 230.0;
+const DETAIL_OUT_M: f32 = 320.0;
+const DETAIL_IN_FLIGHT: usize = 2;
+
+/// Spawn one entity per material bucket under `parent`.
+fn spawn_buckets(commands: &mut Commands, meshes: &mut Assets<Mesh>, bm: &BuildingMaterials, b: &BuildingMeshes, parent: Entity) {
+    for (mat, mesh) in &b.out.meshes {
+        if mesh.is_empty() {
+            continue;
+        }
+        commands.spawn((Mesh3d(meshes.add(to_mesh(mesh))), MeshMaterial3d(bm.get(*mat)), Transform::default(), ChildOf(parent)));
+    }
+}
 
 fn resolve_vector_template(cfg: Res<Config>, mut mgr: ResMut<TileManager>) {
     match ed_data::vector::tile_template(&cfg.cache) {
@@ -130,11 +168,14 @@ fn select_tiles(
     mgr.desired = desired;
 }
 
+#[allow(clippy::too_many_arguments)]
 fn receive_tiles(
     mut commands: Commands,
     mut mgr: ResMut<TileManager>,
+    mut dm: ResMut<DetailManager>,
     mut meshes: ResMut<Assets<Mesh>>,
     mats: Res<WorldMaterials>,
+    bmats: Res<BuildingMaterials>,
     focus: Query<&GlobalTransform, With<Focus>>,
     origin: Res<WorldOrigin>,
 ) {
@@ -186,17 +227,21 @@ fn receive_tiles(
         child(&b.foliage, &mats.matte, true);
         child(&b.rocks, &mats.matte, true);
         child(&b.street_props, &mats.matte, true);
-        if let Some(bm) = &b.buildings {
-            child(&bm.facades, &mats.facade, true);
-            child(&bm.glass, &mats.glass, true);
-            child(&bm.storefronts, &mats.storefront, true);
-            child(&bm.roofs, &mats.matte, true);
-            let col = bm.collider();
-            if !col.is_empty() {
+        // Distant buildings, one entity per detail chunk, with physics shells.
+        let mut lod_entities = HashMap::new();
+        for (chunk, bmesh) in &b.building_lod {
+            let e = commands.spawn((Transform::default(), Visibility::default(), ChildOf(parent_id))).id();
+            spawn_buckets(&mut commands, &mut meshes, &bmats, bmesh, e);
+            if !bmesh.collider.is_empty() {
+                let col = &bmesh.collider;
                 let verts: Vec<Vec3> = col.positions.iter().map(|p| Vec3::from(*p)).collect();
                 let tris: Vec<[u32; 3]> = col.indices.chunks_exact(3).map(|t| [t[0], t[1], t[2]]).collect();
                 commands.spawn((RigidBody::Static, Collider::trimesh(verts, tris), Transform::default(), ChildOf(parent_id)));
             }
+            lod_entities.insert(*chunk, e);
+        }
+        if let Some(set) = &b.building_detail {
+            dm.tiles.insert(b.tile, TileDetail { set: set.clone(), root: parent_id, lod: lod_entities, loaded: HashMap::new(), pending: HashSet::new() });
         }
         mgr.totals.buildings += b.stats.buildings;
         mgr.totals.trees += b.stats.trees;
@@ -210,7 +255,7 @@ fn is_ancestor(a: TileId, of: TileId) -> bool {
 }
 
 /// Despawn tiles we no longer want, once their replacements are all in.
-fn retire_tiles(mut commands: Commands, mut mgr: ResMut<TileManager>) {
+fn retire_tiles(mut commands: Commands, mut mgr: ResMut<TileManager>, mut dm: ResMut<DetailManager>) {
     let mut retire = Vec::new();
     for (&t, &e) in &mgr.loaded {
         if mgr.desired.contains(&t) {
@@ -224,5 +269,88 @@ fn retire_tiles(mut commands: Commands, mut mgr: ResMut<TileManager>) {
     for (t, e) in retire {
         commands.entity(e).despawn();
         mgr.loaded.remove(&t);
+        dm.tiles.remove(&t);
     }
+}
+
+/// Build full-detail building chunks near the focus; drop them when far.
+fn stream_detail(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut dm: ResMut<DetailManager>,
+    focus: Query<&GlobalTransform, With<Focus>>,
+    tiles: Query<&GlobalTransform, With<WorldTile>>,
+    mut vis: Query<&mut Visibility>,
+) {
+    let now = time.elapsed_secs();
+    if now - dm.last < 0.3 {
+        return;
+    }
+    dm.last = now;
+    let Some(fp) = focus.iter().next().map(|t| t.translation()) else { return };
+    let pool = AsyncComputeTaskPool::get();
+    let mut want: Vec<(f32, TileId, (u8, u8))> = Vec::new();
+    let mut drop: Vec<(TileId, (u8, u8))> = Vec::new();
+    for (tid, td) in &dm.tiles {
+        let Ok(gt) = tiles.get(td.root) else { continue };
+        for chunk in td.set.chunks.keys() {
+            let c = gt.transform_point(td.set.chunk_center(*chunk));
+            let d = c.distance(fp);
+            if d < DETAIL_IN_M && !td.loaded.contains_key(chunk) && !td.pending.contains(chunk) {
+                want.push((d, *tid, *chunk));
+            } else if d > DETAIL_OUT_M && td.loaded.contains_key(chunk) {
+                drop.push((*tid, *chunk));
+            }
+        }
+    }
+    for (tid, chunk) in drop {
+        if let Some(td) = dm.tiles.get_mut(&tid) {
+            if let Some(e) = td.loaded.remove(&chunk) {
+                commands.entity(e).despawn();
+            }
+            if let Some(l) = td.lod.get(&chunk).and_then(|e| vis.get_mut(*e).ok()) {
+                *l.into_inner() = Visibility::Inherited;
+            }
+        }
+    }
+    want.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for (_, tid, chunk) in want {
+        if dm.in_flight >= DETAIL_IN_FLIGHT {
+            break;
+        }
+        let tx = dm.tx.clone();
+        let Some(td) = dm.tiles.get_mut(&tid) else { continue };
+        td.pending.insert(chunk);
+        let set = td.set.clone();
+        dm.in_flight += 1;
+        pool.spawn(async move {
+            let _ = tx.send((tid, chunk, set.build_chunk(chunk)));
+        })
+        .detach();
+    }
+}
+
+fn receive_detail(
+    mut commands: Commands,
+    mut dm: ResMut<DetailManager>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    bmats: Res<BuildingMaterials>,
+    mut vis: Query<&mut Visibility>,
+) {
+    let Ok((tid, chunk, bmesh)) = dm.rx.try_recv() else { return };
+    dm.in_flight = dm.in_flight.saturating_sub(1);
+    let Some(td) = dm.tiles.get_mut(&tid) else { return };
+    td.pending.remove(&chunk);
+    let e = commands.spawn((Transform::default(), Visibility::default(), ChildOf(td.root))).id();
+    spawn_buckets(&mut commands, &mut meshes, &bmats, &bmesh, e);
+    td.loaded.insert(chunk, e);
+    if let Some(l) = td.lod.get(&chunk).and_then(|e| vis.get_mut(*e).ok()) {
+        *l.into_inner() = Visibility::Hidden;
+    }
+}
+
+/// Number of full-detail chunks currently shown (for the HUD / capture).
+pub fn detail_stats(dm: &DetailManager) -> (usize, usize) {
+    let loaded = dm.tiles.values().map(|t| t.loaded.len()).sum();
+    (loaded, dm.in_flight)
 }

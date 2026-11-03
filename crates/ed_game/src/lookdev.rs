@@ -96,7 +96,12 @@ fn vignette_tile(cx: f32, cy: f32, region: Region, seed: u64) -> mvt::Tile {
                 props.push(("render_height", Value::Double(st.floor_height as f64 * (8.0 + 20.0 * ed_world::hash01(id, 4) as f64))));
             }
             b.push(feat(GeomType::Polygon, &props, vec![[x, ya], [x + w, ya], [x + w, yb], [x, yb]], id));
-            x += w + 1.5 + 6.0 * ed_world::hash01(id, 5);
+            let attached = matches!(
+                region,
+                Region::NorthAmericaCity | Region::Paris | Region::British | Region::WesternEurope | Region::LatinAmerica
+                    | Region::NorthAfricaMiddleEast | Region::SoutheastAsia | Region::Mediterranean | Region::EasternEurope | Region::SouthAsia
+            );
+            x += w + if attached { 0.0 } else { 6.0 + 10.0 * ed_world::hash01(id, 5) };
         }
     }
     mvt::Tile {
@@ -128,6 +133,7 @@ fn build_stage(
     origin: Res<WorldOrigin>,
     mut meshes: ResMut<Assets<Mesh>>,
     mats: Res<WorldMaterials>,
+    bmats: Res<crate::building_materials::BuildingMaterials>,
 ) {
     let tile = TileId::containing(origin.frame.origin.lat_deg, origin.frame.origin.lon_deg, 14);
     let proj = TileProjector::new(tile, origin.frame);
@@ -140,6 +146,7 @@ fn build_stage(
             commands.spawn((Mesh3d(meshes.add(to_mesh(m))), MeshMaterial3d(mat.clone()), Transform::default(), ChildOf(root)));
         }
     };
+    let bmats = bmats.clone();
     let anchor_v = proj.anchor.as_vec3();
     // Mesh space (relative to the tile anchor) and world space (for cameras).
     let to_local = |px: f32, py: f32, h: f64| proj.local(px as f64 / ext as f64, py as f64 / ext as f64, h);
@@ -202,12 +209,11 @@ fn build_stage(
         let r = roads::generate(&vt, &proj, &grid, &sm, *region);
         add(&r.mesh, &mats.matte);
         add(&props::bake_street_props(&r.props, up), &mats.matte);
-        let ctx = BuildingContext { proj: &proj, grid: &grid, surface: &sm, biome };
+        let ctx = BuildingContext { proj: &proj, grid: &grid, surface: &sm, biome, roads: &r.centerlines };
         let bm = buildings::generate_in_region(&vt, &ctx, *region);
-        add(&bm.facades, &mats.facade);
-        add(&bm.glass, &mats.glass);
-        add(&bm.storefronts, &mats.storefront);
-        add(&bm.roofs, &mats.matte);
+        for (mat, mesh) in &bm.out.meshes {
+            add(mesh, &bmats.get(*mat));
+        }
         // Street trees between the path and the buildings.
         let trees: Vec<TreeInstance> = (0..7)
             .map(|k| {
@@ -235,6 +241,8 @@ fn build_stage(
         let name = format!("region_{}", format!("{region:?}").to_lowercase());
         // Three-quarter street view from the side street, a bit above head height.
         shots.push(Shot { name: format!("{name}_street"), eye: to_world(cx + 60.0, cy + 240.0, GROUND_H + 9.0), target: c + up * 6.0, tonemap: None });
+        // Eye level on the main street, looking down the north-side facades.
+        shots.push(Shot { name: format!("{name}_closeup"), eye: to_world(cx - 150.0, cy + 6.0, GROUND_H + 1.7), target: to_world(cx - 60.0, cy - 34.0, GROUND_H + 7.0), tonemap: None });
         if *region == Region::Mediterranean {
             for (tag, tm) in [("agx", Tonemapping::AgX), ("tony", Tonemapping::TonyMcMapface), ("aces", Tonemapping::AcesFitted), ("blender", Tonemapping::BlenderFilmic)] {
                 shots.push(Shot { name: format!("tonemap_{tag}"), eye: to_world(cx + 60.0, cy + 240.0, GROUND_H + 9.0), target: c + up * 6.0, tonemap: Some(tm) });

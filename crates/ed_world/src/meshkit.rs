@@ -58,7 +58,9 @@ pub fn quad_m(m: &mut MeshData, p: [Vec3; 4], u_axis: Vec3, v_axis: Vec3, scale:
 
 /// A block with chamfered edges (min/max in basis coordinates).
 pub fn block(m: &mut MeshData, b: &Basis, min: Vec3, max: Vec3, bevel: f32, c: [f32; 4]) {
-    let e = bevel.min((max - min).min_element() * 0.45).max(0.0);
+    // Bevels only where they can be seen: tiny parts get crisp 12-tri blocks.
+    let smallest = (max - min).min_element();
+    let e = if bevel < 0.012 || smallest < 0.09 { 0.0 } else { bevel.min(smallest * 0.45) };
     // Build as a convex hull of 24 points (each corner split into 3), then
     // emit the 6 main faces, 12 edge chamfers and 8 corner triangles.
     let (x0, y0, z0, x1, y1, z1) = (min.x, min.y, min.z, max.x, max.y, max.z);
@@ -131,6 +133,11 @@ pub fn block(m: &mut MeshData, b: &Basis, min: Vec3, max: Vec3, bevel: f32, c: [
 /// Profile winding: list points so that, walking the profile, the solid is on
 /// the left; faces then point outward.
 pub fn sweep(m: &mut MeshData, profile: &[Vec2], path: &[Vec3], closed: bool, up: Vec3, c: [f32; 4]) {
+    sweep_ex(m, profile, path, closed, up, c, true);
+}
+
+/// [`sweep`] with optional end caps (thin bars and rails don't need them).
+pub fn sweep_ex(m: &mut MeshData, profile: &[Vec2], path: &[Vec3], closed: bool, up: Vec3, c: [f32; 4], caps: bool) {
     let n = path.len();
     if n < 2 || profile.len() < 2 {
         return;
@@ -171,7 +178,7 @@ pub fn sweep(m: &mut MeshData, profile: &[Vec2], path: &[Vec3], closed: bool, up
         }
         along += len;
     }
-    if !closed {
+    if !closed && caps {
         // Cap both ends with a fan.
         for (idx, flip) in [(0usize, true), (n - 1, false)] {
             let ring = &rings[idx];
