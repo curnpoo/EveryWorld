@@ -24,7 +24,8 @@ pub struct BodyPlugin;
 
 impl Plugin for BodyPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_body).add_systems(PostUpdate, animate_body.before(TransformSystems::Propagate));
+        app.init_resource::<Cosmetics>()
+            .add_systems(Startup, spawn_body).add_systems(PostUpdate, animate_body.before(TransformSystems::Propagate));
     }
 }
 
@@ -36,6 +37,8 @@ const HIP_W: f32 = 0.12;
 const SHOULDER_W: f32 = 0.27;
 const SPINE: f32 = 0.42;
 const STEP_TIME: f32 = 0.22;
+/// Ankle joint height above the ground.
+const ANKLE_H: f32 = 0.11;
 
 /// Joint ids.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -85,6 +88,18 @@ enum Spec {
 #[derive(Component)]
 struct BodyPart(Spec);
 
+/// Player customization. Accessories are optional pieces of the rig.
+#[derive(Resource, Default, Clone)]
+pub struct Cosmetics {
+    pub backpack: bool,
+}
+
+/// Marks an optional accessory piece and which cosmetic toggles it.
+#[derive(Component, Clone, Copy, PartialEq, Eq)]
+enum Accessory {
+    Backpack,
+}
+
 #[derive(Default, Clone, Copy)]
 struct Foot {
     planted: Vec3,
@@ -103,7 +118,7 @@ struct Gait {
     lean: Vec3,
 }
 
-fn spawn_body(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>) {
+fn spawn_body(mut commands: Commands, cosmetics: Res<Cosmetics>, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>) {
     let mat = |m: &mut Assets<StandardMaterial>, rgb: (f32, f32, f32), rough: f32, metal: f32| {
         m.add(StandardMaterial { base_color: Color::srgb(rgb.0, rgb.1, rgb.2), perceptual_roughness: rough, metallic: metal, ..default() })
     };
@@ -178,11 +193,6 @@ fn spawn_body(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats
         (Rigid { f: F::HandR, off: v(0.0, -0.06, 0.0), rot: q0, scale: v(0.07, 0.11, 0.09) }, &cube, &shell),
         (Rigid { f: F::HandL, off: v(0.03, -0.04, -0.05), rot: q0, scale: v(0.03, 0.06, 0.03) }, &cube, &shell_dark),
         (Rigid { f: F::HandR, off: v(-0.03, -0.04, -0.05), rot: q0, scale: v(0.03, 0.06, 0.03) }, &cube, &shell_dark),
-        // --- Parcel backpack with straps and tape band ---
-        (Rigid { f: F::Chest, off: v(0.0, -0.18, 0.27), rot: q0, scale: v(0.4, 0.42, 0.26) }, &cube, &pack),
-        (Rigid { f: F::Chest, off: v(0.0, -0.18, 0.27), rot: q0, scale: v(0.41, 0.06, 0.27) }, &cube, &strap),
-        (Rigid { f: F::Chest, off: v(-0.13, -0.1, -0.005), rot: q0, scale: v(0.05, 0.42, 0.29) }, &cube, &strap),
-        (Rigid { f: F::Chest, off: v(0.13, -0.1, -0.005), rot: q0, scale: v(0.05, 0.42, 0.29) }, &cube, &strap),
         // --- CRT head: case, bezel, bulged screen, tube housing, dials, antenna ---
         (Rigid { f: F::Head, off: v(0.0, 0.0, 0.0), rot: q0, scale: v(0.42, 0.34, 0.3) }, &cube, &shell),
         (Rigid { f: F::Head, off: v(0.0, 0.0, -0.152), rot: q0, scale: v(0.38, 0.3, 0.01) }, &cube, &shell_dark),
@@ -200,6 +210,23 @@ fn spawn_body(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats
     ];
     for (spec, mesh, m) in parts {
         commands.spawn((BodyPart(spec), Mesh3d(mesh.clone()), MeshMaterial3d(m.clone()), Transform::default(), Visibility::Visible));
+    }
+    // Optional parcel backpack (customization; off by default).
+    let backpack: [(Spec, &Handle<Mesh>, &Handle<StandardMaterial>); 4] = [
+        (Rigid { f: F::Chest, off: v(0.0, -0.18, 0.27), rot: q0, scale: v(0.4, 0.42, 0.26) }, &cube, &pack),
+        (Rigid { f: F::Chest, off: v(0.0, -0.18, 0.27), rot: q0, scale: v(0.41, 0.06, 0.27) }, &cube, &strap),
+        (Rigid { f: F::Chest, off: v(-0.13, -0.1, -0.005), rot: q0, scale: v(0.05, 0.42, 0.29) }, &cube, &strap),
+        (Rigid { f: F::Chest, off: v(0.13, -0.1, -0.005), rot: q0, scale: v(0.05, 0.42, 0.29) }, &cube, &strap),
+    ];
+    for (spec, mesh, m) in backpack {
+        commands.spawn((
+            BodyPart(spec),
+            Accessory::Backpack,
+            Mesh3d(mesh.clone()),
+            MeshMaterial3d(m.clone()),
+            Transform::default(),
+            if cosmetics.backpack { Visibility::Visible } else { Visibility::Hidden },
+        ));
     }
     commands.insert_resource(Gait::default());
 }
@@ -232,7 +259,8 @@ fn animate_body(
     spatial: SpatialQuery,
     mut gait: ResMut<Gait>,
     players: Query<(Entity, &Transform, &LinearVelocity, &Player), Without<BodyPart>>,
-    mut parts: Query<(&BodyPart, &mut Transform, &mut Visibility)>,
+    cosmetics: Res<Cosmetics>,
+    mut parts: Query<(&BodyPart, Option<&Accessory>, &mut Transform, &mut Visibility)>,
 ) {
     let Ok((pe, pt, vel, p)) = players.single() else { return };
     let dt = time.delta_secs().min(0.05);
@@ -247,8 +275,12 @@ fn animate_body(
 
     let lean_target = if airborne { Vec3::ZERO } else { v_flat * 0.02 };
     gait.lean = gait.lean.lerp(lean_target, 1.0 - (-6.0 * dt).exp());
-    let crouch = if p.crouch { 0.3 } else { 0.0 };
-    let pelvis = pt.translation - up * (RIDE_HEIGHT - THIGH - SHIN + 0.04 + crouch);
+    // Hip height from the ground: legs nearly straight when standing still,
+    // a natural bend while walking or running, deep bend when crouching.
+    let leg = THIGH + SHIN;
+    let extend = if p.crouch { 0.62 } else { 0.995 - 0.06 * (speed / 4.0).min(1.0) };
+    let ground = pt.translation - up * RIDE_HEIGHT;
+    let pelvis = ground + up * (ANKLE_H + leg * extend + 0.04);
     let hips = [pelvis - right * HIP_W - up * 0.04, pelvis + right * HIP_W - up * 0.04];
 
     // --- Feet ---
@@ -258,7 +290,7 @@ fn animate_body(
     };
     if !gait.init {
         for (i, h) in hips.iter().enumerate() {
-            gait.feet[i].planted = *h - up * (THIGH + SHIN - 0.04);
+            gait.feet[i].planted = *h - up * (THIGH + SHIN + ANKLE_H - 0.02);
         }
         gait.init = true;
     }
@@ -282,7 +314,7 @@ fn animate_body(
                 f.planted = f.to;
             }
         } else {
-            let ideal = ground_at(ideal_xz).unwrap_or(ideal_xz - up * (THIGH + SHIN - 0.04));
+            let ideal = ground_at(ideal_xz).unwrap_or(ideal_xz - up * (THIGH + SHIN + ANKLE_H));
             if (ideal - f.planted).reject_from_normalized(up).length() > stride * 0.5 && !other_stepping {
                 f.stepping = true;
                 f.t = 0.0;
@@ -312,7 +344,7 @@ fn animate_body(
     let head_rot = base * Quat::from_rotation_x(-0.06 + (t * 0.7).sin() * 0.03) * Quat::from_rotation_z((t * 0.45).sin() * 0.04);
 
     // --- Legs ---
-    let ankles = [foot_pos[0] + up * 0.11, foot_pos[1] + up * 0.11];
+    let ankles = [foot_pos[0] + up * ANKLE_H, foot_pos[1] + up * ANKLE_H];
     let (knee_l, ankle_l) = two_bone(hips[0], ankles[0], THIGH, SHIN, fwd + up * 0.1);
     let (knee_r, ankle_r) = two_bone(hips[1], ankles[1], THIGH, SHIN, fwd + up * 0.1);
 
@@ -363,8 +395,11 @@ fn animate_body(
     // Blink every few seconds.
     let blink = if (t % 3.7) < 0.12 { 0.15 } else { 1.0 };
 
-    for (bp, mut tf, mut vis) in &mut parts {
-        *vis = Visibility::Visible;
+    for (bp, acc, mut tf, mut vis) in &mut parts {
+        *vis = match acc {
+            Some(Accessory::Backpack) if !cosmetics.backpack => Visibility::Hidden,
+            _ => Visibility::Visible,
+        };
         match bp.0 {
             Spec::Limb { a, b, r } => *tf = limb(joint(a), joint(b), r),
             Spec::Ball { j, r } => *tf = Transform::from_translation(joint(j)).with_scale(Vec3::splat(r * 2.0)),
