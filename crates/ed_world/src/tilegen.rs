@@ -56,6 +56,9 @@ pub struct TileBuild {
     /// (name, IATA, local position) of airports in this tile.
     pub airports: Vec<(String, String, Vec3)>,
     pub min_max_height: (f32, f32),
+    /// Finest tiles only: what the game needs to scatter near-camera ground
+    /// cover (grass, pebbles, ...) over this tile.
+    pub ground: Option<std::sync::Arc<crate::ground_scatter::GroundSource>>,
     pub stats: TileStats,
     pub errors: Vec<String>,
 }
@@ -161,6 +164,7 @@ pub fn build(job: &TileJob) -> TileBuild {
         street_props: MeshData::default(),
         airports: Vec::new(),
         min_max_height: (hmin, hmax),
+        ground: None,
         stats: TileStats::default(),
         errors,
     };
@@ -216,6 +220,14 @@ pub fn build(job: &TileJob) -> TileBuild {
             let grid = if tile.z >= 14 { 12 } else { 1 };
             out.trees = trees::bake_tile(trees, up, proj.tile.width_m() as f32, grid);
             out.rocks = props::bake_rocks(&rocks, up);
+            if tile.z >= 14 {
+                out.ground = Some(std::sync::Arc::new(crate::ground_scatter::GroundSource {
+                    proj,
+                    grid: grid.clone(),
+                    surface: surface.clone(),
+                    occupancy: Some(occ),
+                }));
+            }
         }
     }
     out.stats.triangles = out.terrain.triangle_count()

@@ -20,10 +20,13 @@ use ed_world::mesh::MeshData;
 use ed_world::project::TileProjector;
 use ed_world::style::Region;
 use ed_world::surface::{Cover, SurfaceMap};
-use ed_world::terrain::{self, TerrainGrid};
+use ed_world::terrain::TerrainGrid;
 use ed_world::{props, roads};
 use std::collections::HashMap;
 use std::path::PathBuf;
+
+#[path = "lookdev_ground.rs"]
+mod ground_v2;
 
 pub struct LookdevPlugin;
 
@@ -140,6 +143,7 @@ fn build_stage(
     let proj = TileProjector::new(tile, origin.frame);
     let up = proj.up();
     let ext = 4096.0f32;
+    let mut shots = ground_v2::build(&mut commands, &mut meshes, &mats, &origin, tile, &proj, &TerrainGrid::flat(tile, 96, GROUND_H as f32), GROUND_H);
     let anchor = GeoAnchored::from_render(&origin.frame, proj.anchor);
     let root = commands.spawn((anchor, Transform::default(), Visibility::default(), Name::new("lookdev"))).id();
     let mut add = |m: &MeshData, mat: &Handle<StandardMaterial>| {
@@ -152,52 +156,9 @@ fn build_stage(
     // Mesh space (relative to the tile anchor) and world space (for cameras).
     let to_local = |px: f32, py: f32, h: f64| proj.local(px as f64 / ext as f64, py as f64 / ext as f64, h);
     let to_world = |px: f32, py: f32, h: f64| to_local(px, py, h) + anchor_v;
-    let mut shots = Vec::new();
 
-    // --- Ground: one big flat grass field, with swatch grid in one corner ---
+    // Ground v2 (field, swatch board, close-up places): see lookdev_ground.rs.
     let grid = TerrainGrid::flat(tile, 96, GROUND_H as f32);
-    let mut surface = SurfaceMap::uniform(tile, Biome::TemperateForest);
-    let res = 96usize;
-    surface.res = res;
-    surface.cover = vec![Cover::Grass; res * res];
-    let mut ground = terrain::build_mesh(&grid, &proj, &surface, 0.0);
-    add(&ground, &mats.terrain);
-    ground = MeshData::default();
-    // Crisp swatch tiles: row 0 = biome default ground, row 1 = mapped land
-    // covers, row 2 = the slope/snow rules (flat, steep, high, high+steep).
-    let biomes = [
-        Biome::TropicalRainforest, Biome::Savanna, Biome::HotDesert, Biome::Mediterranean, Biome::TemperateForest,
-        Biome::Grassland, Biome::Boreal, Biome::Tundra, Biome::Alpine, Biome::IceCap,
-    ];
-    let covers = [
-        Cover::Wood, Cover::Grass, Cover::Farmland, Cover::Wetland, Cover::Sand, Cover::Rock, Cover::Ice,
-        Cover::Residential, Cover::Commercial, Cover::Industrial, Cover::Park, Cover::Pitch,
-    ];
-    let (sx, sy, cell) = (3000.0f32, 3500.0f32, 60.0f32); // px; 60 px ~ 27 m
-    let mut swatch = |col: usize, row: usize, color: [f32; 4]| {
-        let x0 = sx + col as f32 * cell;
-        let y0 = sy + row as f32 * cell;
-        let h = GROUND_H + 0.08;
-        let q = [to_local(x0, y0 + cell * 0.88, h), to_local(x0 + cell * 0.88, y0 + cell * 0.88, h), to_local(x0 + cell * 0.88, y0, h), to_local(x0, y0, h)];
-        ground.quad(q, [[0.0; 2]; 4], color);
-    };
-    for (i, b) in biomes.iter().enumerate() {
-        let sm = SurfaceMap::uniform(tile, *b);
-        swatch(i, 0, sm.ground_color(0.5, 0.5, 200.0, 0.0));
-    }
-    for (i, c) in covers.iter().enumerate() {
-        let mut sm = SurfaceMap::uniform(tile, Biome::TemperateForest);
-        sm.cover = vec![*c];
-        swatch(i, 1, sm.ground_color(0.5, 0.5, 200.0, 0.0));
-    }
-    let alpine = SurfaceMap::uniform(tile, Biome::Alpine);
-    let snowline = Biome::snowline_m(alpine.lat);
-    for (i, (h, slope)) in [(1_500.0, 0.0), (1_500.0, 0.6), (snowline - 200.0, 0.1), (snowline + 300.0, 0.1), (snowline + 300.0, 0.75), (1.0, 0.0)].iter().enumerate() {
-        swatch(i, 2, alpine.ground_color(0.5, 0.5, *h, *slope));
-    }
-    add(&ground, &mats.terrain);
-    let sw_center = to_world(sx + cell * 6.0, sy + cell * 1.5, GROUND_H);
-    shots.push(Shot { name: "ground_swatches".into(), eye: sw_center + up * 150.0 + (to_local(0.0, 150.0, 0.0) - to_local(0.0, 0.0, 0.0)), target: sw_center, tonemap: None });
 
     // --- Region street vignettes ---
     let regions: Vec<Region> = Region::ALL.to_vec();

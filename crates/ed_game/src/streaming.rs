@@ -273,7 +273,7 @@ fn receive_tiles(
     let focus_pos = focus.iter().next().map(|t| t.translation());
     // Bound per-frame upload work.
     for _ in 0..2 {
-        let Ok(ReadyTile { build: b, collider, parts, lod }) = mgr.rx.try_recv() else { break };
+        let Ok(ReadyTile { build: mut b, collider, parts, lod }) = mgr.rx.try_recv() else { break };
         mgr.pending.remove(&b.tile);
         for e in &b.errors {
             debug!("tile {:?}: {e}", b.tile);
@@ -299,6 +299,9 @@ fn receive_tiles(
         ));
         if let Some(collider) = collider {
             parent.insert((RigidBody::Static, collider));
+        }
+        if let Some(g) = b.ground.take() {
+            parent.insert(crate::ground_scatter::GroundCover(g));
         }
         let parent_id = parent.id();
         let near = b.tile.z >= 13;

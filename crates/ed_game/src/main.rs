@@ -8,6 +8,8 @@ mod capture;
 mod config;
 mod engine_audio;
 mod foliage;
+mod ground_material;
+mod ground_scatter;
 mod hud;
 mod lookdev;
 mod mapview;

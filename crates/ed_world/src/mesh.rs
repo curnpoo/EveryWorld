@@ -8,6 +8,9 @@ pub struct MeshData {
     pub uvs: Vec<[f32; 2]>,
     pub colors: Vec<[f32; 4]>,
     pub indices: Vec<u32>,
+    /// Optional per-vertex ground splat weights (terrain only; empty elsewhere).
+    /// See `surface::Ground` for the channel order.
+    pub splat: Vec<[u8; 12]>,
 }
 
 impl MeshData {
@@ -52,6 +55,11 @@ impl MeshData {
         self.normals.extend_from_slice(&other.normals);
         self.uvs.extend_from_slice(&other.uvs);
         self.colors.extend_from_slice(&other.colors);
+        if !other.splat.is_empty() || !self.splat.is_empty() {
+            self.splat.resize(base as usize, [0; 12]);
+            self.splat.extend_from_slice(&other.splat);
+            self.splat.resize(self.positions.len(), [0; 12]);
+        }
         self.indices.extend(other.indices.iter().map(|i| i + base));
     }
 
