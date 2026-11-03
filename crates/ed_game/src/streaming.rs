@@ -127,6 +127,7 @@ fn select_tiles(
     origin: Res<WorldOrigin>,
     mut mgr: ResMut<TileManager>,
     focus: Query<&GlobalTransform, With<Focus>>,
+    camera: Query<(&GlobalTransform, &Projection), With<Camera3d>>,
 ) {
     if !mgr.template_resolved {
         return;
@@ -143,7 +144,11 @@ fn select_tiles(
         root_zoom: if cam.alt_m > 200_000.0 { 3 } else if cam.alt_m > 40_000.0 { 5 } else { 6 },
         ..default()
     };
-    let desired: HashSet<TileId> = lod::select(cam, mgr.ground_estimate, &params).into_iter().collect();
+    let view = camera.single().ok();
+    let desired: HashSet<TileId> = lod::select(cam, mgr.ground_estimate, &params)
+        .into_iter()
+        .filter(|tile| view.is_none_or(|(transform, projection)| tile_intersects_view(*tile, &origin, transform, projection)))
+        .collect();
     // Nearest first.
     let mut missing: Vec<TileId> =
         desired.iter().filter(|t| !mgr.loaded.contains_key(t) && !mgr.pending.contains(t)).copied().collect();
@@ -166,6 +171,29 @@ fn select_tiles(
         .detach();
     }
     mgr.desired = desired;
+}
+
+/// Keep tiles whose conservative bounds intersect the camera frustum.
+/// The bounds include extra height for buildings; nearby tiles stay loaded
+/// while the camera looks away from the ground.
+fn tile_intersects_view(tile: TileId, origin: &WorldOrigin, camera: &GlobalTransform, projection: &Projection) -> bool {
+    let Projection::Perspective(p) = projection else { return true };
+    let center_geo = tile.center();
+    let center = origin.to_render(ed_geo::Geodetic { alt_m: 0.0, ..center_geo });
+    let to_center = center - camera.translation();
+    let radius = tile.width_m() as f32 * std::f32::consts::FRAC_1_SQRT_2 + 500.0;
+    let depth = to_center.dot(camera.forward().as_vec3());
+    if depth + radius < 0.0 {
+        return false;
+    }
+
+    let half_depth = depth.max(0.0) + radius;
+    let tan_half_fov = (p.fov * 0.5).tan();
+    let horizontal = to_center.dot(camera.right().as_vec3()).abs();
+    let vertical = to_center.dot(camera.up().as_vec3()).abs();
+    (horizontal <= half_depth * tan_half_fov * p.aspect_ratio + radius
+        && vertical <= half_depth * tan_half_fov + radius)
+        || origin.to_geodetic(camera.translation()).distance_to(center_geo) < 1_500.0
 }
 
 #[allow(clippy::too_many_arguments)]
