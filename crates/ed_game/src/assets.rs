@@ -164,8 +164,8 @@ fn setup_materials(mut commands: Commands, mut mats: ResMut<Assets<StandardMater
             base_color: Color::WHITE,
             perceptual_roughness: 1.0,
             reflectance: 0.0,
-            // A little self-light so cloud bellies stay soft, not black.
-            emissive: LinearRgba::rgb(600.0, 650.0, 750.0),
+            // Sky light from the atmosphere env map keeps bellies soft.
+            emissive: LinearRgba::rgb(0.0, 0.0, 0.0),
             ..default()
         }),
         ocean: mats.add(StandardMaterial {

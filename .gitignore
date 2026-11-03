@@ -3,3 +3,4 @@
 !docs/**/*.png
 .earthdrop-cache/
 .DS_Store
+earthdrop.bundle

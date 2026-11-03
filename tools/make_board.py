@@ -97,6 +97,12 @@ for key, title, sub, about in [
     if src:
         items.append({"id": f"look-{key}", "section": "nature", "title": title, "sub": sub, "images": [src], "about": about})
 
+tm = [s for s in (jpg(lookdev / f"tonemap_{k}.png") for k in ("agx", "tony", "aces", "blender")) if s]
+if tm:
+    items.append({"id": "look-tonemapping", "section": "light", "title": "Tone mapping", "sub": "Same street, four film looks",
+                  "images": tm, "labels": ["AgX", "TonyMcMapface", "ACES", "Blender Filmic"],
+                  "about": "This sets the whole game's color personality. AgX (current) is soft and filmic but mutes saturated colors. TonyMcMapface keeps more color. ACES is punchy and contrasty. Blender Filmic sits between. Pick one, or tell me the reference you want (Great Big World leans saturated)."})
+
 for key, title, about in [
     ("v8_crossplane", "V8 cross-plane", "Uneven firing per bank gives the muscle-car lope."),
     ("inline4", "Inline-4", "Even firing, buzzy and eager."),

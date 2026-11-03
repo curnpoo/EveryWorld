@@ -63,6 +63,7 @@ section { display: grid; gap: 14px; scroll-margin-top: 70px; }
 section > h2 { font: 700 26px/1.1 var(--display); margin: 0; }
 section > p { margin: 0; color: var(--muted); max-width: 70ch; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 520px), 1fr)); gap: 18px; }
+.grid.solo { grid-template-columns: minmax(0, 880px); }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; display: grid; grid-template-rows: auto 1fr; }
 .card[data-v="keep"] { border-color: var(--keep); }
 .card[data-v="tweak"] { border-color: var(--tweak); }
@@ -117,6 +118,7 @@ const ITEMS = /*__ITEMS__*/[];
 const SECTIONS = [
   ["places", "Real places", "Streamed live from map data. These set the overall mood: color, light, haze, density."],
   ["character", "Character", "Who you play."],
+  ["light", "Light and color", "The film look of the whole game."],
   ["regions", "Regions", "One street per architectural region, same layout everywhere so only the style changes. Street view and aerial."],
   ["nature", "Trees, ground and clouds", "The natural layer that makes a desert feel different from the Alps."],
   ["sound", "Engine sounds", "Press play. Each clip idles, revs, and settles."],
@@ -140,7 +142,7 @@ function render() {
     const items = ITEMS.filter(i => i.section === key);
     if (!items.length) continue;
     nav.append(el("a", { href: "#" + key }, title, el("small", { text: String(items.length) })));
-    const grid = el("div", { class: "grid" });
+    const grid = el("div", { class: items.length === 1 ? "grid solo" : "grid" });
     for (const it of items) grid.append(card(it));
     main.append(el("section", { id: key }, el("h2", { text: title }), el("p", { text: blurb }), grid));
   }
@@ -156,8 +158,8 @@ function card(it) {
     if (it.images.length > 1) {
       const views = el("div", { class: "views" });
       it.images.forEach((src, i) => {
-        const b = el("button", { type: "button", "aria-pressed": String(i === 0), text: it.images.length === 2 ? ["Street", "Aerial"][i] : ["Front", "Back"][i] || String(i + 1) });
-        if (it.section === "character") b.textContent = ["Front", "Back"][i];
+        const names = it.labels || (it.section === "character" ? ["Front", "Back"] : ["Street", "Aerial"]);
+        const b = el("button", { type: "button", "aria-pressed": String(i === 0), text: names[i] || String(i + 1) });
         b.addEventListener("click", () => { img.src = src; views.querySelectorAll("button").forEach((x, j) => x.setAttribute("aria-pressed", String(j === i))); });
         views.append(b);
       });

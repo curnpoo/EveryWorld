@@ -305,8 +305,8 @@ fn build_stage(
         ));
         let fwd = Quat::from_rotation_arc(Vec3::Y, up_w) * Quat::from_rotation_y(0.5) * Vec3::NEG_Z;
         let right = fwd.cross(up_w);
-        shots.push(Shot { name: "character_front".into(), eye: pos + fwd * 3.2 + right * 1.2 + up_w * 0.4, target: pos + up_w * 0.2, tonemap: None });
-        shots.push(Shot { name: "character_back".into(), eye: pos - fwd * 3.0 - right * 1.4 + up_w * 0.9, target: pos + up_w * 0.2, tonemap: None });
+        shots.push(Shot { name: "character_front".into(), eye: pos + fwd * 2.3 + right * 0.9 + up_w * 0.3, target: pos + up_w * 0.05, tonemap: None });
+        shots.push(Shot { name: "character_back".into(), eye: pos - fwd * 2.2 - right * 1.1 + up_w * 0.7, target: pos + up_w * 0.05, tonemap: None });
     }
 
     // `--only a,b`: keep shots whose name contains any of the terms.
@@ -350,11 +350,13 @@ fn run_shots(
     *t = Transform::from_translation(eye).looking_at(target, up);
     list.frames += 1;
     // Let TAA/auto-exposure/env-map settle on each new view.
-    if list.frames == 12 {
+    // First shot waits for shader compilation and the sky LUTs.
+    let settle = if list.idx == 0 { 60 } else { 12 };
+    if list.frames == settle {
         let path = ld.out_dir.join(format!("{name}.png"));
         commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
     }
-    if list.frames > 14 {
+    if list.frames > settle + 2 {
         list.idx += 1;
         list.frames = 0;
     }

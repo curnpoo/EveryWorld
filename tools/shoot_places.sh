@@ -5,7 +5,7 @@ OUT=${1:?out dir}; BIN=${2:-target/debug/earthdrop}
 mkdir -p "$OUT"
 shoot() { # name lat lon alt heading pitch hour
   echo "== $1"
-  timeout 900 "$BIN" --fly --lat "$2" --lon "$3" --alt "$4" --heading "$5" --pitch "$6" --hour "$7" \
+  timeout 1500 "$BIN" --fly --lat "$2" --lon "$3" --alt "$4" --heading "$5" --pitch "$6" --hour "$7" \
     --width 1280 --height 720 --frames 60 --screenshot "$OUT/$1.png" 2>&1 | grep -E "capturing|panic" || true
 }
 shoot central_park      40.7700 -73.9740  120   20  -14 10.5
