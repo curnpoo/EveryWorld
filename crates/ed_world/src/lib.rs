@@ -26,6 +26,7 @@ pub mod style;
 pub mod surface;
 pub mod terrain;
 pub mod tilegen;
+pub mod trees;
 pub mod water;
 
 /// Deterministic hash -> [0,1). Same input, same world, every run, every Mac.

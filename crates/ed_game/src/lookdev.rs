@@ -134,6 +134,7 @@ fn build_stage(
     mut meshes: ResMut<Assets<Mesh>>,
     mats: Res<WorldMaterials>,
     bmats: Res<crate::building_materials::BuildingMaterials>,
+    mut foliage_assets: ResMut<crate::foliage::FoliageAssets>,
 ) {
     let tile = TileId::containing(origin.frame.origin.lat_deg, origin.frame.origin.lon_deg, 14);
     let proj = TileProjector::new(tile, origin.frame);
@@ -200,6 +201,7 @@ fn build_stage(
 
     // --- Region street vignettes ---
     let regions: Vec<Region> = Region::ALL.to_vec();
+    let mut street_trees: Vec<TreeInstance> = Vec::new();
     for (i, region) in regions.iter().enumerate() {
         let (cx, cy) = (500.0 + (i % 4) as f32 * SPACING_PX, 500.0 + (i / 4) as f32 * SPACING_PX);
         let vt = vignette_tile(cx, cy, *region, i as u64);
@@ -235,8 +237,8 @@ fn build_stage(
                     tint: foliage::foliage_color(kind, biome, rr),
                 }
             })
-            .collect();
-        add(&props::bake_trees(&trees, up), &mats.matte);
+            .collect::<Vec<_>>();
+        street_trees.extend(trees);
         let c = to_world(cx, cy, GROUND_H);
         let name = format!("region_{}", format!("{region:?}").to_lowercase());
         // Three-quarter street view from the side street, a bit above head height.
@@ -251,37 +253,8 @@ fn build_stage(
         shots.push(Shot { name: format!("{name}_aerial"), eye: to_world(cx - 180.0, cy + 300.0, GROUND_H + 110.0), target: c, tonemap: None });
     }
 
-    // --- Tree lineup ---
+    // --- Clouds ---
     {
-        let kinds = [
-            TreeKind::Broadleaf, TreeKind::Conifer, TreeKind::Birch, TreeKind::Palm,
-            TreeKind::Acacia, TreeKind::Cypress, TreeKind::Shrub, TreeKind::Cactus,
-        ];
-        let biome_for = |k: TreeKind| match k {
-            TreeKind::Conifer | TreeKind::Birch => Biome::Boreal,
-            TreeKind::Palm => Biome::TropicalRainforest,
-            TreeKind::Acacia => Biome::Savanna,
-            TreeKind::Cypress => Biome::Mediterranean,
-            TreeKind::Cactus => Biome::HotDesert,
-            _ => Biome::TemperateForest,
-        };
-        let (lx, ly) = (3400.0, 900.0);
-        let trees: Vec<TreeInstance> = kinds
-            .iter()
-            .enumerate()
-            .map(|(i, k)| TreeInstance {
-                kind: *k,
-                pos: to_local(lx + i as f32 * 26.0, ly, GROUND_H),
-                scale: 1.0,
-                yaw: 0.6,
-                tint: foliage::foliage_color(*k, biome_for(*k), 0.5),
-            })
-            .collect();
-        add(&props::bake_trees(&trees, up), &mats.matte);
-        let mid = to_world(lx + 3.5 * 26.0, ly, GROUND_H);
-        shots.push(Shot { name: "trees_lineup".into(), eye: mid + up * 9.0 + to_local(0.0, 120.0, 0.0) - to_local(0.0, 0.0, 0.0), target: mid + up * 5.0, tonemap: None });
-
-        // --- Clouds ---
         let (cx, cy) = (3400.0, 2000.0);
         let mut sky = MeshData::default();
         let mut place_cloud = |m: MeshData, at: Vec3| {
@@ -316,6 +289,8 @@ fn build_stage(
         shots.push(Shot { name: "character_front".into(), eye: pos + fwd * 2.3 + right * 0.9 + up_w * 0.3, target: pos + up_w * 0.05, tonemap: None });
         shots.push(Shot { name: "character_back".into(), eye: pos - fwd * 2.2 - right * 1.1 + up_w * 0.7, target: pos + up_w * 0.05, tonemap: None });
     }
+
+    trees_v2_stage(&mut commands, &mut meshes, &mut foliage_assets, root, up, &to_local, &to_world, &street_trees, &mut shots);
 
     // `--only a,b`: keep shots whose name contains any of the terms.
     if let Some(only) = &ld.only {
@@ -369,3 +344,118 @@ fn run_shots(
         list.frames = 0;
     }
 }
+
+// --- Trees v2 (round 2): species lineups, shrubs, forest patch, LOD ---
+#[allow(clippy::too_many_arguments)]
+fn trees_v2_stage(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    fa: &mut crate::foliage::FoliageAssets,
+    root: Entity,
+    up: Vec3,
+    to_local: &dyn Fn(f32, f32, f64) -> Vec3,
+    to_world: &dyn Fn(f32, f32, f64) -> Vec3,
+    street_trees: &[TreeInstance],
+    shots: &mut Vec<Shot>,
+) {
+    use crate::foliage::{spawn_near_tree, wind_mesh};
+    use TreeKind::*;
+    for t in street_trees {
+        spawn_near_tree(commands, meshes, fa, root, t, up, Vec3::ZERO, ed_world::trees::variant_for(t));
+    }
+    // Pixels per meter on this tile, so layouts are in meters.
+    let ppm = 4096.0 / (to_local(4096.0, 0.0, 0.0) - to_local(0.0, 0.0, 0.0)).length();
+    let mut tree = |k: TreeKind, x: f32, y: f32, scale: f32, yaw: f32, variant: u32| {
+        let t = TreeInstance { kind: k, pos: to_local(x, y, GROUND_H), scale, yaw, tint: [1.0; 4] };
+        spawn_near_tree(commands, meshes, fa, root, &t, up, Vec3::ZERO, variant);
+    };
+    // Lineups: a row of species, camera looking north at them.
+    let (x0, y0) = (3150.0f32, 260.0f32);
+    let rows: [(&str, &[TreeKind], f32); 6] = [
+        ("temperate", &[Broadleaf, Maple, PlaneTree, Birch], 17.0),
+        ("conifers", &[Conifer, Fir, Pine, Cypress], 13.0),
+        ("warm", &[Palm, DatePalm, Olive, Banana], 13.0),
+        ("arid", &[Acacia, Baobab, Cactus, PricklyPear], 15.0),
+        ("shrubs", &[Shrub, Boxwood, Juniper, Oleander, FloweringBush, Fern, GrassTussock], 3.2),
+        ("variants", &[Broadleaf, Broadleaf, Broadleaf, Palm, Palm, Palm], 13.0),
+    ];
+    for (ri, (name, kinds, spacing)) in rows.iter().enumerate() {
+        let y = y0 + ri as f32 * 120.0 * ppm;
+        let n = kinds.len() as f32;
+        for (i, k) in kinds.iter().enumerate() {
+            let x = x0 + (i as f32 - (n - 1.0) * 0.5) * spacing * ppm;
+            let variant = if *name == "variants" { (i % 3) as u32 } else { 0 };
+            tree(*k, x, y, 1.0, 0.6 + i as f32 * 1.3, variant);
+        }
+        let width = spacing * (n - 1.0) + spacing;
+        let tall = if *name == "shrubs" { 0.9 } else { 7.5 };
+        let dist = (width * 0.52).max(if *name == "shrubs" { 8.5 } else { 26.0 });
+        let target = to_world(x0, y, GROUND_H + tall);
+        let eye = to_world(x0, y + dist * ppm, GROUND_H + tall * 0.5 + 1.2);
+        shots.push(Shot { name: format!("trees_lineup_{name}"), eye, target, tonemap: None });
+    }
+    // Forest patch: temperate mixed wood with understory, eye-level inside.
+    let (fx, fy) = (x0, y0 + (6.0 * 120.0 + 70.0) * ppm);
+    let mix = [Broadleaf, Broadleaf, Maple, Birch, Conifer, Broadleaf, Maple, Pine];
+    let under = [Fern, Fern, Shrub, GrassTussock, FloweringBush, Fern];
+    for k in 0..90u64 {
+        let a = ed_world::hash01(k, 1) * std::f32::consts::TAU;
+        let r = 60.0 * ed_world::hash01(k, 2).sqrt();
+        let (x, y) = (fx + a.cos() * r * ppm, fy + a.sin() * r * ppm);
+        if (x - fx).abs() < 5.0 * ppm && y > fy {
+            continue; // a clearing for the camera
+        }
+        let kind = mix[k as usize % mix.len()];
+        tree(kind, x, y, 0.85 + 0.3 * ed_world::hash01(k, 3), a * 5.0, (k % 3) as u32);
+    }
+    for k in 0..140u64 {
+        let a = ed_world::hash01(k, 11) * std::f32::consts::TAU;
+        let r = 45.0 * ed_world::hash01(k, 12).sqrt();
+        let (x, y) = (fx + a.cos() * r * ppm, fy + a.sin() * r * ppm);
+        tree(under[k as usize % under.len()], x, y, 0.8 + 0.4 * ed_world::hash01(k, 13), a * 3.0, (k % 3) as u32);
+    }
+    shots.push(Shot {
+        name: "trees_forest_closeup".into(),
+        eye: to_world(fx, fy + 30.0 * ppm, GROUND_H + 2.2),
+        target: to_world(fx, fy - 10.0 * ppm, GROUND_H + 6.0),
+        tonemap: None,
+    });
+    shots.push(Shot {
+        name: "trees_forest_aerial".into(),
+        eye: to_world(fx - 70.0 * ppm, fy + 90.0 * ppm, GROUND_H + 55.0),
+        target: to_world(fx, fy, GROUND_H + 5.0),
+        tonemap: None,
+    });
+    // Leaf close-up and palm close-up.
+    let (cx, cy) = (x0 + 80.0 * ppm, y0);
+    tree(Broadleaf, cx, cy, 1.0, 0.3, 1);
+    shots.push(Shot { name: "trees_closeup_leaves".into(), eye: to_world(cx + 2.0 * ppm, cy + 9.0 * ppm, GROUND_H + 5.5), target: to_world(cx, cy, GROUND_H + 8.0), tonemap: None });
+    let (px, py) = (x0 + 80.0 * ppm, y0 + 60.0 * ppm);
+    tree(Palm, px, py, 1.0, 0.2, 0);
+    shots.push(Shot { name: "trees_closeup_palm".into(), eye: to_world(px + 6.0 * ppm, py + 12.0 * ppm, GROUND_H + 4.0), target: to_world(px, py, GROUND_H + 8.0), tonemap: None });
+    // LOD: near (left) vs far cards (right) for a few species.
+    let (lx, ly) = (x0 + 150.0 * ppm, y0 + 150.0 * ppm);
+    let lod_kinds = [Broadleaf, Conifer, Palm, Birch];
+    let mut far_spawns = Vec::new();
+    for (i, k) in lod_kinds.iter().enumerate() {
+        let x = lx + (i as f32 - 1.5) * 26.0 * ppm;
+        tree(*k, x - 6.0 * ppm, ly, 1.0, 0.0, 0);
+        far_spawns.push((*k, to_local(x + 6.0 * ppm, ly, GROUND_H)));
+    }
+    for (k, pos) in far_spawns {
+        let far = ed_world::trees::far_model(k, 0);
+        commands.spawn((
+            Mesh3d(meshes.add(wind_mesh(&far.leaves))),
+            MeshMaterial3d(fa.leaves.clone()),
+            Transform { translation: pos, rotation: Quat::from_rotation_arc(Vec3::Y, up), scale: Vec3::ONE },
+            ChildOf(root),
+        ));
+    }
+    shots.push(Shot {
+        name: "trees_lod_compare".into(),
+        eye: to_world(lx, ly + 62.0 * ppm, GROUND_H + 6.0),
+        target: to_world(lx, ly, GROUND_H + 7.0),
+        tonemap: None,
+    });
+}
+

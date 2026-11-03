@@ -178,6 +178,7 @@ fn receive_tiles(
     bmats: Res<BuildingMaterials>,
     focus: Query<&GlobalTransform, With<Focus>>,
     origin: Res<WorldOrigin>,
+    foliage: Res<crate::foliage::FoliageAssets>,
 ) {
     let focus_pos = focus.iter().next().map(|t| t.translation());
     // Bound per-frame upload work.
@@ -224,7 +225,6 @@ fn receive_tiles(
         child(&b.terrain, &mats.terrain, near);
         child(&b.water, &mats.water, false);
         child(&b.roads, &mats.matte, false);
-        child(&b.foliage, &mats.matte, true);
         child(&b.rocks, &mats.matte, true);
         child(&b.street_props, &mats.matte, true);
         // Distant buildings, one entity per detail chunk, with physics shells.
@@ -243,6 +243,7 @@ fn receive_tiles(
         if let Some(set) = &b.building_detail {
             dm.tiles.insert(b.tile, TileDetail { set: set.clone(), root: parent_id, lod: lod_entities, loaded: HashMap::new(), pending: HashSet::new() });
         }
+        crate::foliage::spawn_tile_trees(&mut commands, &mut meshes, &foliage, parent_id, &b.trees);
         mgr.totals.buildings += b.stats.buildings;
         mgr.totals.trees += b.stats.trees;
         mgr.totals.triangles += b.stats.triangles;
