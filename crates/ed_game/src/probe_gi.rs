@@ -9,7 +9,8 @@
 //! downward physics ray), bake on the async pool, upload a 3D texture.
 //!
 //! Knobs: `EW_PROBE_GI=0` off, `EW_PROBE_K` bounce multiplier,
-//! `EW_PROBE_DEBUG=1|2` initial debug mode. F3 cycles debug: off ->
+//! `EW_PROBE_DEBUG=1|2` initial debug mode. Debug stats on shows the
+//! spheres; F3 (or I while stats are on) cycles debug: off ->
 //! per-face probe colours (unlit) -> lit white spheres (shaded by the volume).
 
 use crate::ground_scatter::GroundCover;
@@ -279,8 +280,20 @@ fn update_intensity(mut st: ResMut<ProbeGi>, sun: Query<&GlobalTransform, With<S
     }
 }
 
-fn debug_toggle(keys: Res<ButtonInput<KeyCode>>, mut st: ResMut<ProbeGi>) {
-    if keys.just_pressed(KeyCode::F3) {
+/// The probe spheres follow the debug-stats toggle (menu "Stats"): stats on
+/// shows the unlit probe colours, off hides them. F3 / I then cycles modes.
+fn debug_toggle(
+    keys: Res<ButtonInput<KeyCode>>,
+    gfx: Res<crate::menu::GraphicsSettings>,
+    mut was_stats: Local<bool>,
+    mut st: ResMut<ProbeGi>,
+) {
+    if gfx.show_stats != *was_stats {
+        *was_stats = gfx.show_stats;
+        st.debug = if gfx.show_stats { 1 } else { 0 };
+        st.debug_dirty = true;
+    }
+    if keys.just_pressed(KeyCode::F3) || (gfx.show_stats && keys.just_pressed(KeyCode::KeyI)) {
         st.debug = (st.debug + 1) % 3;
         st.debug_dirty = true;
         let name = ["off", "probe colours (unlit)", "lit spheres"][st.debug as usize];

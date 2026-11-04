@@ -96,7 +96,24 @@ pub struct GraphicsSettings {
 impl Default for GraphicsSettings {
     fn default() -> Self {
         let post = !std::env::args().any(|a| a == "--no-post");
-        Self { shadows: !std::env::args().any(|a| a == "--no-shadows"), ambient_occlusion: post, bloom: post, render_pct: 100, aa: post, show_stats: false, time_live: false, hour_offset: 0.0 }
+        let mut g = Self { shadows: !std::env::args().any(|a| a == "--no-shadows"), ambient_occlusion: post, bloom: post, render_pct: 67, aa: post, show_stats: false, time_live: false, hour_offset: 0.0 };
+        // Perf bisecting: `EW_GFX=ao=0,bloom=0,aa=0,shadows=0,res=50,stats=1`.
+        if let Ok(spec) = std::env::var("EW_GFX") {
+            for kv in spec.split(',') {
+                let Some((k, v)) = kv.split_once('=') else { continue };
+                let b = v != "0";
+                match k {
+                    "ao" => g.ambient_occlusion = b,
+                    "bloom" => g.bloom = b,
+                    "aa" => g.aa = b,
+                    "shadows" => g.shadows = b,
+                    "stats" => g.show_stats = b,
+                    "res" => g.render_pct = v.parse().unwrap_or(g.render_pct),
+                    _ => {}
+                }
+            }
+        }
+        g
     }
 }
 

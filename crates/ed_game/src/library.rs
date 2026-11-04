@@ -2,7 +2,7 @@
 //!
 //! Every library asset is cooked ONCE at startup (palettized mesh -> meshlet
 //! mesh + collider); tiles then spawn their `Placement`s as instances that
-//! share the cooked handles. `EW_NO_MESHLET=1` draws the same instances as
+//! share the cooked handles. `EW_MESHLET=1` draws the same instances as meshlets instead of
 //! ordinary meshes for A/B comparisons.
 
 use crate::assets::WorldMaterials;
@@ -51,8 +51,11 @@ pub fn meshlet_mesh(m: &MeshData) -> Option<MeshletMesh> {
         .ok()
 }
 
+/// Meshlets (virtual geometry) are opt-in: `EW_MESHLET=1`. On Apple GPUs the
+/// meshlet cull + raster passes (run again per shadow cascade) measured ~60%
+/// slower than ordinary meshes at the same content (24 vs 39 fps, Nov 2026).
 pub fn meshlets_enabled() -> bool {
-    std::env::var_os("EW_NO_MESHLET").is_none()
+    std::env::var("EW_MESHLET").is_ok_and(|v| v != "0") && std::env::var_os("EW_NO_MESHLET").is_none()
 }
 
 fn cook(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut meshlets: ResMut<Assets<MeshletMesh>>) {

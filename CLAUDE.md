@@ -1,7 +1,7 @@
 # EveryWorld (binary: `earthdrop`)
 
 Drop anywhere on real Earth; walk, drive, fly, rocket to the Moon. Real data (OSM vector tiles, elevation, weather) decides *what* is there; procedural rules decide *how it looks*. Rust 2024 + Bevy 0.20 + Avian 0.8, Metal on macOS.
-Deeper docs: `docs/ARCHITECTURE.md` (design), `docs/PLAN-engine.md` (asset library / agents / vibes direction), `docs/PLAN-perf.md` (meshlets), `docs/ROADMAP.md` (phases), `docs/claude-handoff/*.md` (session handoffs), `docs/lookdev/round2/*` (art review notes).
+Deeper docs: `docs/ARCHITECTURE.md` (design), `docs/PLAN-engine.md` (asset library / agents / vibes direction), `docs/PLAN-perf.md` (meshlets), `docs/PLAN-native-engine.md` (target engine: own RHI, 120 fps tiers, multiplayer, space), `docs/ROADMAP.md` (phases), `docs/claude-handoff/*.md` (session handoffs), `docs/lookdev/round2/*` (art review notes).
 
 ## Read this first (saves tokens)
 - Do NOT read whole big files. Use `grep -n '^\(pub \)\?fn\|^struct\|^enum'` on a file, then read ranges. Biggest: `ed_world/src/trees/mod.rs` (1.8k), `voice.rs` (1.4k), `buildings.rs` (1.4k), `archkit.rs` (1.3k), `ground_scatter.rs` (1k).
@@ -51,9 +51,9 @@ Cache dir `.earthdrop-cache/` (tiles cached forever; gitignored). Dev profile: d
 - Modes: `--fly` skips player/vehicles; `--lookdev` replaces streaming.
 
 ## Rendering / meshlets
-- Bevy meshlets (virtual geometry) are on by default (`MeshletPlugin` in `main.rs`). Meshlet meshes take position/normal/UV only: colours go through `MeshData::palettize()` + `WorldMaterials::palette_matte` (512x512 palette LUT). MSAA must stay off on every camera.
+- Bevy meshlets (virtual geometry) are OFF by default (opt in `EW_MESHLET=1`; measured ~60% slower on M3 Pro). `MeshletPlugin` stays registered in `main.rs`. Meshlet meshes take position/normal/UV only: colours go through `MeshData::palettize()` + `WorldMaterials::palette_matte` (512x512 palette LUT). MSAA must stay off on every camera.
 - `vendor/bevy_pbr` is a patched copy of bevy_pbr 0.20.1 (`[patch.crates-io]`): meshlet prepass `flags`, atmosphere pipeline key, material bind group index 3, motion-vector NaN guard. Re-apply if Bevy is bumped.
-- Env knobs: `EW_NO_MESHLET=1` (same content as ordinary meshes, A/B), `EW_POST=bloom,taa,ssao` (subset of post), `EW_TILE_STATS=1` (per-tile tri counts), `EW_PERF=1` + `EW_PERF_OUT=path`.
+- Env knobs: `EW_MESHLET=1` (same content as meshlets, A/B), `EW_POST=bloom,taa,ssao` (subset of post), `EW_TILE_STATS=1` (per-tile tri counts), `EW_PERF=1` + `EW_PERF_OUT=path`.
 - Screenshots/perf runs need the window focused on macOS (an unfocused/occluded window renders black).
 
 ## Key invariants

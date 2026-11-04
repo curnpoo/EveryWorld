@@ -113,7 +113,7 @@ fn ready_tile(mut b: TileBuild) -> ReadyTile {
     .filter(|(_, m)| !m.is_empty())
     .map(|(p, m)| (p, to_mesh(m)))
     .collect::<Vec<_>>();
-    // `EW_NO_MESHLET=1` draws the same chunks as ordinary meshes (A/B the virtual-geometry path).
+    // Ordinary meshes by default; `EW_MESHLET=1` draws the same chunks as meshlets (A/B).
     let (meshlets, parts) = if !crate::library::meshlets_enabled() {
         let mut parts = parts;
         parts.extend(b.rock_chunks.iter().map(|m| (Part::Rocks, to_mesh(m))));
@@ -317,8 +317,10 @@ fn receive_tiles(
     library: Option<Res<crate::library::CookedLibrary>>,
 ) {
     let focus_pos = focus.iter().next().map(|t| t.translation());
-    // Bound per-frame upload work.
-    for _ in 0..2 {
+    // Bound per-frame upload work: one tile per frame. A tile is hundreds of
+    // entities + static colliders + texture uploads; two in one frame made
+    // 100-280 ms hitches while streaming.
+    for _ in 0..1 {
         let Ok(ReadyTile { build: mut b, collider, parts, meshlets, lod }) = mgr.rx.try_recv() else { break };
         mgr.pending.remove(&b.tile);
         for e in &b.errors {
