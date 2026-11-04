@@ -1,6 +1,6 @@
 # Plan: space visuals (atmosphere from orbit, stars, Moon, planets)
 
-Status: partly built. Weather/clouds come from `ed_climate` (`PLAN-world-sim.md`); perf is `PLAN-perf.md`.
+Status: partly built. Weather/clouds come from `ed_climate` (`world-sim.md`); rendering and perf: `engine.md`.
 
 ## Where we are
 There are two separate renderers, and they share almost nothing:

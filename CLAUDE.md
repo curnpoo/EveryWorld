@@ -1,7 +1,10 @@
 # EveryWorld (binary: `earthdrop`)
 
 Drop anywhere on real Earth; walk, drive, fly, rocket to the Moon. Real data (OSM vector tiles, elevation, weather) decides *what* is there; procedural rules decide *how it looks*. Rust 2024 + Bevy 0.20 + Avian 0.8, Metal on macOS.
-Deeper docs: `docs/ARCHITECTURE.md` (design), `docs/PLAN-engine.md` (asset library / agents / vibes direction), `docs/PLAN-perf.md` (meshlets), `docs/PLAN-native-engine.md` (target engine: own RHI, 120 fps tiers, multiplayer, space), `docs/ROADMAP.md` (phases), `docs/claude-handoff/*.md` (session handoffs), `docs/lookdev/round2/*` (art review notes).
+Docs (start with the first two):
+- `docs/ROADMAP.md`: what's done and what's next, features (Phases 0-5) and the engine/perf track (M0-M10).
+- `docs/CHANGES.md`: recent changes, newest first, with what still needs checking on the Mac. Add an entry when you land work; fold verified items into the roadmap.
+- `docs/ARCHITECTURE.md`: how it works. `docs/plans/`: `engine.md` (target engine, milestones, meshlet findings), `assets-and-agents.md`, `buildings.md`, `world-sim.md`, `space-visuals.md`. `docs/lookdev/round2/*`: art review notes.
 
 ## Read this first (saves tokens)
 - Do NOT read whole big files. Use `grep -n '^\(pub \)\?fn\|^struct\|^enum'` on a file, then read ranges. Biggest: `ed_world/src/trees/mod.rs` (1.8k), `voice.rs` (1.4k), `buildings.rs` (1.4k), `archkit.rs` (1.3k), `ground_scatter.rs` (1k).
@@ -74,7 +77,6 @@ Cache dir `.earthdrop-cache/` (tiles cached forever; gitignored). Dev profile: d
 - Parallel sessions touch different files (trees, ground, clouds, buildings); keep edits scoped.
 
 ## Known issues / active work
-- Buildings: roof/foundation overhaul landed (see `docs/PLAN-buildings.md` for what and what's left). `buildings.rs`: `roof_plan` (Flat | Mansard | Pitched(rects)) is shared by `detail_one` and `lod_one`; `foundation()` skins walls above low terrain. Needs visual check in-game; thresholds (350/500 m2, 4 floors, 14 m span) are constants in `roof_plan`.
+- Buildings: roof/foundation overhaul landed (see `docs/plans/buildings.md` for what and what's left). `buildings.rs`: `roof_plan` (Flat | Mansard | Pitched(rects)) is shared by `detail_one` and `lod_one`; `foundation()` skins walls above low terrain. Needs visual check in-game; thresholds (350/500 m2, 4 floors, 14 m span) are constants in `roof_plan`.
 - Open: does terrain render at a coarser LOD than the building's `TerrainGrid`? Foundations have a 0.5 m margin only.
-- M0/M1 work on `perf/m0-m1` needs a Mac measurement pass: see `docs/claude-handoff/2026-11-04-m0-m1.md`.
-- Roadmap items: instancing, CDLOD, landmarks, interiors, night lighting (see `docs/ROADMAP.md`).
+- M0/M1 (env map, cascades, shared terrain material, budgeted apply, `ed_runtime`, tree impostors, tiles as data) is on `main` but unmeasured on the Mac: test pass in `docs/CHANGES.md`. Open: pipeline pre-warm, clouds ½ res. Next: M2 (`docs/ROADMAP.md`).

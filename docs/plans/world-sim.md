@@ -1,6 +1,6 @@
 # Plan: procedural climate, weather and storms
 
-Status: PLAN ONLY, nothing implemented. Atmosphere, stars and space visuals: `PLAN-space-visuals.md`. Performance: `PLAN-perf.md`.
+Status: PLAN ONLY, nothing implemented. Atmosphere, stars and space visuals: `space-visuals.md`. Rendering and perf: `engine.md`.
 Map base done: satellite globe (EOX Sentinel-2) with OSM roads/borders burned into the tiles (`globe.rs`, `maprender::overlay_on_imagery`); the climate overlay is still to do.
 
 ## Decisions (user)

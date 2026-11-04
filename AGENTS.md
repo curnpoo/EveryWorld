@@ -5,8 +5,9 @@ Drop anywhere on real Earth; walk, drive, fly, rocket to the Moon. Real data
 rules decide **how it looks**.
 
 This file is the map of the repository. `CLAUDE.md` is the short working memory;
-`docs/ARCHITECTURE.md` is the long design document; `docs/ROADMAP.md` is the
-phase plan.
+`docs/ROADMAP.md` says what's done and next (features + engine track);
+`docs/CHANGES.md` lists recent changes and open checks; `docs/ARCHITECTURE.md`
+is the design document; `docs/plans/` holds the plans.
 
 ---
 
@@ -44,14 +45,15 @@ crates/
   ed_flight/         atmosphere, drag, Mach, gravity, rocket "superpower" model
   ed_space/          Sun/Moon/planet ephemeris and body catalog
   ed_engine_audio/   Rust port of vendor/engine-sound-kit (JS is source of truth)
+  ed_runtime/        M1 runtime services: job pools, frame budget, LRU, view cone, scheduler
   ed_game/           Bevy 0.20 + Avian 0.8 app (binary: earthdrop)
 tools/               screenshot scenes, lookdev boards
-vendor/              engine-sound-kit JS reference implementation
-docs/                architecture, roadmap, building plan, handoffs, lookdev notes
+vendor/              engine-sound-kit JS reference, patched bevy_pbr
+docs/                ROADMAP, CHANGES, ARCHITECTURE, plans/, lookdev notes
 ```
 
 Dependency order: `ed_geo` → `ed_data` → `ed_world` → (`ed_flight`, `ed_space`,
-`ed_engine_audio`) → `ed_game`. Everything except `ed_game` is engine-free,
+`ed_engine_audio`, `ed_runtime`) → `ed_game`. Everything except `ed_game` is engine-free,
 unit-tested, and thread-safe.
 
 ---
@@ -99,7 +101,7 @@ Render frame convention: **x = East, y = Up, z = −North**.
 | `water.rs` | Inland lakes/rivers from `water`; ocean is global in the game |
 | `surface.rs` | `SurfaceMap` land-cover raster (`Cover`) from landcover/landuse/park/water |
 | `biome.rs` | Coarse climate/biome classification from latitude, altitude, deserts |
-| `foliage.rs` + `trees/` | Tree/shrub placement; procedural branching trees, leaf/bark textures |
+| `foliage.rs` + `trees/` | Tree/shrub placement; procedural branching trees, leaf/bark textures; `trees/impostor.rs` bakes the impostor atlas and builds per-tile impostor quads |
 | `props.rs` | Rocks and street furniture baked per tile |
 | `ground_scatter.rs` | Near-camera ground cover (grass, flowers, pebbles, moss, scrub, snow, ripples) |
 | `ground_tex.rs` | Procedural tileable ground textures per `Ground` layer |
@@ -157,10 +159,12 @@ Ignore this crate unless the task is audio.
 | `assets.rs` | Shared materials and procedural textures |
 | `building_materials.rs` | One material per `ed_world::bparts::Mat` bucket |
 | `meshconv.rs` | `ed_world::MeshData` → Bevy `Mesh` |
-| `streaming.rs` | Quadtree tile streaming, worker builds, hole-free swaps, detail chunks, `TileManager` totals |
+| `streaming.rs` | Tile streaming on `ed_runtime` (IO pool, CPU pool, budgeted staged apply, hole-free retire); tiles are ~10 merged entities; building LOD explodes into chunks only while detail loads (`Explode`) |
 | `ground_material.rs` | Terrain splat material and procedural ground textures |
 | `ground_scatter.rs` | Near-camera ground-cover chunk streaming |
-| `foliage.rs` | Foliage material, leaf atlas/bark textures, distance LOD |
+| `foliage.rs` | Foliage materials; `TreeChunks`: leaf cards (< 800 m) and full trees (< 230 m) become entities only near the camera |
+| `impostors.rs` + `shaders/impostor.wesl` | Tree impostor material, atlas bake at startup, distance thinning and satellite tint |
+| `near_chunks.rs` | `NearMeshes`: rock chunks as data, entities only within 500 m |
 | `sky.rs` | Sun, atmosphere, Moon/planets, ocean, fog, weather, `Clock` |
 | `clouds.rs` + `clouds.wesl` | Volumetric cloud raymarch and weather-driven sky |
 | `shaders/` | Custom WESL shaders |
@@ -287,7 +291,10 @@ artifacts as source.
 
 ## Current status / known issues
 
-- Building roof/foundation overhaul landed (`docs/PLAN-buildings.md`); needs
+- Status lives in `docs/ROADMAP.md` and `docs/CHANGES.md`; read those first.
+  M0/M1 perf work (tree impostors, tiles as data, `ed_runtime`) is unmeasured
+  on the Mac.
+- Building roof/foundation overhaul landed (`docs/plans/buildings.md`); needs
   in-game visual checks. Threshold constants (350/500 m², 4 floors, 14 m span)
   live in `roof_plan`.
 - Open question: does terrain render at a coarser LOD than the building's

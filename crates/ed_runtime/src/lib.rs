@@ -1,4 +1,4 @@
-//! Engine-free runtime services for EveryWorld (PLAN-native-engine.md, M1).
+//! Engine-free runtime services for EveryWorld (`docs/plans/engine.md`, M1).
 //!
 //! - [`jobs`]: thread pools with priorities, re-prioritisation and
 //!   cancellation. Separate pools for network IO and CPU work, so a slow

@@ -1,10 +1,38 @@
 # Roadmap
 
-Phases are ordered so there's always something playable. Each item is sized to be a good standalone task for a Claude Code session (one Mac, one day).
+What's done, what's next. Recent changes and open checks: `CHANGES.md`. Plans: `plans/` (engine, assets and agents, buildings, world sim, space visuals). How it works: `ARCHITECTURE.md`.
+
+Phases are ordered so there's always something playable. Each item is sized to be a good standalone task for a Claude Code session (one Mac, one day). Two tracks run side by side: **features** (Phases 0-5) and **engine and performance** (M0-M10, from `plans/engine.md`).
+
+## Now
+
+1. **Mac test pass for M0 + M1** (`CHANGES.md`, about 20 minutes): fps, hitches, forests/impostors, building explode, colliders. Everything since `c42ed5e` is unmeasured on Metal.
+2. **M0 leftovers**: pipeline pre-warm (confirm the AO/TAA cause with the test pass first); clouds ½ res (deferred, no gain while vertex bound).
+3. **M2 start**: `ed_gpu` RHI (wgpu backend) + `ed_render` v1 (terrain clipmap, GPU-culled instancing, visibility buffer, cached shadows, own TAAU).
+4. Feature side: art direction round 2 review; `ed_climate` milestones 1-3.
 
 Getting around until Phase 4: **rocket boots and teleporting**. Vehicles come after Space.
 
-Weather is **procedural** (`ed_climate`, see `docs/PLAN-world-sim.md`): a deterministic function of (world seed, UTC time), not live data. Open-Meteo stays only as a dev fallback until `ed_climate` lands. Space visuals: `docs/PLAN-space-visuals.md`.
+Weather is **procedural** (`ed_climate`, see `plans/world-sim.md`): a deterministic function of (world seed, UTC time), not live data. Open-Meteo stays only as a dev fallback until `ed_climate` lands. Space visuals: `plans/space-visuals.md`.
+
+## Engine and performance track
+
+Targets and design: `plans/engine.md`. Baseline (M3 Pro, Ohio suburb, 67% render scale): 33.5 fps, 56k entities, vertex bound.
+
+| M | What | Status |
+|---|---|---|
+| **M0** | Quick wins in Bevy. Exit: 45+ fps steady, no frame > 50 ms after load | **Built, not yet measured.** Done: 2 shadow cascades; env map re-rendered only on change; one shared terrain material (satellite texture pool); staged, budgeted tile apply; tree impostors to ~20-30 km (user approved for trees); far trees out of shadows. Open: pipeline pre-warm, clouds ½ res. |
+| **M1** | `ed_runtime` + tiles stop being entities. Exit: tile apply < 1 ms, flat entity count | **Built, not yet measured.** Done: `ed_runtime` (job pools with priority/cancel, frame budgets, residency LRU, height-aware view test, hole-free retire); IO and CPU pools; out-of-view tiles stay resident; a tile is ~10 entities (merged props, merged LOD buildings that explode near detail, one impostor mesh, cards/trees/rocks only near the camera). Entities at Zermatt village: 16,503 -> 2,166. Left for M2: fully GPU-resident tiles (no per-tile entities). |
+| **M2** | `ed_gpu` RHI (wgpu) + `ed_render` v1: terrain clipmap, GPU-culled instancing, visibility buffer, cached shadows, own TAAU. Exit: 60 fps steady on the 6 reference scenes | Next |
+| **G1** | Decision gate: native backends | After M2 |
+| **M3** | Native Metal (if G1 says so), cluster LOD (Nanite-like) + software raster. Exit: 120 fps High on M3 Pro | |
+| **M4** | Lighting: DDGI, virtual shadow maps, GTAO, froxel fog, motion blur, night lights | |
+| **M5** | App shell off Bevy, `ed_store` persistence, agents framework, missions v1 | |
+| **M6** | Water: FFT ocean + local shallow water, buoyancy | |
+| **M7** | Windows + DLSS/FSR3 | |
+| **M8** | Multiplayer | |
+| **M9** | Mobile (iOS, then Android) | |
+| **M10** | Space: reference frames, orbits, procedural planets, galaxy | |
 
 ## Phase 0: Foundation (done)
 
@@ -31,12 +59,12 @@ Weather is **procedural** (`ed_climate`, see `docs/PLAN-world-sim.md`): a determ
 3. **Rocket boots + skydive + parachute + wingsuit**: done: boots, skydive, parachute, wingsuit, Mach 1 boom, camera shake. Left: vapor cone, speed lines, wind from `ed_climate`
 4. [x] **HUD**: compass strip with waypoint pins, mode pill, minimap from vector tiles, target rings for bodies/waypoints with distance and ETA
 5. **Procedural climate** (`ed_climate` milestones 1-3): climate base (insolation, lapse rate, wind belts, orographic rain), deterministic synoptic grid, storm records; `WeatherSample` replaces `CurrentWeather` in clouds/foliage/sky
-6. Weather FX from `WeatherSample`: rain and snow particles, wet roads, fog from visibility; later local storms (hurricane, tornado, sandstorm) per PLAN-world-sim
+6. Weather FX from `WeatherSample`: rain and snow particles, wet roads, fog from visibility; later local storms (hurricane, tornado, sandstorm) per `plans/world-sim.md`
 
 ## Phase 2: World fidelity
 
-1. GPU instancing for repeated building modules (windows, balconies, AC units): the big triangle win for dense cities
-2. CDLOD geomorphing for terrain (no popping); VisibilityRange crossfades between building detail and distant versions
+1. GPU instancing for repeated building modules (windows, balconies, AC units): the big triangle win for dense cities (lands with M2's GPU-culled instancing)
+2. CDLOD geomorphing for terrain (no popping; M2 terrain clipmap); crossfades between building detail and distant versions
 3. Landmarks and special buildings from OSM tags: castles, churches, cathedrals, mosques, temples, stadiums, skyscraper crowns, old town walls
 4. ESA WorldCover land cover; Macrostrat geology for rock color (climate is procedural, Phase 1.5)
 5. Building interiors (procedural floor plans, enterable ground floors)
@@ -48,7 +76,7 @@ Weather is **procedural** (`ed_climate`, see `docs/PLAN-world-sim.md`): a determ
 ## Phase 3: Space (by rocket boots)
 
 1. Rocket boots superpower stages that reach orbit and beyond (boost stages exist); left: time compression on long coasts
-2. Earth from orbit: low-zoom globe tiles, atmosphere from space, cloud layer from `ed_climate` (planet shell exists; see PLAN-space-visuals)
+2. Earth from orbit: low-zoom globe tiles, atmosphere from space, cloud layer from `ed_climate` (planet shell exists; see `plans/space-visuals.md`)
 3. The Moon: procedural cratered terrain, then NASA LOLA elevation; land and walk
 4. Mars (MOLA), then the rest, with HUD target rings and approach guidance
 5. Starfield: procedural sky done (`starfield.rs`); next a real Hipparcos/Yale catalog
@@ -75,5 +103,6 @@ Weather is **procedural** (`ed_climate`, see `docs/PLAN-world-sim.md`): a determ
 - CI: `cargo test --workspace` + lookdev snapshot diff
 - Move style/kit tables to `assets/styles/*.ron` with hot reload
 - [x] Tile builder: dedicated IO thread pool + cancellation for tiles that went stale (`ed_runtime::jobs`, M1)
-- Profiling HUD (frame time, tiles in flight, triangles, memory): partly done (F3/I debug stats with pipeline depth, `--perf` CSV); left: GPU pass timings, memory
+- Profiling HUD (frame time, tiles in flight, triangles, memory): partly done (F3/I debug stats with pipeline depth, `--perf` CSV with entities and pipeline columns); left: GPU pass timings, memory
+- Perf gate script (`tools/perf_gate.sh`, 6 reference routes; `plans/engine.md` §13)
 - macOS app bundle + signing

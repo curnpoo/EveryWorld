@@ -55,4 +55,4 @@ Everything that wants mood reads `WorldMood`; nothing reads raw weather/time dir
 - E4: agent framework + first animal (birds: flocking, cheap, everywhere) and pedestrians.
 - E5: `WorldMood` + ambience audio beds + region grading tables.
 - E6: glTF import through the cook path + disk cache of cooked meshlets.
-- Perf tracks (PLAN-perf.md) continue in parallel: instanced foliage (Track A), own cluster renderer for leaves/buildings (Track C), terrain CDLOD.
+- Perf work continues in parallel on the engine track (`engine.md` milestones, status in `docs/ROADMAP.md`).

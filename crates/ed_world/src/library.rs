@@ -1,5 +1,5 @@
 //! Asset library: the catalog of reusable things the world places (props now;
-//! boulders, trunks, vehicles, animals later). See `docs/PLAN-engine.md`.
+//! boulders, trunks, vehicles, animals later). See `docs/plans/assets-and-agents.md`.
 //!
 //! World generation emits [`Placement`]s (asset id + transform in tile space)
 //! instead of baking copies into tile meshes. The game cooks each asset once

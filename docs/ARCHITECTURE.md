@@ -51,7 +51,7 @@ Everything except `ed_game` is engine-free, unit tested, and runs on any thread.
 | Place search | Open-Meteo geocoding | "drop me in Zermatt" |
 | Moon/planets | JPL Keplerian elements + Almanac lunar series | computed locally, no network |
 
-Planned additions (see `DATA.md`): ESA WorldCover 10 m land cover, TerraClimate (real climate instead of latitude bands), Macrostrat geology (rock color/type), NASA LOLA/MOLA for real Moon and Mars terrain, Gaia/Hipparcos stars, NASA SVS city lights.
+Planned additions: ESA WorldCover 10 m land cover, TerraClimate (real climate instead of latitude bands), Macrostrat geology (rock color/type), NASA LOLA/MOLA for real Moon and Mars terrain, Gaia/Hipparcos stars, NASA SVS city lights.
 
 Everything is cached on disk forever (tiles are immutable per planet build), so the second visit to a place is instant and offline.
 
@@ -72,7 +72,7 @@ tile id ─┬─> elevation tile ──> TerrainGrid (single source of truth fo
 ```
 
 - Everything that sits on the ground samples the **same** `TerrainGrid` with the same triangle interpolation as the render mesh and the physics collider. Nothing floats, nothing sinks.
-- Each tile becomes a handful of merged meshes (one draw call for all trees in a tile, one for all facades, etc.).
+- Each tile becomes about ten entities: terrain, water, roads, merged props (+ one compound collider), merged LOD buildings per material (+ one collider), one impostor mesh for all its trees, and holders for things that only become entities near the camera (leaf-card chunks, full trees, rocks, building detail). Tiles are data first; the ECS holds what's near or has behaviour.
 - Generation is deterministic (hash of OSM id / tile / cell), so the world looks identical every run on every Mac.
 - Typical z14 tile: 0.3 to 1 s on one core, 400k to 800k triangles.
 
@@ -90,8 +90,10 @@ Adding "Kyoto machiya" or "Lagos compound" is one table entry. These tables move
 ## Level of detail ("never see it pop")
 
 - **Terrain**: quadtree over map tiles, ~2 km tiles under you, ~600 km tiles at the horizon, a few hundred total. Skirts hide cracks. Next: CDLOD geomorphing so vertices slide between levels instead of popping.
-- **Buildings/props/trees**: merged per tile today; next is Bevy `VisibilityRange` dithered crossfades between full detail, impostor and nothing.
-- **Nanite-style virtual geometry**: Bevy has experimental *meshlets*. Tracked as an experiment once it's proven on Metal; the pipeline already produces dense static meshes it can ingest.
+- **Trees**: full tree (< 230 m) -> merged leaf cards per chunk (< 800 m, z14 tiles) -> one impostor quad per tree (hemi-octahedral atlas baked at startup; thinned with distance, survivors grow to keep canopy cover, sub-pixel trees fade into the satellite colour). Trees exist on z10+ tiles, so forests read to ~20-30 km.
+- **Buildings**: merged LOD massing per tile; near the player the tile splits into chunks and swaps in full-detail facades chunk by chunk, then merges back when you leave.
+- **Streaming**: `ed_runtime` job pools (IO + CPU, priority, cancel), budgeted staged apply, height-aware view test, hole-free retire, out-of-view tiles kept resident up to a cap.
+- **Nanite-style virtual geometry**: Bevy meshlets work on Metal but measured slower in the game (one cull per view); off by default (`EW_MESHLET=1`). The plan is our own cluster renderer (`plans/engine.md`, M2-M3).
 - **Down to pebbles**: data stops at ~5 m resolution, so below that we add procedural micro-detail (noise displacement + scattered pebbles/grass near the camera, by ground type).
 - **Up to planets**: a body is a dot (HUD marker), then a sphere, then a quadtree of terrain tiles. Same LOD system at every scale.
 

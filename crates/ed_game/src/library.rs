@@ -1,4 +1,4 @@
-//! Bevy side of the asset library (`ed_world::library`, see `docs/PLAN-engine.md`).
+//! Bevy side of the asset library (`ed_world::library`, see `docs/plans/assets-and-agents.md`).
 //!
 //! Every library asset is cooked ONCE at startup (palettized mesh -> meshlet
 //! mesh + collider); tiles then spawn their `Placement`s as instances that

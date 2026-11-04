@@ -10,10 +10,10 @@ Vision set by user: a **120 fps whole-Earth sim sandbox**, extending to other pl
 
 Open decision: **Rust + wgpu**, or **full native** (our own GPU layer over Metal, Vulkan and DX12)? See §3. The plan is set up so this choice can be made with measurements rather than up front.
 
-Related plans:
-- `PLAN-engine.md`: asset library, agents, vibes.
-- `PLAN-perf.md`: meshlets.
-- `PLAN-world-sim.md`, `PLAN-space-visuals.md`.
+Related plans (all in `docs/plans/`):
+- `assets-and-agents.md`: asset library, agents, vibes.
+- `world-sim.md`, `space-visuals.md`, `buildings.md`.
+- Meshlet findings (the old perf plan) are the appendix at the end of this file.
 
 ---
 
@@ -237,7 +237,7 @@ Rules:
 
 ## 6. Simulation systems
 
-- **Agents** (NPCs, animals, traffic). One framework (`PLAN-engine.md` §2).
+- **Agents** (NPCs, animals, traffic). One framework (`assets-and-agents.md` §2).
   - Full sim within ~1 km of any player; simplified "statistical" sim per cell beyond that.
   - Navigation on OSM road and footpath graphs plus a navmesh near the player.
   - Animation: GPU skinning, crowd impostors at distance.
@@ -356,10 +356,6 @@ Mobile specifics:
 | **M0** (now, in Bevy, 1-2 wk) | Tree impostors, far trees out of shadows, 2 cascades, env map on change, clouds ½ res, pipeline pre-warm, time-budgeted apply, shared terrain material | 45+ fps steady, no frame > 50 ms after load |
 | **M1** (3-4 wk) | `ed_runtime`: jobs, residency, budgets, streaming scheduler out of `streaming.rs`. Tiles stop being entities | Tile apply < 1 ms; flat entity count |
 
-**Status (Nov 4, `perf/m0-m1`, not yet measured on the Mac; see `docs/claude-handoff/2026-11-04-m0-m1.md`):**
-- M0 done: 2 cascades; env map refreshed only on change (patched `bevy_pbr`, `EnvironmentMapRefresh`); shared terrain material (satellite texture pool + `MeshTag`); staged, budgeted tile apply. Far leaf cards were already out of shadows.
-- M0 done (later): tree impostors (user approved for trees, Nov 4; drawn out to where a tree is under ~1.5 px, z10+ tiles). M0 open: pipeline pre-warm (cause of the settings stall unconfirmed; AO/TAA toggles change every material's pipeline key), clouds ½ res (deferred: measured no gain while vertex bound).
-- M1 started: `ed_runtime` crate with IO and CPU job pools (priority, re-rank, cancel), frame budgets, residency LRU, height-aware view test, linear-time hole-free retire. `streaming.rs` runs on it. Tiles stop being entities (Bevy form): a tile is ~10 entities; cards, full trees and rocks are entities only near the camera, building LOD is merged per tile and explodes into chunks only where detail loads. Zermatt test spot: 12,892 -> 1,334 entities. The fully GPU-resident form (no per-tile entities at all) waits for M2's own renderer.
 | **M2** (6-8 wk) | `ed_gpu` RHI (wgpu backend) + `ed_render` v1: terrain clipmap, GPU-culled instancing, impostors, visibility buffer, cached shadows, own TAAU. Bevy keeps app/UI/player only | **60 fps steady** on the 6 reference scenes, High tier |
 | **G1** | **Decision gate: native backends** (§3) | Profile data written up |
 | **M3** (8-12 wk) | Native Metal backend (if G1 says so): ICBs, tile memory, MetalFX, binary archives. Cluster LOD (Nanite-like) + software raster | **120 fps** High tier on M3 Pro, 1440p output |
@@ -370,6 +366,8 @@ Mobile specifics:
 | **M8** | Multiplayer: server, interest management, delta replication, prediction | 2+ players see the same edits and vehicles across a city |
 | **M9** | Mobile: iOS (Metal backend reuse), then Android (Vulkan); touch UI, thermal dynamic resolution | 60 fps on iPhone 15 Pro |
 | **M10** | Space: reference frames, orbital mechanics, procedural planets on the Earth pipeline, galaxy | Fly Earth → Moon → Mars surface with no load screen |
+
+Progress against these milestones is tracked in `docs/ROADMAP.md` (Engine and performance track); recent work and open checks in `docs/CHANGES.md`.
 
 ---
 
@@ -393,3 +391,24 @@ Mobile specifics:
 - **Nanite-style rendering on Apple and mobile.** Mitigation: tiered fallback (discrete LOD + impostors) is built first and always kept.
 - **Determinism across platforms.** Mitigation: golden-hash CI from M1 onward.
 - **Vendor SDK licensing** (DLSS, XeSS). Mitigation: TAAU and FSR (open source) are always available.
+
+---
+
+## Appendix: meshlet findings (from the old perf plan, Nov 2026)
+
+Original direction: Nanite-like virtual geometry as the core, no impostors, no discrete LOD meshes. Update Nov 4: the user approved impostors for trees ("as far as makes sense"); everything else keeps that direction, and §5.1 above is the plan for it.
+
+**Probe** (`crates/ed_game/src/bin/meshlet_probe.rs`, `cargo run --release -p ed_game --features meshlet --bin meshlet_probe -- [--standard] [--grid N]`, M3 Pro):
+- Bevy's meshlet pipeline works on Apple GPUs (64-bit atomics present). Converting a 33k-tri mesh: 0.12 s.
+- 121M tris: standard ~52 fps, meshlet ~120 (capped). 756M tris: standard 16.7 fps, meshlet ~120. The technique scales.
+- In the real game meshlets measured ~60% slower (one cull + raster per view, 5 views), so they are off by default (`EW_MESHLET=1` to A/B).
+
+**Hard limits of Bevy's meshlets** (why we need our own cluster renderer, M3):
+1. Position, normal, UV only. No vertex colours (we palettize: `MeshData::palettize` + a palette LUT).
+2. No custom vertex shader, so no GPU wind on foliage.
+3. Opaque only: no alpha-mask leaves or grass cards.
+4. Conversion is slow and meant for ahead-of-time assets, heavy for per-chunk procedural buildings.
+
+**Measured wins before the engine plan** (Zermatt, 1280x720, M3 Pro): baseline 12 fps (30M visible tris: rocks 15M, trees 12.6M, terrain 2.6M). Rocks chunked + range-limited: 31 fps. Far trees in thinned density bands: 60 fps (vsync cap). The bands were replaced by impostors on Nov 4.
+
+**Still-valid design points:** terrain should be CDLOD/clipmaps, not meshlets; texture detail should follow screen footprint (virtual texturing / mip streaming); far objects can get cheap fake shadows instead of none; ground cover should be one mesh per kind with per-chunk instance buffers and density fades.
