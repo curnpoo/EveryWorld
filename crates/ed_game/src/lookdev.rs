@@ -323,13 +323,13 @@ fn trees_v2_stage(
     use crate::foliage::{spawn_near_tree, wind_mesh};
     use TreeKind::*;
     for t in street_trees {
-        spawn_near_tree(commands, meshes, fa, root, t, up, Vec3::ZERO, ed_world::trees::variant_for(t));
+        spawn_near_tree(commands, meshes, fa, root, t, up, Vec3::ZERO, ed_world::trees::variant_for(t), &mut Vec::new());
     }
     // Pixels per meter on this tile, so layouts are in meters.
     let ppm = 4096.0 / (to_local(4096.0, 0.0, 0.0) - to_local(0.0, 0.0, 0.0)).length();
     let mut tree = |k: TreeKind, x: f32, y: f32, scale: f32, yaw: f32, variant: u32| {
         let t = TreeInstance { kind: k, pos: to_local(x, y, GROUND_H), scale, yaw, tint: [1.0; 4] };
-        spawn_near_tree(commands, meshes, fa, root, &t, up, Vec3::ZERO, variant);
+        spawn_near_tree(commands, meshes, fa, root, &t, up, Vec3::ZERO, variant, &mut Vec::new());
     };
     // Lineups: a row of species, camera looking north at them.
     let (x0, y0) = (3150.0f32, 260.0f32);

@@ -46,6 +46,7 @@ fn record(
     terrain: Query<(&Mesh3d, &ViewVisibility), With<MeshMaterial3d<TerrainMaterial>>>,
     scatter: Query<(&Mesh3d, &ViewVisibility), With<MeshMaterial3d<ScatterMaterial>>>,
     foliage: Query<(&Mesh3d, &ViewVisibility), With<MeshMaterial3d<FoliageMaterial>>>,
+    impostors: Query<(&Mesh3d, &ViewVisibility), With<MeshMaterial3d<crate::impostors::ImpostorMaterial>>>,
     other: Query<(&Mesh3d, &ViewVisibility), With<MeshMaterial3d<StandardMaterial>>>,
 ) {
     // Mesh CPU data is dropped after GPU extraction, so remember triangle counts on add.
@@ -91,7 +92,7 @@ fn record(
     };
     let (vt, nt) = count(&mut terrain.iter());
     let (vs, ns) = count(&mut scatter.iter());
-    let (vf, nf) = count(&mut foliage.iter());
+    let (vf, nf) = count(&mut foliage.iter().chain(impostors.iter()));
     let (vo, no) = count(&mut other.iter());
     let _ = writeln!(log.file, "{t:.1},{:.1},{avg:.2},{p99:.2},{max:.2},{tiles},{pending},{desired},{tris:.2},{},{vt:.2},{vs:.2},{vf:.2},{vo:.2},{},{io},{build},{applying}", 1000.0 / avg.max(1e-3), entities.iter().count(), nt + ns + nf + no);
     let _ = log.file.flush();

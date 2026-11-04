@@ -255,16 +255,25 @@ pub fn build(job: &TileJob) -> TileBuild {
             }));
             out.roads = r.mesh;
         }
-        if tile.z >= 13 {
+        if tile.z >= 10 {
             let occ = foliage::Occupancy::from_vector(vt, 512);
-            let max = if tile.z >= 14 { 9_000 } else { 1_500 };
-            let (trees, rocks) = foliage::scatter(&proj, &grid, &surface, Some(&occ), max);
+            let max = match tile.z {
+                14.. => 9_000,
+                12 | 13 => 6_000,
+                11 => 5_000,
+                _ => 4_000,
+            };
+            let (trees, rocks, kept) = foliage::scatter(&proj, &grid, &surface, Some(&occ), max);
             out.stats.trees = trees.len();
             out.stats.rocks = rocks.len();
-            // Finest tiles get a chunk grid so the game can swap in full
-            // detail near the camera; coarser tiles are one far-LOD chunk.
-            let chunk_grid = if tile.z >= 14 { 12 } else { 1 };
-            out.trees = trees::bake_tile(trees, up, proj.tile.width_m() as f32, chunk_grid);
+            // Fine tiles: chunks with far cards and instances, so the game can
+            // swap in full detail near the camera; impostors take over past
+            // the cards. Coarse tiles: impostors only.
+            let fine = tile.z >= 14;
+            let near_cut = if fine { trees::impostor::CARD_RANGE_M - 150.0 } else { 0.0 };
+            let impostors = trees::impostor::build_mesh(&trees, up, Vec3::ZERO, kept, near_cut);
+            out.trees = if fine { trees::bake_tile(trees, up, proj.tile.width_m() as f32, 12) } else { trees::TileTrees { up, chunks: Vec::new(), impostors: Default::default() } };
+            out.trees.impostors = impostors;
             // Rocks are small: only fine tiles show them, in culled chunks.
             if tile.z >= 14 {
                 out.rock_chunks = props::bake_rocks_chunked(&rocks, up, proj.tile.width_m() as f32, 16);

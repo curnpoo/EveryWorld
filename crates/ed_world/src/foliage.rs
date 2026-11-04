@@ -107,6 +107,9 @@ pub struct TreeInstance {
     pub pos: Vec3,
     pub scale: f32,
     pub yaw: f32,
+    /// Canopy colour (linear RGB). From the satellite photo where loaded
+    /// (alpha 1), else the species/biome colour (alpha 0). Distant impostors
+    /// fade toward it so far forest matches the ground imagery.
     pub tint: [f32; 4],
 }
 
@@ -253,7 +256,7 @@ pub fn scatter(
     surface: &SurfaceMap,
     occ: Option<&Occupancy>,
     max_trees: usize,
-) -> (Vec<TreeInstance>, Vec<RockInstance>) {
+) -> (Vec<TreeInstance>, Vec<RockInstance>, f32) {
     let width = proj.tile.width_m() as f32;
     let cells = ((width / 8.0) as usize).clamp(16, 512);
     let cell_area_ha = (width / cells as f32).powi(2) / 10_000.0;
@@ -303,7 +306,13 @@ pub fn scatter(
                     pos: proj.local(u, v, h as f64),
                     scale,
                     yaw: r * std::f32::consts::TAU * 7.0,
-                    tint: foliage_color(kind, surface.biome, crate::hash01(tkey, key * 11)),
+                    tint: match surface.sat_linear(u, v) {
+                        Some(c) => [c[0], c[1], c[2], 1.0],
+                        None => {
+                            let c = foliage_color(kind, surface.biome, crate::hash01(tkey, key * 11));
+                            [c[0], c[1], c[2], 0.0]
+                        }
+                    },
                 });
                 continue;
             }
@@ -327,5 +336,7 @@ pub fn scatter(
             }
         }
     }
-    (trees, rocks)
+    // Share of the real trees kept, for impostors to make up the rest.
+    let kept = if expected > 0.0 { (trees.len() as f32 / expected).clamp(1e-4, 1.0) } else { 1.0 };
+    (trees, rocks, kept)
 }

@@ -46,8 +46,10 @@ pub struct StreamingPlugin;
 impl Plugin for StreamingPlugin {
     fn build(&self, app: &mut App) {
         let (dtx, drx) = crossbeam_channel::unbounded();
-        app.insert_resource(TileManager::new())
-            .insert_resource(DetailManager { tx: dtx, rx: drx, tiles: HashMap::new(), in_flight: 0, last: -1.0 })
+        let (etx, erx) = crossbeam_channel::unbounded();
+        app.add_plugins(crate::near_chunks::NearChunksPlugin)
+            .insert_resource(TileManager::new())
+            .insert_resource(DetailManager { tx: dtx, rx: drx, etx, erx, tiles: HashMap::new(), in_flight: 0, last: -1.0 })
             .add_systems(Startup, resolve_vector_template)
             .add_systems(
                 Update,
@@ -59,6 +61,7 @@ impl Plugin for StreamingPlugin {
                     retire_tiles,
                     stream_detail.run_if(not(in_state(crate::menu::GameState::Menu))),
                     receive_detail,
+                    receive_explode,
                 )
                     .chain(),
             );
@@ -136,9 +139,41 @@ struct ReadyTile {
     parts: Vec<(Part, Mesh)>,
     /// Opaque static meshes converted to meshlets (virtual geometry) off-thread.
     meshlets: Vec<(MeshletMesh, Vec3)>,
-    lod: Vec<((u8, u8), BuildingBatch)>,
-    /// Tree far meshes, converted on the worker.
+    /// Rock chunks (fine tiles): (centre, mesh), entities only near the camera.
+    rock_chunks: Vec<(Vec3, Mesh)>,
+    /// Library placements merged into one mesh + collider (meshlets off).
+    placements: Option<crate::library::MergedPlacements>,
+    /// Building LOD of the whole tile, merged per material, one collider.
+    lod: BuildingBatch,
+    /// Per-chunk LOD source for tiles with near detail (see [`Explode`]).
+    lod_chunks: Option<Arc<Vec<((u8, u8), BuildingMeshes)>>>,
+    /// Trees: impostor quads and card chunks, converted on the worker.
     trees: crate::foliage::PreparedTrees,
+}
+
+/// Merge every chunk's LOD buildings into one mesh per material and one
+/// physics shell for the tile.
+fn merge_lod(chunks: &[((u8, u8), BuildingMeshes)]) -> BuildingBatch {
+    let mut by_mat: HashMap<Mat, ed_world::mesh::MeshData> = HashMap::new();
+    let mut col = ed_world::mesh::MeshData::default();
+    for (_, b) in chunks {
+        for (mat, m) in &b.out.meshes {
+            if !m.is_empty() {
+                by_mat.entry(*mat).or_default().append(m);
+            }
+        }
+        let base = col.positions.len() as u32;
+        col.positions.extend_from_slice(&b.collider.positions);
+        col.indices.extend(b.collider.indices.iter().map(|i| i + base));
+    }
+    let mut buckets: Vec<(Mat, Mesh)> = by_mat.into_iter().map(|(mat, m)| (mat, to_mesh(&m))).collect();
+    buckets.sort_by_key(|(m, _)| format!("{m:?}"));
+    let collider = (!col.indices.is_empty()).then(|| {
+        let verts: Vec<Vec3> = col.positions.iter().map(|p| Vec3::from(*p)).collect();
+        let tris: Vec<[u32; 3]> = col.indices.chunks_exact(3).map(|t| [t[0], t[1], t[2]]).collect();
+        Collider::trimesh(verts, tris)
+    });
+    BuildingBatch { buckets, collider }
 }
 
 fn ready_tile(mut b: TileBuild) -> ReadyTile {
@@ -155,16 +190,17 @@ fn ready_tile(mut b: TileBuild) -> ReadyTile {
     .map(|(p, m)| (p, to_mesh(m)))
     .collect::<Vec<_>>();
     // Ordinary meshes by default; `EW_MESHLET=1` draws the same chunks as meshlets (A/B).
-    let (meshlets, parts) = if !crate::library::meshlets_enabled() {
-        let mut parts = parts;
-        parts.extend(b.rock_chunks.iter().map(|m| (Part::Rocks, to_mesh(m))));
-        (Vec::new(), parts)
+    let (meshlets, rock_chunks, placements) = if !crate::library::meshlets_enabled() {
+        let rocks = b.rock_chunks.iter().filter(|m| !m.is_empty()).map(|m| (crate::near_chunks::center_of(&m.positions), to_mesh(m))).collect();
+        (Vec::new(), rocks, Some(crate::library::merge_placements(&b.placements)))
     } else {
-        (b.rock_chunks.iter().filter_map(|m| to_meshlet(m)).collect(), parts)
+        (b.rock_chunks.iter().filter_map(|m| to_meshlet(m)).collect(), Vec::new(), None)
     };
-    let lod = std::mem::take(&mut b.building_lod).into_iter().map(|(c, m)| (c, prepare_batch(&m, true))).collect();
-    let trees = crate::foliage::prepare_trees(&b.trees);
-    ReadyTile { build: b, collider, parts, meshlets, lod, trees }
+    let chunks = std::mem::take(&mut b.building_lod);
+    let lod = merge_lod(&chunks);
+    let lod_chunks = (b.building_detail.is_some() && !chunks.is_empty()).then(|| Arc::new(chunks));
+    let trees = crate::foliage::prepare_trees(std::mem::take(&mut b.trees));
+    ReadyTile { build: b, collider, parts, meshlets, rock_chunks, placements, lod, lod_chunks, trees }
 }
 
 #[derive(Resource)]
@@ -274,6 +310,9 @@ pub struct WorldTile;
 pub struct DetailManager {
     tx: Sender<(TileId, (u8, u8), BuildingBatch)>,
     rx: Receiver<(TileId, (u8, u8), BuildingBatch)>,
+    /// Per-chunk LOD batches for a tile being exploded.
+    etx: Sender<(TileId, Vec<((u8, u8), BuildingBatch)>)>,
+    erx: Receiver<(TileId, Vec<((u8, u8), BuildingBatch)>)>,
     tiles: HashMap<TileId, TileDetail>,
     in_flight: usize,
     last: f32,
@@ -282,15 +321,41 @@ pub struct DetailManager {
 struct TileDetail {
     set: Arc<DetailSet>,
     root: Entity,
+    /// The tile's merged LOD buildings (shown while not exploded).
+    lod_root: Option<Entity>,
+    lod_src: Option<Arc<Vec<((u8, u8), BuildingMeshes)>>>,
+    /// Per-chunk LOD entities while exploded.
     lod: HashMap<(u8, u8), Entity>,
+    explode: Explode,
+    /// Last time this tile had detail loaded, pending or wanted.
+    busy_at: f32,
     loaded: HashMap<(u8, u8), Entity>,
     pending: HashSet<(u8, u8)>,
 }
+
+/// A tile's LOD buildings are ONE merged mesh per material. Swapping a chunk
+/// for full detail needs per-chunk LOD, so the tile "explodes" into chunk
+/// entities first (prepared on a worker, spawned a few per frame), and
+/// implodes back once no detail has been near for a while. Only the few
+/// tiles around the player are ever exploded.
+enum Explode {
+    Merged,
+    Pending,
+    Spawning(Vec<((u8, u8), BuildingBatch)>),
+    Exploded,
+}
+
+/// Exploded tiles with no detail near for this long merge back.
+const IMPLODE_AFTER_S: f32 = 8.0;
+/// Per-chunk LOD spawns per frame while exploding.
+const EXPLODE_CHUNKS_PER_FRAME: usize = 8;
 
 /// Detail is built inside this radius and dropped beyond the outer one.
 const DETAIL_IN_M: f32 = 230.0;
 const DETAIL_OUT_M: f32 = 320.0;
 const DETAIL_IN_FLIGHT: usize = 2;
+/// Rock chunks are entities only within this distance of the camera.
+const ROCK_RANGE_M: f32 = 500.0;
 
 /// Spawn one entity per material bucket under `parent`.
 fn spawn_buckets(commands: &mut Commands, meshes: &mut Assets<Mesh>, bm: &BuildingMaterials, b: BuildingBatch, parent: Entity) {
@@ -478,9 +543,9 @@ enum Stage {
     Base,
     /// Library placements and meshlet chunks.
     Extras,
-    /// Distant building chunks (meshes + physics shells), one chunk at a time.
+    /// Merged LOD buildings (one mesh per material) and their physics shell.
     Buildings,
-    /// Tree chunks, one at a time.
+    /// Impostors and the near-camera tree chunk set.
     Trees,
     /// Reveal the tile and hand it to retirement / detail streaming.
     Finish,
@@ -492,12 +557,12 @@ struct Applying {
     stage: Stage,
     parent: Option<Entity>,
     ready: ReadyTile,
-    lod_entities: HashMap<(u8, u8), Entity>,
+    lod_root: Option<Entity>,
 }
 
 impl Applying {
     fn new(ready: ReadyTile) -> Self {
-        Self { tile: ready.build.tile, stage: Stage::Base, parent: None, ready, lod_entities: HashMap::new() }
+        Self { tile: ready.build.tile, stage: Stage::Base, parent: None, ready, lod_root: None }
     }
 }
 
@@ -514,7 +579,7 @@ fn apply_tiles(
     bmats: Res<BuildingMaterials>,
     focus: Query<&GlobalTransform, With<Focus>>,
     origin: Res<WorldOrigin>,
-    foliage: Res<crate::foliage::FoliageAssets>,
+    impostors: Res<crate::impostors::Impostors>,
     mut sat_pool: ResMut<crate::ground_material::SatPool>,
     library: Option<Res<crate::library::CookedLibrary>>,
 ) {
@@ -584,17 +649,27 @@ fn apply_tiles(
                         }
                         e.insert(ChildOf(parent_id));
                     }
+                    let rocks = std::mem::take(&mut a.ready.rock_chunks);
+                    if !rocks.is_empty() {
+                        commands.spawn((crate::near_chunks::NearMeshes::new(ROCK_RANGE_M, mats.matte.clone(), rocks), Transform::default(), Visibility::default(), ChildOf(parent_id)));
+                    }
                     a.stage = Stage::Extras;
                 }
                 Stage::Extras => {
-                    let cost = 1 + a.ready.build.placements.len() as u32 / 20 + a.ready.meshlets.len() as u32;
+                    let merged = a.ready.placements.as_ref().map_or(0, |m| m.mesh.as_ref().map_or(0, tris) / 10_000 + 2);
+                    let cost = 1 + merged + if a.ready.placements.is_none() { a.ready.build.placements.len() as u32 } else { 0 } + a.ready.meshlets.len() as u32;
                     if !budget.try_spend(cost) {
                         blocked = true;
                         continue;
                     }
                     let parent_id = a.parent.unwrap();
-                    if let Some(lib) = &library {
-                        crate::library::spawn_placements(&mut commands, lib, &mats, parent_id, &a.ready.build.placements);
+                    match a.ready.placements.take() {
+                        Some(m) => crate::library::spawn_merged(&mut commands, &mut meshes, &mats, parent_id, m),
+                        None => {
+                            if let Some(lib) = &library {
+                                crate::library::spawn_placements(&mut commands, lib, &mats, parent_id, &a.ready.build.placements);
+                            }
+                        }
                     }
                     for (m, off) in a.ready.meshlets.drain(..) {
                         commands.spawn((MeshletMesh3d(meshlet_assets.add(m)), MeshMaterial3d(mats.palette_matte.clone()), Transform::from_translation(off), ChildOf(parent_id)));
@@ -602,36 +677,34 @@ fn apply_tiles(
                     a.stage = Stage::Buildings;
                 }
                 Stage::Buildings => {
-                    let Some((_, batch)) = a.ready.lod.last() else {
-                        a.stage = Stage::Trees;
-                        continue;
-                    };
+                    let batch = &a.ready.lod;
                     let cost = 1 + batch.buckets.len() as u32 + if batch.collider.is_some() { 3 } else { 0 } + batch.buckets.iter().map(|(_, m)| tris(m)).sum::<u32>() / 10_000;
                     if !budget.try_spend(cost) {
                         blocked = true;
                         continue;
                     }
-                    let (chunk, mut batch) = a.ready.lod.pop().unwrap();
+                    let mut batch = std::mem::replace(&mut a.ready.lod, BuildingBatch { buckets: Vec::new(), collider: None });
                     let parent_id = a.parent.unwrap();
-                    let e = commands.spawn((Transform::default(), Visibility::default(), ChildOf(parent_id))).id();
                     if let Some(col) = batch.collider.take() {
                         commands.spawn((RigidBody::Static, col, Transform::default(), ChildOf(parent_id)));
                     }
-                    spawn_buckets(&mut commands, &mut meshes, &bmats, batch, e);
-                    a.lod_entities.insert(chunk, e);
+                    if !batch.buckets.is_empty() {
+                        let e = commands.spawn((Transform::default(), Visibility::default(), ChildOf(parent_id))).id();
+                        spawn_buckets(&mut commands, &mut meshes, &bmats, batch, e);
+                        a.lod_root = Some(e);
+                    }
+                    a.stage = Stage::Trees;
                 }
                 Stage::Trees => {
-                    if a.ready.trees.chunks.is_empty() {
-                        a.stage = Stage::Finish;
-                        continue;
-                    }
-                    if !budget.try_spend(4) {
+                    let tr = &a.ready.trees;
+                    let cost = 2 + tr.impostors.as_ref().map_or(0, |(m, _)| tris(m)) / 10_000;
+                    if !budget.try_spend(cost) {
                         blocked = true;
                         continue;
                     }
-                    let c = a.ready.trees.chunks.pop().unwrap();
-                    let (up, lod) = (a.ready.trees.up, a.ready.trees.lod);
-                    crate::foliage::spawn_tree_chunk(&mut commands, &mut meshes, &foliage, a.parent.unwrap(), up, lod, c);
+                    let tr = std::mem::replace(&mut a.ready.trees, crate::foliage::PreparedTrees { up: Vec3::Y, chunks: Vec::new(), impostors: None });
+                    crate::foliage::spawn_tile_trees(&mut commands, &mut meshes, &impostors, a.parent.unwrap(), tr);
+                    a.stage = Stage::Finish;
                 }
                 Stage::Finish => unreachable!(),
             }
@@ -653,7 +726,20 @@ fn apply_tiles(
             }
         }
         if let Some(set) = &b.building_detail {
-            dm.tiles.insert(t, TileDetail { set: set.clone(), root: parent_id, lod: std::mem::take(&mut a.lod_entities), loaded: HashMap::new(), pending: HashSet::new() });
+            dm.tiles.insert(
+                t,
+                TileDetail {
+                    set: set.clone(),
+                    root: parent_id,
+                    lod_root: a.lod_root,
+                    lod_src: a.ready.lod_chunks.take(),
+                    lod: HashMap::new(),
+                    explode: Explode::Merged,
+                    busy_at: 0.0,
+                    loaded: HashMap::new(),
+                    pending: HashSet::new(),
+                },
+            );
         }
         if std::env::var_os("EW_TILE_STATS").is_some() {
             eprintln!("TILESTAT z{} terrain={} water={} roads={} trees={} rocks={} street={} trees_n={}", t.z, b.terrain.triangle_count(), b.water.triangle_count(), b.roads.triangle_count(), b.trees.triangle_count(), b.rocks.triangle_count(), b.street_props.triangle_count(), b.stats.trees);
@@ -706,6 +792,8 @@ fn retire_tiles(mut commands: Commands, mut mgr: ResMut<TileManager>, mut dm: Re
 }
 
 /// Build full-detail building chunks near the focus; drop them when far.
+/// A tile explodes its merged LOD into chunks before its first detail chunk
+/// and implodes again once nothing has been near for a while.
 fn stream_detail(
     time: Res<Time>,
     mut commands: Commands,
@@ -723,17 +811,49 @@ fn stream_detail(
     let pool = AsyncComputeTaskPool::get();
     let mut want: Vec<(f32, TileId, (u8, u8))> = Vec::new();
     let mut drop: Vec<(TileId, (u8, u8))> = Vec::new();
-    for (tid, td) in &dm.tiles {
+    let mut explode: Vec<TileId> = Vec::new();
+    for (tid, td) in dm.tiles.iter_mut() {
         let Ok(gt) = tiles.get(td.root) else { continue };
+        let mut wants = false;
         for chunk in td.set.chunks.keys() {
             let c = gt.transform_point(td.set.chunk_center(*chunk));
             let d = c.distance(fp);
             if d < DETAIL_IN_M && !td.loaded.contains_key(chunk) && !td.pending.contains(chunk) {
-                want.push((d, *tid, *chunk));
+                wants = true;
+                if matches!(td.explode, Explode::Exploded) || td.lod_src.is_none() {
+                    want.push((d, *tid, *chunk));
+                }
             } else if d > DETAIL_OUT_M && td.loaded.contains_key(chunk) {
                 drop.push((*tid, *chunk));
             }
         }
+        if wants || !td.loaded.is_empty() || !td.pending.is_empty() {
+            td.busy_at = now;
+        }
+        if wants && matches!(td.explode, Explode::Merged) && td.lod_src.is_some() {
+            explode.push(*tid);
+        }
+        // Nothing near for a while: merge back into the one-mesh-per-material LOD.
+        if matches!(td.explode, Explode::Exploded) && now - td.busy_at > IMPLODE_AFTER_S {
+            for (_, e) in td.lod.drain() {
+                commands.entity(e).despawn();
+            }
+            if let Some(l) = td.lod_root.and_then(|e| vis.get_mut(e).ok()) {
+                *l.into_inner() = Visibility::Inherited;
+            }
+            td.explode = Explode::Merged;
+        }
+    }
+    for tid in explode {
+        let Some(td) = dm.tiles.get_mut(&tid) else { continue };
+        let Some(src) = td.lod_src.clone() else { continue };
+        td.explode = Explode::Pending;
+        let tx = dm.etx.clone();
+        pool.spawn(async move {
+            let batches = src.iter().map(|(c, m)| (*c, prepare_batch(m, false))).collect();
+            let _ = tx.send((tid, batches));
+        })
+        .detach();
     }
     for (tid, chunk) in drop {
         if let Some(td) = dm.tiles.get_mut(&tid) {
@@ -773,11 +893,53 @@ fn receive_detail(
     dm.in_flight = dm.in_flight.saturating_sub(1);
     let Some(td) = dm.tiles.get_mut(&tid) else { return };
     td.pending.remove(&chunk);
+    // Imploded while this was building: the merged LOD would overlap it.
+    if td.lod_src.is_some() && !matches!(td.explode, Explode::Exploded) {
+        return;
+    }
     let e = commands.spawn((Transform::default(), Visibility::default(), ChildOf(td.root))).id();
     spawn_buckets(&mut commands, &mut meshes, &bmats, bmesh, e);
     td.loaded.insert(chunk, e);
     if let Some(l) = td.lod.get(&chunk).and_then(|e| vis.get_mut(*e).ok()) {
         *l.into_inner() = Visibility::Hidden;
+    }
+}
+
+/// Take prepared per-chunk LOD batches and spawn them a few per frame; once
+/// a tile's are all in, hide its merged LOD.
+fn receive_explode(
+    mut commands: Commands,
+    mut dm: ResMut<DetailManager>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    bmats: Res<BuildingMaterials>,
+    mut vis: Query<&mut Visibility>,
+) {
+    while let Ok((tid, batches)) = dm.erx.try_recv() {
+        if let Some(td) = dm.tiles.get_mut(&tid) {
+            if matches!(td.explode, Explode::Pending) {
+                td.explode = Explode::Spawning(batches);
+            }
+        }
+    }
+    let mut budget = EXPLODE_CHUNKS_PER_FRAME;
+    for td in dm.tiles.values_mut() {
+        let Explode::Spawning(batches) = &mut td.explode else { continue };
+        while budget > 0 {
+            let Some((chunk, batch)) = batches.pop() else { break };
+            budget -= 1;
+            let e = commands.spawn((Transform::default(), Visibility::default(), ChildOf(td.root))).id();
+            spawn_buckets(&mut commands, &mut meshes, &bmats, batch, e);
+            td.lod.insert(chunk, e);
+        }
+        if batches.is_empty() {
+            if let Some(l) = td.lod_root.and_then(|e| vis.get_mut(e).ok()) {
+                *l.into_inner() = Visibility::Hidden;
+            }
+            td.explode = Explode::Exploded;
+        }
+        if budget == 0 {
+            break;
+        }
     }
 }
 

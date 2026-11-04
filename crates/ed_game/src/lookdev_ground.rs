@@ -268,7 +268,7 @@ pub(super) fn build(
             // Trees for context (forest, park, scrub woods, meadow hedges).
             let occ = if place == Place::UrbanPark { Some(urban_extras(commands, meshes, mats, root, &tp, &grid_t, &surface_t)) } else { None };
             let spot = if center { Some(camera_spot(place, &grid_t, &tp)) } else { None };
-            let (trees, _) = foliage::scatter(&tp, &grid_t, &surface_t, occ.as_ref(), if center { 6000 } else { 1500 });
+            let (trees, _, _) = foliage::scatter(&tp, &grid_t, &surface_t, occ.as_ref(), if center { 6000 } else { 1500 });
             let trees: Vec<_> = trees
                 .into_iter()
                 .filter(|t| spot.is_none_or(|(su, sv, _)| t.pos.distance(tp.local(su, sv, grid_t.sample(su, sv) as f64)) > 4.5))

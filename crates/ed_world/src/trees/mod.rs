@@ -20,6 +20,7 @@
 //! leaf material, a handful of big cards and a simplified trunk) grown from
 //! the same seed so the silhouette matches.
 
+pub mod impostor;
 pub mod textures;
 
 use crate::foliage::{TreeInstance, TreeKind};
@@ -1605,17 +1606,6 @@ pub fn bake_far(trees: &[TreeInstance], up: Vec3, origin: Vec3) -> WindMesh {
     out
 }
 
-/// Density-thinned far mesh: every `keep_every`-th tree, scaled up in
-/// footprint so the canopy cover stays similar (used beyond ~1 km).
-pub fn bake_far_thin(trees: &[TreeInstance], up: Vec3, origin: Vec3, keep_every: usize, grow: f32) -> WindMesh {
-    let mut out = WindMesh::default();
-    for t in trees.iter().step_by(keep_every.max(1)) {
-        let m = far_model(t.kind, variant_for(t));
-        out.append_transformed(&m.leaves, instance_rotation(t, up), t.scale * grow, t.pos - origin, instance_phase(t));
-    }
-    out
-}
-
 /// Full-detail merged meshes for a small set of trees (lookdev, tests):
 /// (rough bark, palm bark, leaves).
 pub fn bake_near(trees: &[TreeInstance], up: Vec3, origin: Vec3) -> (WindMesh, WindMesh, WindMesh) {
@@ -1639,12 +1629,8 @@ pub fn bake_near(trees: &[TreeInstance], up: Vec3, origin: Vec3) -> (WindMesh, W
 pub struct TreeChunk {
     /// Chunk center, relative to the tile anchor.
     pub center: Vec3,
-    /// Far-LOD mesh, relative to `center`.
+    /// Far-LOD mesh (leaf cards), relative to `center`.
     pub far: WindMesh,
-    /// 1-in-4 thinned far mesh for mid distance (empty on coarse tiles).
-    pub far_mid: WindMesh,
-    /// 1-in-16 thinned far mesh for the horizon (empty on coarse tiles).
-    pub far_low: WindMesh,
     /// Instances in this chunk (positions relative to the tile anchor).
     pub instances: Vec<TreeInstance>,
 }
@@ -1653,15 +1639,18 @@ pub struct TreeChunk {
 #[derive(Debug, Clone, Default)]
 pub struct TileTrees {
     pub up: Vec3,
+    /// Fine tiles only: card chunks and instances for near detail.
     pub chunks: Vec<TreeChunk>,
+    /// Every tree of the tile as an impostor quad (tile mesh space).
+    pub impostors: impostor::ImpostorMesh,
 }
 
 impl TileTrees {
     pub fn count(&self) -> usize {
-        self.chunks.iter().map(|c| c.instances.len()).sum()
+        self.chunks.iter().map(|c| c.instances.len()).sum::<usize>().max(self.impostors.len())
     }
     pub fn triangle_count(&self) -> usize {
-        self.chunks.iter().map(|c| c.far.triangle_count()).sum()
+        self.chunks.iter().map(|c| c.far.triangle_count()).sum::<usize>() + self.impostors.len() * 2
     }
 }
 
@@ -1683,15 +1672,10 @@ pub fn bake_tile(trees: Vec<TreeInstance>, up: Vec3, width: f32, grid: usize) ->
         .map(|instances| {
             let center = instances.iter().map(|t| t.pos).sum::<Vec3>() / instances.len() as f32;
             let far = bake_far(&instances, up, center);
-            let (far_mid, far_low) = if grid > 1 {
-                (bake_far_thin(&instances, up, center, 4, 1.6), bake_far_thin(&instances, up, center, 16, 2.6))
-            } else {
-                (WindMesh::default(), WindMesh::default())
-            };
-            TreeChunk { center, far, far_mid, far_low, instances }
+            TreeChunk { center, far, instances }
         })
         .collect();
-    TileTrees { up, chunks }
+    TileTrees { up, chunks, impostors: Default::default() }
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 # Plan: performance (virtual geometry + instancing)
 
-Status: PLAN / findings only. Direction set by user: Nanite-like virtual geometry as the core, full detail everywhere, NO impostors, NO classic discrete LOD meshes.
+Status: PLAN / findings only. Direction set by user: Nanite-like virtual geometry as the core, full detail everywhere, NO impostors, NO classic discrete LOD meshes. Update Nov 4: the user approved impostors for trees (drawn as far as they make sense); everything else keeps this direction.
 
 ## Measured (perf.csv, perf_lod.csv, perf_lowres_nopost.csv, rows with tiles loaded)
 - 15-21 fps average, p99 frame 90-114 ms.

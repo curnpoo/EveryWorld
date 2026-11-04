@@ -1,29 +1,25 @@
 //! Trees and shrubs on screen: the wind-swayed foliage material, the
 //! procedural leaf atlas and bark textures, and distance LOD.
 //!
-//! Each tile's trees arrive as chunks ([`ed_world::trees::TileTrees`]). A
-//! chunk always has a merged far-LOD mesh (big leaf cards, simple trunks).
-//! When the camera comes close, [`stream_near_trees`] hides it and spawns
-//! full-detail trees as entities sharing one mesh per species variant, so
-//! Bevy batches them into a few instanced draws; walking away reverses it.
+//! LOD chain per tree, far to near: impostor quad (one entity per tile, see
+//! [`crate::impostors`]), merged leaf-card mesh per chunk (fine tiles,
+//! within [`impostor::CARD_RANGE_M`]), full-detail tree (within `NEAR_IN`)
+//! sharing one mesh per species variant so Bevy instances them. Cards and
+//! full trees are entities only while the camera is near
+//! ([`stream_tree_chunks`]).
 
 use crate::meshconv::to_mesh;
 use bevy::asset::{RenderAssetUsages, embedded_asset};
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::pbr::{ExtendedMaterial, MaterialExtension};
-use bevy::camera::visibility::VisibilityRange;
-use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 use bevy::render::render_resource::{AsBindGroup, Extent3d, TextureDimension, TextureFormat};
 use bevy::shader::ShaderRef;
 use ed_world::foliage::{TreeInstance, TreeKind};
-use ed_world::trees::{self, BarkStyle, TileTrees, WindMesh, textures::Rgba8Image};
+use ed_world::trees::{self, BarkStyle, TileTrees, WindMesh, impostor, textures::Rgba8Image};
 use std::collections::HashMap;
 
 /// Full-detail trees within this distance of a chunk's center...
-/// Far-tree density bands: full to here, 1-in-4 to `FAR_LOW_M`, 1-in-16 beyond.
-const FAR_MID_M: f32 = 800.0;
-const FAR_LOW_M: f32 = 2500.0;
 const NEAR_IN: f32 = 230.0;
 /// ...and back to the far cards beyond this one (hysteresis).
 const NEAR_OUT: f32 = 270.0;
@@ -36,10 +32,10 @@ impl Plugin for FoliagePlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "shaders/foliage.wesl");
         embedded_asset!(app, "shaders/foliage_prepass.wesl");
-        app.add_plugins(MaterialPlugin::<FoliageMaterial>::default())
+        app.add_plugins((MaterialPlugin::<FoliageMaterial>::default(), crate::impostors::ImpostorPlugin))
             .insert_resource(Wind::default())
             .add_systems(PreStartup, setup_foliage)
-            .add_systems(Update, (update_wind, stream_near_trees));
+            .add_systems(Update, (update_wind, stream_tree_chunks));
     }
 }
 
@@ -145,10 +141,18 @@ fn to_image(img: Rgba8Image, repeat: bool) -> Image {
     out
 }
 
-fn setup_foliage(mut commands: Commands, mut images: ResMut<Assets<Image>>, mut mats: ResMut<Assets<FoliageMaterial>>) {
-    let atlas = images.add(to_image(trees::textures::leaf_atlas(), false));
-    let bark_tex = images.add(to_image(trees::textures::bark_texture(), true));
-    let palm_tex = images.add(to_image(trees::textures::palm_bark_texture(), true));
+fn setup_foliage(
+    mut commands: Commands,
+    mut images: ResMut<Assets<Image>>,
+    mut mats: ResMut<Assets<FoliageMaterial>>,
+    mut imp_mats: ResMut<Assets<crate::impostors::ImpostorMaterial>>,
+) {
+    let (leaf_img, bark_img, palm_img) = (trees::textures::leaf_atlas(), trees::textures::bark_texture(), trees::textures::palm_bark_texture());
+    // The impostor bake renders the same textures on a background thread.
+    crate::impostors::setup(&mut commands, &mut images, &mut imp_mats, leaf_img.clone(), bark_img.clone(), palm_img.clone());
+    let atlas = images.add(to_image(leaf_img, false));
+    let bark_tex = images.add(to_image(bark_img, true));
+    let palm_tex = images.add(to_image(palm_img, true));
     let ext = WindExt::default();
     let bark = |tex: Handle<Image>| StandardMaterial {
         base_color_texture: Some(tex),
@@ -207,20 +211,29 @@ fn update_wind(
     }
 }
 
-/// A chunk of a tile's trees, switching between far cards and full detail.
+/// A fine tile's tree chunks. Leaf-card meshes and full-detail trees exist
+/// as entities only near the camera ([`stream_tree_chunks`]); everything
+/// else is drawn by the tile's single impostor entity.
 #[derive(Component)]
-pub struct TreeChunkLod {
-    instances: Vec<TreeInstance>,
+pub struct TreeChunks {
     up: Vec3,
-    /// Chunk center in the tile's mesh space (instances are relative to the tile).
+    chunks: Vec<ChunkState>,
+}
+
+struct ChunkState {
+    /// Chunk center in the tile's mesh space.
     center: Vec3,
-    far: Entity,
+    /// Card mesh, converted on the worker; uploaded the first time the
+    /// camera comes within range, then kept by handle.
+    far_src: Option<Mesh>,
+    far_mesh: Option<Handle<Mesh>>,
+    instances: Vec<TreeInstance>,
+    far: Option<Entity>,
     near: Vec<Entity>,
 }
 
-/// Spawn one full-detail tree under `parent`; `offset` is subtracted from
-/// the instance position (the parent's position in the same space).
-/// `variant` is normally [`trees::variant_for`].
+/// Spawn one full-detail tree under `parent` (bark and leaves entities,
+/// each with the tree's transform). `variant` is normally [`trees::variant_for`].
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_near_tree(
     commands: &mut Commands,
@@ -231,108 +244,122 @@ pub fn spawn_near_tree(
     up: Vec3,
     offset: Vec3,
     variant: u32,
-) -> Entity {
+    out: &mut Vec<Entity>,
+) {
     let p = fa.proto(meshes, t.kind, variant);
     let transform = Transform {
         translation: t.pos - offset,
         rotation: trees::instance_rotation(t, up),
         scale: Vec3::splat(t.scale),
     };
-    let root = commands.spawn((transform, Visibility::default(), ChildOf(parent))).id();
     if let Some(b) = p.bark {
-        commands.spawn((Mesh3d(b), MeshMaterial3d(fa.bark_for(p.style).clone()), Transform::default(), ChildOf(root)));
+        out.push(commands.spawn((Mesh3d(b), MeshMaterial3d(fa.bark_for(p.style).clone()), transform, ChildOf(parent))).id());
     }
     if let Some(l) = p.leaves {
-        commands.spawn((Mesh3d(l), MeshMaterial3d(fa.leaves.clone()), Transform::default(), ChildOf(root)));
+        out.push(commands.spawn((Mesh3d(l), MeshMaterial3d(fa.leaves.clone()), transform, ChildOf(parent))).id());
     }
-    root
 }
 
-/// A tile's tree chunk with its far meshes already converted to Bevy meshes
-/// (done on the build worker, not the main thread).
+/// A tile's tree chunk with its card mesh already converted (on the worker).
 pub struct PreparedTreeChunk {
     center: Vec3,
-    far: Mesh,
-    /// Thinned density bands with their visibility range.
-    bands: Vec<(Mesh, f32, f32)>,
+    far: Option<Mesh>,
     instances: Vec<TreeInstance>,
 }
 
-/// A tile's trees, ready to spawn chunk by chunk.
+/// A tile's trees, ready to spawn.
 pub struct PreparedTrees {
     pub up: Vec3,
-    /// Coarse tiles (one chunk) only ever show far cards; finer ones swap to
-    /// full-detail trees near the camera.
-    pub lod: bool,
+    /// Fine tiles only.
     pub chunks: Vec<PreparedTreeChunk>,
+    /// Every tree as an impostor quad.
+    pub impostors: Option<(Mesh, bevy::camera::primitives::Aabb)>,
 }
 
-/// Worker-thread half of spawning: convert every far mesh up front.
-pub fn prepare_trees(trees: &TileTrees) -> PreparedTrees {
-    let lod = trees.chunks.len() > 1;
+/// Worker-thread half of spawning: convert every mesh up front.
+pub fn prepare_trees(trees: TileTrees) -> PreparedTrees {
     let chunks = trees
         .chunks
-        .iter()
-        .map(|c| PreparedTreeChunk {
-            center: c.center,
-            far: wind_mesh(&c.far),
-            bands: [(&c.far_mid, FAR_MID_M, FAR_LOW_M), (&c.far_low, FAR_LOW_M, f32::MAX)]
-                .into_iter()
-                .filter(|(m, _, _)| !m.mesh.positions.is_empty())
-                .map(|(m, a, b)| (wind_mesh(m), a, b))
-                .collect(),
-            instances: c.instances.clone(),
-        })
+        .into_iter()
+        .map(|c| PreparedTreeChunk { center: c.center, far: (!c.far.is_empty()).then(|| wind_mesh(&c.far)), instances: c.instances })
         .collect();
-    PreparedTrees { up: trees.up, lod, chunks }
+    let impostors = (!trees.impostors.is_empty()).then(|| crate::impostors::to_mesh(trees.impostors));
+    PreparedTrees { up: trees.up, chunks, impostors }
 }
 
-/// Spawn one prepared tree chunk under `parent` (the tile entity, whose mesh
-/// space the chunk is in). Returns the number of entities spawned.
-pub fn spawn_tree_chunk(commands: &mut Commands, meshes: &mut Assets<Mesh>, fa: &FoliageAssets, parent: Entity, up: Vec3, lod: bool, c: PreparedTreeChunk) -> u32 {
-    let holder = commands.spawn((Transform::from_translation(c.center), Visibility::default(), ChildOf(parent))).id();
-    let mut far_e = commands.spawn((Mesh3d(meshes.add(c.far)), MeshMaterial3d(fa.leaves.clone()), Transform::default(), ChildOf(holder)));
-    if lod {
-        far_e.insert(VisibilityRange::abrupt(0.0, FAR_MID_M));
-    }
-    let far = far_e.id();
-    let mut n = 2;
-    // Thinned density bands (no mesh swaps, just fewer, larger crowns).
-    for (m, a, b) in c.bands {
-        commands.spawn((Mesh3d(meshes.add(m)), MeshMaterial3d(fa.leaves.clone()), Transform::default(), VisibilityRange::abrupt(a, b), NotShadowCaster, ChildOf(holder)));
+/// Spawn a tile's trees under `parent` (the tile entity): one impostor
+/// entity, plus one chunk-set entity on fine tiles. Returns the entity count.
+pub fn spawn_tile_trees(commands: &mut Commands, meshes: &mut Assets<Mesh>, imp: &crate::impostors::Impostors, parent: Entity, p: PreparedTrees) -> u32 {
+    let mut n = 0;
+    if let Some((mesh, aabb)) = p.impostors {
+        crate::impostors::spawn(commands, meshes, imp, parent, mesh, aabb);
         n += 1;
     }
-    if lod {
-        commands.entity(holder).insert(TreeChunkLod { instances: c.instances, up, center: c.center, far, near: Vec::new() });
+    if !p.chunks.is_empty() {
+        let chunks = p
+            .chunks
+            .into_iter()
+            .map(|c| ChunkState { center: c.center, far_src: c.far, far_mesh: None, instances: c.instances, far: None, near: Vec::new() })
+            .collect();
+        commands.spawn((TreeChunks { up: p.up, chunks }, Transform::default(), Visibility::default(), ChildOf(parent)));
+        n += 1;
     }
     n
 }
 
-/// Swap chunks between far cards and full-detail trees by camera distance.
-pub fn stream_near_trees(
+/// Card meshes spawned per frame at most (each may upload a mesh).
+const CARD_SPAWNS_PER_FRAME: usize = 24;
+
+/// Near the camera, turn chunks into entities: leaf cards within
+/// [`impostor::CARD_RANGE_M`], full-detail trees within `NEAR_IN`.
+pub fn stream_tree_chunks(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     fa: Option<ResMut<FoliageAssets>>,
     cam: Query<&GlobalTransform, (With<Camera3d>, Without<crate::globe::GlobeCamera>)>,
-    mut chunks: Query<(Entity, &GlobalTransform, &mut TreeChunkLod)>,
+    mut sets: Query<(Entity, &GlobalTransform, &mut TreeChunks)>,
 ) {
     let Some(mut fa) = fa else { return };
     let Some(cam) = cam.iter().next().map(|c| c.translation()) else { return };
-    let mut swaps = 0;
-    for (e, gt, mut c) in &mut chunks {
-        let d = gt.translation().distance(cam);
-        if c.near.is_empty() && d < NEAR_IN && swaps < SWAPS_PER_FRAME {
-            swaps += 1;
-            let (up, center) = (c.up, c.center);
-            let near: Vec<Entity> = c.instances.iter().map(|t| spawn_near_tree(&mut commands, &mut meshes, &mut fa, e, t, up, center, trees::variant_for(t))).collect();
-            c.near = near;
-            commands.entity(c.far).insert(Visibility::Hidden);
-        } else if !c.near.is_empty() && d > NEAR_OUT && swaps < SWAPS_PER_FRAME {
-            swaps += 1;
-            for n in c.near.drain(..) {
-                commands.entity(n).despawn();
+    let (mut swaps, mut cards) = (0, 0);
+    for (root, gt, mut set) in &mut sets {
+        let up = set.up;
+        for c in set.chunks.iter_mut() {
+            let d = gt.transform_point(c.center).distance(cam);
+            let card_range = impostor::CARD_RANGE_M + if c.far.is_some() { 60.0 } else { 0.0 };
+            if d < card_range {
+                if c.far.is_none() && cards < CARD_SPAWNS_PER_FRAME {
+                    if c.far_mesh.is_none() {
+                        c.far_mesh = c.far_src.take().map(|m| meshes.add(m));
+                    }
+                    if let Some(h) = &c.far_mesh {
+                        cards += 1;
+                        let vis = if c.near.is_empty() { Visibility::Inherited } else { Visibility::Hidden };
+                        c.far = Some(commands.spawn((Mesh3d(h.clone()), MeshMaterial3d(fa.leaves.clone()), Transform::from_translation(c.center), vis, ChildOf(root))).id());
+                    }
+                }
+            } else if let Some(e) = c.far.take() {
+                commands.entity(e).despawn();
             }
-            commands.entity(c.far).insert(Visibility::Inherited);
+            if c.near.is_empty() && d < NEAR_IN && swaps < SWAPS_PER_FRAME {
+                swaps += 1;
+                let mut near = Vec::with_capacity(c.instances.len() * 2);
+                for t in &c.instances {
+                    spawn_near_tree(&mut commands, &mut meshes, &mut fa, root, t, up, Vec3::ZERO, trees::variant_for(t), &mut near);
+                }
+                c.near = near;
+                if let Some(e) = c.far {
+                    commands.entity(e).insert(Visibility::Hidden);
+                }
+            } else if !c.near.is_empty() && d > NEAR_OUT && swaps < SWAPS_PER_FRAME {
+                swaps += 1;
+                for n in c.near.drain(..) {
+                    commands.entity(n).despawn();
+                }
+                if let Some(e) = c.far {
+                    commands.entity(e).insert(Visibility::Inherited);
+                }
+            }
         }
     }
 }

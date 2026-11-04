@@ -97,3 +97,62 @@ pub fn spawn_placements(commands: &mut Commands, lib: &CookedLibrary, mats: &Wor
         }
     }
 }
+
+/// A tile's placements merged into one mesh and one compound collider
+/// (built on a worker), so a tile's props cost two entities, not hundreds.
+pub struct MergedPlacements {
+    pub mesh: Option<Mesh>,
+    pub collider: Option<Collider>,
+}
+
+/// Source meshes of every library asset, palettized like the cooked ones.
+fn sources() -> &'static [MeshData] {
+    static S: std::sync::OnceLock<Vec<MeshData>> = std::sync::OnceLock::new();
+    S.get_or_init(|| {
+        library::get()
+            .iter()
+            .map(|(_, def)| {
+                let mut m = (def.build)();
+                m.palettize();
+                m
+            })
+            .collect()
+    })
+}
+
+/// Merge `placements` (tile mesh space). Worker-thread safe.
+pub fn merge_placements(placements: &[Placement]) -> MergedPlacements {
+    let lib = library::get();
+    let src = sources();
+    let mut mesh = MeshData::default();
+    let mut shapes = Vec::new();
+    for p in placements {
+        let Some(m) = src.get(p.asset.0 as usize) else { continue };
+        let base = mesh.positions.len() as u32;
+        for i in 0..m.positions.len() {
+            mesh.positions.push((p.rot * (Vec3::from(m.positions[i]) * p.scale) + p.pos).to_array());
+            mesh.normals.push((p.rot * Vec3::from(m.normals[i])).to_array());
+        }
+        mesh.uvs.extend_from_slice(&m.uvs);
+        mesh.colors.extend_from_slice(&m.colors);
+        mesh.indices.extend(m.indices.iter().map(|i| i + base));
+        if let ColliderShape::Cylinder { radius, height } = lib.get(p.asset).collider {
+            let h = height * p.scale;
+            shapes.push((p.pos + p.rot * (Vec3::Y * h * 0.5), p.rot, Collider::cylinder(radius * p.scale, h)));
+        }
+    }
+    MergedPlacements {
+        mesh: (!mesh.is_empty()).then(|| to_mesh(&mesh)),
+        collider: (!shapes.is_empty()).then(|| Collider::compound(shapes)),
+    }
+}
+
+/// Spawn merged placements under the tile entity `parent`.
+pub fn spawn_merged(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &WorldMaterials, parent: Entity, m: MergedPlacements) {
+    if let Some(mesh) = m.mesh {
+        commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(mats.matte.clone()), Transform::default(), ChildOf(parent)));
+    }
+    if let Some(col) = m.collider {
+        commands.spawn((RigidBody::Static, col, Transform::default(), ChildOf(parent)));
+    }
+}
