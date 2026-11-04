@@ -68,10 +68,12 @@ fn setup_sky(
         Sun,
         DirectionalLight { illuminance: lux::RAW_SUNLIGHT, shadow_maps_enabled: !std::env::args().any(|a| a == "--no-shadows"), ..default() },
         SunDisk::EARTH,
-        // Tighter cascades: 1.5 km over 3 cascades spread 2048 texels so thin that
-        // near shadows were blurry *and* expensive. Beyond ~700 m the terrain is
-        // NotShadowCaster anyway; far shading comes from the probes + AO.
-        CascadeShadowConfigBuilder { first_cascade_far_bound: 25.0, maximum_distance: 700.0, num_cascades: 3, overlap_proportion: 0.15, ..default() }.build(),
+        // Two cascades (M0): every cascade re-draws the shadow casters, and the
+        // frame is vertex bound, so a cascade is mostly pure cost. The near one
+        // covers 40 m (the player, cars, street furniture: where contact matters),
+        // the far one runs to 700 m. Beyond that the terrain is NotShadowCaster
+        // anyway; far shading comes from the probes + AO + contact shadows.
+        CascadeShadowConfigBuilder { first_cascade_far_bound: 40.0, maximum_distance: 700.0, num_cascades: 2, overlap_proportion: 0.15, ..default() }.build(),
         Transform::default(),
     ));
     if cfg.atmosphere {
