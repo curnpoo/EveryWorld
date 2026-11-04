@@ -22,7 +22,7 @@ impl Plugin for SkyPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(Clock { unix_s: 0.0, rate: 1.0 })
             .add_systems(Startup, (setup_sky, fetch_weather))
-            .add_systems(Update, (tick_clock, update_sun, update_bodies, follow_ocean));
+            .add_systems(Update, (tick_clock, update_sun, update_bodies, follow_ocean, follow_ocean_globe));
     }
 }
 
@@ -48,6 +48,11 @@ struct EarthAtmosphere;
 #[derive(Component)]
 struct Ocean;
 
+/// Whole-planet sea-level shell for views from high altitude, where the local
+/// disc (280 km radius) can't reach the horizon.
+#[derive(Component)]
+struct OceanGlobe;
+
 fn setup_sky(
     mut commands: Commands,
     cfg: Res<Config>,
@@ -60,15 +65,22 @@ fn setup_sky(
     clock.unix_s = cfg.now_unix();
     commands.spawn((
         Sun,
-        DirectionalLight { illuminance: lux::RAW_SUNLIGHT, shadow_maps_enabled: true, ..default() },
+        DirectionalLight { illuminance: lux::RAW_SUNLIGHT, shadow_maps_enabled: !std::env::args().any(|a| a == "--no-shadows"), ..default() },
         SunDisk::EARTH,
-        CascadeShadowConfigBuilder { first_cascade_far_bound: 60.0, maximum_distance: 1_500.0, num_cascades: 3, ..default() }.build(),
+        // Tighter cascades: 1.5 km over 3 cascades spread 2048 texels so thin that
+        // near shadows were blurry *and* expensive. Beyond ~700 m the terrain is
+        // NotShadowCaster anyway; far shading comes from the probes + AO.
+        CascadeShadowConfigBuilder { first_cascade_far_bound: 25.0, maximum_distance: 700.0, num_cascades: 3, overlap_proportion: 0.15, ..default() }.build(),
         Transform::default(),
     ));
     if cfg.atmosphere {
         // Planet center sits at ECEF origin; GeoAnchored keeps it there across rebases.
         let medium = media.add(ScatteringMedium::earth(256, 256));
-        commands.spawn((EarthAtmosphere, Atmosphere::earth(medium), GeoAnchored(DAffine3::IDENTITY), Transform::default()));
+        // Where no terrain tile covers the view (open ocean at low zoom) the atmosphere's
+        // own ground sphere shows through; make it deep-ocean navy, not mid-grey.
+        let mut atm = Atmosphere::earth(medium);
+        atm.ground_albedo = Vec3::new(0.012, 0.045, 0.075);
+        commands.spawn((EarthAtmosphere, atm, GeoAnchored(DAffine3::IDENTITY), Transform::default()));
     }
     // Moon and planets at their true positions and sizes.
     let sphere = meshes.add(Sphere::new(1.0).mesh().uv(64, 32));
@@ -82,6 +94,14 @@ fn setup_sky(
         commands.spawn((CelestialBody(b.id), Mesh3d(sphere.clone()), MeshMaterial3d(mat), Transform::default(), bevy::light::NotShadowCaster));
     }
     commands.spawn((Ocean, Mesh3d(meshes.add(Mesh::from(Plane3d::default()))), MeshMaterial3d(wm.ocean.clone()), Transform::default(), bevy::light::NotShadowCaster));
+    commands.spawn((OceanGlobe, bevy::camera::visibility::NoFrustumCulling, Mesh3d(meshes.add(Mesh::from(Plane3d::default()))), MeshMaterial3d(mats.add(StandardMaterial {
+            // Orbit view: matte deep blue. A mirror-smooth sea at grazing angles only
+            // reflects the hazy sky and reads as grey-brown.
+            base_color: Color::srgb(0.035, 0.20, 0.42),
+            perceptual_roughness: 0.5,
+            reflectance: 0.12,
+            ..default()
+        })), Transform::default(), Visibility::Hidden, bevy::light::NotShadowCaster));
 }
 
 fn fetch_weather(mut commands: Commands, cfg: Res<Config>) {
@@ -165,13 +185,22 @@ fn update_bodies(
 fn follow_ocean(
     origin: Res<WorldOrigin>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut q: Query<(&mut Mesh3d, &mut Transform), With<Ocean>>,
+    mut q: Query<(&mut Mesh3d, &mut Transform, &mut Visibility), With<Ocean>>,
+    focus: Query<&GlobalTransform, With<Focus>>,
     mut built_gen: Local<Option<u64>>,
 ) {
+    // From high up, terrain tiles carry the satellite water colour themselves;
+    // the sea disc would only add mismatched patches where it clips them.
+    if let Some(f) = focus.iter().next() {
+        let high = origin.to_geodetic(f.translation()).alt_m > 30_000.0;
+        if let Ok((_, _, mut vis)) = q.single_mut() {
+            *vis = if high { Visibility::Hidden } else { Visibility::Inherited };
+        }
+    }
     if *built_gen == Some(origin.generation) {
         return;
     }
-    let Ok((mut mesh, mut t)) = q.single_mut() else { return };
+    let Ok((mut mesh, mut t, _)) = q.single_mut() else { return };
     let mut m = ed_world::mesh::MeshData::default();
     let (rings, seg) = (48usize, 96usize);
     let center = origin.frame.origin;
@@ -210,4 +239,55 @@ fn follow_ocean(
     *t = Transform::default();
     *built_gen = Some(origin.generation);
     let _ = DVec3::ZERO;
+}
+
+/// Sea-level ellipsoid, 1 degree cells (chord sag ~240 m, hidden under the
+/// bathymetry-carrying terrain tiles). Rebuilt when the floating origin moves,
+/// shown only from high altitude where it replaces the local disc.
+fn follow_ocean_globe(
+    origin: Res<WorldOrigin>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut q: Query<(&mut Mesh3d, &mut Visibility), With<OceanGlobe>>,
+    focus: Query<&GlobalTransform, With<Focus>>,
+    mut built_gen: Local<Option<u64>>,
+) {
+    let Ok((mut mesh, mut vis)) = q.single_mut() else { return };
+    let high = focus.iter().next().is_some_and(|f| origin.to_geodetic(f.translation()).alt_m > 30_000.0);
+    *vis = if high { Visibility::Inherited } else { Visibility::Hidden };
+    if !high || *built_gen == Some(origin.generation) {
+        return;
+    }
+    let (rows, cols) = (360usize, 720usize);
+    let mut m = ed_world::mesh::MeshData::default();
+    for r in 0..=rows {
+        let lat = -90.0 + 180.0 * r as f64 / rows as f64;
+        for c in 0..=cols {
+            let lon = -180.0 + 360.0 * c as f64 / cols as f64;
+            let p = origin.frame.geodetic_to_render(ed_geo::Geodetic { lat_deg: lat, lon_deg: lon, alt_m: 80.0 });
+            let n = origin.frame.up_at_render(p);
+            m.vertex(p.as_vec3().to_array(), n.as_vec3().to_array(), [0.0, 0.0], [1.0; 4]);
+        }
+    }
+    let w = cols as u32 + 1;
+    for r in 0..rows as u32 {
+        for c in 0..cols as u32 {
+            let (a, b) = (r * w + c, r * w + c + 1);
+            let (cc, d) = (a + w, b + w);
+            m.tri(a, b, d);
+            m.tri(a, d, cc);
+        }
+    }
+    // Face outward: compare a mid-latitude triangle with its vertex normal.
+    let probe = (rows as u32 / 2 + 20) * cols as u32 * 6 + 12;
+    let i = (probe as usize).min(m.indices.len() - 3);
+    let [a, b, c] = [m.indices[i], m.indices[i + 1], m.indices[i + 2]].map(|k| Vec3::from(m.positions[k as usize]));
+    let n = Vec3::from(m.normals[m.indices[i] as usize]);
+    if (b - a).cross(c - a).dot(n) < 0.0 {
+        for tri in m.indices.chunks_exact_mut(3) {
+            tri.swap(1, 2);
+        }
+    }
+    mesh.0 = meshes.add(crate::meshconv::to_mesh(&m));
+    *built_gen = Some(origin.generation);
+    info!("ocean globe built: {} verts", m.positions.len());
 }

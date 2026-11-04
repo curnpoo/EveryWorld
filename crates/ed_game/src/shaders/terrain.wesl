@@ -30,6 +30,8 @@ struct GroundParams {
 @group(constants::MATERIAL_BIND_GROUP) @binding(103) var normal_tex: texture_2d_array<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(104) var macro_tex: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(105) var macro_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(106) var sat_tex: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(107) var sat_sampler: sampler;
 
 struct TerrainVertex {
     @builtin(instance_index) instance_index: u32,
@@ -40,6 +42,7 @@ struct TerrainVertex {
     @location(8) splat0: vec4<f32>,
     @location(9) splat1: vec4<f32>,
     @location(10) splat2: vec4<f32>,
+    @location(11) sat: vec4<f32>,
 };
 
 struct TerrainVertexOutput {
@@ -52,6 +55,7 @@ struct TerrainVertexOutput {
     @location(8) splat0: vec4<f32>,
     @location(9) splat1: vec4<f32>,
     @location(10) splat2: vec4<f32>,
+    @location(11) sat: vec4<f32>,
 };
 
 @vertex
@@ -67,6 +71,7 @@ fn vertex(v: TerrainVertex) -> TerrainVertexOutput {
     out.splat0 = v.splat0;
     out.splat1 = v.splat1;
     out.splat2 = v.splat2;
+    out.sat = v.sat;
     return out;
 }
 
@@ -276,8 +281,31 @@ fn fragment(in: TerrainVertexOutput, @builtin(front_facing) is_front: bool) -> F
     albedo = albedo * (1.0 - 0.45 * wet);
     rough = mix(rough, 0.22, wet * 0.8);
 
+    // Satellite albedo (gamma-encoded per vertex). alpha: 0 none, ~0.5 water, 1 land.
+    // Per-pixel satellite colour: texels sit on vertices, so remap uv to texel centres.
+    let sd = vec2<f32>(textureDimensions(sat_tex));
+    let sat_s = textureSample(sat_tex, sat_sampler, in.uv * (sd - 1.0) / sd + 0.5 / sd);
+    let has_sat = smoothstep(0.2, 0.4, sat_s.a);
+    let sat_lin = pow(max(sat_s.rgb, vec3<f32>(0.0)), vec3<f32>(2.2));
+    // Water: satellite colour, very smooth, no ground texture or wet darkening.
+    let water_f = has_sat * clamp((1.0 - sat_s.a) * 2.0, 0.0, 1.0);
+    // Far field: real-world colour takes over with distance (texture detail
+    // is kept as a luminance modulation so it doesn't go flat).
+    let far_f = has_sat * smoothstep(400.0, 4000.0, dist) * 0.9;
+    let detail = clamp(dot(albedo, vec3<f32>(0.2126, 0.7152, 0.0722)) / max(dot(albedo, vec3<f32>(0.3333)), 0.02), 0.6, 1.4);
+    albedo = mix(albedo, sat_lin * mix(1.0, detail, 0.35), far_f);
+    albedo = mix(albedo, sat_lin, water_f);
+    // Far away, a mirror-smooth sea just reflects the hazy sky as a flat grey sheet
+    // (and differs per tile); keep it glossy only up close.
+    rough = mix(rough, mix(0.07, 0.35, smoothstep(2000.0, 60000.0, dist)), water_f);
+    ao = mix(ao, 1.0, water_f);
+    // From altitude, fresnel at grazing angles would reflect the (poorly probed) hazy
+    // sky and wash the sea grey; let the satellite/navy albedo carry the colour.
+    pbr_input.material.reflectance = pbr_input.material.reflectance * (1.0 - 0.85 * water_f * smoothstep(5000.0, 80000.0, dist));
+    nd = normalize(mix(nd, n, water_f));
+
     pbr_input.material.base_color = vec4<f32>(albedo, 1.0);
-    pbr_input.material.perceptual_roughness = clamp(rough, 0.06, 1.0);
+    pbr_input.material.perceptual_roughness = clamp(rough, 0.04, 1.0);
     pbr_input.N = nd;
     pbr_input.diffuse_occlusion = pbr_input.diffuse_occlusion * ao;
     pbr_input.specular_occlusion = pbr_input.specular_occlusion * ao;

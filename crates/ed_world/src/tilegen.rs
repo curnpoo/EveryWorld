@@ -41,6 +41,8 @@ pub struct TileBuild {
     /// Render-space anchor (in `frame`) that all meshes are relative to.
     pub anchor: DVec3,
     pub terrain: MeshData,
+    /// Satellite colour texture (size, RGBA8) over the tile's uv square.
+    pub sat_tex: Option<(u32, Vec<u8>)>,
     pub collider: Option<(Vec<Vec3>, Vec<[u32; 3]>)>,
     pub water: MeshData,
     pub roads: MeshData,
@@ -52,7 +54,11 @@ pub struct TileBuild {
     /// Trees and shrubs: per-chunk far-LOD meshes + instances for near detail.
     pub trees: trees::TileTrees,
     pub rocks: MeshData,
+    /// Rocks split into spatial chunks (fine tiles only) for culling.
+    pub rock_chunks: Vec<MeshData>,
     pub street_props: MeshData,
+    /// Library asset instances (street props, ...) in tile mesh space.
+    pub placements: Vec<crate::library::Placement>,
     /// (name, IATA, local position) of airports in this tile.
     pub airports: Vec<(String, String, Vec3)>,
     pub min_max_height: (f32, f32),
@@ -98,7 +104,7 @@ pub fn build(job: &TileJob) -> TileBuild {
 
     // --- Elevation (falls back to coarser zooms, then sea level) ---
     let mut grid = None;
-    let segs = if tile.z >= 13 { 64 } else if tile.z >= 9 { 32 } else { 24 };
+    let segs = if tile.z >= 13 { 64 } else if tile.z >= 9 { 48 } else { 96 };
     let mut ez = elevation_zoom(tile.z);
     while grid.is_none() {
         let src_id = tile.ancestor(ez).0;
@@ -135,10 +141,24 @@ pub fn build(job: &TileJob) -> TileBuild {
     } else {
         None
     };
-    let surface = match &vt {
+    let mut surface = match &vt {
         Some((vid, t)) => SurfaceMap::from_vector(tile, *vid, t, biome, if tile.z >= 13 { 192 } else { 64 }),
         None => SurfaceMap::uniform(tile, biome),
     };
+    // Real-world colour (Sentinel-2 cloudless). Optional: offline just means no tint.
+    match ed_data::satellite::fetch(&job.cache, tile.ancestor(tile.z.min(ed_data::satellite::MAX_ZOOM)).0) {
+        Ok(s) => {
+            surface = surface.with_satellite(s);
+            // Coarse tiles span huge areas: mosaic the four children for 2x the texels.
+            if tile.z < ed_data::satellite::MAX_ZOOM && tile.z <= 9 {
+                let k: Vec<_> = tile.children().iter().filter_map(|c| ed_data::satellite::fetch(&job.cache, *c).ok()).collect();
+                if let Ok(k) = <[_; 4]>::try_from(k) {
+                    surface = surface.with_satellite_kids(k);
+                }
+            }
+        }
+        Err(e) => errors.push(format!("satellite: {e}")),
+    }
 
     let uncarved = grid.clone();
     if vt.is_some() {
@@ -146,6 +166,8 @@ pub fn build(job: &TileJob) -> TileBuild {
     }
     let skirt = (tile.width_m() as f32 * 0.02).clamp(5.0, 3_000.0);
     let terrain_mesh = terrain::build_mesh(&grid, &proj, &surface, skirt);
+    let sat_n = if tile.z <= 9 { 512 } else if tile.z <= 12 { 256 } else { 128 };
+    let sat_tex = surface.sat_texture(sat_n, |u, v| grid.sample(u, v)).map(|d| (sat_n as u32, d));
     let collider = (tile.z >= 13).then(|| terrain::build_collider(&grid, &proj));
     let up = proj.up();
 
@@ -154,6 +176,7 @@ pub fn build(job: &TileJob) -> TileBuild {
         frame: job.frame,
         anchor: proj.anchor,
         terrain: terrain_mesh,
+        sat_tex,
         collider,
         water: MeshData::default(),
         roads: MeshData::default(),
@@ -161,7 +184,9 @@ pub fn build(job: &TileJob) -> TileBuild {
         building_detail: None,
         trees: trees::TileTrees::default(),
         rocks: MeshData::default(),
+        rock_chunks: Vec::new(),
         street_props: MeshData::default(),
+        placements: Vec::new(),
         airports: Vec::new(),
         min_max_height: (hmin, hmax),
         ground: None,
@@ -191,7 +216,7 @@ pub fn build(job: &TileJob) -> TileBuild {
             let region = Region::locate(center.lat_deg, center.lon_deg, ((gmin + gmax) * 0.5) as f64, buildings::tile_is_dense(vt));
             out.water = water::generate(vt, &proj, &uncarved);
             let r = roads::generate(vt, &proj, &grid, &surface, region);
-            out.street_props = props::bake_street_props(&r.props, up);
+            out.placements.extend(props::place_street_props(crate::library::get(), &r.props, up));
             out.stats.props = r.props.len();
             let ctx = BuildingContext { proj: &proj, grid: &grid, surface: &surface, biome, roads: &r.centerlines };
             let specs = buildings::prepare(vt, &ctx, region);
@@ -211,7 +236,7 @@ pub fn build(job: &TileJob) -> TileBuild {
         }
         if tile.z >= 13 {
             let occ = foliage::Occupancy::from_vector(vt, 512);
-            let max = if tile.z >= 14 { 9_000 } else { 4_000 };
+            let max = if tile.z >= 14 { 9_000 } else { 1_500 };
             let (trees, rocks) = foliage::scatter(&proj, &grid, &surface, Some(&occ), max);
             out.stats.trees = trees.len();
             out.stats.rocks = rocks.len();
@@ -219,7 +244,10 @@ pub fn build(job: &TileJob) -> TileBuild {
             // detail near the camera; coarser tiles are one far-LOD chunk.
             let chunk_grid = if tile.z >= 14 { 12 } else { 1 };
             out.trees = trees::bake_tile(trees, up, proj.tile.width_m() as f32, chunk_grid);
-            out.rocks = props::bake_rocks(&rocks, up);
+            // Rocks are small: only fine tiles show them, in culled chunks.
+            if tile.z >= 14 {
+                out.rock_chunks = props::bake_rocks_chunked(&rocks, up, proj.tile.width_m() as f32, 16);
+            }
             if tile.z >= 14 {
                 out.ground = Some(std::sync::Arc::new(crate::ground_scatter::GroundSource {
                     proj,
@@ -235,6 +263,7 @@ pub fn build(job: &TileJob) -> TileBuild {
         + out.roads.triangle_count()
         + out.trees.triangle_count()
         + out.rocks.triangle_count()
+        + out.rock_chunks.iter().map(|m| m.triangle_count()).sum::<usize>()
         + out.street_props.triangle_count()
         + out.building_lod.iter().map(|(_, b)| b.triangle_count()).sum::<usize>();
     out

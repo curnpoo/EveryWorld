@@ -241,7 +241,7 @@ pub fn inset(poly: &[Vec3], up: Vec3, d: f32) -> Vec<Vec3> {
             let na = up.cross(a) * s;
             let nb = up.cross(b) * s;
             let bis = (na + nb).normalize_or(nb);
-            let k = 1.0 / bis.dot(nb).max(0.3);
+            let k = 1.0 / bis.dot(nb).max(0.5);
             p + bis * d * k
         })
         .collect()

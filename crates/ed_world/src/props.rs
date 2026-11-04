@@ -1,8 +1,9 @@
-//! Procedural geometry for rocks and street furniture, baked into one merged
-//! mesh per tile. Trees and shrubs live in [`crate::trees`] (see
+//! Procedural geometry for rocks (baked per chunk) and street furniture
+//! (library assets placed per tile, see [`crate::library`]). Trees and shrubs live in [`crate::trees`] (see
 //! [`crate::trees::bake_tile`]).
 
 use crate::foliage::RockInstance;
+use crate::library::{self, AssetDef, ColliderShape, Library, Placement, RenderPath};
 use crate::mesh::{MeshData, rgb, scale_color};
 use crate::roads::{PoleKind, PropKind, SignalLayout, StreetProp};
 use glam::{Quat, Vec3};
@@ -105,6 +106,26 @@ pub fn bake_rocks(rocks: &[RockInstance], up: Vec3) -> MeshData {
     out
 }
 
+/// Rocks bucketed into a `grid` x `grid` set of chunk meshes (tile mesh space),
+/// so the renderer can frustum-cull and distance-cull them per chunk.
+pub fn bake_rocks_chunked(rocks: &[RockInstance], up: Vec3, width: f32, grid: usize) -> Vec<MeshData> {
+    let grid = grid.max(1);
+    let model = rock_mesh([1.0; 4]);
+    let mut cells: Vec<MeshData> = (0..grid * grid).map(|_| MeshData::default()).collect();
+    let cell = (width / grid as f32).max(1.0);
+    let half = width * 0.5;
+    for r in rocks {
+        let i = (((r.pos.x + half) / cell).floor() as i64).clamp(0, grid as i64 - 1) as usize;
+        let j = (((r.pos.z + half) / cell).floor() as i64).clamp(0, grid as i64 - 1) as usize;
+        place(&mut cells[j * grid + i], &model, r.pos, up, r.yaw, r.scale, Some(r.tint));
+    }
+    cells.retain(|m| !m.is_empty());
+    for m in &mut cells {
+        m.palettize();
+    }
+    cells
+}
+
 fn street_prop_mesh(kind: PropKind) -> MeshData {
     let mut m = MeshData::default();
     let grey = rgb(0x5a5f66);
@@ -153,6 +174,41 @@ fn street_prop_mesh(kind: PropKind) -> MeshData {
         }
     }
     m
+}
+
+/// Every street prop variant with its library key. Keys are the stable names
+/// rules and content packs use; the order here is irrelevant.
+const STREET_PROPS: [(PropKind, &str, f32, f32); 7] = [
+    (PropKind::StreetLight, "prop/street_light", 0.12, 7.5),
+    (PropKind::UtilityPole(PoleKind::Wood), "prop/utility_pole_wood", 0.16, 10.0),
+    (PropKind::UtilityPole(PoleKind::Concrete), "prop/utility_pole_concrete", 0.16, 10.0),
+    (PropKind::UtilityPole(PoleKind::None), "prop/utility_pole", 0.16, 10.0),
+    (PropKind::TrafficSignal(SignalLayout::Vertical), "prop/traffic_signal_vertical", 0.12, 5.5),
+    (PropKind::TrafficSignal(SignalLayout::Horizontal), "prop/traffic_signal_horizontal", 0.12, 5.5),
+    (PropKind::StopSign, "prop/stop_sign", 0.05, 2.2),
+];
+
+pub fn street_prop_key(kind: PropKind) -> &'static str {
+    STREET_PROPS.iter().find(|(k, ..)| *k == kind).map_or("prop/street_light", |(_, key, ..)| key)
+}
+
+pub(crate) fn register_street_props(lib: &mut Library) {
+    for (kind, key, radius, height) in STREET_PROPS {
+        lib.register(AssetDef {
+            key: key.into(),
+            render: RenderPath::Meshlet,
+            collider: ColliderShape::Cylinder { radius, height },
+            build: std::sync::Arc::new(move || street_prop_mesh(kind)),
+        });
+    }
+}
+
+/// Street props as library placements (one instance of a shared model each).
+pub fn place_street_props(lib: &Library, props: &[StreetProp], up: Vec3) -> Vec<Placement> {
+    props
+        .iter()
+        .filter_map(|p| lib.id(street_prop_key(p.kind)).map(|id| library::upright(id, p.pos, up, p.facing)))
+        .collect()
 }
 
 pub fn bake_street_props(props: &[StreetProp], up: Vec3) -> MeshData {

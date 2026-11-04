@@ -297,7 +297,7 @@ fn plane_physics(
 fn vehicle_camera(
     driving: Res<Driving>,
     vehicles: Query<&Transform, (Or<(With<Car>, With<Plane>)>, Without<Camera3d>)>,
-    mut cams: Query<&mut Transform, With<Camera3d>>,
+    mut cams: Query<&mut Transform, (With<Camera3d>, Without<crate::globe::GlobeCamera>)>,
     time: Res<Time>,
 ) {
     let Some(v) = driving.0 else { return };

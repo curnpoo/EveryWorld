@@ -32,7 +32,7 @@ pub type ScatterMaterial = ExtendedMaterial<StandardMaterial, ScatterExt>;
 pub const ATTRIBUTE_SPLAT0: MeshVertexAttribute = MeshVertexAttribute::new("GroundSplat0", 0x6E57_0001, VertexFormat::Unorm8x4);
 pub const ATTRIBUTE_SPLAT1: MeshVertexAttribute = MeshVertexAttribute::new("GroundSplat1", 0x6E57_0002, VertexFormat::Unorm8x4);
 pub const ATTRIBUTE_SPLAT2: MeshVertexAttribute = MeshVertexAttribute::new("GroundSplat2", 0x6E57_0003, VertexFormat::Unorm8x4);
-/// Unused padding: keeps the terrain vertex stride at 64 bytes. With a
+/// Satellite albedo (gamma RGB + blend). Also keeps the terrain vertex stride at 64 bytes. With a
 /// 60-byte stride, small meshes sharing a vertex slab were drawn from
 /// misaligned offsets (long streaks across the sky).
 pub const ATTRIBUTE_SPLAT_PAD: MeshVertexAttribute = MeshVertexAttribute::new("GroundSplatPad", 0x6E57_0005, VertexFormat::Unorm8x4);
@@ -69,6 +69,10 @@ pub struct GroundExt {
     #[texture(104)]
     #[sampler(105)]
     pub macro_tex: Handle<Image>,
+    /// Per-tile satellite colour (gamma RGB + land/water flag in alpha).
+    #[texture(106)]
+    #[sampler(107)]
+    pub sat_tex: Handle<Image>,
 }
 
 impl MaterialExtension for GroundExt {
@@ -93,6 +97,7 @@ impl MaterialExtension for GroundExt {
             ATTRIBUTE_SPLAT0.at_shader_location(8),
             ATTRIBUTE_SPLAT1.at_shader_location(9),
             ATTRIBUTE_SPLAT2.at_shader_location(10),
+            ATTRIBUTE_SPLAT_PAD.at_shader_location(11),
         ])?;
         if let Some(buf) = descriptor.vertex.buffers.first_mut() {
             buf.attributes.extend(extra.attributes);
@@ -195,6 +200,25 @@ fn array_image(layers: &[&[u8]], size: u32, format: TextureFormat, srgb: bool) -
 }
 
 /// Build the terrain + scatter materials (synthesizes the ground textures).
+/// Linear-filtered RGBA8 image for the per-tile satellite colour (data is pre-encoded gamma).
+pub fn sat_image(size: u32, data: Vec<u8>) -> Image {
+    let mut img = Image::new(
+        Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8Unorm,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    img.sampler = bevy::image::ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor {
+        address_mode_u: bevy::image::ImageAddressMode::ClampToEdge,
+        address_mode_v: bevy::image::ImageAddressMode::ClampToEdge,
+        mag_filter: bevy::image::ImageFilterMode::Linear,
+        min_filter: bevy::image::ImageFilterMode::Linear,
+        ..default()
+    });
+    img
+}
+
 pub fn create(
     images: &mut Assets<Image>,
     terrain_mats: &mut Assets<TerrainMaterial>,
@@ -228,7 +252,7 @@ pub fn create(
     };
     let terrain = terrain_mats.add(ExtendedMaterial {
         base: StandardMaterial { base_color: Color::WHITE, perceptual_roughness: 0.95, reflectance: 0.3, ..default() },
-        extension: GroundExt { params, albedo, normal, macro_tex },
+        extension: GroundExt { params, albedo, normal, macro_tex, sat_tex: images.add(sat_image(1, vec![0, 0, 0, 0])) },
     });
     let scatter = scatter_mats.add(ExtendedMaterial {
         base: StandardMaterial {
@@ -286,7 +310,7 @@ fn update_params(
     gm: Option<Res<GroundMaterials>>,
     mut terrain_mats: ResMut<Assets<TerrainMaterial>>,
     mut scatter_mats: ResMut<Assets<ScatterMaterial>>,
-    cam: Query<&GlobalTransform, With<Camera3d>>,
+    cam: Query<&GlobalTransform, (With<Camera3d>, Without<crate::globe::GlobeCamera>)>,
     mut last_offset: Local<Option<glam::DVec2>>,
 ) {
     if let Some(wm) = wm

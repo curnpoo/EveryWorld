@@ -206,12 +206,26 @@ pub struct SurfaceMap {
     pub lat: f64,
     pub res: usize,
     pub cover: Vec<Cover>,
+    /// Satellite colours (Sentinel-2) covering this tile, if fetched.
+    pub sat: Option<SatView>,
+}
+
+/// A satellite tile plus the window of it that this surface tile occupies
+/// (the sat tile is an ancestor of the surface tile).
+#[derive(Debug, Clone)]
+pub struct SatView {
+    pub tile: std::sync::Arc<ed_data::satellite::SatTile>,
+    pub u0: f64,
+    pub v0: f64,
+    pub s: f64,
+    /// Optional finer mosaic: the four children (index cx + 2*cy) of `tile`.
+    pub kids: Option<[std::sync::Arc<ed_data::satellite::SatTile>; 4]>,
 }
 
 impl SurfaceMap {
     pub fn uniform(tile: TileId, biome: Biome) -> Self {
         let c = tile.center();
-        Self { tile, biome, lat: c.lat_deg, res: 1, cover: vec![Cover::Natural] }
+        Self { tile, biome, lat: c.lat_deg, res: 1, cover: vec![Cover::Natural], sat: None }
     }
 
     /// Rasterize a vector tile's cover polygons. `vt_tile` may be an ancestor
@@ -245,7 +259,87 @@ impl SurfaceMap {
                 }
             }
         }
-        Self { tile, biome, lat: c.lat_deg, res, cover }
+        Self { tile, biome, lat: c.lat_deg, res, cover, sat: None }
+    }
+
+    /// Attach satellite imagery. `sat.id` must be an ancestor of (or equal to) this tile.
+    pub fn with_satellite(mut self, sat: ed_data::satellite::SatTile) -> Self {
+        let (_, u0, v0, s) = self.tile.ancestor(sat.id.z);
+        self.sat = Some(SatView { tile: std::sync::Arc::new(sat), u0, v0, s, kids: None });
+        self
+    }
+
+    /// Upgrade to a 2x finer mosaic of the surface tile's children (tile must equal the sat tile).
+    pub fn with_satellite_kids(mut self, kids: [ed_data::satellite::SatTile; 4]) -> Self {
+        if let Some(s) = self.sat.as_mut() {
+            s.kids = Some(kids.map(std::sync::Arc::new));
+        }
+        self
+    }
+
+    /// RGBA8 satellite texture over the tile (`size`^2): gamma RGB + land/water flag
+    /// in alpha (see `sat_vertex`). `height(u,v)` gives ground height for the water test.
+    pub fn sat_texture(&self, size: usize, height: impl Fn(f64, f64) -> f32) -> Option<Vec<u8>> {
+        self.sat.as_ref()?;
+        let mut out = Vec::with_capacity(size * size * 4);
+        for j in 0..size {
+            for i in 0..size {
+                let (u, v) = (i as f64 / (size - 1) as f64, j as f64 / (size - 1) as f64);
+                out.extend_from_slice(&self.sat_vertex(u, v, height(u, v)));
+            }
+        }
+        Some(out)
+    }
+
+    /// Real-world colour (linear RGB) at tile (u, v), if satellite data is loaded.
+    pub fn sat_linear(&self, u: f64, v: f64) -> Option<[f32; 3]> {
+        let s = self.sat.as_ref()?;
+        if let Some(k) = &s.kids {
+            let (x, y) = (u.clamp(0.0, 1.0 - 1e-9) * 2.0, v.clamp(0.0, 1.0 - 1e-9) * 2.0);
+            let (cx, cy) = (x as usize, y as usize);
+            return Some(k[cx + 2 * cy].sample(x - cx as f64, y - cy as f64));
+        }
+        Some(s.tile.sample(s.u0 + u * s.s, s.v0 + v * s.s))
+    }
+
+    /// Is this a water cell (mapped water, or open sea in tiles with no vector data)?
+    pub fn is_water(&self, u: f64, v: f64, height: f32) -> bool {
+        self.cover_at(u, v) == Cover::Water || (self.res == 1 && height < 0.0)
+    }
+
+    /// Per-vertex far-field albedo: gamma-2.2 RGB + blend strength. Water
+    /// gets a satellite-informed water colour (depth-darkened) at full strength.
+    pub fn sat_vertex(&self, u: f64, v: f64, height: f32) -> [u8; 4] {
+        let enc = |c: [f32; 3]| [0, 1, 2].map(|k| (c[k].clamp(0.0, 1.0).powf(1.0 / 2.2) * 255.0 + 0.5) as u8);
+        let sat = self.sat_linear(u, v);
+        if self.is_water(u, v, height) {
+            // Shallow = lighter/greener, deep = navy. Satellite sets the hue.
+            let deep = noise::smoothstep(0.0, -60.0, height.min(0.0) as f32);
+            let base = [0.030 - 0.016 * deep, 0.115 - 0.055 * deep, 0.200 - 0.095 * deep];
+            let c = match sat {
+                Some(s) => {
+                    // Satellite hue only on the shelf; open ocean uses one
+                    // consistent navy so tile JPEG differences never show as seams.
+                    let shelf = noise::smoothstep(-200.0, -20.0, height.min(0.0)) * 0.35;
+                    // Lakes/rivers (above sea level) and shallows take the satellite hue;
+                    // open deep ocean never does, so z>=7 and z<7 tiles match.
+                    let inland = if self.res == 1 { 0.0 } else { 0.65 * noise::smoothstep(-60.0, -5.0, height) };
+                    let w = shelf.max(inland);
+                    [0, 1, 2].map(|k| base[k] * (1.0 - w) + s[k] * w * 0.9)
+                }
+                None => base,
+            };
+            let e = enc(c);
+            // Alpha 128 flags water for the shader (255 = land, 0 = no data).
+            return [e[0], e[1], e[2], 128];
+        }
+        match sat {
+            Some(c) => {
+                let e = enc(c);
+                [e[0], e[1], e[2], 255]
+            }
+            None => [0, 0, 0, 0],
+        }
     }
 
     pub fn cover_at(&self, u: f64, v: f64) -> Cover {
@@ -337,12 +431,45 @@ impl SurfaceMap {
             Biome::IceCap => [1.0, 1.0, 1.0],
         };
         let (gx, gy) = self.global_xy(u, v);
-        // Large, slow patches: some fields greener, some drier, some darker.
-        let dry = noise::fbm(gx * 14.0, gy * 14.0, 31, 3, 0) - 0.5;
-        let lum = 0.92 + 0.16 * noise::fbm(gx * 40.0, gy * 40.0, 32, 2, 0);
         let c = self.cover_at(u, v);
+        let mut base = base;
+        // Satellite truth: scale the living layers so they average to what
+        // the real place looks like. Canopy hides the ground under forests,
+        // so woods only get a partial correction.
+        let mut noise_k = 1.0;
+        if let Some(sat) = self.sat_linear(u, v) {
+            let strength = match c {
+                Cover::Wood => 0.45,
+                Cover::Natural | Cover::Grass | Cover::Park | Cover::Pitch | Cover::Farmland | Cover::Wetland => 0.9,
+                _ => 0.0,
+            };
+            let mut exp = [0.0f32; 3];
+            let mut wsum = 0.0;
+            for (g, x) in recipe(c, self.biome) {
+                if g.is_living() {
+                    let m = g.mean_color();
+                    for k in 0..3 {
+                        exp[k] += m[k] * x;
+                    }
+                    wsum += x;
+                }
+            }
+            if strength > 0.0 && wsum > 0.05 {
+                let r = [0, 1, 2].map(|k| sat[k] / (exp[k] / wsum).max(1e-3));
+                let l = ((r[0] + r[1] + r[2]) / 3.0).max(1e-3);
+                let bright = l.clamp(0.55, 1.45);
+                for k in 0..3 {
+                    let t = (r[k] / l).clamp(0.6, 1.6) * bright;
+                    base[k] = base[k] + (t - base[k]) * strength;
+                }
+                noise_k = 0.5;
+            }
+        }
+        // Large, slow patches: some fields greener, some drier, some darker.
+        let dry = (noise::fbm(gx * 14.0, gy * 14.0, 31, 3, 0) - 0.5) * noise_k;
+        let lum = 1.0 + (0.92 + 0.16 * noise::fbm(gx * 40.0, gy * 40.0, 32, 2, 0) - 1.0) * noise_k;
         let wet = match c {
-            Cover::Wetland => 0.8,
+            Cover::Wetland => 0.6,
             Cover::Water => 1.0,
             _ => 0.0,
         };

@@ -269,7 +269,7 @@ fn run_shots(
     ld: Res<Lookdev>,
     list: Option<ResMut<ShotList>>,
     origin: Res<WorldOrigin>,
-    mut cam: Query<(&mut Transform, &mut Tonemapping), With<Camera3d>>,
+    mut cam: Query<(&mut Transform, &mut Tonemapping), (With<Camera3d>, Without<crate::globe::GlobeCamera>)>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let Some(mut list) = list else { return };

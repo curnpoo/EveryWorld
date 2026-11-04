@@ -14,6 +14,7 @@ pub mod elevation;
 pub mod geocode;
 pub mod http;
 pub mod mvt;
+pub mod satellite;
 pub mod vector;
 pub mod weather;
 

@@ -64,6 +64,23 @@ fn prepare_batch(b: &BuildingMeshes, with_collider: bool) -> BuildingBatch {
     BuildingBatch { buckets, collider }
 }
 
+use bevy::pbr::experimental::meshlet::{MeshletMesh, MeshletMesh3d};
+
+/// Convert a palettized per-tile mesh to a meshlet mesh, recentred on its AABB
+/// centre (returned as the entity offset): Bevy's cluster verifier asserts bounding
+/// spheres nest within 1e-4, which f32 cannot hold km from the origin.
+fn to_meshlet(m: &ed_world::mesh::MeshData) -> Option<(MeshletMesh, Vec3)> {
+    if m.positions.is_empty() { return None; }
+    let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+    for p in &m.positions { lo = lo.min(Vec3::from(*p)); hi = hi.max(Vec3::from(*p)); }
+    let c = (lo + hi) * 0.5;
+    let mut local = ed_world::mesh::MeshData { positions: m.positions.iter().map(|p| (Vec3::from(*p) - c).to_array()).collect(), ..Default::default() };
+    local.normals = m.normals.clone();
+    local.uvs = m.uvs.clone();
+    local.indices = m.indices.clone();
+    crate::library::meshlet_mesh(&local).map(|ml| (ml, c))
+}
+
 #[derive(Clone, Copy)]
 enum Part {
     Terrain,
@@ -78,6 +95,8 @@ struct ReadyTile {
     build: TileBuild,
     collider: Option<Collider>,
     parts: Vec<(Part, Mesh)>,
+    /// Opaque static meshes converted to meshlets (virtual geometry) off-thread.
+    meshlets: Vec<(MeshletMesh, Vec3)>,
     lod: Vec<((u8, u8), BuildingBatch)>,
 }
 
@@ -93,9 +112,17 @@ fn ready_tile(mut b: TileBuild) -> ReadyTile {
     .into_iter()
     .filter(|(_, m)| !m.is_empty())
     .map(|(p, m)| (p, to_mesh(m)))
-    .collect();
+    .collect::<Vec<_>>();
+    // `EW_NO_MESHLET=1` draws the same chunks as ordinary meshes (A/B the virtual-geometry path).
+    let (meshlets, parts) = if !crate::library::meshlets_enabled() {
+        let mut parts = parts;
+        parts.extend(b.rock_chunks.iter().map(|m| (Part::Rocks, to_mesh(m))));
+        (Vec::new(), parts)
+    } else {
+        (b.rock_chunks.iter().filter_map(|m| to_meshlet(m)).collect(), parts)
+    };
     let lod = std::mem::take(&mut b.building_lod).into_iter().map(|(c, m)| (c, prepare_batch(&m, true))).collect();
-    ReadyTile { build: b, collider, parts, lod }
+    ReadyTile { build: b, collider, parts, meshlets, lod }
 }
 
 #[derive(Resource)]
@@ -110,6 +137,8 @@ pub struct TileManager {
     pub ground_estimate: f64,
     last_select: f32,
     pub totals: Totals,
+    /// Per-tile contribution to `totals`, so retiring a tile subtracts it.
+    tile_totals: HashMap<TileId, Totals>,
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -121,6 +150,14 @@ pub struct Totals {
 
 impl TileManager {
     /// Everything requested has arrived.
+    fn recount(&mut self) {
+        self.totals = self.tile_totals.values().fold(Totals::default(), |a, t| Totals {
+            buildings: a.buildings + t.buildings,
+            trees: a.trees + t.trees,
+            triangles: a.triangles + t.triangles,
+        });
+    }
+
     pub fn idle(&self) -> bool {
         self.template_resolved && self.pending.is_empty() && self.desired.iter().all(|t| self.loaded.contains_key(t))
     }
@@ -139,11 +176,12 @@ fn default_manager() -> TileManager {
         ground_estimate: 0.0,
         last_select: -1.0,
         totals: Totals::default(),
+        tile_totals: HashMap::new(),
     }
 }
 
 #[derive(Component)]
-pub struct WorldTile(pub TileId);
+pub struct WorldTile;
 
 /// Full-detail building chunks near the player.
 #[derive(Resource)]
@@ -189,7 +227,7 @@ fn select_tiles(
     origin: Res<WorldOrigin>,
     mut mgr: ResMut<TileManager>,
     focus: Query<&GlobalTransform, With<Focus>>,
-    camera: Query<(&GlobalTransform, &Projection), With<Camera3d>>,
+    camera: Query<(&GlobalTransform, &Projection), (With<Camera3d>, Without<crate::globe::GlobeCamera>)>,
 ) {
     if !mgr.template_resolved {
         return;
@@ -244,6 +282,10 @@ fn tile_intersects_view(tile: TileId, origin: &WorldOrigin, camera: &GlobalTrans
     let center = origin.to_render(ed_geo::Geodetic { alt_m: 0.0, ..center_geo });
     let to_center = center - camera.translation();
     let radius = tile.width_m() as f32 * std::f32::consts::FRAC_1_SQRT_2 + 500.0;
+    // Never cull tiles around the camera: their colliders must survive looking away.
+    if to_center.length() < tile.width_m() as f32 * 1.5 + 500.0 {
+        return true;
+    }
     let depth = to_center.dot(camera.forward().as_vec3());
     if depth + radius < 0.0 {
         return false;
@@ -264,16 +306,20 @@ fn receive_tiles(
     mut mgr: ResMut<TileManager>,
     mut dm: ResMut<DetailManager>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut meshlet_assets: ResMut<Assets<MeshletMesh>>,
     mats: Res<WorldMaterials>,
     bmats: Res<BuildingMaterials>,
     focus: Query<&GlobalTransform, With<Focus>>,
     origin: Res<WorldOrigin>,
     foliage: Res<crate::foliage::FoliageAssets>,
+    mut terrain_mats: ResMut<Assets<crate::ground_material::TerrainMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+    library: Option<Res<crate::library::CookedLibrary>>,
 ) {
     let focus_pos = focus.iter().next().map(|t| t.translation());
     // Bound per-frame upload work.
     for _ in 0..2 {
-        let Ok(ReadyTile { build: mut b, collider, parts, lod }) = mgr.rx.try_recv() else { break };
+        let Ok(ReadyTile { build: mut b, collider, parts, meshlets, lod }) = mgr.rx.try_recv() else { break };
         mgr.pending.remove(&b.tile);
         for e in &b.errors {
             debug!("tile {:?}: {e}", b.tile);
@@ -291,7 +337,7 @@ fn receive_tiles(
         }
         let anchor = GeoAnchored::from_render(&b.frame, b.anchor);
         let mut parent = commands.spawn((
-            WorldTile(b.tile),
+            WorldTile,
             anchor,
             Transform::default(),
             Visibility::default(),
@@ -307,7 +353,23 @@ fn receive_tiles(
         let near = b.tile.z >= 13;
         for (part, mesh) in parts {
             if matches!(part, Part::Terrain) {
-                let mut e = commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(mats.terrain.clone()), Transform::default()));
+                // Per-tile material: same ground splat, plus this tile's satellite texture.
+                let tile_mat = match (b.sat_tex.take(), terrain_mats.get(&mats.terrain).cloned()) {
+                    (Some((n, data)), Some(mut m)) => {
+                        if let Some(dir) = std::env::var_os("EW_DUMP_SAT") {
+                            let _ = std::fs::create_dir_all(&dir);
+                            let mut ppm = format!("P6\n{n} {n}\n255\n").into_bytes();
+                            for px in data.chunks_exact(4) {
+                                ppm.extend_from_slice(&px[..3]);
+                            }
+                            let _ = std::fs::write(std::path::Path::new(&dir).join(format!("{}_{}_{}.ppm", b.tile.z, b.tile.x, b.tile.y)), ppm);
+                        }
+                        m.extension.sat_tex = images.add(crate::ground_material::sat_image(n, data));
+                        terrain_mats.add(m)
+                    }
+                    _ => mats.terrain.clone(),
+                };
+                let mut e = commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(tile_mat), Transform::default()));
                 if !near {
                     e.insert(bevy::light::NotShadowCaster);
                 }
@@ -326,6 +388,12 @@ fn receive_tiles(
             }
             e.insert(ChildOf(parent_id));
         }
+        if let Some(lib) = &library {
+            crate::library::spawn_placements(&mut commands, lib, &mats, parent_id, &b.placements);
+        }
+        for (m, off) in meshlets {
+            commands.spawn((MeshletMesh3d(meshlet_assets.add(m)), MeshMaterial3d(mats.palette_matte.clone()), Transform::from_translation(off), ChildOf(parent_id)));
+        }
         // Distant buildings, one entity per detail chunk, with physics shells.
         let mut lod_entities = HashMap::new();
         for (chunk, mut batch) in lod {
@@ -340,9 +408,11 @@ fn receive_tiles(
             dm.tiles.insert(b.tile, TileDetail { set: set.clone(), root: parent_id, lod: lod_entities, loaded: HashMap::new(), pending: HashSet::new() });
         }
         crate::foliage::spawn_tile_trees(&mut commands, &mut meshes, &foliage, parent_id, &b.trees);
-        mgr.totals.buildings += b.stats.buildings;
-        mgr.totals.trees += b.stats.trees;
-        mgr.totals.triangles += b.stats.triangles;
+        if std::env::var_os("EW_TILE_STATS").is_some() {
+            eprintln!("TILESTAT z{} terrain={} water={} roads={} trees={} rocks={} street={} bldg_lod={} trees_n={}", b.tile.z, b.terrain.triangle_count(), b.water.triangle_count(), b.roads.triangle_count(), b.trees.triangle_count(), b.rocks.triangle_count(), b.street_props.triangle_count(), b.building_lod.iter().map(|(_, m)| m.triangle_count()).sum::<usize>(), b.stats.trees);
+        }
+        mgr.tile_totals.insert(b.tile, Totals { buildings: b.stats.buildings, trees: b.stats.trees, triangles: b.stats.triangles });
+        mgr.recount();
         mgr.loaded.insert(b.tile, parent_id);
     }
 }
@@ -363,10 +433,15 @@ fn retire_tiles(mut commands: Commands, mut mgr: ResMut<TileManager>, mut dm: Re
             retire.push((t, e));
         }
     }
+    let retired = !retire.is_empty();
     for (t, e) in retire {
         commands.entity(e).despawn();
         mgr.loaded.remove(&t);
+        mgr.tile_totals.remove(&t);
         dm.tiles.remove(&t);
+    }
+    if retired {
+        mgr.recount();
     }
 }
 

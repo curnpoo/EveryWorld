@@ -19,7 +19,7 @@ pub struct CameraPlugin;
 
 impl Plugin for CameraPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_camera).add_systems(Update, fly_camera.run_if(|cfg: Res<Config>| cfg.fly && cfg.lookdev.is_none()));
+        app.add_systems(Startup, spawn_camera).add_systems(Update, atmosphere_by_altitude).add_systems(Update, fly_camera.run_if(|cfg: Res<Config>| cfg.fly && cfg.lookdev.is_none()));
     }
 }
 
@@ -28,6 +28,25 @@ pub struct FlyCam {
     pub yaw: f32,
     pub pitch: f32,
     pub speed: f32,
+}
+
+/// Lookup-texture atmosphere is exact and cheap near the ground, but its
+/// aerial-perspective volume only spans 32 km. From altitude we switch to the
+/// ray-marched model, which integrates the true path through the shell, so the
+/// limb glow, blue haze over land and ocean extinction appear from orbit.
+fn atmosphere_by_altitude(
+    origin: Res<WorldOrigin>,
+    mut cams: Query<(&GlobalTransform, &mut AtmosphereSettings), (With<Camera3d>, Without<crate::globe::GlobeCamera>)>,
+) {
+    for (gt, mut s) in &mut cams {
+        let alt = origin.to_geodetic(gt.translation()).alt_m;
+        let high = alt > 15_000.0;
+        let mode = if high { bevy::pbr::AtmosphereMode::Raymarched } else { bevy::pbr::AtmosphereMode::LookupTexture };
+        if s.rendering_method as u32 != mode as u32 {
+            s.rendering_method = mode;
+            s.sky_max_samples = if high { 48 } else { 16 };
+        }
+    }
 }
 
 fn spawn_camera(mut commands: Commands, cfg: Res<Config>, origin: Res<WorldOrigin>) {
@@ -41,15 +60,21 @@ fn spawn_camera(mut commands: Commands, cfg: Res<Config>, origin: Res<WorldOrigi
         Hdr,
         Projection::Perspective(PerspectiveProjection { fov: 60f32.to_radians(), near: 0.1, far: 1.0e13, ..default() }),
         Tonemapping::BlenderFilmic,
-        Bloom::NATURAL,
         Exposure { ev100: 14.2 },
         Msaa::Off,
-        TemporalAntiAliasing::default(),
-        ScreenSpaceAmbientOcclusion::default(),
         Transform::from_translation(pos).with_rotation(Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0)),
         FlyCam { yaw, pitch, speed: 60.0 },
         Rebased,
     ));
+    if !cfg.no_post {
+        // `EW_POST=bloom,taa,ssao` (any subset) to bisect post effects; default all.
+        let only = std::env::var("EW_POST").ok();
+        let on = |k: &str| only.as_deref().map_or(true, |v| v.split(',').any(|x| x == k));
+        if on("bloom") { cam.insert(Bloom::NATURAL); }
+        if on("taa") { cam.insert(TemporalAntiAliasing::default()); }
+        if on("ssao") { cam.insert(ScreenSpaceAmbientOcclusion::default()); }
+        if only.as_deref().is_some_and(|v| v.contains("mv")) { cam.insert((bevy::core_pipeline::prepass::DepthPrepass, bevy::core_pipeline::prepass::MotionVectorPrepass)); }
+    }
     // The camera drives streaming in spectator/lookdev modes; otherwise the player does.
     if cfg.fly || cfg.lookdev.is_some() {
         cam.insert(Focus);

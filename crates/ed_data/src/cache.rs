@@ -54,7 +54,7 @@ impl DiskCache {
             std::fs::create_dir_all(dir)?;
         }
         // Write-then-rename so a crash never leaves a half tile behind.
-        let tmp = p.with_extension("partial");
+        let tmp = p.with_extension(format!("{:?}.partial", std::thread::current().id()).replace('(', "").replace(')', ""));
         std::fs::write(&tmp, bytes)?;
         std::fs::rename(tmp, p)
     }

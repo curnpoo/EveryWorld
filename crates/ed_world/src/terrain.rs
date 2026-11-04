@@ -127,6 +127,7 @@ pub fn build_mesh_sub(grid: &TerrainGrid, proj: &TileProjector, surface: &Surfac
     };
     m.positions.reserve(n * n);
     m.splat.reserve(n * n);
+    m.sat.reserve(n * n);
     for j in 0..n {
         for i in 0..n {
             let (u, v) = (i as f64 / seg as f64, j as f64 / seg as f64);
@@ -137,6 +138,7 @@ pub fn build_mesh_sub(grid: &TerrainGrid, proj: &TileProjector, surface: &Surfac
             let w = surface.splat(u, v, h, slope);
             m.vertex(p.to_array(), nrm.to_array(), [u as f32, v as f32], surface.tint(u, v));
             m.splat.push(pack_splat(&w));
+            m.sat.push(surface.sat_vertex(u, v, h));
         }
     }
     for j in 0..seg {
@@ -165,6 +167,9 @@ pub fn build_mesh_sub(grid: &TerrainGrid, proj: &TileProjector, surface: &Surfac
                 let p = Vec3::from(m.positions[k]) - up * skirt_m;
                 let bot = m.vertex(p.to_array(), m.normals[k], m.uvs[k], m.colors[k]);
                 m.splat.push(m.splat[k]);
+                if !m.sat.is_empty() {
+                    m.sat.push(m.sat[k]);
+                }
                 if let Some((pt, pb)) = prev {
                     // Double-sided so winding doesn't matter on any edge.
                     m.tri(pt, top, bot);

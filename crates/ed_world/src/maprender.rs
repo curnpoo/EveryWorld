@@ -77,11 +77,13 @@ const LAND: u32 = 0xeef0e2;
 
 struct Canvas {
     px: Vec<Rgb>,
+    /// Side length in pixels (square).
+    n: usize,
 }
 
 impl Canvas {
     fn fill_poly(&mut self, rings: &[Vec<[f64; 2]>], c: Rgb, alpha: f32) {
-        let n = SIZE;
+        let n = self.n;
         let mut xs = Vec::new();
         for y in 0..n {
             let sv = (y as f64 + 0.5) / n as f64;
@@ -109,7 +111,13 @@ impl Canvas {
     }
 
     fn line(&mut self, a: [f64; 2], b: [f64; 2], width: f32, c: Rgb) {
-        let n = SIZE as f32;
+        self.line_a(a, b, width, c, 1.0);
+    }
+
+    /// Anti-aliased segment in tile uv, `opacity` scales the coverage.
+    fn line_a(&mut self, a: [f64; 2], b: [f64; 2], width: f32, c: Rgb, opacity: f32) {
+        let stride = self.n;
+        let n = stride as f32;
         let (ax, ay, bx, by) = (a[0] as f32 * n, a[1] as f32 * n, b[0] as f32 * n, b[1] as f32 * n);
         let len = ((bx - ax).powi(2) + (by - ay).powi(2)).sqrt().max(0.01);
         let r = width * 0.5;
@@ -123,9 +131,9 @@ impl Canvas {
                 let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
                 let t = (((px - ax) * (bx - ax) + (py - ay) * (by - ay)) / (len * len)).clamp(0.0, 1.0);
                 let d = ((px - (ax + t * (bx - ax))).powi(2) + (py - (ay + t * (by - ay))).powi(2)).sqrt();
-                let cov = (r + 0.5 - d).clamp(0.0, 1.0);
+                let cov = (r + 0.5 - d).clamp(0.0, 1.0) * opacity;
                 if cov > 0.0 {
-                    let p = &mut self.px[y as usize * SIZE + x as usize];
+                    let p = &mut self.px[y as usize * stride + x as usize];
                     for k in 0..3 {
                         p[k] = p[k] * (1.0 - cov) + c[k] * cov;
                     }
@@ -138,8 +146,17 @@ impl Canvas {
 /// Render one map tile. `heights` (same tile or an ancestor) gives
 /// hillshade and the land/sea split where vector water is missing.
 pub fn render(id: TileId, vt: Option<&mvt::Tile>, heights: Option<(&HeightTile, (f64, f64, f64))>) -> MapTile {
+    render_at(id, vt, (0.0, 0.0, 1.0), heights)
+}
+
+/// Render one map tile from a vector tile that covers a larger area.
+/// `src` maps `vt`'s tile-local coordinates into this tile: for a feature at
+/// `(u, v)` inside `vt`, its position here is `((u - u0) / s, (v - v0) / s)`.
+/// This is what overzooming past the vector source's native zoom uses.
+pub fn render_at(id: TileId, vt: Option<&mvt::Tile>, src: (f64, f64, f64), heights: Option<(&HeightTile, (f64, f64, f64))>) -> MapTile {
+    let (u0, v0, scale) = src;
     let n = SIZE;
-    let mut cv = Canvas { px: vec![hex(LAND); n * n] };
+    let mut cv = Canvas { px: vec![hex(LAND); n * n], n };
     // Hillshade + hypsometric tint.
     if let Some((h, (u0, v0, s))) = heights {
         let m_per_px = id.width_m() / n as f64;
@@ -181,7 +198,14 @@ pub fn render(id: TileId, vt: Option<&mvt::Tile>, heights: Option<(&HeightTile, 
     let mut labels = Vec::new();
     if let Some(vt) = vt {
         let rings_of = |f: &mvt::Feature, ext: f64| -> Vec<Vec<[f64; 2]>> {
-            f.rings.iter().map(|r| r.iter().map(|p| [p[0] as f64 / ext, p[1] as f64 / ext]).collect()).collect()
+            f.rings
+                .iter()
+                .map(|r| {
+                    r.iter()
+                        .map(|p| [(p[0] as f64 / ext - u0) / scale, (p[1] as f64 / ext - v0) / scale])
+                        .collect()
+                })
+                .collect()
         };
         for (layer, pick) in [("landcover", 0u8), ("landuse", 1), ("park", 2), ("water", 3)] {
             let Some(l) = vt.layer(layer) else { continue };
@@ -216,15 +240,7 @@ pub fn render(id: TileId, vt: Option<&mvt::Tile>, heights: Option<(&HeightTile, 
             let zoom_k = (id.z as f32 - 9.0).max(0.4) * 0.35;
             // Casing first, then fill, minor roads before major.
             let mut feats: Vec<_> = l.features.iter().filter(|f| f.geom_type == GeomType::LineString).collect();
-            let rank = |f: &&mvt::Feature| match f.str("class").unwrap_or("") {
-                "motorway" => 5,
-                "trunk" => 4,
-                "primary" => 3,
-                "secondary" => 2,
-                "tertiary" => 1,
-                _ => 0,
-            };
-            feats.sort_by_key(rank);
+            feats.sort_by_key(|f| road_rank(f.str("class").unwrap_or("")));
             for f in feats {
                 let (w, fill) = match f.str("class").unwrap_or("") {
                     "motorway" => (3.0, 0xf6c86a),
@@ -239,7 +255,8 @@ pub fn render(id: TileId, vt: Option<&mvt::Tile>, heights: Option<(&HeightTile, 
                 let w = w * zoom_k;
                 for r in &f.rings {
                     for s in r.windows(2) {
-                        let (a, b) = ([s[0][0] as f64 / ext, s[0][1] as f64 / ext], [s[1][0] as f64 / ext, s[1][1] as f64 / ext]);
+                        let map = |p: [f32; 2]| [(p[0] as f64 / ext - u0) / scale, (p[1] as f64 / ext - v0) / scale];
+                        let (a, b) = (map(s[0]), map(s[1]));
                         cv.line(a, b, w + 1.2, hex(0xb9b2a6));
                         cv.line(a, b, w, hex(fill));
                     }
@@ -256,27 +273,13 @@ pub fn render(id: TileId, vt: Option<&mvt::Tile>, heights: Option<(&HeightTile, 
                 let (w, c) = if level <= 2.0 { (1.4, 0x9a7aa0) } else { (0.8, 0xbba6c0) };
                 for r in &f.rings {
                     for s in r.windows(2) {
-                        cv.line([s[0][0] as f64 / ext, s[0][1] as f64 / ext], [s[1][0] as f64 / ext, s[1][1] as f64 / ext], w, hex(c));
+                        let map = |p: [f32; 2]| [(p[0] as f64 / ext - u0) / scale, (p[1] as f64 / ext - v0) / scale];
+                        cv.line(map(s[0]), map(s[1]), w, hex(c));
                     }
                 }
             }
         }
-        if let Some(l) = vt.layer("place") {
-            let ext = l.extent as f64;
-            for f in &l.features {
-                let Some(class) = f.str("class").and_then(PlaceClass::from_omt) else { continue };
-                let Some(p) = f.rings.first().and_then(|r| r.first()) else { continue };
-                let (u, v) = (p[0] as f64 / ext, p[1] as f64 / ext);
-                if !(0.0..1.0).contains(&u) || !(0.0..1.0).contains(&v) {
-                    continue;
-                }
-                let name = f.str("name:en").or(f.str("name_en")).or(f.str("name")).unwrap_or("").to_string();
-                if name.is_empty() {
-                    continue;
-                }
-                labels.push(Label { name, class, rank: f.num("rank").unwrap_or(10.0) as u32, u: u as f32, v: v as f32 });
-            }
-        }
+        labels.extend(place_labels(vt, (u0, v0, scale)));
     }
     let rgba = cv
         .px
@@ -289,15 +292,150 @@ pub fn render(id: TileId, vt: Option<&mvt::Tile>, heights: Option<(&HeightTile, 
     MapTile { id, rgba, labels }
 }
 
+/// Place labels (countries, states, cities, ...) of `vt` that fall inside
+/// the tile `src` maps to (same `(u0, v0, scale)` convention as [`render_at`]).
+pub fn place_labels(vt: &mvt::Tile, (u0, v0, scale): (f64, f64, f64)) -> Vec<Label> {
+    let mut out = Vec::new();
+    let Some(l) = vt.layer("place") else { return out };
+    let ext = l.extent as f64;
+    for f in &l.features {
+        let Some(class) = f.str("class").and_then(PlaceClass::from_omt) else { continue };
+        let Some(p) = f.rings.first().and_then(|r| r.first()) else { continue };
+        let (u, v) = ((p[0] as f64 / ext - u0) / scale, (p[1] as f64 / ext - v0) / scale);
+        if !(0.0..1.0).contains(&u) || !(0.0..1.0).contains(&v) {
+            continue;
+        }
+        let name = f.str("name:en").or(f.str("name_en")).or(f.str("name")).unwrap_or("");
+        if name.is_empty() {
+            continue;
+        }
+        out.push(Label { name: name.to_string(), class, rank: f.num("rank").unwrap_or(10.0) as u32, u: u as f32, v: v as f32 });
+    }
+    out
+}
+
+/// Draw map linework (country/state borders, then roads by zoom) straight
+/// onto a satellite tile, for the 3D map globe. `rgb` is 8-bit sRGB,
+/// `size * size * 3`, row 0 = north. `src` maps `vt` into this tile exactly
+/// like [`render_at`]. Styled for photo backgrounds: light strokes over a
+/// thin dark halo, translucent so the imagery still reads through.
+/// Bilinear 2x upsample of an 8-bit RGB square image (for crisper linework
+/// on magnified tiles). Returns the new side length and pixels.
+pub fn upsample2(size: usize, rgb: &[u8]) -> (usize, Vec<u8>) {
+    let m = size * 2;
+    let mut out = vec![0u8; m * m * 3];
+    for y in 0..m {
+        let fy = ((y as f32 + 0.5) * 0.5 - 0.5).clamp(0.0, (size - 1) as f32);
+        let (y0, ty) = (fy as usize, fy.fract());
+        let y1 = (y0 + 1).min(size - 1);
+        for x in 0..m {
+            let fx = ((x as f32 + 0.5) * 0.5 - 0.5).clamp(0.0, (size - 1) as f32);
+            let (x0, tx) = (fx as usize, fx.fract());
+            let x1 = (x0 + 1).min(size - 1);
+            for c in 0..3 {
+                let p = |xx: usize, yy: usize| rgb[(yy * size + xx) * 3 + c] as f32;
+                let v = (p(x0, y0) * (1.0 - tx) + p(x1, y0) * tx) * (1.0 - ty) + (p(x0, y1) * (1.0 - tx) + p(x1, y1) * tx) * ty;
+                out[(y * m + x) * 3 + c] = (v + 0.5) as u8;
+            }
+        }
+    }
+    (m, out)
+}
+
+pub fn overlay_on_imagery(id: TileId, size: usize, rgb: &mut [u8], vt: &mvt::Tile, src: (f64, f64, f64)) {
+    assert_eq!(rgb.len(), size * size * 3);
+    let (u0, v0, scale) = src;
+    // Line widths are authored for 256 px tiles.
+    let px_k = size as f32 / SIZE as f32;
+    let lin = |c: u8| {
+        let c = c as f32 / 255.0;
+        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    };
+    // Blend in linear light so thin AA edges don't darken.
+    let mut cv = Canvas { px: rgb.chunks_exact(3).map(|p| [lin(p[0]), lin(p[1]), lin(p[2])]).collect(), n: size };
+    let map = |p: [f32; 2], ext: f64| [(p[0] as f64 / ext - u0) / scale, (p[1] as f64 / ext - v0) / scale];
+    let lhex = |h: u32| hex(h).map(|c| lin((c * 255.0) as u8));
+
+    if id.z >= 8 {
+        if let Some(l) = vt.layer("transportation") {
+            let ext = l.extent as f64;
+            let z = id.z as f32;
+            let mut feats: Vec<_> = l.features.iter().filter(|f| f.geom_type == GeomType::LineString).collect();
+            feats.sort_by_key(|f| road_rank(f.str("class").unwrap_or("")));
+            for f in feats {
+                // (min zoom, width at z12, colour)
+                let (min_z, w, c) = match f.str("class").unwrap_or("") {
+                    "motorway" => (8, 1.5, 0xffc85a),
+                    "trunk" => (8, 1.3, 0xffdc8a),
+                    "primary" => (9, 1.1, 0xfff2c0),
+                    "secondary" => (10, 0.9, 0xffffff),
+                    "tertiary" => (11, 0.7, 0xffffff),
+                    "minor" => (12, 0.45, 0xffffff),
+                    "rail" => (11, 0.45, 0xd8d0c8),
+                    _ => continue,
+                };
+                if id.z < min_z {
+                    continue;
+                }
+                let w = w * (1.0 + (z - 12.0) * 0.15).max(0.7) * px_k;
+                let (halo, fill) = (lhex(0x1a1a1a), lhex(c));
+                for r in &f.rings {
+                    for s in r.windows(2) {
+                        let (a, b) = (map(s[0], ext), map(s[1], ext));
+                        cv.line_a(a, b, w + 0.9 * px_k, halo, 0.22);
+                        cv.line_a(a, b, w, fill, 0.7);
+                    }
+                }
+            }
+        }
+    }
+    if let Some(l) = vt.layer("boundary") {
+        let ext = l.extent as f64;
+        for f in l.features.iter().filter(|f| f.geom_type == GeomType::LineString) {
+            let level = f.num("admin_level").unwrap_or(10.0);
+            if f.num("maritime").unwrap_or(0.0) > 0.0 || level > 4.0 || (level > 2.0 && id.z < 4) {
+                continue;
+            }
+            let (w, op) = if level <= 2.0 { (1.3, 0.8) } else { (0.8, 0.5) };
+            for r in &f.rings {
+                for s in r.windows(2) {
+                    let (a, b) = (map(s[0], ext), map(s[1], ext));
+                    cv.line_a(a, b, (w + 1.2) * px_k, lhex(0x000000), op * 0.4);
+                    cv.line_a(a, b, w * px_k, lhex(0xf0e6ff), op);
+                }
+            }
+        }
+    }
+    let enc = |x: f32| {
+        let x = x.clamp(0.0, 1.0);
+        let s = if x <= 0.0031308 { x * 12.92 } else { 1.055 * x.powf(1.0 / 2.4) - 0.055 };
+        (s * 255.0 + 0.5) as u8
+    };
+    for (o, c) in rgb.chunks_exact_mut(3).zip(&cv.px) {
+        o.copy_from_slice(&[enc(c[0]), enc(c[1]), enc(c[2])]);
+    }
+}
+
+fn road_rank(class: &str) -> u8 {
+    match class {
+        "motorway" => 5,
+        "trunk" => 4,
+        "primary" => 3,
+        "secondary" => 2,
+        "tertiary" => 1,
+        _ => 0,
+    }
+}
+
 /// Fetch and render a map tile (blocking; run on a worker).
 pub fn fetch_and_render(cache: &ed_data::DiskCache, template: Option<&str>, id: TileId) -> MapTile {
     let ez = id.z.min(11);
     let (anc, u0, v0, s) = id.ancestor(ez);
     let h = ed_data::elevation::fetch(cache, anc).ok();
-    let vt = template.and_then(|t| ed_data::vector::fetch(cache, t, id.ancestor(id.z.min(ed_data::vector::MAX_ZOOM)).0).ok());
-    // Vector tiles stop at z14; deeper zooms reuse the z14 tile (clipped).
-    let vt = if id.z > ed_data::vector::MAX_ZOOM { None } else { vt };
-    render(id, vt.as_ref(), h.as_ref().map(|h| (h, (u0, v0, s))))
+    // Vector tiles stop at z14; deeper zooms overzoom the z14 tile.
+    let (vanc, vu0, vv0, vs) = id.ancestor(id.z.min(ed_data::vector::MAX_ZOOM));
+    let vt = template.and_then(|t| ed_data::vector::fetch(cache, t, vanc).ok());
+    render_at(id, vt.as_ref(), (vu0, vv0, vs), h.as_ref().map(|h| (h, (u0, v0, s))))
 }
 
 #[cfg(test)]
@@ -309,6 +447,45 @@ mod tests {
         let t = render(TileId::new(3, 4, 2), None, None);
         assert_eq!(t.rgba.len(), SIZE * SIZE * 4);
         assert!(t.labels.is_empty());
+    }
+
+    #[test]
+    fn overzoom_crops_the_parent_tile() {
+        let building = ed_data::mvt::Feature {
+            id: None,
+            geom_type: ed_data::mvt::GeomType::Polygon,
+            props: Default::default(),
+            // Top-left quadrant of a 4096-extent parent tile.
+            rings: vec![vec![[0.0, 0.0], [2048.0, 0.0], [2048.0, 2048.0], [0.0, 2048.0]]],
+        };
+        let vt = ed_data::mvt::Tile { layers: vec![ed_data::mvt::Layer { name: "building".into(), extent: 4096, features: vec![building] }] };
+        let i = ((SIZE / 2) * SIZE + SIZE / 2) * 4;
+
+        let inside = render_at(TileId::new(15, 0, 0), Some(&vt), (0.0, 0.0, 0.5), None);
+        assert_eq!(&inside.rgba[i..i + 3], [0xd4, 0xce, 0xc6]);
+
+        let outside = render_at(TileId::new(15, 0, 0), Some(&vt), (0.5, 0.5, 0.5), None);
+        assert_ne!(&outside.rgba[i..i + 3], [0xd4, 0xce, 0xc6]);
+    }
+
+    #[test]
+    fn imagery_overlay_draws_roads_only_when_zoomed_in() {
+        let road = ed_data::mvt::Feature {
+            id: None,
+            geom_type: ed_data::mvt::GeomType::LineString,
+            props: [("class".to_string(), ed_data::mvt::Value::String("primary".into()))].into_iter().collect(),
+            // Horizontal line through the middle.
+            rings: vec![vec![[0.0, 2048.0], [4096.0, 2048.0]]],
+        };
+        let vt = ed_data::mvt::Tile { layers: vec![ed_data::mvt::Layer { name: "transportation".into(), extent: 4096, features: vec![road] }] };
+        let mid = ((SIZE / 2) * SIZE + SIZE / 2) * 3;
+        let mut far = vec![20u8; SIZE * SIZE * 3];
+        overlay_on_imagery(TileId::new(5, 0, 0), SIZE, &mut far, &vt, (0.0, 0.0, 1.0));
+        assert!(far.iter().all(|&c| c == 20), "no roads at z5");
+        let mut near = vec![20u8; SIZE * SIZE * 3];
+        overlay_on_imagery(TileId::new(12, 0, 0), SIZE, &mut near, &vt, (0.0, 0.0, 1.0));
+        assert!(near[mid] > 150, "road drawn light at z12: {}", near[mid]);
+        assert!(near[3] < 25, "corner untouched");
     }
 
     /// `cargo test -p ed_world maprender -- --ignored`: real data has labels.

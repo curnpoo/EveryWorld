@@ -11,6 +11,8 @@ use crate::meshconv::to_mesh;
 use bevy::asset::{RenderAssetUsages, embedded_asset};
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::pbr::{ExtendedMaterial, MaterialExtension};
+use bevy::camera::visibility::VisibilityRange;
+use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 use bevy::render::render_resource::{AsBindGroup, Extent3d, TextureDimension, TextureFormat};
 use bevy::shader::ShaderRef;
@@ -19,6 +21,9 @@ use ed_world::trees::{self, BarkStyle, TileTrees, WindMesh, textures::Rgba8Image
 use std::collections::HashMap;
 
 /// Full-detail trees within this distance of a chunk's center...
+/// Far-tree density bands: full to here, 1-in-4 to `FAR_LOW_M`, 1-in-16 beyond.
+const FAR_MID_M: f32 = 800.0;
+const FAR_LOW_M: f32 = 2500.0;
 const NEAR_IN: f32 = 230.0;
 /// ...and back to the far cards beyond this one (hysteresis).
 const NEAR_OUT: f32 = 270.0;
@@ -249,9 +254,17 @@ pub fn spawn_tile_trees(commands: &mut Commands, meshes: &mut Assets<Mesh>, fa: 
     let lod = trees.chunks.len() > 1;
     for c in &trees.chunks {
         let holder = commands.spawn((Transform::from_translation(c.center), Visibility::default(), ChildOf(parent))).id();
-        let far = commands
-            .spawn((Mesh3d(meshes.add(wind_mesh(&c.far))), MeshMaterial3d(fa.leaves.clone()), Transform::default(), ChildOf(holder)))
-            .id();
+        let mut far_e = commands.spawn((Mesh3d(meshes.add(wind_mesh(&c.far))), MeshMaterial3d(fa.leaves.clone()), Transform::default(), ChildOf(holder)));
+        if lod {
+            far_e.insert(VisibilityRange::abrupt(0.0, FAR_MID_M));
+        }
+        let far = far_e.id();
+        // Thinned density bands (no mesh swaps, just fewer, larger crowns).
+        for (m, a, b) in [(&c.far_mid, FAR_MID_M, FAR_LOW_M), (&c.far_low, FAR_LOW_M, f32::MAX)] {
+            if !m.mesh.positions.is_empty() {
+                commands.spawn((Mesh3d(meshes.add(wind_mesh(m))), MeshMaterial3d(fa.leaves.clone()), Transform::default(), VisibilityRange::abrupt(a, b), NotShadowCaster, ChildOf(holder)));
+            }
+        }
         if lod {
             commands.entity(holder).insert(TreeChunkLod { instances: c.instances.clone(), up: trees.up, center: c.center, far, near: Vec::new() });
         }
@@ -263,7 +276,7 @@ pub fn stream_near_trees(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     fa: Option<ResMut<FoliageAssets>>,
-    cam: Query<&GlobalTransform, With<Camera3d>>,
+    cam: Query<&GlobalTransform, (With<Camera3d>, Without<crate::globe::GlobeCamera>)>,
     mut chunks: Query<(Entity, &GlobalTransform, &mut TreeChunkLod)>,
 ) {
     let Some(mut fa) = fa else { return };

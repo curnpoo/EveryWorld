@@ -11,6 +11,8 @@ pub struct MeshData {
     /// Optional per-vertex ground splat weights (terrain only; empty elsewhere).
     /// See `surface::Ground` for the channel order.
     pub splat: Vec<[u8; 12]>,
+    /// Optional per-vertex satellite albedo (gamma RGB + blend), terrain only.
+    pub sat: Vec<[u8; 4]>,
 }
 
 impl MeshData {
@@ -60,11 +62,52 @@ impl MeshData {
             self.splat.extend_from_slice(&other.splat);
             self.splat.resize(self.positions.len(), [0; 12]);
         }
+        if !other.sat.is_empty() || !self.sat.is_empty() {
+            self.sat.resize(base as usize, [0; 4]);
+            self.sat.extend_from_slice(&other.sat);
+            self.sat.resize(self.positions.len(), [0; 4]);
+        }
         self.indices.extend(other.indices.iter().map(|i| i + base));
     }
 
     pub fn triangle_count(&self) -> usize {
         self.indices.len() / 3
+    }
+}
+
+/// Global color lookup table: 6 bits per sRGB channel = 262,144 colors laid
+/// out in a `PALETTE_SIDE`^2 texture. Meshes that cannot carry vertex color
+/// (Bevy meshlets) point their UVs at the texel of their color instead.
+pub const PALETTE_SIDE: u32 = 512;
+
+fn lin_to_srgb(v: f32) -> f32 {
+    let v = v.clamp(0.0, 1.0);
+    if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }
+}
+
+/// Palette slot of a linear RGB color.
+pub fn palette_index(c: [f32; 4]) -> u32 {
+    let q = |v: f32| (lin_to_srgb(v) * 63.0).round() as u32;
+    q(c[0]) << 12 | q(c[1]) << 6 | q(c[2])
+}
+
+/// UV of the texel center for a linear color (sample with nearest filtering).
+pub fn palette_uv(c: [f32; 4]) -> [f32; 2] {
+    let i = palette_index(c);
+    let s = PALETTE_SIDE as f32;
+    [((i % PALETTE_SIDE) as f32 + 0.5) / s, ((i / PALETTE_SIDE) as f32 + 0.5) / s]
+}
+
+/// sRGB8 texel for palette slot `i` (for building the texture).
+pub fn palette_texel(i: u32) -> [u8; 4] {
+    let e = |v: u32| ((v & 63) as f32 / 63.0 * 255.0).round() as u8;
+    [e(i >> 12), e(i >> 6), e(i), 255]
+}
+
+impl MeshData {
+    /// Replace vertex colors by palette UVs (for meshlet meshes).
+    pub fn palettize(&mut self) {
+        self.uvs = self.colors.iter().map(|c| palette_uv(*c)).collect();
     }
 }
 

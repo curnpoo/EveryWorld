@@ -18,8 +18,7 @@ pub struct Config {
     /// Camera look direction at start (compass degrees) and pitch.
     pub heading_deg: f32,
     pub pitch_deg: f32,
-    /// Override local solar hour (0-24). None = real current time.
-    pub hour: Option<f64>,
+    /// Fixed UTC timestamp for the clock (default: 15:00 local solar time).
     pub unix_override: Option<f64>,
     pub screenshot: Option<PathBuf>,
     /// Minimum frames to wait before a screenshot.
@@ -33,6 +32,10 @@ pub struct Config {
     pub lookdev_only: Option<String>,
     /// Spectator fly camera instead of the robot.
     pub fly: bool,
+    /// `--no-post`: drop bloom, TAA and SSAO.
+    pub no_post: bool,
+    /// `--scale <f>`: OS scale factor override (1.0 = half the pixels of a 2x Retina display).
+    pub scale: Option<f64>,
 }
 
 impl Config {
@@ -70,11 +73,25 @@ impl Config {
             start = Geodetic::new(40.0, -3.7, 0.0);
             place_name = "Lookdev stage".into();
         }
-        let hour = num("--hour").or(lookdev.as_ref().map(|_| 14.5));
+        // Daytime by default: 15:00 local solar time unless --hour overrides it.
+        let hour = num("--hour").or(lookdev.as_ref().map(|_| 14.5)).or(Some(15.0));
         let unix_override = hour.map(|h| {
             // Today's date (UTC), at the requested *local solar* hour.
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
-            let midnight = (now / 86_400.0).floor() * 86_400.0;
+            let mut midnight = (now / 86_400.0).floor() * 86_400.0;
+            // `--date YYYY-MM-DD` pins the day (reference shots at a known season).
+            if let Some(d) = get("--date") {
+                let p: Vec<i64> = d.split('-').filter_map(|x| x.parse().ok()).collect();
+                if let [y, m, dd] = p[..] {
+                    // Days from civil (Howard Hinnant).
+                    let y = if m <= 2 { y - 1 } else { y };
+                    let era = y.div_euclid(400);
+                    let yoe = y - era * 400;
+                    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + dd - 1;
+                    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+                    midnight = ((era * 146_097 + doe - 719_468) * 86_400) as f64;
+                }
+            }
             midnight + (h - start.lon_deg / 15.0) * 3600.0
         });
         Self {
@@ -83,7 +100,6 @@ impl Config {
             start_agl: num("--alt").unwrap_or(40.0),
             heading_deg: num("--heading").unwrap_or(0.0) as f32,
             pitch_deg: num("--pitch").unwrap_or(-12.0) as f32,
-            hour,
             unix_override,
             screenshot: get("--screenshot").map(PathBuf::from),
             screenshot_frames: num("--frames").unwrap_or(30.0) as u32,
@@ -94,6 +110,8 @@ impl Config {
             lookdev,
             lookdev_only: get("--only"),
             fly: args.iter().any(|a| a == "--fly"),
+            no_post: args.iter().any(|a| a == "--no-post"),
+            scale: num("--scale"),
         }
     }
 

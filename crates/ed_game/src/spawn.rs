@@ -36,9 +36,11 @@ pub enum SpawnHeight {
 pub enum SpawnRequest {
     /// A known point (map click, coordinates).
     At { pos: Geodetic, name: String, height: SpawnHeight },
-    /// Geocode a typed place name first.
+    /// Geocode a typed place name first (search UI is currently not exposed).
+    #[allow(dead_code)]
     Search { query: String, height: SpawnHeight },
-    /// Somewhere interesting, picked at random.
+    /// Somewhere interesting, picked at random (random UI is currently not exposed).
+    #[allow(dead_code)]
     Random { height: SpawnHeight },
 }
 
@@ -54,9 +56,7 @@ pub struct Spawner {
 
 /// Fired once the player has been placed somewhere new.
 #[derive(Resource, Clone)]
-pub struct Arrived {
-    pub name: String,
-}
+pub struct Arrived;
 
 const DROP_AGL_M: f64 = 1_200.0;
 
@@ -131,7 +131,19 @@ fn start_requests(cfg: Res<Config>, mut sp: ResMut<Spawner>, mut reqs: MessageRe
         AsyncComputeTaskPool::get()
             .spawn(async move {
                 let found: Result<(Geodetic, String, SpawnHeight), String> = match req {
-                    SpawnRequest::At { pos, name, height } => Ok((pos, name, height)),
+                    SpawnRequest::At { pos, name, height } => {
+                        let name = if name.is_empty() {
+                            ed_data::geocode::reverse(&cache, pos)
+                                .ok()
+                                .flatten()
+                                .filter(|p| !p.name.is_empty())
+                                .map(|p| if p.country.is_empty() { p.name } else { format!("{}, {}", p.name, p.country) })
+                                .unwrap_or_else(|| format!("{:.4}, {:.4}", pos.lat_deg, pos.lon_deg))
+                        } else {
+                            name
+                        };
+                        Ok((pos, name, height))
+                    }
                     SpawnRequest::Random { height } => {
                         let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(7);
                         let (g, n) = pick_random(seed);
@@ -163,8 +175,17 @@ fn finish_requests(
     mut commands: Commands,
     mut sp: ResMut<Spawner>,
     mut origin: ResMut<WorldOrigin>,
-    mut players: Query<(&mut Transform, &mut Player, Option<&mut LinearVelocity>, Option<&mut Position>)>,
-    mut cams: Query<&mut Transform, (With<Camera3d>, Without<Player>)>,
+    mut clock: ResMut<crate::sky::Clock>,
+    gfx: Option<Res<crate::menu::GraphicsSettings>>,
+    mut players: Query<(
+        &mut Transform,
+        &mut Player,
+        Option<&mut LinearVelocity>,
+        Option<&mut AngularVelocity>,
+        Option<&mut Position>,
+        Option<&mut Rotation>,
+    )>,
+    mut cams: Query<&mut Transform, (With<Camera3d>, Without<Player>, Without<crate::globe::GlobeCamera>)>,
 ) {
     let Ok(res) = sp.rx.try_recv() else { return };
     sp.busy = false;
@@ -175,29 +196,51 @@ fn finish_requests(
             return;
         }
     };
+    // Keep the chosen local solar hour when teleporting (unless the player
+    // selected "Now", which tracks the real absolute time).
+    let local_hour = gfx
+        .filter(|g| !g.time_live)
+        .map(|_| (clock.unix_s / 3600.0 + origin.frame.origin.lon_deg / 15.0).rem_euclid(24.0));
     origin.frame = EnuFrame::new(Geodetic { alt_m: 0.0, ..dest });
     origin.generation += 1;
+    if let Some(h) = local_hour {
+        let midnight = (clock.unix_s / 86_400.0).floor() * 86_400.0;
+        clock.unix_s = midnight + (h - dest.lon_deg / 15.0) * 3600.0;
+    }
     let agl = match height {
         SpawnHeight::Sky => DROP_AGL_M,
         SpawnHeight::Ground => 2.5,
     };
     let pos = origin.to_render(Geodetic { alt_m: dest.alt_m + agl, ..dest });
-    if let Ok((mut t, mut p, vel, ppos)) = players.single_mut() {
+    let up = origin.up_at(pos);
+    if let Ok((mut t, mut p, vel, ang_vel, ppos, prot)) = players.single_mut() {
+        let rot = Quat::from_rotation_arc(Vec3::Y, up) * Quat::from_rotation_y(p.yaw);
         t.translation = pos;
+        t.rotation = rot;
         if let Some(mut v) = vel {
             v.0 = Vec3::ZERO;
+        }
+        if let Some(mut av) = ang_vel {
+            av.0 = Vec3::ZERO;
         }
         if let Some(mut pp) = ppos {
             pp.0 = pos;
         }
+        if let Some(mut pr) = prot {
+            pr.0 = rot;
+        }
         p.mode = if height == SpawnHeight::Sky { MoveMode::Skydive } else { MoveMode::Fall };
         p.agl = agl as f32;
         p.grounded = false;
+        p.prev_vel = Vec3::ZERO;
+        p.accel_smooth = Vec3::ZERO;
     } else if let Ok(mut c) = cams.single_mut() {
         c.translation = pos;
     }
     sp.status = String::new();
-    commands.insert_resource(Arrived { name });
+    commands.insert_resource(crate::player::Settling { until_s: Some(f32::MAX) });
+    commands.insert_resource(crate::hud::ArrivalNotice { name, until_s: 0.0 });
+    commands.insert_resource(Arrived);
 }
 
 #[cfg(test)]

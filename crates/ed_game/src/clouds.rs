@@ -409,7 +409,7 @@ fn update_uniforms(
     q: Res<CloudQuality>,
     over: Res<CloudOverride>,
     mut st: ResMut<CloudState>,
-    cams: Query<&GlobalTransform, With<Camera3d>>,
+    cams: Query<&GlobalTransform, (With<Camera3d>, Without<crate::globe::GlobeCamera>)>,
     sun: Query<&GlobalTransform, With<Sun>>,
     layers: Query<&MeshMaterial3d<CloudMaterial>>,
     mut caster: Query<&mut Transform, With<CloudShadowCaster>>,

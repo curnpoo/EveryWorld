@@ -232,7 +232,7 @@ fn cycle_engine_sound(keys: Res<ButtonInput<KeyCode>>, driving: Res<Driving>, au
 pub fn drive_engine_sounds(
     time: Res<Time>,
     mut audio: ResMut<EngineAudio>,
-    cams: Query<&GlobalTransform, With<Camera3d>>,
+    cams: Query<&GlobalTransform, (With<Camera3d>, Without<crate::globe::GlobeCamera>)>,
     mut vehicles: Query<(Entity, &GlobalTransform, &LinearVelocity, &mut EngineSound, Option<&Car>, Option<&Plane>)>,
 ) {
     let dt = time.delta_secs_f64();

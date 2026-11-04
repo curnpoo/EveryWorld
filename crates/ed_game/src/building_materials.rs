@@ -233,7 +233,7 @@ fn lod_facade() -> Image {
 
 fn setup(mut commands: Commands, mut mats: ResMut<Assets<StandardMaterial>>, mut images: ResMut<Assets<Image>>) {
     let mut by_mat = HashMap::new();
-    let mut tex = |img: Image, rough: f32, reflect: f32, metal: f32, mats: &mut Assets<StandardMaterial>, images: &mut Assets<Image>| {
+    let tex = |img: Image, rough: f32, reflect: f32, metal: f32, mats: &mut Assets<StandardMaterial>, images: &mut Assets<Image>| {
         mats.add(StandardMaterial {
             base_color_texture: Some(images.add(img)),
             perceptual_roughness: rough,

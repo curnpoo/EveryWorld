@@ -68,7 +68,7 @@ fn plan_chunks(
     mut state: ResMut<ScatterState>,
     lookdev: Option<Res<crate::lookdev::Lookdev>>,
     tiles: Query<(Entity, &GroundCover, &GlobalTransform)>,
-    cam: Query<&GlobalTransform, With<Camera3d>>,
+    cam: Query<&GlobalTransform, (With<Camera3d>, Without<crate::globe::GlobeCamera>)>,
 ) {
     let Ok(cam) = cam.single() else { return };
     let cam_w = cam.translation();

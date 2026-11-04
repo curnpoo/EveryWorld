@@ -20,7 +20,6 @@ use bevy::prelude::*;
 use ed_data::mvt::{self, GeomType, Value};
 use ed_geo::tile::TileId;
 use ed_world::biome::Biome;
-use ed_world::buildings::{self, BuildingContext};
 use ed_world::foliage::{self, Occupancy};
 use ed_world::ground_scatter::GroundSource;
 use ed_world::mesh::MeshData;
@@ -144,11 +143,6 @@ pub(super) fn build(
     let spawn_root = |commands: &mut Commands, p: &TileProjector, name: String| -> Entity {
         let anchor = GeoAnchored::from_render(&origin.frame, p.anchor);
         commands.spawn((anchor, Transform::default(), Visibility::default(), Name::new(name))).id()
-    };
-    let add = |commands: &mut Commands, meshes: &mut Assets<Mesh>, root: Entity, m: &MeshData, mat: Handle<StandardMaterial>| {
-        if !m.is_empty() {
-            commands.spawn((Mesh3d(meshes.add(to_mesh(m))), MeshMaterial3d(mat), Transform::default(), ChildOf(root)));
-        }
     };
     let add_terrain = |commands: &mut Commands, meshes: &mut Assets<Mesh>, root: Entity, m: &MeshData| {
         commands.spawn((Mesh3d(meshes.add(to_mesh(m))), MeshMaterial3d(mats.terrain.clone()), Transform::default(), ChildOf(root)));

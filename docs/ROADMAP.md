@@ -4,11 +4,13 @@ Phases are ordered so there's always something playable. Each item is sized to b
 
 Getting around until Phase 4: **rocket boots and teleporting**. Vehicles come after Space.
 
+Weather is **procedural** (`ed_climate`, see `docs/PLAN-world-sim.md`): a deterministic function of (world seed, UTC time), not live data. Open-Meteo stays only as a dev fallback until `ed_climate` lands. Space visuals: `docs/PLAN-space-visuals.md`.
+
 ## Phase 0: Foundation (done)
 
 - [x] Workspace: `ed_geo`, `ed_data`, `ed_world`, `ed_flight`, `ed_space`, `ed_game`
 - [x] WGS84/ECEF/ENU math, slippy tiles, real sun position (tested)
-- [x] Data: Mapterhorn + AWS elevation, OpenFreeMap vector tiles (hand-written MVT decoder), Open-Meteo weather, geocoding, disk cache
+- [x] Data: Mapterhorn + AWS elevation, OpenFreeMap vector tiles (hand-written MVT decoder), Open-Meteo weather (dev fallback), geocoding, disk cache
 - [x] World gen: terrain, land cover raster, biomes, 17 architectural regions, street kits, roads, street props, trees, rocks, inland water
 - [x] Quadtree LOD, floating origin, tile streaming with hole-free swaps
 - [x] Filmic pipeline: HDR, atmosphere, atmosphere env-map lighting, bloom, SSAO, TAA
@@ -21,21 +23,22 @@ Getting around until Phase 4: **rocket boots and teleporting**. Vehicles come af
    - [x] Round 1 review; Blender Filmic picked
    - [x] Robot courier v2: connected cylinder/ball-joint body, CRT TV head, backpack as a cosmetic
    - [x] Buildings v2: modeled facades fitted to each wall, party walls, doors/stoops/shopfronts, balconies, shutters, AC units, fire escapes, cornices, flat/pitched/mansard roofs with rooftop gear, house lots; per-region variants; chunked detail streaming
-   - [ ] Trees v2: branching trees, leaf cards, wind sway, more species (parallel session)
-   - [ ] Ground v2: splat terrain material, procedural textures, near-camera grass/rocks/moss (parallel session)
-   - [ ] Clouds v2: volumetric, weather driven, translucent (parallel session)
+   - [x] Trees v2: branching trees, leaf cards, wind sway, more species
+   - [x] Ground v2: splat terrain material, procedural textures, near-camera grass/rocks/moss
+   - [x] Clouds v2: volumetric, translucent (driven by live weather for now; switch to `WeatherSample` from `ed_climate`)
    - [ ] Round 2 review
-2. **Teleport**: type a place name (or pick on a globe map), drop in from altitude and skydive down
-3. **Rocket boots + skydive + parachute + wingsuit**: Mach 1 boom, vapor cone, camera shake, speed lines, wind from live weather
-4. **HUD**: compass strip with waypoint pins, mode pill, minimap from vector tiles, target rings for bodies/waypoints with distance and ETA
-5. Weather FX: rain and snow particles, wet roads, fog from visibility
+2. [x] **Teleport**: type a place name (or pick on the satellite globe map with roads/borders), drop in from altitude and skydive down
+3. **Rocket boots + skydive + parachute + wingsuit**: done: boots, skydive, parachute, wingsuit, Mach 1 boom, camera shake. Left: vapor cone, speed lines, wind from `ed_climate`
+4. [x] **HUD**: compass strip with waypoint pins, mode pill, minimap from vector tiles, target rings for bodies/waypoints with distance and ETA
+5. **Procedural climate** (`ed_climate` milestones 1-3): climate base (insolation, lapse rate, wind belts, orographic rain), deterministic synoptic grid, storm records; `WeatherSample` replaces `CurrentWeather` in clouds/foliage/sky
+6. Weather FX from `WeatherSample`: rain and snow particles, wet roads, fog from visibility; later local storms (hurricane, tornado, sandstorm) per PLAN-world-sim
 
 ## Phase 2: World fidelity
 
 1. GPU instancing for repeated building modules (windows, balconies, AC units): the big triangle win for dense cities
 2. CDLOD geomorphing for terrain (no popping); VisibilityRange crossfades between building detail and distant versions
 3. Landmarks and special buildings from OSM tags: castles, churches, cathedrals, mosques, temples, stadiums, skyscraper crowns, old town walls
-4. ESA WorldCover land cover; TerraClimate climate; Macrostrat geology for rock color
+4. ESA WorldCover land cover; Macrostrat geology for rock color (climate is procedural, Phase 1.5)
 5. Building interiors (procedural floor plans, enterable ground floors)
 6. Bridges and tunnels with real decks; road elevation smoothing
 7. Night: lit windows, street lights, NASA SVS city lights from orbit
@@ -44,11 +47,11 @@ Getting around until Phase 4: **rocket boots and teleporting**. Vehicles come af
 
 ## Phase 3: Space (by rocket boots)
 
-1. Rocket boots superpower stages that reach orbit and beyond; time compression on long coasts
-2. Earth from orbit: low-zoom globe tiles, atmosphere from space, cloud layer
+1. Rocket boots superpower stages that reach orbit and beyond (boost stages exist); left: time compression on long coasts
+2. Earth from orbit: low-zoom globe tiles, atmosphere from space, cloud layer from `ed_climate` (planet shell exists; see PLAN-space-visuals)
 3. The Moon: procedural cratered terrain, then NASA LOLA elevation; land and walk
 4. Mars (MOLA), then the rest, with HUD target rings and approach guidance
-5. Starfield from Gaia/Hipparcos
+5. Starfield: procedural sky done (`starfield.rs`); next a real Hipparcos/Yale catalog
 
 ## Phase 4: Vehicles
 
@@ -64,7 +67,7 @@ Getting around until Phase 4: **rocket boots and teleporting**. Vehicles come af
 1. Delivery missions with the planner: pick up, multi-leg route, timer, scoring
 2. NPCs (pedestrian robots) on sidewalks, animals by biome (deer, camels, penguins...)
 3. Photo mode + postcards ("Greetings from Zermatt")
-4. Title screen: spinning Earth with real clouds and city lights
+4. Title screen: spinning Earth (done: `globe.rs`, satellite tiles, atmosphere, stars); left: procedural clouds and city lights
 5. Character customization (backpack and more), save/load, settings, controller support
 
 ## Engineering

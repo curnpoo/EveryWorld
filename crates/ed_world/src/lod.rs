@@ -19,7 +19,7 @@ pub struct LodParams {
 
 impl Default for LodParams {
     fn default() -> Self {
-        Self { root_zoom: 6, max_zoom: 14, split: 2.0, root_radius: 2 }
+        Self { root_zoom: 6, max_zoom: 14, split: 1.0, root_radius: 2 }
     }
 }
 

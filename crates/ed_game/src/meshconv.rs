@@ -20,7 +20,7 @@ pub fn to_mesh(m: &MeshData) -> Mesh {
             let v: Vec<[u8; 4]> = m.splat.iter().map(|s| [s[k * 4], s[k * 4 + 1], s[k * 4 + 2], s[k * 4 + 3]]).collect();
             mesh.insert_attribute(attr, VertexAttributeValues::Unorm8x4(v));
         }
-        mesh.insert_attribute(ATTRIBUTE_SPLAT_PAD, VertexAttributeValues::Unorm8x4(vec![[0; 4]; m.positions.len()]));
+        mesh.insert_attribute(ATTRIBUTE_SPLAT_PAD, VertexAttributeValues::Unorm8x4(if m.sat.len() == m.positions.len() { m.sat.clone() } else { vec![[0; 4]; m.positions.len()] }));
     }
     mesh
 }

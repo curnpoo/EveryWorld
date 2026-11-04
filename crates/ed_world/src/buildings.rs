@@ -141,6 +141,7 @@ pub fn prepare(vt: &mvt::Tile, ctx: &BuildingContext, region: Region) -> Vec<Bui
         }
     }
 
+    let mut pending: Vec<(Footprint, (u8, u8))> = Vec::new();
     for f in &layer.features {
         if f.geom_type != GeomType::Polygon || matches!(f.props.get("hide_3d"), Some(mvt::Value::Bool(true))) {
             continue;
@@ -171,10 +172,30 @@ pub fn prepare(vt: &mvt::Tile, ctx: &BuildingContext, region: Region) -> Vec<Bui
             };
             let chunk = (((cx as f64 / ext) * CHUNKS as f64) as u8).min(CHUNKS - 1);
             let chunk_y = (((cy as f64 / ext) * CHUNKS as f64) as u8).min(CHUNKS - 1);
-            if let Some(mut spec) = prepare_one(fp, ctx, &index, region, up) {
-                spec.chunk = (chunk, chunk_y);
-                specs.push(spec);
+            pending.push((fp, (chunk, chunk_y)));
+        }
+    }
+
+    // Raised parts (OSM building:part with min_height) need something under
+    // them. If no ground-level footprint covers the part's center, it would
+    // hover: ground it instead.
+    let polys: Vec<Vec<Vec2>> = pending
+        .iter()
+        .map(|(fp, _)| if fp.min_height > 0.5 { Vec::new() } else { fp.ring.iter().map(|&(u, v)| Vec2::new(u as f32, v as f32)).collect() })
+        .collect();
+    for (fp, chunk) in pending.iter_mut() {
+        if fp.min_height > 0.5 {
+            let c = Vec2::new(fp.center.0 as f32, fp.center.1 as f32);
+            if !polys.iter().any(|p| p.len() >= 3 && point_in_poly(c, p)) {
+                fp.min_height = 0.0;
             }
+        }
+        let _ = chunk;
+    }
+    for (fp, chunk) in pending {
+        if let Some(mut spec) = prepare_one(fp, ctx, &index, region, up) {
+            spec.chunk = chunk;
+            specs.push(spec);
         }
     }
     specs
@@ -305,8 +326,8 @@ fn nearest_road(p: Vec3, roads: &[(RoadClass, Vec<Vec3>)], up: Vec3) -> Option<(
 }
 
 /// Remove tiny edges and near-collinear vertices so walls are clean.
-fn simplify(ring: &[Vec3], party: &[bool], up: Vec3) -> (Vec<Vec3>, Vec<bool>) {
-    let mut pts: Vec<(Vec3, bool)> = ring.iter().copied().zip(party.iter().copied()).collect();
+fn simplify(ring: &[Vec3], party: &[bool], uvs: &[(f64, f64)], up: Vec3) -> (Vec<Vec3>, Vec<bool>, Vec<(f64, f64)>) {
+    let mut pts: Vec<(Vec3, bool, (f64, f64))> = ring.iter().copied().zip(party.iter().copied()).zip(uvs.iter().copied()).map(|((p, b), uv)| (p, b, uv)).collect();
     let mut changed = true;
     while changed && pts.len() > 3 {
         changed = false;
@@ -329,7 +350,7 @@ fn simplify(ring: &[Vec3], party: &[bool], up: Vec3) -> (Vec<Vec3>, Vec<bool>) {
             }
         }
     }
-    (pts.iter().map(|p| p.0).collect(), pts.iter().map(|p| p.1).collect())
+    (pts.iter().map(|p| p.0).collect(), pts.iter().map(|p| p.1).collect(), pts.iter().map(|p| p.2).collect())
 }
 
 /// One wall segment and how it is used.
@@ -342,11 +363,29 @@ struct Wall {
     party: bool,
     front: bool,
     street: bool,
+    /// Terrain height along a -> b relative to `base_h` (evenly spaced,
+    /// first at `a`, last at `b`). Drives the foundation strip.
+    ground: Vec<f32>,
 }
+
+/// Dense ground sampling spacing along walls (m).
+const GROUND_STEP: f32 = 1.5;
 
 fn prepare_one(f: Footprint, ctx: &BuildingContext, index: &RoadIndex, region: Region, up: Vec3) -> Option<BuildingSpec> {
     let grounds: Vec<f32> = f.ring.iter().map(|&(u, v)| ctx.grid.sample(u, v)).collect();
-    let g_min = grounds.iter().cloned().fold(f32::MAX, f32::min);
+    // Lowest terrain under the footprint: sample every edge (~1 m) and the
+    // centroid, not just the corners, so a dip mid-wall can't open a gap.
+    let mut g_min = grounds.iter().cloned().fold(f32::MAX, f32::min);
+    for i in 0..f.ring.len() {
+        let (a, b) = (f.ring[i], f.ring[(i + 1) % f.ring.len()]);
+        let len = ctx.proj.local(a.0, a.1, 0.0).distance(ctx.proj.local(b.0, b.1, 0.0));
+        let n = (len / 1.0).ceil().clamp(1.0, 200.0) as usize;
+        for k in 1..n {
+            let t = k as f64 / n as f64;
+            g_min = g_min.min(ctx.grid.sample(a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t));
+        }
+    }
+    g_min = g_min.min(ctx.grid.sample(f.center.0, f.center.1));
     let g_avg = grounds.iter().sum::<f32>() / grounds.len() as f32;
     let neighborhood = {
         let c = ctx.proj.tile.uv_to_geodetic(f.center.0, f.center.1);
@@ -361,7 +400,7 @@ fn prepare_one(f: Footprint, ctx: &BuildingContext, index: &RoadIndex, region: R
         }
     };
     let upper = f.min_height > 0.5;
-    let base_h = if upper { g_avg + f.min_height } else { g_min - 0.4 };
+    let base_h = if upper { g_avg + f.min_height } else { g_min - 0.5 };
     // Facade y is measured from base_h. `gy` = street level in facade space.
     let gy = if upper { 0.0 } else { g_avg - base_h };
     let stoop = var.ground == GroundFloor::Stoop && !upper;
@@ -370,13 +409,15 @@ fn prepare_one(f: Footprint, ctx: &BuildingContext, index: &RoadIndex, region: R
 
     let mut ring: Vec<Vec3> = f.ring.iter().map(|&(u, v)| ctx.proj.local(u, v, base_h as f64)).collect();
     let mut party = f.party.clone();
+    let mut uvs = f.ring.clone();
     if mk::signed_area(&ring, up) < 0.0 {
         ring.reverse();
+        uvs.reverse();
         // Edge i (ring[i] -> ring[i+1]) after reversal was edge (n-2-i) before.
         let n = party.len();
         party = (0..n).map(|i| f.party[(2 * n - 2 - i) % n]).collect();
     }
-    let (ring, party) = simplify(&ring, &party, up);
+    let (ring, party, uvs) = simplify(&ring, &party, &uvs, up);
     if ring.len() < 3 {
         return None;
     }
@@ -403,7 +444,15 @@ fn prepare_one(f: Footprint, ctx: &BuildingContext, index: &RoadIndex, region: R
             let (a, b) = (ring[i], ring[(i + 1) % n]);
             let d = (b - a).reject_from_normalized(up);
             let len = d.length();
-            Wall { a, b, len, outward: up.cross(d / len.max(1e-4)).normalize_or(Vec3::X), party: party[i], front: false, street: false }
+            let (ua, ub) = (uvs[i], uvs[(i + 1) % n]);
+            let steps = (len / GROUND_STEP).ceil().clamp(1.0, 120.0) as usize;
+            let ground = (0..=steps)
+                .map(|k| {
+                    let t = k as f64 / steps as f64;
+                    ctx.grid.sample(ua.0 + (ub.0 - ua.0) * t, ua.1 + (ub.1 - ua.1) * t) - base_h
+                })
+                .collect();
+            Wall { a, b, len, outward: up.cross(d / len.max(1e-4)).normalize_or(Vec3::X), party: party[i], front: false, street: false, ground }
         })
         .collect();
     if let Some((_, q, _)) = road {
@@ -471,6 +520,12 @@ fn detail_one(o: &mut BuildingMeshes, s: &BuildingSpec, dctx: &DetailCtx, up: Ve
         facade(o, &b, w, var, f, floors, gy, ground_h, wall_top, upper, commercial, building_balcony, has_fire_escape, wall_c, trim_c, door_c, shutter_c);
     }
 
+    // Concrete foundation: wherever the terrain falls below street level,
+    // a skin from the base up to street level hides the gap under the house.
+    if !upper {
+        foundation(o, walls, up, gy);
+    }
+
     // Plinth, string courses, cornice: swept around the whole footprint.
     let outward_sweep = |o: &mut BuildingMeshes, prof: &[Vec2], y: f32, c: [f32; 4]| {
         // Sweep's profile x points to the path's right (= inward for CCW); flip it.
@@ -489,10 +544,9 @@ fn detail_one(o: &mut BuildingMeshes, s: &BuildingSpec, dctx: &DetailCtx, up: Ve
     }
 
     // ------------------------------------------------------------ roof
-    let form = if f.holes || ring.len() > 24 { RoofForm::Flat } else { pick(var.roof_forms, f.seed, 7) };
-    let form = if floors > 8 && form != RoofForm::Mansard { RoofForm::Flat } else { form };
-    match form {
-        RoofForm::Flat => {
+    let plan = roof_plan(s, up);
+    match plan {
+        RoofPlan::Flat => {
             match var.cornice {
                 Cornice::None => {}
                 Cornice::Simple => outward_sweep(o, &profiles::band(0.18, 0.3), wall_top - 0.3, trim_c),
@@ -504,15 +558,15 @@ fn detail_one(o: &mut BuildingMeshes, s: &BuildingSpec, dctx: &DetailCtx, up: Ve
             }
             flat_roof(o, ring, walls, up, wall_top, var, f, wall_c, region);
         }
-        RoofForm::Mansard => {
+        RoofPlan::Mansard => {
             outward_sweep(o, &profiles::cornice(0.45, 0.55), wall_top - 0.5, trim_c);
             mansard(o, ring, walls, up, wall_top, var, f, roof_c, trim_c, wall_c);
         }
-        RoofForm::Gable | RoofForm::Hip | RoofForm::LowHip => {
+        RoofPlan::Pitched(form, ref rects) => {
             if var.cornice != Cornice::None {
                 outward_sweep(o, &profiles::band(0.12, 0.22), wall_top - 0.22, trim_c);
             }
-            pitched(o, ring, walls, up, wall_top, form, var, f, roof_c, trim_c, wall_c);
+            pitched(o, rects, up, form, var, f, roof_c, trim_c, wall_c);
         }
     }
 
@@ -521,6 +575,29 @@ fn detail_one(o: &mut BuildingMeshes, s: &BuildingSpec, dctx: &DetailCtx, up: Ve
         lot(o, walls, up, gy, var, f, dctx, trim_c, roof_c, door_c);
     }
 
+}
+
+/// Concrete skin over the part of each wall that stands above the terrain
+/// below street level `gy` (facade space). Sits 3 cm proud of the wall.
+fn foundation(o: &mut BuildingMeshes, walls: &[Wall], up: Vec3, gy: f32) {
+    let c = [0.62, 0.61, 0.58, 1.0];
+    for w in walls.iter().filter(|w| !w.party && w.len >= 0.8) {
+        let n = w.ground.len() - 1;
+        let off = w.outward * 0.03;
+        for k in 0..n {
+            let (g0, g1) = (w.ground[k], w.ground[k + 1]);
+            if g0.min(g1) > gy - 0.05 {
+                continue; // terrain at or above street level: nothing to hide
+            }
+            let (t0, t1) = (k as f32 / n as f32, (k + 1) as f32 / n as f32);
+            let (p0, p1) = (w.a.lerp(w.b, t0) + off, w.a.lerp(w.b, t1) + off);
+            let top = gy + 0.02;
+            let q = [p0, p1, p1 + up * top, p0 + up * top];
+            let mid = (p0 + p1) * 0.5 + up * top * 0.5;
+            let m = o.out.m(Mat::Wall(WallMat::Concrete));
+            mk::m_quad_facing(m, q, mid + w.outward * 5.0, c);
+        }
+    }
 }
 
 /// Distant building: textured massing (windows drawn on, aligned to the
@@ -571,31 +648,81 @@ fn lod_one(o: &mut BuildingMeshes, s: &BuildingSpec, up: Vec3) {
     let cap: Vec<Vec3> = s.ring.iter().map(|p| *p + up * s.wall_top).collect();
     mk::polygon(&mut o.collider, &cap, &[], up, 1.0, [1.0; 4]);
 
-    // Roof: flat cap, or a hip made by insetting the eave ring.
+    // Roof: same decision as the detailed model so it doesn't pop.
     let eave: Vec<Vec3> = s.ring.iter().map(|p| *p + up * s.wall_top).collect();
-    let flat = s.f.holes || s.ring.len() > 24 || s.floors > 8 || var.roof_forms.iter().all(|f| *f == RoofForm::Flat);
-    if flat {
-        let parapet = if matches!(var.cornice, Cornice::None) { 0.55 } else { 0.9 };
-        for w in &s.walls {
-            let p = [w.a + up * s.wall_top, w.b + up * s.wall_top, w.b + up * (s.wall_top + parapet), w.a + up * (s.wall_top + parapet)];
-            o.out.m(Mat::LodWall).quad(p, [[0.04, 0.5]; 4], s.wall_c);
+    let plan = roof_plan(s, up);
+    match plan {
+        RoofPlan::Flat => {
+            let parapet = if matches!(var.cornice, Cornice::None) { 0.55 } else { 0.9 };
+            for w in &s.walls {
+                let p = [w.a + up * s.wall_top, w.b + up * s.wall_top, w.b + up * (s.wall_top + parapet), w.a + up * (s.wall_top + parapet)];
+                o.out.m(Mat::LodWall).quad(p, [[0.04, 0.5]; 4], s.wall_c);
+            }
+            let deck: Vec<Vec3> = eave.iter().map(|p| *p + up * (parapet * 0.6)).collect();
+            mk::polygon(o.out.m(Mat::Roof(RoofMat::Gravel)), &deck, &[], up, 2.0, s.roof_c);
         }
-        let deck: Vec<Vec3> = eave.iter().map(|p| *p + up * (parapet * 0.6)).collect();
-        mk::polygon(o.out.m(Mat::Roof(RoofMat::Gravel)), &deck, &[], up, 2.0, s.roof_c);
+        RoofPlan::Mansard => {
+            let inner: Vec<Vec3> = mk::inset(&eave, up, 1.0).iter().map(|p| *p + up * 2.9).collect();
+            let m = o.out.m(Mat::Roof(RoofMat::Zinc));
+            for i in 0..eave.len() {
+                let j = (i + 1) % eave.len();
+                let q = [eave[i], eave[j], inner[j], inner[i]];
+                let len = eave[i].distance(eave[j]);
+                m.quad(q, [[0.0, 0.0], [len, 0.0], [len, 1.0], [0.0, 1.0]], s.roof_c);
+            }
+            mk::polygon(m, &inner, &[], up, 1.0, s.roof_c);
+        }
+        RoofPlan::Pitched(form, ref rects) => {
+            for obb in rects {
+                lod_pitched(o, obb, form, up, var, s.roof_c, s.wall_c);
+            }
+        }
+    }
+}
+
+/// Simple gable/hip for one rectangle (distant view).
+fn lod_pitched(o: &mut BuildingMeshes, obb: &Obb, form: RoofForm, up: Vec3, var: &Variant, roof_c: [f32; 4], wall_c: [f32; 4]) {
+    let pitch = if form == RoofForm::LowHip { var.pitch.min(0.4) } else { var.pitch };
+    let (l, sd, c) = (obb.axis_l, obb.axis_s, obb.center);
+    let (hl, hs) = (obb.half.x, obb.half.y);
+    let rise = (pitch * hs).min(MAX_RISE);
+    let ov = 0.3;
+    let e = |sl: f32, ss: f32| c + l * sl * (hl + ov) + sd * ss * (hs + ov);
+    // Roof faces always look up: flip winding if needed.
+    let face = |m: &mut MeshData, p: &[Vec3]| {
+        let n = (p[1] - p[0]).cross(p[2] - p[0]);
+        let mut q: Vec<Vec3> = p.to_vec();
+        if n.dot(up) < 0.0 {
+            q.reverse();
+        }
+        if q.len() == 4 {
+            let (w, h) = (q[0].distance(q[1]), q[1].distance(q[2]));
+            m.quad([q[0], q[1], q[2], q[3]], [[0.0, 0.0], [w, 0.0], [w, h], [0.0, h]], roof_c);
+        } else {
+            m.triangle([q[0], q[1], q[2]], [[0.0, 0.0], [2.0, 0.0], [1.0, 1.0]], roof_c);
+        }
+    };
+    let m = o.out.m(Mat::Roof(var.roof_mat));
+    if form == RoofForm::Gable {
+        let r = |sl: f32| c + l * sl * (hl + ov) + up * rise;
+        face(m, &[e(1.0, 1.0), e(-1.0, 1.0), r(-1.0), r(1.0)]);
+        face(m, &[e(-1.0, -1.0), e(1.0, -1.0), r(1.0), r(-1.0)]);
+        for sl in [1.0f32, -1.0] {
+            let (g0, g1, apex) = (c + l * sl * hl + sd * hs, c + l * sl * hl - sd * hs, c + l * sl * hl + up * rise);
+            let mm = o.out.m(Mat::LodWall);
+            if (g1 - g0).cross(apex - g0).dot(l * sl) >= 0.0 {
+                mm.triangle([g0, g1, apex], [[0.04, 0.5]; 3], wall_c);
+            } else {
+                mm.triangle([g1, g0, apex], [[0.04, 0.5]; 3], wall_c);
+            }
+        }
     } else {
-        let span = (2.0 * mk::signed_area(&eave, up) / perimeter(&eave)).max(1.0);
-        let mansard = var.roof_forms.contains(&RoofForm::Mansard);
-        let (d, rise) = if mansard { (1.0, 2.9) } else { (span * 0.95, (var.pitch * span * 0.95).min(6.0)) };
-        let inner: Vec<Vec3> = mk::inset(&eave, up, d).iter().map(|p| *p + up * rise).collect();
-        let mat = if mansard { RoofMat::Zinc } else { var.roof_mat };
-        let m = o.out.m(Mat::Roof(mat));
-        for i in 0..eave.len() {
-            let j = (i + 1) % eave.len();
-            let q = [eave[i], eave[j], inner[j], inner[i]];
-            let len = eave[i].distance(eave[j]);
-            m.quad(q, [[0.0, 0.0], [len, 0.0], [len, 1.0], [0.0, 1.0]], s.roof_c);
-        }
-        mk::polygon(m, &inner, &[], up, 1.0, s.roof_c);
+        let rh = (hl - hs).max(HIP_MIN_RIDGE * hs);
+        let (r0, r1) = (c + l * rh + up * rise, c - l * rh + up * rise);
+        face(m, &[e(1.0, 1.0), e(-1.0, 1.0), r1, r0]);
+        face(m, &[e(-1.0, -1.0), e(1.0, -1.0), r0, r1]);
+        face(m, &[e(1.0, -1.0), e(1.0, 1.0), r0]);
+        face(m, &[e(-1.0, 1.0), e(-1.0, -1.0), r1]);
     }
 }
 
@@ -1022,34 +1149,157 @@ fn roof_plane(o: &mut BuildingMeshes, mat: RoofMat, eave_a: Vec3, eave_b: Vec3, 
     }
 }
 
+/// Tallest a pitched roof may rise above the eaves (m).
+const MAX_RISE: f32 = 4.5;
+/// Hip ridge never shrinks below this fraction of the half-span (no needle apex).
+const HIP_MIN_RIDGE: f32 = 0.3;
+
+/// How a building is roofed. Shared by the detailed and distant models so
+/// the roof shape doesn't change with distance.
+enum RoofPlan {
+    Flat,
+    Mansard,
+    Pitched(RoofForm, Vec<Obb>),
+}
+
+fn roof_plan(s: &BuildingSpec, up: Vec3) -> RoofPlan {
+    let (var, f) = (s.var, &s.f);
+    if f.holes || s.ring.len() > 24 || var.roof_forms.iter().all(|r| *r == RoofForm::Flat) {
+        return RoofPlan::Flat;
+    }
+    let form = pick(var.roof_forms, f.seed, 7);
+    let eave: Vec<Vec3> = s.ring.iter().map(|p| *p + up * s.wall_top).collect();
+    let span = 2.0 * s.area / perimeter(&eave);
+    match form {
+        RoofForm::Flat => RoofPlan::Flat,
+        RoofForm::Mansard => {
+            let boxy = fit_obb(&eave, up).is_some_and(|b| b.rectangularity > 0.8);
+            if s.floors > 12 || s.ring.len() > 16 || s.area > 1500.0 || span < 3.0 || !boxy { RoofPlan::Flat } else { RoofPlan::Mansard }
+        }
+        _ => {
+            // Big buildings are offices/warehouses/blocks: flat roof, parapet, gear.
+            let max_area = if var.house { 350.0 } else { 500.0 };
+            if s.floors > 4 || s.area > max_area {
+                return RoofPlan::Flat;
+            }
+            let rects = roof_rects(&eave, up);
+            if rects.is_empty() || rects.iter().any(|r| r.half.y * 2.0 > 14.0) {
+                return RoofPlan::Flat;
+            }
+            RoofPlan::Pitched(form, rects)
+        }
+    }
+}
+
+/// Split a footprint into rectangles a gable/hip can sit on. One rectangle
+/// if the footprint is (nearly) its bounding box; otherwise a greedy cover on
+/// a raster (L/T/U houses). Empty = the shape can't be covered cleanly.
+fn roof_rects(eave: &[Vec3], up: Vec3) -> Vec<Obb> {
+    let Some(obb) = fit_obb(eave, up) else { return vec![] };
+    if obb.half.y < 1.5 {
+        return vec![];
+    }
+    if obb.rectangularity >= 0.95 && eave.len() <= 12 {
+        return vec![obb];
+    }
+    let (l, sd) = (obb.axis_l, obb.axis_s);
+    let poly: Vec<Vec2> = eave.iter().map(|p| Vec2::new((*p - obb.center).dot(l), (*p - obb.center).dot(sd))).collect();
+    let nx = ((obb.half.x * 2.0 / 0.5).ceil() as usize).clamp(1, 300);
+    let ny = ((obb.half.y * 2.0 / 0.5).ceil() as usize).clamp(1, 300);
+    let (cx, cy) = (obb.half.x * 2.0 / nx as f32, obb.half.y * 2.0 / ny as f32);
+    let (x0, y0) = (-obb.half.x, -obb.half.y);
+    let mut grid = vec![false; nx * ny];
+    for j in 0..ny {
+        for i in 0..nx {
+            grid[j * nx + i] = point_in_poly(Vec2::new(x0 + (i as f32 + 0.5) * cx, y0 + (j as f32 + 0.5) * cy), &poly);
+        }
+    }
+    let mut rects = Vec::new();
+    for _ in 0..3 {
+        let Some((i0, j0, w, h)) = largest_rect(&grid, nx, ny) else { break };
+        let (wm, hm) = (w as f32 * cx, h as f32 * cy);
+        if wm.min(hm) < 3.0 || wm * hm < 15.0 {
+            break;
+        }
+        for j in j0..j0 + h {
+            for i in i0..i0 + w {
+                grid[j * nx + i] = false;
+            }
+        }
+        let center = obb.center + l * (x0 + (i0 as f32 + w as f32 * 0.5) * cx) + sd * (y0 + (j0 as f32 + h as f32 * 0.5) * cy);
+        let (hx, hy) = (wm * 0.5, hm * 0.5);
+        rects.push(if hx >= hy {
+            Obb { center, axis_l: l, axis_s: sd, half: Vec2::new(hx, hy), rectangularity: 1.0 }
+        } else {
+            Obb { center, axis_l: sd, axis_s: l, half: Vec2::new(hy, hx), rectangularity: 1.0 }
+        });
+    }
+    let left = grid.iter().filter(|g| **g).count() as f32 * cx * cy;
+    let foot = mk::signed_area(eave, up).abs();
+    if rects.is_empty() || left > 0.05 * foot + 2.0 {
+        return vec![];
+    }
+    rects
+}
+
+fn point_in_poly(p: Vec2, poly: &[Vec2]) -> bool {
+    let mut inside = false;
+    let mut j = poly.len() - 1;
+    for i in 0..poly.len() {
+        let (a, b) = (poly[i], poly[j]);
+        if (a.y > p.y) != (b.y > p.y) && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+/// Largest all-true axis-aligned rectangle in a grid: (i0, j0, w, h).
+fn largest_rect(g: &[bool], nx: usize, ny: usize) -> Option<(usize, usize, usize, usize)> {
+    let mut hts = vec![0usize; nx + 1];
+    let mut best = (0usize, 0, 0, 0, 0);
+    for j in 0..ny {
+        for i in 0..nx {
+            hts[i] = if g[j * nx + i] { hts[i] + 1 } else { 0 };
+        }
+        let mut st: Vec<usize> = Vec::new();
+        for i in 0..=nx {
+            let cur = hts[i]; // hts[nx] stays 0: sentinel
+            while let Some(&t) = st.last() {
+                if hts[t] <= cur {
+                    break;
+                }
+                st.pop();
+                let h = hts[t];
+                let left = st.last().map_or(0, |&k| k + 1);
+                let w = i - left;
+                if h * w > best.0 {
+                    best = (h * w, left, j + 1 - h, w, h);
+                }
+            }
+            st.push(i);
+        }
+    }
+    (best.0 > 0).then_some((best.1, best.2, best.3, best.4))
+}
+
 #[allow(clippy::too_many_arguments)]
-fn pitched(o: &mut BuildingMeshes, ring: &[Vec3], walls: &[Wall], up: Vec3, top: f32, form: RoofForm, var: &Variant, f: &Footprint, roof_c: [f32; 4], trim_c: [f32; 4], wall_c: [f32; 4]) {
-    let eave_ring: Vec<Vec3> = ring.iter().map(|p| *p + up * top).collect();
-    let rect = fit_obb(&eave_ring, up).filter(|b| b.rectangularity > 0.82 && ring.len() <= 12 && b.half.y > 1.5);
+fn pitched(o: &mut BuildingMeshes, rects: &[Obb], up: Vec3, form: RoofForm, var: &Variant, f: &Footprint, roof_c: [f32; 4], trim_c: [f32; 4], wall_c: [f32; 4]) {
+    for (k, obb) in rects.iter().enumerate() {
+        pitched_rect(o, obb, up, form, var, f, roof_c, trim_c, wall_c, k == 0);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn pitched_rect(o: &mut BuildingMeshes, obb: &Obb, up: Vec3, form: RoofForm, var: &Variant, f: &Footprint, roof_c: [f32; 4], trim_c: [f32; 4], wall_c: [f32; 4], extras: bool) {
     let pitch = if form == RoofForm::LowHip { var.pitch.min(0.4) } else { var.pitch };
     let ov = var.overhang;
-    let Some(obb) = rect else {
-        // Any footprint: hip roof by insetting the eave ring.
-        let span = (2.0 * mk::signed_area(&eave_ring, up) / perimeter(&eave_ring)).max(1.0);
-        let d = span * 0.95;
-        let rise = (pitch * d).min(6.0);
-        let outer = mk::inset(&eave_ring, up, -ov);
-        let drop = rise * ov / d.max(0.1);
-        let outer: Vec<Vec3> = outer.iter().map(|p| *p - up * drop).collect();
-        let inner: Vec<Vec3> = mk::inset(&eave_ring, up, d).iter().map(|p| *p + up * rise).collect();
-        for i in 0..outer.len() {
-            let j = (i + 1) % outer.len();
-            roof_plane(o, var.roof_mat, outer[i], outer[j], inner[j], inner[i], roof_c);
-        }
-        mk::polygon(o.out.m(Mat::Roof(var.roof_mat)), &inner, &[], up, 1.0, roof_c);
-        fascia_and_soffit(o, &outer, &eave_ring, up, trim_c);
-        roof_extras(o, &obb_from_ring(&eave_ring, up), up, top + rise * 0.6, var, f, wall_c);
-        return;
-    };
     let (l, s, c) = (obb.axis_l, obb.axis_s, obb.center);
     let (hl, hs) = (obb.half.x, obb.half.y);
-    let rise = (pitch * hs).min(7.0);
+    let rise = (pitch * hs).min(MAX_RISE);
     let drop = rise * ov / hs;
+    let eave_ring = [c + l * hl + s * hs, c - l * hl + s * hs, c - l * hl - s * hs, c + l * hl - s * hs];
     let e = |sl: f32, ss: f32| c + l * sl * (hl + if form == RoofForm::Gable { ov * 0.6 } else { ov }) + s * ss * (hs + ov) - up * drop;
     match form {
         RoofForm::Gable => {
@@ -1085,7 +1335,7 @@ fn pitched(o: &mut BuildingMeshes, ring: &[Vec3], walls: &[Wall], up: Vec3, top:
             bp::bar(&mut o.out, Mat::Trim, eaves[0] - up * 0.08, eaves[1] - up * 0.08, 0.16, up, trim_c);
         }
         _ => {
-            let ridge_half = (hl - hs).max(0.0);
+            let ridge_half = (hl - hs).max(HIP_MIN_RIDGE * hs);
             let r0 = c + l * ridge_half + up * rise;
             let r1 = c - l * ridge_half + up * rise;
             roof_plane(o, var.roof_mat, e(1.0, 1.0), e(-1.0, 1.0), r1, r0, roof_c);
@@ -1102,16 +1352,14 @@ fn pitched(o: &mut BuildingMeshes, ring: &[Vec3], walls: &[Wall], up: Vec3, top:
             fascia_and_soffit(o, &outer, &eave_ring, up, trim_c);
         }
     }
-    roof_extras(o, &obb, up, top + rise * 0.55, var, f, wall_c);
-    let _ = walls;
+    if extras {
+        roof_extras(o, obb, up, c.dot(up) + rise * 0.55, var, f, wall_c);
+    }
 }
+
 
 fn perimeter(ring: &[Vec3]) -> f32 {
     (0..ring.len()).map(|i| ring[i].distance(ring[(i + 1) % ring.len()])).sum::<f32>().max(1e-3)
-}
-
-fn obb_from_ring(ring: &[Vec3], up: Vec3) -> Obb {
-    fit_obb(ring, up).unwrap_or(Obb { center: ring[0], axis_l: Vec3::X, axis_s: Vec3::Z, half: Vec2::splat(1.0), rectangularity: 1.0 })
 }
 
 /// Fascia board around the eaves and a soffit back to the wall.
@@ -1364,5 +1612,111 @@ mod tests {
         let ys: Vec<f32> = m.collider.positions.iter().map(|p| p[1]).collect();
         let span = ys.iter().cloned().fold(f32::MIN, f32::max) - ys.iter().cloned().fold(f32::MAX, f32::min);
         assert!((14.0..22.0).contains(&span), "{span}");
+    }
+
+    fn ring3(pts: &[(f32, f32)]) -> Vec<Vec3> {
+        pts.iter().map(|&(x, z)| Vec3::new(x, 0.0, z)).collect()
+    }
+
+    #[test]
+    fn roof_rects_rectangle_is_single() {
+        let r = roof_rects(&ring3(&[(0.0, 0.0), (12.0, 0.0), (12.0, 8.0), (0.0, 8.0)]), Vec3::Y);
+        assert_eq!(r.len(), 1);
+    }
+
+    #[test]
+    fn roof_rects_l_shape_splits_without_overhang() {
+        let l = ring3(&[(0.0, 0.0), (20.0, 0.0), (20.0, 8.0), (8.0, 8.0), (8.0, 20.0), (0.0, 20.0)]);
+        let r = roof_rects(&l, Vec3::Y);
+        assert!(r.len() >= 2, "L should split, got {}", r.len());
+        // Every rectangle corner stays inside the footprint's bounding L (tolerance for raster).
+        let cells: Vec<Vec2> = l.iter().map(|p| Vec2::new(p.x, p.z)).collect();
+        for b in &r {
+            for (sl, ss) in [(1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)] {
+                let p = b.center + b.axis_l * sl * (b.half.x - 0.3) + b.axis_s * ss * (b.half.y - 0.3);
+                assert!(point_in_poly(Vec2::new(p.x, p.z), &cells), "corner {p:?} outside L");
+            }
+        }
+    }
+
+    #[test]
+    fn roof_rects_rejects_spiky_shapes() {
+        // A thin triangle can't carry a gable: caller falls back to flat.
+        let t = ring3(&[(0.0, 0.0), (30.0, 0.0), (15.0, 2.0)]);
+        assert!(roof_rects(&t, Vec3::Y).is_empty());
+    }
+
+    #[test]
+    fn big_buildings_get_flat_roofs() {
+        // 40x30 m = 1200 m2: far over any pitched-roof size limit.
+        let vt = tile_with(vec![rect(2000.0, 2040.0, 70.0, 50.0)], Some(10.0));
+        for r in Region::ALL {
+            let (lat, lon) = (40.0, -3.7);
+            let tile = TileId::containing(lat, lon, 14);
+            let proj = TileProjector::new(tile, EnuFrame::new(Geodetic::new(lat, lon, 0.0)));
+            let grid = TerrainGrid::flat(tile, 8, 100.0);
+            let surface = SurfaceMap::uniform(tile, Biome::Mediterranean);
+            let ctx = BuildingContext { proj: &proj, grid: &grid, surface: &surface, biome: Biome::Mediterranean, roads: &[] };
+            for s in prepare(&vt, &ctx, r) {
+                let big_pitched = matches!(roof_plan(&s, proj.up()), RoofPlan::Pitched(..));
+                assert!(!big_pitched, "{r:?}: {} m2 got a pitched roof", s.area);
+            }
+        }
+    }
+
+    #[test]
+    fn foundations_reach_below_sloped_terrain() {
+        let (lat, lon) = (40.0, -3.7);
+        let tile = TileId::containing(lat, lon, 14);
+        let proj = TileProjector::new(tile, EnuFrame::new(Geodetic::new(lat, lon, 0.0)));
+        // Rough, steep ground: +-6 m bumps every cell.
+        let segs = 64;
+        let mut grid = TerrainGrid::flat(tile, segs, 100.0);
+        for (k, h) in grid.heights.iter_mut().enumerate() {
+            *h += ((k * 7919) % 13) as f32 - 6.0;
+        }
+        let surface = SurfaceMap::uniform(tile, Biome::Mediterranean);
+        let ctx = BuildingContext { proj: &proj, grid: &grid, surface: &surface, biome: Biome::Mediterranean, roads: &[] };
+        let vt = tile_with(vec![rect(2000.0, 2040.0, 60.0, 40.0), rect(1500.0, 1500.0, 90.0, 30.0)], Some(12.0));
+        for r in Region::ALL {
+            for s in prepare(&vt, &ctx, r) {
+                let base_y = s.ring.iter().map(|p| p.y).fold(f32::MAX, f32::min);
+                let (xs, ys): (Vec<f64>, Vec<f64>) = s.f.ring.iter().cloned().unzip();
+                let (x0, x1) = (xs.iter().cloned().fold(f64::MAX, f64::min), xs.iter().cloned().fold(f64::MIN, f64::max));
+                let (y0, y1) = (ys.iter().cloned().fold(f64::MAX, f64::min), ys.iter().cloned().fold(f64::MIN, f64::max));
+                for i in 0..=20 {
+                    for j in 0..=20 {
+                        let (u, v) = (x0 + (x1 - x0) * i as f64 / 20.0, y0 + (y1 - y0) * j as f64 / 20.0);
+                        let ground_y = proj.local(u, v, ctx.grid.sample(u, v) as f64).y;
+                        assert!(base_y <= ground_y - 0.2, "{r:?}: base {base_y} above ground {ground_y} at ({u},{v})");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sloped_buildings_build_finite_meshes() {
+        let (lat, lon) = (40.0, -3.7);
+        let tile = TileId::containing(lat, lon, 14);
+        let proj = TileProjector::new(tile, EnuFrame::new(Geodetic::new(lat, lon, 0.0)));
+        let mut grid = TerrainGrid::flat(tile, 64, 100.0);
+        for (k, h) in grid.heights.iter_mut().enumerate() {
+            *h += ((k * 31) % 11) as f32 * 1.5;
+        }
+        let surface = SurfaceMap::uniform(tile, Biome::Mediterranean);
+        let ctx = BuildingContext { proj: &proj, grid: &grid, surface: &surface, biome: Biome::Mediterranean, roads: &[] };
+        let lshape = vec![[2000.0, 2000.0], [2060.0, 2000.0], [2060.0, 2030.0], [2030.0, 2030.0], [2030.0, 2070.0], [2000.0, 2070.0]];
+        let vt = tile_with(vec![lshape, rect(2200.0, 2000.0, 30.0, 20.0), rect(1000.0, 1000.0, 5.0, 60.0)], Some(9.0));
+        let dctx = DetailCtx { proj, grid: grid.clone(), roads: vec![] };
+        for r in Region::ALL {
+            let specs = prepare(&vt, &ctx, r);
+            assert!(!specs.is_empty());
+            for m in [build_detail(specs.iter(), &dctx), build_lod(specs.iter(), dctx.proj.up())] {
+                for mesh in m.out.meshes.values() {
+                    assert!(mesh.positions.iter().all(|p| p.iter().all(|c| c.is_finite())), "{r:?}");
+                }
+            }
+        }
     }
 }
