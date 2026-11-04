@@ -85,25 +85,25 @@ fn vertex(v: TerrainVertex) -> TerrainVertexOutput {
 // vertices, so uv is remapped to texel centres. Gradients are taken up front
 // so the per-class branches stay legal in non-uniform control flow.
 fn sample_sat(uv: vec2<f32>, tag: u32) -> vec4<f32> {
-    let class = tag >> 24u;
+    let cls = tag >> 24u;
     let layer = i32(tag & 0x00FFFFFFu);
     var n = 128.0;
-    if class == 1u {
+    if cls == 1u {
         n = 512.0;
-    } else if class == 2u {
+    } else if cls == 2u {
         n = 256.0;
     }
     let k = (n - 1.0) / n;
     let st = uv * k + 0.5 / n;
     let dx = dpdx(uv) * k;
     let dy = dpdy(uv) * k;
-    if class == 1u {
+    if cls == 1u {
         return textureSampleGrad(sat_512, sat_sampler, st, layer, dx, dy);
     }
-    if class == 2u {
+    if cls == 2u {
         return textureSampleGrad(sat_256, sat_sampler, st, layer, dx, dy);
     }
-    if class == 3u {
+    if cls == 3u {
         return textureSampleGrad(sat_128, sat_sampler, st, layer, dx, dy);
     }
     return vec4<f32>(0.0);
