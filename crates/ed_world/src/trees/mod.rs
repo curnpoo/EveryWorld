@@ -21,7 +21,9 @@
 //! the same seed so the silhouette matches.
 
 pub mod impostor;
+pub mod species;
 pub mod textures;
+pub use species::{Genome, SpeciesDef};
 
 use crate::foliage::{TreeInstance, TreeKind};
 use crate::mesh::MeshData;
@@ -635,57 +637,56 @@ impl Builder {
 
 // ---------------------------------------------------------------- species --
 
-/// Grow a species variant. `far` builds the far-LOD card model.
+/// Grow a species variant with the default genome (the shared, cached look).
 pub fn build(kind: TreeKind, variant: u32, far: bool) -> TreeModel {
+    build_genome(kind, variant, far, &Genome::default())
+}
+
+/// Grow a species variant shaped by `genome` (see `species.rs`). The default
+/// genome reproduces [`build`] exactly; this is the entry point for
+/// per-instance unique meshes.
+pub fn build_genome(kind: TreeKind, variant: u32, far: bool, genome: &Genome) -> TreeModel {
     // Far models keep roughly this many cards per tree.
-    let near_cards = if far { build_inner(kind, variant, false, 1.0).1 } else { 0 };
-    let keep = if far { (target_far_cards(kind) as f32 / near_cards.max(1) as f32).min(1.0) } else { 1.0 };
-    build_inner(kind, variant, far, keep).0
+    let near_cards = if far { build_inner(kind, variant, false, 1.0, genome).1 } else { 0 };
+    let keep = if far { (species::def(kind).far_cards as f32 / near_cards.max(1) as f32).min(1.0) } else { 1.0 };
+    build_inner(kind, variant, far, keep, genome).0
 }
 
-fn target_far_cards(kind: TreeKind) -> usize {
-    use TreeKind::*;
-    match kind {
-        Palm | DatePalm | Banana | Fern | GrassTussock => 8,
-        Conifer | Fir | Cypress => 34,
-        Cactus | PricklyPear => 0,
-        _ => 34,
-    }
-}
-
-fn build_inner(kind: TreeKind, variant: u32, far: bool, keep: f32) -> (TreeModel, u64) {
+fn build_inner(kind: TreeKind, variant: u32, far: bool, keep: f32, genome: &Genome) -> (TreeModel, u64) {
     let seed = 0x7EE5_0000 + (kind as u64) * 977 + variant as u64 * 31;
     let mut b = Builder::new(seed, far, keep);
     let v = variant as usize % VARIANTS as usize;
-    let pick = |a: [u32; 3]| a[v];
+    let leaf = species::def(kind).leaf[v];
     use TreeKind::*;
     match kind {
-        Broadleaf => oak(&mut b, pick([0x5d8a3a, 0x6b9442, 0x547f36])),
-        Maple => maple(&mut b, pick([0x6c9a3e, 0x7aa344, 0x8a9a3a])),
-        PlaneTree => plane(&mut b, pick([0x6f9a45, 0x7ba34c, 0x66903f])),
-        Birch => birch(&mut b, pick([0x86b04a, 0x93b851, 0x7ca545])),
-        Conifer => spruce(&mut b, pick([0x2f5a3a, 0x355f3c, 0x2b5236]), false),
-        Fir => spruce(&mut b, pick([0x2c5040, 0x2a4a3e, 0x33584a]), true),
-        Pine => pine(&mut b, pick([0x4a6e3c, 0x557842, 0x46683a])),
-        Palm => coconut(&mut b, pick([0x6d9a3c, 0x78a443, 0x669236])),
-        DatePalm => date_palm(&mut b, pick([0x6f8a58, 0x7a9260, 0x688252])),
-        Cypress => cypress(&mut b, pick([0x2f4a2c, 0x344f30, 0x2b4428])),
-        Olive => olive(&mut b, pick([0x7d8c62, 0x86946a, 0x74845c])),
-        Acacia => acacia(&mut b, pick([0x7c8e40, 0x879845, 0x72863c])),
-        Baobab => baobab(&mut b, pick([0x6f9440, 0x7a9c46, 0x66893a])),
-        Banana => banana(&mut b, pick([0x7aa83e, 0x86b244, 0x70a03a])),
+        Broadleaf => oak(&mut b, leaf),
+        Maple => maple(&mut b, leaf),
+        PlaneTree => plane(&mut b, leaf),
+        Birch => birch(&mut b, leaf),
+        Conifer => spruce(&mut b, leaf, false),
+        Fir => spruce(&mut b, leaf, true),
+        Pine => pine(&mut b, leaf),
+        Palm => coconut(&mut b, leaf),
+        DatePalm => date_palm(&mut b, leaf),
+        Cypress => cypress(&mut b, leaf),
+        Olive => olive(&mut b, leaf),
+        Acacia => acacia(&mut b, leaf),
+        Baobab => baobab(&mut b, leaf),
+        Banana => banana(&mut b, leaf),
         Cactus => saguaro(&mut b, v),
         PricklyPear => prickly_pear(&mut b),
-        Shrub => shrub(&mut b, pick([0x5f8a40, 0x6b9446, 0x587f3a]), LeafCell::Oval, [1.0; 4]),
-        Boxwood => boxwood(&mut b, pick([0x3f6a2e, 0x467333, 0x3a6229])),
-        Juniper => juniper(&mut b, pick([0x4a6f55, 0x52775a, 0x45684e])),
-        Oleander => oleander(&mut b, pick([0x557a3e, 0x5e8244, 0x507438]), v),
-        Fern => fern(&mut b, pick([0x5e9a3a, 0x68a240, 0x569034])),
-        GrassTussock => tussock(&mut b, pick([0x9aa457, 0x8e9c4e, 0xa6a860])),
-        FloweringBush => flowering(&mut b, pick([0x5a8a40, 0x628f44, 0x55823c]), v),
+        Shrub => shrub(&mut b, leaf, LeafCell::Oval, [1.0; 4]),
+        Boxwood => boxwood(&mut b, leaf),
+        Juniper => juniper(&mut b, leaf),
+        Oleander => oleander(&mut b, leaf, v),
+        Fern => fern(&mut b, leaf),
+        GrassTussock => tussock(&mut b, leaf),
+        FloweringBush => flowering(&mut b, leaf, v),
     }
     let cards = b.card_index;
-    (b.finish(), cards)
+    let mut model = b.finish();
+    genome.apply(&mut model);
+    (model, cards)
 }
 
 fn crown_dome(t: f32) -> f32 {
@@ -1587,7 +1588,13 @@ pub fn variant_for(t: &TreeInstance) -> u32 {
 
 /// Instance rotation: model +Y to the local `up`, then the yaw.
 pub fn instance_rotation(t: &TreeInstance, up: Vec3) -> Quat {
-    Quat::from_rotation_arc(Vec3::Y, up) * Quat::from_rotation_y(t.yaw)
+    // Natural lean: a few degrees off vertical in a per-tree direction
+    // (taller, slimmer crowns lean less; shrubs sprawl more).
+    let h = |salt: u64| crate::hash01((t.pos.x.to_bits() as u64) << 32 ^ t.pos.z.to_bits() as u64, salt);
+    let max_lean = if t.kind.is_shrub() { 0.12 } else { 0.06 };
+    let dir = h(0xA1) * std::f32::consts::TAU;
+    let lean = Quat::from_axis_angle(Vec3::new(dir.sin(), 0.0, dir.cos()), h(0xA2) * max_lean * h(0xA2));
+    Quat::from_rotation_arc(Vec3::Y, up) * lean * Quat::from_rotation_y(t.yaw)
 }
 
 /// Per-instance wind phase shift so neighbours don't sway in lockstep.

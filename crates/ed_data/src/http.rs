@@ -39,3 +39,28 @@ pub fn get_bytes_opt(url: &str) -> anyhow::Result<Option<Vec<u8>>> {
         Err(e) => Err(e.into()),
     }
 }
+
+/// Fetch `len` bytes at `start` with an HTTP Range request. Returns the bytes
+/// and the total object length (from `Content-Range`); 404 is `Ok(None)`.
+/// A server that ignores `Range` (plain 200) is an error, not a silent 400 MB read.
+pub fn get_range(url: &str, start: u64, len: u64) -> anyhow::Result<Option<(Vec<u8>, u64)>> {
+    let range = format!("bytes={}-{}", start, start + len - 1);
+    match agent().get(url).header("Range", range).call() {
+        Ok(mut resp) => {
+            if resp.status() != 206 {
+                anyhow::bail!("{url}: server ignored Range (status {})", resp.status());
+            }
+            let total = resp
+                .headers()
+                .get("content-range")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.rsplit('/').next())
+                .and_then(|s| s.parse::<u64>().ok())
+                .ok_or_else(|| anyhow::anyhow!("{url}: missing Content-Range"))?;
+            let bytes = resp.body_mut().with_config().limit(16 * 1024 * 1024).read_to_vec()?;
+            Ok(Some((bytes, total)))
+        }
+        Err(ureq::Error::StatusCode(404)) | Err(ureq::Error::StatusCode(403)) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}

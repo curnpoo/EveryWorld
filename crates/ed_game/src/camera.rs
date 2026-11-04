@@ -49,7 +49,7 @@ fn atmosphere_by_altitude(
     }
 }
 
-fn spawn_camera(mut commands: Commands, cfg: Res<Config>, origin: Res<WorldOrigin>) {
+fn spawn_camera(mut commands: Commands, cfg: Res<Config>, origin: Res<WorldOrigin>, mut images: ResMut<Assets<Image>>) {
     // Start above the drop point; streaming refines the ground under us.
     let ground = cfg.start.alt_m.max(0.0);
     let pos = origin.to_render(ed_geo::Geodetic { alt_m: ground + cfg.start_agl, ..cfg.start });
@@ -65,7 +65,15 @@ fn spawn_camera(mut commands: Commands, cfg: Res<Config>, origin: Res<WorldOrigi
         Transform::from_translation(pos).with_rotation(Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0)),
         FlyCam { yaw, pitch, speed: 60.0 },
         Rebased,
+        crate::cloud_half::CloudView,
+        // Layer 0 plus the camera-only layer (meshes the sun must not see).
+        bevy::camera::visibility::RenderLayers::from_layers(&[0, CAMERA_ONLY_LAYER]),
     ));
+    if cfg.headless {
+        let target = crate::headless::make_target(&mut images, cfg.width, cfg.height);
+        cam.insert(bevy::camera::RenderTarget::Image(target.clone().into()));
+        cam.commands().insert_resource(crate::headless::HeadlessTarget(target));
+    }
     if !cfg.no_post {
         // `EW_POST=bloom,taa,ssao` (any subset) to bisect post effects; default all.
         let only = std::env::var("EW_POST").ok();
@@ -94,11 +102,13 @@ fn spawn_camera(mut commands: Commands, cfg: Res<Config>, origin: Res<WorldOrigi
 
 fn fly_camera(
     time: Res<Time>,
+    cfg: Res<Config>,
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
     buttons: Res<ButtonInput<MouseButton>>,
     origin: Res<WorldOrigin>,
+    spatial: avian3d::prelude::SpatialQuery,
     mut q: Query<(&mut Transform, &mut FlyCam)>,
 ) {
     let Ok((mut t, mut cam)) = q.single_mut() else { return };
@@ -106,6 +116,10 @@ fn fly_camera(
     if buttons.pressed(MouseButton::Right) || buttons.pressed(MouseButton::Left) {
         cam.yaw -= mouse.delta.x * 0.003;
         cam.pitch = (cam.pitch - mouse.delta.y * 0.003).clamp(-1.55, 1.55);
+    }
+    // Scripted route (`--spin`, `--cruise`) for unattended perf runs.
+    if let Some(spin) = cfg.spin {
+        cam.yaw -= spin.to_radians() * dt;
     }
     if scroll.delta.y != 0.0 {
         cam.speed = (cam.speed * 1.2f32.powf(scroll.delta.y)).clamp(2.0, 2.0e6);
@@ -137,4 +151,24 @@ fn fly_camera(
     }
     let boost = if keys.pressed(KeyCode::ShiftLeft) { 10.0 } else { 1.0 };
     t.translation += dir.normalize_or_zero() * cam.speed * boost * dt;
+    if let Some(v) = cfg.cruise {
+        // Level flight along the heading, so AGL stays roughly constant over flat ground.
+        let level = (fwd - up * fwd.dot(up)).normalize_or_zero();
+        t.translation += level * v * dt;
+        // Terrain follow: hold the start AGL over the colliders (ground + roofs),
+        // so a long route never flies into a mountain. Eased, so it stays smooth.
+        let top = t.translation + up * 4000.0;
+        if let Ok(down) = Dir3::new(-up) {
+            if let Some(hit) = spatial.cast_ray(top, down, 8000.0, true, &avian3d::prelude::SpatialQueryFilter::default()) {
+                let agl = hit.distance - 4000.0;
+                let err = cfg.start_agl as f32 - agl;
+                t.translation += up * err * (1.0 - (-2.0 * dt).exp());
+            }
+        }
+    }
 }
+
+/// Render layer seen by the main camera but not the sun: meshes drawn without
+/// casting shadows while a cheaper stand-in on `clouds::CLOUD_SHADOW_LAYER`
+/// (sun only) casts for them. Used for full-detail building chunks.
+pub const CAMERA_ONLY_LAYER: usize = 6;

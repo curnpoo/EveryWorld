@@ -245,7 +245,7 @@ impl Material for CloudMaterial {
 }
 
 #[derive(Component)]
-struct CloudLayer;
+pub(crate) struct CloudLayer;
 
 fn noise_image(size: usize, data: Vec<u8>) -> Image {
     let s = size as u32;

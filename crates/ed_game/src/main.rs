@@ -5,6 +5,7 @@ mod body;
 mod building_materials;
 mod camera;
 mod capture;
+mod cloud_half;
 mod clouds;
 mod config;
 mod engine_audio;
@@ -16,6 +17,7 @@ mod impostors;
 mod library;
 mod lookdev;
 mod globe;
+mod headless;
 mod mapview;
 mod near_chunks;
 mod menu;
@@ -63,13 +65,25 @@ fn main() {
     if std::env::var_os("EW_NO_PIPELINE").is_some() {
         plugins = plugins.disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>();
     }
+    if cfg.headless {
+        // No winit: no window, no Dock icon, no focus steal. The loop runs
+        // uncapped; `headless::wait_for_gpu` paces it against the GPU.
+        plugins = plugins
+            .set(WindowPlugin { primary_window: None, exit_condition: bevy::window::ExitCondition::DontExit, ..default() })
+            .disable::<bevy::winit::WinitPlugin>();
+        app.add_plugins(bevy::app::ScheduleRunnerPlugin::run_loop(std::time::Duration::ZERO));
+    }
     app.add_plugins(plugins)
     .add_plugins(bevy::pbr::experimental::meshlet::MeshletPlugin { cluster_buffer_slots: 1 << 22 })
     .add_plugins(PhysicsPlugins::default())
     .insert_resource(Gravity(Vec3::NEG_Y * 9.81))
     .insert_resource(cfg.clone())
     .add_plugins((origin::OriginPlugin, assets::AssetsPlugin, building_materials::BuildingMaterialsPlugin, sky::SkyPlugin, camera::CameraPlugin, foliage::FoliagePlugin))
-    .add_plugins((clouds::CloudsPlugin, perf::PerfPlugin, render_scale::RenderScalePlugin, library::LibraryPlugin));
+    .add_plugins((clouds::CloudsPlugin, cloud_half::CloudHalfPlugin, perf::PerfPlugin, render_scale::RenderScalePlugin, library::LibraryPlugin))
+    .add_systems(Update, headless::quit_after);
+    if cfg.headless {
+        app.add_plugins(headless::HeadlessPlugin);
+    }
     if let Some(dir) = &cfg.lookdev {
         std::fs::create_dir_all(dir).expect("create lookdev dir");
         app.insert_resource(lookdev::Lookdev { out_dir: dir.clone(), only: cfg.lookdev_only.clone() })

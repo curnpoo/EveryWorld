@@ -27,6 +27,12 @@ pub enum Cover {
     Park,
     Pitch,
     Water,
+    /// WorldCover shrubland: scrub, maquis, sagebrush.
+    Shrub,
+    /// WorldCover bare / sparse vegetation: desert pavement, scree, dry flats.
+    Bare,
+    /// Moss and lichen (tundra, high latitude barrens).
+    Moss,
 }
 
 impl Cover {
@@ -58,7 +64,7 @@ impl Cover {
         match self {
             Cover::Natural => 0,
             Cover::Residential | Cover::Commercial | Cover::Industrial => 1,
-            Cover::Farmland | Cover::Grass | Cover::Wood | Cover::Wetland => 2,
+            Cover::Farmland | Cover::Grass | Cover::Wood | Cover::Wetland | Cover::Shrub | Cover::Bare | Cover::Moss => 2,
             Cover::Sand | Cover::Rock | Cover::Ice => 3,
             Cover::Park | Cover::Pitch => 4,
             Cover::Water => 5,
@@ -124,7 +130,7 @@ impl Ground {
 /// What a land-cover class is made of, per biome. Weights need not sum to 1.
 fn recipe(c: Cover, b: Biome) -> Vec<(Ground, f32)> {
     use Ground::*;
-    let dry = matches!(b, Biome::Mediterranean | Biome::Savanna | Biome::HotDesert);
+    let dry = matches!(b, Biome::Mediterranean | Biome::Savanna | Biome::HotDesert | Biome::Steppe);
     match c {
         Cover::Natural => match b {
             Biome::TropicalRainforest => vec![(ForestFloor, 0.45), (Grass, 0.3), (Moss, 0.2), (Mud, 0.05)],
@@ -133,6 +139,7 @@ fn recipe(c: Cover, b: Biome) -> Vec<(Ground, f32)> {
             Biome::Mediterranean => vec![(DryGrass, 0.5), (Dirt, 0.3), (Gravel, 0.2)],
             Biome::TemperateForest => vec![(Grass, 0.75), (Moss, 0.12), (Dirt, 0.13)],
             Biome::Grassland => vec![(Grass, 0.5), (DryGrass, 0.45), (Dirt, 0.05)],
+            Biome::Steppe => vec![(DryGrass, 0.55), (Dirt, 0.25), (Gravel, 0.2)],
             Biome::Boreal => vec![(Moss, 0.4), (ForestFloor, 0.3), (Grass, 0.3)],
             Biome::Tundra => vec![(Moss, 0.4), (DryGrass, 0.3), (Gravel, 0.3)],
             Biome::Alpine => vec![(Grass, 0.5), (Gravel, 0.25), (Rock, 0.25)],
@@ -140,7 +147,7 @@ fn recipe(c: Cover, b: Biome) -> Vec<(Ground, f32)> {
         },
         Cover::Wood => match b {
             Biome::TropicalRainforest => vec![(ForestFloor, 0.6), (Moss, 0.2), (Mud, 0.2)],
-            Biome::Mediterranean | Biome::Savanna | Biome::HotDesert => vec![(ForestFloor, 0.5), (DryGrass, 0.3), (Dirt, 0.2)],
+            Biome::Mediterranean | Biome::Savanna | Biome::HotDesert | Biome::Steppe => vec![(ForestFloor, 0.5), (DryGrass, 0.3), (Dirt, 0.2)],
             Biome::Boreal | Biome::Alpine | Biome::Tundra => vec![(ForestFloor, 0.45), (Moss, 0.4), (Grass, 0.15)],
             _ => vec![(ForestFloor, 0.5), (Moss, 0.25), (Grass, 0.25)],
         },
@@ -161,6 +168,28 @@ fn recipe(c: Cover, b: Biome) -> Vec<(Ground, f32)> {
         Cover::Commercial => vec![(Paving, 0.7), (Gravel, 0.2), (Grass, 0.1)],
         Cover::Industrial => vec![(Gravel, 0.5), (Paving, 0.3), (Dirt, 0.2)],
         Cover::Water => vec![(Mud, 0.6), (Sand, 0.4)],
+        Cover::Shrub => match b {
+            Biome::HotDesert => vec![(Sand, 0.45), (Gravel, 0.3), (Dirt, 0.15), (DryGrass, 0.1)],
+            _ if dry => vec![(DryGrass, 0.4), (Dirt, 0.35), (Gravel, 0.25)],
+            Biome::Tundra | Biome::Alpine => vec![(Moss, 0.3), (Gravel, 0.35), (DryGrass, 0.2), (Rock, 0.15)],
+            _ => vec![(Grass, 0.4), (ForestFloor, 0.25), (Dirt, 0.25), (Moss, 0.1)],
+        },
+        Cover::Bare => match b {
+            Biome::HotDesert => vec![(Sand, 0.45), (Gravel, 0.35), (Rock, 0.2)],
+            Biome::Alpine | Biome::Tundra | Biome::IceCap => vec![(Gravel, 0.45), (Rock, 0.4), (Dirt, 0.15)],
+            _ => vec![(Dirt, 0.45), (Gravel, 0.3), (Rock, 0.25)],
+        },
+        Cover::Moss => vec![(Moss, 0.6), (DryGrass, 0.15), (Gravel, 0.25)],
+    }
+}
+
+/// What dry ground shows where vegetation fails (satellite says it is not green).
+fn bare_ground(b: Biome) -> &'static [(Ground, f32)] {
+    use Ground::*;
+    match b {
+        Biome::HotDesert => &[(Sand, 0.5), (Gravel, 0.3), (Dirt, 0.2)],
+        Biome::Alpine | Biome::Tundra | Biome::IceCap => &[(Gravel, 0.5), (Rock, 0.3), (Dirt, 0.2)],
+        _ => &[(Dirt, 0.55), (Gravel, 0.3), (Sand, 0.15)],
     }
 }
 
@@ -206,6 +235,13 @@ pub struct SurfaceMap {
     pub lat: f64,
     pub res: usize,
     pub cover: Vec<Cover>,
+    /// WorldCover canopy: share of tree samples per cell (0..=255), `wc_res`^2, empty if not loaded.
+    pub canopy: Vec<u8>,
+    /// WorldCover shrub share per cell (0..=255), same grid as `canopy`.
+    pub shrubs: Vec<u8>,
+    pub wc_res: usize,
+    /// Bedrock under the tile (Macrostrat), colours exposed rock and sand.
+    pub lith: Option<ed_data::geology::Lithology>,
     /// Satellite colours (Sentinel-2) covering this tile, if fetched.
     pub sat: Option<SatView>,
 }
@@ -225,7 +261,7 @@ pub struct SatView {
 impl SurfaceMap {
     pub fn uniform(tile: TileId, biome: Biome) -> Self {
         let c = tile.center();
-        Self { tile, biome, lat: c.lat_deg, res: 1, cover: vec![Cover::Natural], sat: None }
+        Self { tile, biome, lat: c.lat_deg, res: 1, cover: vec![Cover::Natural], canopy: Vec::new(), shrubs: Vec::new(), wc_res: 0, lith: None, sat: None }
     }
 
     /// Rasterize a vector tile's cover polygons. `vt_tile` may be an ancestor
@@ -259,7 +295,47 @@ impl SurfaceMap {
                 }
             }
         }
-        Self { tile, biome, lat: c.lat_deg, res, cover, sat: None }
+        Self { tile, biome, lat: c.lat_deg, res, cover, canopy: Vec::new(), shrubs: Vec::new(), wc_res: 0, lith: None, sat: None }
+    }
+
+    /// Fill unmapped (`Natural`) cells from ESA WorldCover and keep its canopy
+    /// and shrub fractions for tree density. OSM polygons still win where mapped.
+    /// The cover grid is upsampled to the WorldCover grid if it is coarser.
+    pub fn with_worldcover(mut self, lc: &ed_data::worldcover::LandCover) -> Self {
+        use ed_data::worldcover as wc;
+        if lc.w == 0 || lc.w != lc.h {
+            return self;
+        }
+        if self.res < lc.w {
+            let (old, r) = (std::mem::take(&mut self.cover), self.res);
+            self.cover = (0..lc.w * lc.w).map(|i| old[(i / lc.w * r / lc.w) * r + (i % lc.w * r / lc.w)]).collect();
+            self.res = lc.w;
+        }
+        for y in 0..self.res {
+            for x in 0..self.res {
+                let cell = &mut self.cover[y * self.res + x];
+                if *cell != Cover::Natural {
+                    continue;
+                }
+                let k = (y * lc.w / self.res) * lc.w + x * lc.w / self.res;
+                *cell = match lc.class[k] {
+                    wc::TREE | wc::MANGROVE => Cover::Wood,
+                    wc::SHRUB => Cover::Shrub,
+                    wc::GRASS => Cover::Grass,
+                    wc::CROP => Cover::Farmland,
+                    wc::BUILT => Cover::Residential,
+                    wc::BARE => Cover::Bare,
+                    wc::SNOW => Cover::Ice,
+                    wc::WETLAND => Cover::Wetland,
+                    wc::MOSS => Cover::Moss,
+                    _ => Cover::Natural, // water is left to OSM (it carves terrain)
+                };
+            }
+        }
+        self.canopy = lc.tree.clone();
+        self.shrubs = lc.shrub.clone();
+        self.wc_res = lc.w;
+        self
     }
 
     /// Attach satellite imagery. `sat.id` must be an ancestor of (or equal to) this tile.
@@ -369,10 +445,22 @@ impl SurfaceMap {
         let (cu, cv) = (u + wx, v + wy);
         let mut w = [0.0f32; LAYERS];
         let taps: [(f64, f64, f32); 5] = [(0.0, 0.0, 2.0), (-0.6, 0.0, 1.0), (0.6, 0.0, 1.0), (0.0, -0.6, 1.0), (0.0, 0.6, 1.0)];
+        let green = self.greenness(u, v);
         for (du, dv, k) in taps {
             let c = self.cover_at((cu + du * cell).clamp(0.0, 1.0), (cv + dv * cell).clamp(0.0, 1.0));
+            // Where the satellite shows no green, unmanaged vegetated cover
+            // gives way to bare ground (no lawn in a desert).
+            let gated = matches!(c, Cover::Natural | Cover::Grass | Cover::Shrub | Cover::Moss);
             for (l, x) in recipe(c, self.biome) {
-                w[l as usize] += x * k;
+                if gated && l.is_living() {
+                    let keep = 0.08 + 0.92 * green;
+                    w[l as usize] += x * k * keep;
+                    for (bg, bx) in bare_ground(self.biome) {
+                        w[*bg as usize] += x * k * (1.0 - keep) * bx;
+                    }
+                } else {
+                    w[l as usize] += x * k;
+                }
             }
         }
         normalize(&mut w);
@@ -425,6 +513,7 @@ impl SurfaceMap {
             Biome::Mediterranean => [1.10, 1.0, 0.80],
             Biome::TemperateForest => [1.0, 1.0, 1.0],
             Biome::Grassland => [1.06, 1.02, 0.88],
+            Biome::Steppe => [1.10, 1.0, 0.84],
             Biome::Boreal => [0.86, 0.96, 0.94],
             Biome::Tundra => [1.04, 0.96, 0.86],
             Biome::Alpine => [0.96, 1.02, 0.90],
@@ -440,7 +529,7 @@ impl SurfaceMap {
         if let Some(sat) = self.sat_linear(u, v) {
             let strength = match c {
                 Cover::Wood => 0.45,
-                Cover::Natural | Cover::Grass | Cover::Park | Cover::Pitch | Cover::Farmland | Cover::Wetland => 0.9,
+                Cover::Natural | Cover::Grass | Cover::Park | Cover::Pitch | Cover::Farmland | Cover::Wetland | Cover::Shrub | Cover::Moss => 0.9,
                 _ => 0.0,
             };
             let mut exp = [0.0f32; 3];
@@ -503,16 +592,63 @@ impl SurfaceMap {
         c
     }
 
-    /// Trees per hectare for the foliage scatterer.
+    /// How green the real ground looks (0 barren .. 1 vegetated), from the
+    /// satellite's green-over-red excess. 1.0 when there is no imagery.
+    pub fn greenness(&self, u: f64, v: f64) -> f32 {
+        match self.sat_linear(u, v) {
+            Some([r, g, _]) => noise::smoothstep(0.0, 0.10, (g - r) / (g + r + 1e-3)),
+            None => 1.0,
+        }
+    }
+
+    /// Tree-canopy share (0..1) from WorldCover at tile (u, v), if loaded.
+    pub fn canopy_at(&self, u: f64, v: f64) -> Option<f32> {
+        (!self.canopy.is_empty()).then(|| self.wc_cell(&self.canopy, u, v))
+    }
+
+    pub fn shrub_at(&self, u: f64, v: f64) -> Option<f32> {
+        (!self.shrubs.is_empty()).then(|| self.wc_cell(&self.shrubs, u, v))
+    }
+
+    fn wc_cell(&self, grid: &[u8], u: f64, v: f64) -> f32 {
+        let n = self.wc_res;
+        let x = ((u * n as f64) as usize).min(n - 1);
+        let y = ((v * n as f64) as usize).min(n - 1);
+        grid[y * n + x] as f32 / 255.0
+    }
+
+    /// Plants (trees + shrubs) per hectare for the foliage scatterer. With
+    /// WorldCover loaded this is canopy-driven: a 90 % canopy cell gets a near
+    /// full forest, a 5 % cell a few scattered trees, desert none. Without it,
+    /// per-cover/biome defaults gated by how green the satellite says it is.
     pub fn tree_density(&self, u: f64, v: f64) -> f32 {
-        match self.cover_at(u, v) {
+        let c = self.cover_at(u, v);
+        let canopy = self.canopy_at(u, v);
+        if let Some(f) = canopy {
+            let trees = forest_max(self.biome) * f.powf(1.15);
+            let shrubs = self.shrub_at(u, v).unwrap_or(0.0) * shrub_max(self.biome);
+            return match c {
+                Cover::Park => 35.0f32.max(trees),
+                Cover::Residential => 12.0f32.max(trees * 0.7),
+                Cover::Commercial | Cover::Industrial => (trees * 0.3).min(8.0),
+                Cover::Farmland => (trees + shrubs).min(10.0),
+                Cover::Rock | Cover::Sand | Cover::Ice | Cover::Water | Cover::Pitch => 0.0,
+                Cover::Bare => (trees + shrubs).min(forest_max(self.biome) * 0.05),
+                _ => trees + shrubs,
+            };
+        }
+        let green = self.greenness(u, v);
+        let d = match c {
             Cover::Wood => match self.biome {
                 Biome::TropicalRainforest => 300.0,
                 Biome::Boreal | Biome::TemperateForest => 220.0,
+                Biome::HotDesert => 15.0,
+                Biome::Steppe => 40.0,
                 _ => 120.0,
             },
             Cover::Park => 35.0,
             Cover::Residential => 12.0,
+            Cover::Shrub => shrub_max(self.biome) * 0.4,
             Cover::Grass | Cover::Wetland => 6.0,
             Cover::Farmland => 1.5,
             Cover::Natural => match self.biome {
@@ -522,11 +658,42 @@ impl SurfaceMap {
                 Biome::Mediterranean => 25.0,
                 Biome::Savanna => 8.0,
                 Biome::Grassland => 2.0,
-                Biome::HotDesert => 0.3,
+                Biome::Steppe => 1.5,
+                Biome::HotDesert => 0.2,
                 Biome::Tundra | Biome::Alpine | Biome::IceCap => 0.0,
             },
             _ => 0.0,
-        }
+        };
+        // Managed land stays as is; wild land follows the real greenness.
+        if matches!(c, Cover::Park | Cover::Residential | Cover::Farmland) { d } else { d * (0.05 + 0.95 * green) }
+    }
+}
+
+/// Plants per hectare of closed canopy (100 % tree share), by biome.
+fn forest_max(b: Biome) -> f32 {
+    match b {
+        Biome::TropicalRainforest => 450.0,
+        Biome::TemperateForest => 300.0,
+        Biome::Boreal => 350.0,
+        Biome::Mediterranean => 160.0,
+        Biome::Savanna => 90.0,
+        Biome::Grassland => 80.0,
+        Biome::Steppe => 50.0,
+        Biome::HotDesert => 25.0,
+        Biome::Alpine => 160.0,
+        Biome::Tundra => 60.0,
+        Biome::IceCap => 0.0,
+    }
+}
+
+/// Shrubs per hectare of full shrub cover, by biome (dry scrub is sparse).
+fn shrub_max(b: Biome) -> f32 {
+    match b {
+        Biome::HotDesert => 60.0,
+        Biome::Steppe | Biome::Savanna => 120.0,
+        Biome::Tundra | Biome::Alpine => 150.0,
+        Biome::IceCap => 0.0,
+        _ => 250.0,
     }
 }
 
@@ -538,6 +705,7 @@ pub fn biome_ground(b: Biome) -> [f32; 4] {
         Biome::Mediterranean => rgb(0xb3b26b),
         Biome::TemperateForest => rgb(0x8fb862),
         Biome::Grassland => rgb(0xb5be6e),
+        Biome::Steppe => rgb(0xbfae78),
         Biome::Boreal => rgb(0x7f9a66),
         Biome::Tundra => rgb(0xa5a383),
         Biome::Alpine => rgb(0x9aa77a),
@@ -586,6 +754,31 @@ fn fill_polygon(grid: &mut [Cover], res: usize, outer: &[[f64; 2]], holes: &[Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn landcover(class: u8, tree: u8, shrub: u8) -> ed_data::worldcover::LandCover {
+        ed_data::worldcover::LandCover { w: 4, h: 4, class: vec![class; 16], tree: vec![tree; 16], shrub: vec![shrub; 16] }
+    }
+
+    #[test]
+    fn worldcover_fills_unmapped_cells_and_drives_density() {
+        let tile = TileId::new(12, 2200, 1500);
+        let forest = SurfaceMap::uniform(tile, Biome::TemperateForest).with_worldcover(&landcover(10, 230, 0));
+        assert_eq!(forest.cover_at(0.5, 0.5), Cover::Wood);
+        let desert = SurfaceMap::uniform(tile, Biome::HotDesert).with_worldcover(&landcover(60, 0, 0));
+        assert_eq!(desert.cover_at(0.5, 0.5), Cover::Bare);
+        let (dense, sparse) = (forest.tree_density(0.5, 0.5), desert.tree_density(0.5, 0.5));
+        assert!(dense > 150.0, "closed forest should be dense, got {dense}");
+        assert!(sparse < 1.0, "desert gets (almost) no trees, got {sparse}");
+    }
+
+    #[test]
+    fn osm_polygons_beat_worldcover() {
+        let tile = TileId::new(12, 2200, 1500);
+        let mut m = SurfaceMap::uniform(tile, Biome::TemperateForest);
+        m.cover = vec![Cover::Park; 1];
+        let m = m.with_worldcover(&landcover(60, 0, 0));
+        assert_eq!(m.cover_at(0.5, 0.5), Cover::Park);
+    }
 
     #[test]
     fn fill_square_with_hole() {

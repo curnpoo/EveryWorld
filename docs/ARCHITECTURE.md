@@ -47,6 +47,9 @@ Everything except `ed_game` is engine-free, unit tested, and runs on any thread.
 | Elevation | **Mapterhorn** (Terrarium WebP, 512 px) | Copernicus GLO-30 + national lidar (swisstopo, USGS 3DEP) |
 | Elevation fallback | AWS Terrain Tiles (Terrarium PNG) | SRTM/GMTED + ETOPO1 bathymetry |
 | Map vectors | **OpenFreeMap** (OpenMapTiles schema) | buildings w/ heights + colour, roads, water, land cover, land use, parks, airports, POIs |
+| Climate normals | **WorldClim 2.1** (10 arc-min, baked by `tools/bake_climate.py`, embedded in `ed_data`) | CC BY 4.0. Temperature (lapse-rate corrected), coldest month, precipitation, rain seasonality -> `Biome`. Static, not weather |
+| Land cover | **ESA WorldCover 2021 v200** COGs on S3 (HTTP range reads, 256 KB blocks cached) | CC BY 4.0. Fills what OSM leaves unmapped (forest/scrub/grass/bare/crop/snow) and gives canopy fractions for tree density |
+| Geology | **Macrostrat** point lookup, cached per ~1 km | CC BY 4.0. Lithology keywords -> rock colour (rocks now; sand/scree tint is a follow-up) |
 | Weather | Open-Meteo | current + 48 h hourly forecast |
 | Place search | Open-Meteo geocoding | "drop me in Zermatt" |
 | Moon/planets | JPL Keplerian elements + Almanac lunar series | computed locally, no network |
@@ -82,7 +85,7 @@ tile id ─┬─> elevation tile ──> TerrainGrid (single source of truth fo
 
 - **Region** (from lat/lon/elevation/density): `NorthAmericaCity`, `Paris`, `Mediterranean`, `Alpine`, `Nordic`, `Japan`, `NorthAfricaMiddleEast`, ... Each has wall/roof palettes, roof shapes and pitch, floor height, default storeys, shopfront odds, awning colors.
 - **StreetKit** per region: drive side, center-line style (double yellow vs dashed white), utility poles (wood/concrete/none), signal layout (vertical vs Japanese horizontal), sidewalk color, curb height, stop-sign text.
-- **Biome** (climate): drives ground palette, tree species mix (palms, conifers, acacias, cacti, cypress...), snowline, tree line, rock density.
+- **Biome** (climate): chosen from real WorldClim normals (`Biome::from_climate`, heuristic boxes only where the grid has no data); drives ground palette, tree species mix (palms, conifers, acacias, cacti, cypress...), snowline, tree line, rock density.
 - OSM `building:colour` always wins when present.
 
 Adding "Kyoto machiya" or "Lagos compound" is one table entry. These tables move to `assets/styles/*.ron` so art direction can be tuned without recompiling.

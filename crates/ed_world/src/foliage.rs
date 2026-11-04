@@ -235,6 +235,7 @@ pub fn species(biome: Biome, cover: Cover, r: f32, lat: f64) -> TreeKind {
                 pick(&[(Broadleaf, 3.0), (Maple, 1.5), (Birch, 1.0), (Conifer, 1.0), (Shrub, 2.0), (GrassTussock, 1.5)], r)
             }
         }
+        Biome::Steppe => pick(&[(Shrub, 4.0), (GrassTussock, 3.0), (Juniper, 1.5), (Pine, 0.5)], r),
         Biome::Boreal => pick(&[(Conifer, 5.0), (Fir, 2.5), (Pine, 2.0), (Birch, 2.0), (Juniper, 1.0), (Fern, 0.7)], r),
         Biome::Alpine => pick(&[(Conifer, 3.0), (Fir, 3.0), (Pine, 1.5), (Juniper, 2.0), (GrassTussock, 1.5)], r),
         Biome::Tundra | Biome::IceCap => pick(&[(Juniper, 2.0), (GrassTussock, 3.0), (Shrub, 1.0)], r),
@@ -246,7 +247,26 @@ pub fn species(biome: Biome, cover: Cover, r: f32, lat: f64) -> TreeKind {
 pub fn foliage_color(kind: TreeKind, biome: Biome, r: f32) -> [f32; 4] {
     let dry = matches!(biome, Biome::HotDesert | Biome::Savanna) && !matches!(kind, TreeKind::Cactus | TreeKind::PricklyPear);
     let base = if dry { [1.06, 1.0, 0.86, 1.0] } else { [1.0; 4] };
-    scale_color(base, 0.94 + 0.12 * r)
+    scale_color(base, 0.88 + 0.24 * r)
+}
+
+/// Most plants one 8 m cell can hold (a closed tropical canopy is ~3).
+const MAX_PER_CELL: f32 = 3.0;
+
+/// How big plants grow here, 0.55 (stunted) .. 1.2 (lush): set by biome
+/// water/warmth, shrinking toward the treeline.
+pub fn vigor(biome: Biome, elev_m: f32, snowline_m: f32) -> f32 {
+    let base = match biome {
+        Biome::TropicalRainforest => 1.2,
+        Biome::TemperateForest | Biome::Boreal => 1.0,
+        Biome::Mediterranean | Biome::Grassland => 0.85,
+        Biome::Savanna => 0.8,
+        Biome::Steppe => 0.7,
+        Biome::HotDesert => 0.62,
+        Biome::Alpine | Biome::Tundra => 0.6,
+        Biome::IceCap => 0.55,
+    };
+    base * (1.0 - 0.45 * ((elev_m - (snowline_m - 1_400.0)) / 1_000.0).clamp(0.0, 1.0))
 }
 
 /// Scatter trees and rocks over a tile. Roughly one candidate per 8x8 m cell.
@@ -268,7 +288,7 @@ pub fn scatter(
     for j in (0..cells).step_by(4) {
         for i in (0..cells).step_by(4) {
             let (u, v) = ((i as f64 + 0.5) / cells as f64, (j as f64 + 0.5) / cells as f64);
-            expected += (surface.tree_density(u, v) * cell_area_ha).min(0.95) * 16.0;
+            expected += (surface.tree_density(u, v) * cell_area_ha).min(MAX_PER_CELL) * 16.0;
         }
     }
     let thin = (max_trees as f32 / expected.max(1.0)).min(1.0);
@@ -293,27 +313,54 @@ pub fn scatter(
             if cover == Cover::Water {
                 continue;
             }
-            let p_tree = (surface.tree_density(u, v) * cell_area_ha).min(0.95)
+            // Expected plants in this 8 m cell. Dense forest is several per cell,
+            // so the whole part is placed for sure and the fraction by a roll.
+            let want = (surface.tree_density(u, v) * cell_area_ha).min(MAX_PER_CELL)
                 * thin
                 * (1.0 - ((h - (snowline - 800.0)) / 600.0).clamp(0.0, 1.0));
-            if roll < p_tree && trees.len() < max_trees {
-                let r = crate::hash01(tkey, key * 7 + 5);
-                let kind = species(surface.biome, cover, r, surface.lat);
-                let r2 = crate::hash01(tkey, key * 7 + 6);
-                let scale = if kind.is_shrub() { 0.7 + r2 * 0.6 } else { 0.8 + r2 * 0.45 };
-                trees.push(TreeInstance {
-                    kind,
-                    pos: proj.local(u, v, h as f64),
-                    scale,
-                    yaw: r * std::f32::consts::TAU * 7.0,
-                    tint: match surface.sat_linear(u, v) {
-                        Some(c) => [c[0], c[1], c[2], 1.0],
-                        None => {
-                            let c = foliage_color(kind, surface.biome, crate::hash01(tkey, key * 11));
-                            [c[0], c[1], c[2], 0.0]
-                        }
-                    },
-                });
+            let n = want.floor() as usize + usize::from(roll < want.fract());
+            if n > 0 && trees.len() < max_trees {
+                for k in 0..n {
+                    // Extra plants in a cell get their own jittered spot.
+                    let (tu, tv, th) = if k == 0 {
+                        (u, v, h)
+                    } else {
+                        let ku = u + (crate::hash01(tkey, key * 31 + k as u64 * 2) as f64 - 0.5) / cells as f64;
+                        let kv = v + (crate::hash01(tkey, key * 31 + k as u64 * 2 + 1) as f64 - 0.5) / cells as f64;
+                        let (ku, kv) = (ku.clamp(0.0, 0.9999), kv.clamp(0.0, 0.9999));
+                        (ku, kv, grid.sample(ku, kv))
+                    };
+                    if th < 0.5 || trees.len() >= max_trees {
+                        continue;
+                    }
+                    let salt = key * 17 + k as u64;
+                    let r = crate::hash01(tkey, salt * 7 + 5);
+                    let kind = species(surface.biome, cover, r, surface.lat);
+                    let r2 = crate::hash01(tkey, salt * 7 + 6);
+                    // Age/size: most plants are middling, a few old giants and
+                    // saplings, all scaled by how well things grow here.
+                    let age = crate::hash01(tkey, salt * 7 + 3);
+                    let spread = if kind.is_shrub() { 0.6 + 0.8 * r2 } else { 0.55 + 0.9 * age * age.sqrt() + 0.25 * r2 };
+                    let scale = spread * vigor(surface.biome, th, snowline).max(0.5);
+                    trees.push(TreeInstance {
+                        kind,
+                        pos: proj.local(tu, tv, th as f64),
+                        scale,
+                        yaw: r * std::f32::consts::TAU * 7.0,
+                        tint: match surface.sat_linear(tu, tv) {
+                            Some(c) => {
+                                // Each crown a little lighter/darker and warmer/cooler.
+                                let j = crate::hash01(tkey, salt * 11 + 1);
+                                let k = 0.9 + 0.2 * crate::hash01(tkey, salt * 11 + 2);
+                                [c[0] * k * (1.0 + 0.06 * (j - 0.5)), c[1] * k, c[2] * k * (1.0 - 0.06 * (j - 0.5)), 1.0]
+                            }
+                            None => {
+                                let c = foliage_color(kind, surface.biome, crate::hash01(tkey, salt * 11));
+                                [c[0], c[1], c[2], 0.0]
+                            }
+                        },
+                    });
+                }
                 continue;
             }
             // Rocks: rocky ground, mountains above treeline, deserts.
@@ -331,7 +378,11 @@ pub fn scatter(
                     pos: proj.local(u, v, h as f64 - 0.2 * s as f64),
                     scale: Vec3::new(s, s * (0.5 + 0.4 * jv), s * (0.7 + 0.5 * ju)),
                     yaw: r * 40.0,
-                    tint: scale_color(rgb(if surface.biome == Biome::HotDesert { 0xc49a6c } else { 0x9b958c }), 0.85 + 0.3 * ju),
+                    tint: scale_color(rgb(match surface.lith {
+                        Some(l) => l.rock_rgb(),
+                        None if surface.biome == Biome::HotDesert => 0xc49a6c,
+                        None => 0x9b958c,
+                    }), 0.8 + 0.4 * ju),
                 });
             }
         }

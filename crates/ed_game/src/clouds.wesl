@@ -6,8 +6,11 @@
 // the CPU in f64). Every texture period below divides that, so the field is
 // continuous across floating-origin rebases.
 
-import bevy_pbr::render::mesh_view_bindings as vb;
-import bevy_pbr::prepass::io as pio;
+// `CLOUD_HALF` is the half-resolution pass (`cloud_half.rs`): own view and
+// depth bindings in group 0, cloud bindings in group 1, entry `fragment_half`.
+@if(!CLOUD_HALF) import bevy_pbr::render::mesh_view_bindings as vb;
+@if(!CLOUD_HALF) import bevy_pbr::prepass::io as pio;
+import bevy_render::view::View;
 
 struct CloudUniform {
     noise_from_render: mat3x3<f32>,
@@ -28,11 +31,18 @@ struct CloudUniform {
     storm_up: array<vec4<f32>, 8>,
 };
 
-@group(3) @binding(0) var<uniform> cl: CloudUniform;
-@group(3) @binding(1) var shape_tex: texture_3d<f32>;
-@group(3) @binding(2) var shape_smp: sampler;
-@group(3) @binding(3) var detail_tex: texture_3d<f32>;
-@group(3) @binding(4) var detail_smp: sampler;
+@if(!CLOUD_HALF) @group(3) @binding(0) var<uniform> cl: CloudUniform;
+@if(!CLOUD_HALF) @group(3) @binding(1) var shape_tex: texture_3d<f32>;
+@if(!CLOUD_HALF) @group(3) @binding(2) var shape_smp: sampler;
+@if(!CLOUD_HALF) @group(3) @binding(3) var detail_tex: texture_3d<f32>;
+@if(!CLOUD_HALF) @group(3) @binding(4) var detail_smp: sampler;
+@if(CLOUD_HALF) @group(1) @binding(0) var<uniform> cl: CloudUniform;
+@if(CLOUD_HALF) @group(1) @binding(1) var shape_tex: texture_3d<f32>;
+@if(CLOUD_HALF) @group(1) @binding(2) var shape_smp: sampler;
+@if(CLOUD_HALF) @group(1) @binding(3) var detail_tex: texture_3d<f32>;
+@if(CLOUD_HALF) @group(1) @binding(4) var detail_smp: sampler;
+@if(CLOUD_HALF) @group(0) @binding(0) var<uniform> h_view: View;
+@if(CLOUD_HALF) @group(0) @binding(1) var h_depth: texture_depth_2d;
 
 const PI: f32 = 3.14159265;
 
@@ -55,7 +65,7 @@ struct VOut {
     @builtin(position) pos: vec4<f32>,
 };
 
-@if(!PREPASS_PIPELINE)
+@if(!PREPASS_PIPELINE && !CLOUD_HALF)
 @vertex
 fn vertex(@location(0) position: vec3<f32>) -> VOut {
     var o: VOut;
@@ -382,12 +392,50 @@ fn rain_shafts(ro: vec3<f32>, rd: vec3<f32>, h_c: f32, mu: f32, t_a: f32, t_b: f
     return vec4<f32>(col, T);
 }
 
-@if(!PREPASS_PIPELINE)
+@if(!PREPASS_PIPELINE && !CLOUD_HALF)
 @fragment
 fn fragment(in: VOut) -> @location(0) vec4<f32> {
-    let frag = in.pos;
     let view = vb::view;
-    let uv = (frag.xy - view.viewport.xy) / view.viewport.zw;
+    let uv = (in.pos.xy - view.viewport.xy) / view.viewport.zw;
+    var d = 0.0;
+    @if(DEPTH_PREPASS && !MULTISAMPLED) {
+        d = textureLoad(vb::depth_prepass_texture, vec2<i32>(in.pos.xy), 0);
+    }
+    return march(in.pos.xy, uv, d, view);
+}
+
+struct HalfOut {
+    @location(0) color: vec4<f32>,
+    // Raw (reverse-Z) depth this texel marched against, for the upsample.
+    @location(1) depth: f32,
+};
+
+// One texel per 2x2 full-res block. The block's depth alternates between its
+// nearest and farthest sample in a checkerboard, so at a silhouette both the
+// "in front" and "behind" answers exist nearby for the depth-aware upsample.
+@if(CLOUD_HALF)
+@fragment
+fn fragment_half(@builtin(position) pos: vec4<f32>) -> HalfOut {
+    let hp = vec2<i32>(pos.xy);
+    let full = hp * 2;
+    let lim = vec2<i32>(textureDimensions(h_depth)) - 1;
+    let d00 = textureLoad(h_depth, min(full, lim), 0);
+    let d10 = textureLoad(h_depth, min(full + vec2<i32>(1, 0), lim), 0);
+    let d01 = textureLoad(h_depth, min(full + vec2<i32>(0, 1), lim), 0);
+    let d11 = textureLoad(h_depth, min(full + vec2<i32>(1, 1), lim), 0);
+    let near = max(max(d00, d10), max(d01, d11));
+    let far = min(min(d00, d10), min(d01, d11));
+    let d = select(far, near, ((hp.x + hp.y) & 1) == 0);
+    let uv = (vec2<f32>(full) + 1.0) / h_view.viewport.zw;
+    var o: HalfOut;
+    o.color = march(pos.xy, uv, d, h_view);
+    o.depth = d;
+    return o;
+}
+
+// The cloud (+ rain) march for one pixel: `frag_xy` seeds the jitter, `uv`
+// is the screen position, `d` the raw scene depth (0 = sky).
+fn march(frag_xy: vec2<f32>, uv: vec2<f32>, d: f32, view: View) -> vec4<f32> {
     let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
     let near_w = view.world_from_clip * vec4<f32>(ndc, 1.0, 1.0);
     let ro = view.world_position;
@@ -395,13 +443,10 @@ fn fragment(in: VOut) -> @location(0) vec4<f32> {
 
     // Opaque scene distance along this ray (terrain, buildings, ocean).
     var t_scene = 1e30;
-    @if(DEPTH_PREPASS && !MULTISAMPLED) {
-        let d = textureLoad(vb::depth_prepass_texture, vec2<i32>(frag.xy), 0);
-        if d > 0.0 {
-            let view_z = view.clip_from_view[3][2] / d;
-            let fwd = normalize(-view.world_from_view[2].xyz);
-            t_scene = view_z / max(dot(rd, fwd), 1e-4);
-        }
+    if d > 0.0 {
+        let view_z = view.clip_from_view[3][2] / d;
+        let fwd = normalize(-view.world_from_view[2].xyz);
+        t_scene = view_z / max(dot(rd, fwd), 1e-4);
     }
 
     let up = cl.cam_up.xyz;
@@ -414,7 +459,7 @@ fn fragment(in: VOut) -> @location(0) vec4<f32> {
     let ground = ray_shell(h_c, mu, 0.0);
     let hits_ground = mu < 0.0 && ground.y >= ground.x && ground.x > 0.0;
     let t_max = min(t_scene, cl.planet.y);
-    let jitter = fract(ign(frag.xy) + f32(view.frame_count % 64u) * 0.618034);
+    let jitter = fract(ign(frag_xy) + f32(view.frame_count % 64u) * 0.618034);
 
     var t0 = 0.0;
     var t1 = 0.0;
@@ -591,7 +636,7 @@ fn shadow_discard(p: vec3<f32>) -> bool {
     return od * SIGMA < 2.0;
 }
 
-@if(PREPASS_PIPELINE && PREPASS_FRAGMENT)
+@if(PREPASS_PIPELINE && PREPASS_FRAGMENT && !CLOUD_HALF)
 @fragment
 fn fragment(in: pio::VertexOutput) -> pio::FragmentOutput {
     if shadow_discard(in.world_position.xyz) {
@@ -607,7 +652,7 @@ fn fragment(in: pio::VertexOutput) -> pio::FragmentOutput {
     return out;
 }
 
-@if(PREPASS_PIPELINE && !PREPASS_FRAGMENT)
+@if(PREPASS_PIPELINE && !PREPASS_FRAGMENT && !CLOUD_HALF)
 @fragment
 fn fragment(in: pio::VertexOutput) {
     if shadow_discard(in.world_position.xyz) {

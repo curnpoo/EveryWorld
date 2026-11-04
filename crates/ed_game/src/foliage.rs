@@ -12,6 +12,8 @@ use crate::meshconv::to_mesh;
 use bevy::asset::{RenderAssetUsages, embedded_asset};
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::pbr::{ExtendedMaterial, MaterialExtension};
+use bevy::camera::visibility::RenderLayers;
+use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy::render::render_resource::{AsBindGroup, Extent3d, TextureDimension, TextureFormat};
 use bevy::shader::ShaderRef;
@@ -260,6 +262,21 @@ pub fn spawn_near_tree(
     }
 }
 
+/// One compound collider of trunk cylinders for `trees` (tile space), or
+/// `None` when none of them has a trunk (shrubs, ferns, grass).
+fn tree_colliders(trees: &[TreeInstance], up: Vec3) -> Option<Collider> {
+    let shapes: Vec<(Vec3, Quat, Collider)> = trees
+        .iter()
+        .filter_map(|t| {
+            let trunk = trees::species::def(t.kind).trunk?;
+            let rot = trees::instance_rotation(t, up);
+            let h = trunk.height * t.scale;
+            Some((t.pos + rot * (Vec3::Y * h * 0.5), rot, Collider::cylinder(trunk.radius * t.scale, h)))
+        })
+        .collect();
+    (!shapes.is_empty()).then(|| Collider::compound(shapes))
+}
+
 /// A tile's tree chunk with its card mesh already converted (on the worker).
 pub struct PreparedTreeChunk {
     center: Vec3,
@@ -334,8 +351,11 @@ pub fn stream_tree_chunks(
                     }
                     if let Some(h) = &c.far_mesh {
                         cards += 1;
-                        let vis = if c.near.is_empty() { Visibility::Inherited } else { Visibility::Hidden };
-                        c.far = Some(commands.spawn((Mesh3d(h.clone()), MeshMaterial3d(fa.leaves.clone()), Transform::from_translation(c.center), vis, ChildOf(root))).id());
+                        let e = commands.spawn((Mesh3d(h.clone()), MeshMaterial3d(fa.leaves.clone()), Transform::from_translation(c.center), ChildOf(root))).id();
+                        if !c.near.is_empty() {
+                            commands.entity(e).insert(RenderLayers::layer(crate::clouds::CLOUD_SHADOW_LAYER));
+                        }
+                        c.far = Some(e);
                     }
                 }
             } else if let Some(e) = c.far.take() {
@@ -347,9 +367,20 @@ pub fn stream_tree_chunks(
                 for t in &c.instances {
                     spawn_near_tree(&mut commands, &mut meshes, &mut fa, root, t, up, Vec3::ZERO, trees::variant_for(t), &mut near);
                 }
+                // Trunk colliders: one static compound per chunk, so the
+                // player and vehicles can't walk through full-detail trees.
+                if let Some(col) = tree_colliders(&c.instances, up) {
+                    near.push(commands.spawn((RigidBody::Static, col, Transform::default(), ChildOf(root))).id());
+                }
+                // Full trees draw for the camera only; the chunk's leaf cards
+                // (one merged mesh) cast their shadow from the sun-only layer.
+                // Thousands of bark/leaf draws per cascade become one.
+                for &e in &near {
+                    commands.entity(e).insert(RenderLayers::layer(crate::camera::CAMERA_ONLY_LAYER));
+                }
                 c.near = near;
                 if let Some(e) = c.far {
-                    commands.entity(e).insert(Visibility::Hidden);
+                    commands.entity(e).insert(RenderLayers::layer(crate::clouds::CLOUD_SHADOW_LAYER));
                 }
             } else if !c.near.is_empty() && d > NEAR_OUT && swaps < SWAPS_PER_FRAME {
                 swaps += 1;
@@ -357,7 +388,7 @@ pub fn stream_tree_chunks(
                     commands.entity(n).despawn();
                 }
                 if let Some(e) = c.far {
-                    commands.entity(e).insert(Visibility::Inherited);
+                    commands.entity(e).remove::<RenderLayers>();
                 }
             }
         }

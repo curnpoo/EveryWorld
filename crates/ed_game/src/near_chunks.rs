@@ -2,6 +2,7 @@
 //! data on one component per tile, and entities only while in range. Part
 //! of "tiles are data, not entities": a far tile costs no entity for them.
 
+use avian3d::prelude::*;
 use bevy::prelude::*;
 
 pub struct NearChunksPlugin;
@@ -27,12 +28,16 @@ struct Item {
     src: Option<Mesh>,
     handle: Option<Handle<Mesh>>,
     entity: Option<Entity>,
+    /// Static collision, built from the uploaded mesh when first within
+    /// [`COLLIDE_M`], then kept; the entity exists only while in range.
+    collider: Option<Collider>,
+    col_entity: Option<Entity>,
 }
 
 impl NearMeshes {
     /// `meshes`: (chunk centre in tile space, mesh).
     pub fn new(range: f32, material: Handle<StandardMaterial>, meshes: Vec<(Vec3, Mesh)>) -> Self {
-        let items = meshes.into_iter().map(|(center, m)| Item { center, src: Some(m), handle: None, entity: None }).collect();
+        let items = meshes.into_iter().map(|(center, m)| Item { center, src: Some(m), handle: None, entity: None, collider: None, col_entity: None }).collect();
         Self { range, material, items }
     }
 }
@@ -47,6 +52,11 @@ pub fn center_of(positions: &[[f32; 3]]) -> Vec3 {
     if lo.x > hi.x { Vec3::ZERO } else { (lo + hi) * 0.5 }
 }
 
+/// Rocks collide only this close to the camera (m).
+const COLLIDE_M: f32 = 90.0;
+/// Trimesh builds per frame at most.
+const COLLIDERS_PER_FRAME: usize = 3;
+
 /// Spawns per frame at most (each may upload a mesh).
 const SPAWNS_PER_FRAME: usize = 32;
 
@@ -58,6 +68,7 @@ fn stream_near_meshes(
 ) {
     let Some(cam) = cam.iter().next().map(|c| c.translation()) else { return };
     let mut spawned = 0;
+    let mut built = 0;
     for (root, gt, mut set) in &mut sets {
         let (range, mat) = (set.range, set.material.clone());
         for it in set.items.iter_mut() {
@@ -75,6 +86,22 @@ fn stream_near_meshes(
                 }
             } else if let Some(e) = it.entity.take() {
                 commands.entity(e).despawn();
+            }
+            let want_col = d < COLLIDE_M;
+            if want_col && it.col_entity.is_none() {
+                if it.collider.is_none() && built < COLLIDERS_PER_FRAME {
+                    if let Some(m) = it.handle.as_ref().and_then(|h| meshes.get(h)) {
+                        built += 1;
+                        it.collider = Collider::trimesh_from_mesh(m);
+                    }
+                }
+                if let Some(c) = &it.collider {
+                    it.col_entity = Some(commands.spawn((RigidBody::Static, c.clone(), Transform::default(), ChildOf(root))).id());
+                }
+            } else if !want_col && d > COLLIDE_M * 1.15 {
+                if let Some(e) = it.col_entity.take() {
+                    commands.entity(e).despawn();
+                }
             }
         }
     }

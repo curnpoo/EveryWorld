@@ -4,7 +4,7 @@ Drop anywhere on real Earth; walk, drive, fly, rocket to the Moon. Real data (OS
 Docs (start with the first two):
 - `docs/ROADMAP.md`: what's done and what's next, features (Phases 0-5) and the engine/perf track (M0-M10).
 - `docs/CHANGES.md`: recent changes, newest first, with what still needs checking on the Mac. Add an entry when you land work; fold verified items into the roadmap.
-- `docs/ARCHITECTURE.md`: how it works. `docs/plans/`: `engine.md` (target engine, milestones, meshlet findings), `assets-and-agents.md`, `buildings.md`, `world-sim.md`, `space-visuals.md`. `docs/lookdev/round2/*`: art review notes.
+- `docs/ARCHITECTURE.md`: how it works. `docs/plans/`: `procedural-flora.md` (species as data, per-tree genomes, niche selection: read before touching trees/ground cover), `engine.md` (target engine, milestones, meshlet findings), `assets-and-agents.md`, `buildings.md`, `world-sim.md`, `space-visuals.md`. `docs/lookdev/round2/*`: art review notes.
 
 ## Read this first (saves tokens)
 - Do NOT read whole big files. Use `grep -n '^\(pub \)\?fn\|^struct\|^enum'` on a file, then read ranges. Biggest: `ed_world/src/trees/mod.rs` (1.8k), `voice.rs` (1.4k), `buildings.rs` (1.4k), `archkit.rs` (1.3k), `ground_scatter.rs` (1k).
@@ -29,7 +29,7 @@ Cache dir `.earthdrop-cache/` (tiles cached forever; gitignored). Dev profile: d
 | Crate | Role |
 |---|---|
 | `ed_geo` | f64 WGS84/ECEF/ENU math (`lib.rs`), slippy tiles `TileId` (`tile.rs`), NOAA sun (`sun.rs`) |
-| `ed_data` | HTTP+disk cache (`http`,`cache`), Terrarium elevation (`elevation`), hand-written MVT decoder (`mvt`), OpenFreeMap tiles (`vector`), Open-Meteo weather/geocode |
+| `ed_data` | HTTP+disk cache (`http`,`cache`), Terrarium elevation (`elevation`), hand-written MVT decoder (`mvt`), OpenFreeMap tiles (`vector`), Open-Meteo weather/geocode; real-data layers: `climate` (embedded WorldClim normals, `tools/bake_climate.py`), `worldcover`+`cog` (ESA land cover range reads), `geology` (Macrostrat lithology) |
 | `ed_world` | **World generator**: tile -> meshes. Details below |
 | `ed_flight` | atmosphere, drag, Mach, gravity, rocket "superpower" model |
 | `ed_space` | Sun/Moon/planet ephemeris, body catalog |
@@ -45,7 +45,7 @@ Cache dir `.earthdrop-cache/` (tiles cached forever; gitignored). Dev profile: d
 - `archkit.rs` per-`Region` `Variant` tables (wall/roof palettes, `roof_forms`, `pitch`, `overhang`, floor heights, ground-floor type). `style.rs` `Region::locate` + street kits. Data tables, not code paths.
 - `meshkit.rs` modeling toolkit (`sweep`, `inset`, `polygon`, `wall_with_openings`, `Basis`, `signed_area`). `bparts.rs` parts (windows, doors, balconies, chimneys...; `Mat` buckets, `Out`). `mesh.rs` `MeshData`.
 - `library.rs` **asset library**: `AssetDef` (key, `RenderPath`, `ColliderShape`, generator) + `Placement`. Tiles emit `TileBuild::placements` instead of baking discrete objects; `library::get()` is global (content packs `install` before first tile). Street props are the first assets (`props::register_street_props`).
-- `roads.rs`, `water.rs`, `surface.rs` (land-cover raster `SurfaceMap`, `Cover`), `biome.rs`, `foliage.rs`+`trees/` (procedural trees; `trees/impostor.rs` CPU-bakes the impostor atlas and builds per-tile impostor quads), `props.rs` (rocks, street furniture), `ground_scatter.rs`+`ground_tex.rs`+`noise.rs` (near-camera cover, procedural textures), `clouds.rs` (engine-free cloud volumes), `lod.rs` (terrain quadtree), `maprender.rs` (2D menu map), `missions.rs`.
+- `roads.rs`, `water.rs`, `surface.rs` (land-cover raster `SurfaceMap`, `Cover`; WorldCover canopy/shrub rasters and lithology drive plant density and colour), `biome.rs` (`Biome::from_climate`, real climate with heuristic fallback), `foliage.rs`+`trees/` (procedural trees; `trees/species.rs` = `SpeciesDef` table + `Genome`: add species as rows, don't hard-code palettes/budgets in `mod.rs`; `trees/impostor.rs` CPU-bakes the impostor atlas and builds per-tile impostor quads), `props.rs` (rocks, street furniture), `ground_scatter.rs`+`ground_tex.rs`+`noise.rs` (near-camera cover, procedural textures), `clouds.rs` (engine-free cloud volumes), `lod.rs` (terrain quadtree), `maprender.rs` (2D menu map), `missions.rs`.
 
 ## ed_game modules (`crates/ed_game/src`) — each is a Bevy Plugin, wired in `main.rs`
 - Core: `library` (cooks every library asset once at PreStartup -> `CookedLibrary`; `spawn_placements` instances them as meshlets + static colliders), `origin` (floating origin, re-anchors at >8 km), `config` (CLI), `assets` (shared materials/textures), `building_materials` (one material per `bparts::Mat`), `meshconv` (MeshData -> bevy Mesh).
@@ -79,4 +79,9 @@ Cache dir `.earthdrop-cache/` (tiles cached forever; gitignored). Dev profile: d
 ## Known issues / active work
 - Buildings: roof/foundation overhaul landed (see `docs/plans/buildings.md` for what and what's left). `buildings.rs`: `roof_plan` (Flat | Mansard | Pitched(rects)) is shared by `detail_one` and `lod_one`; `foundation()` skins walls above low terrain. Needs visual check in-game; thresholds (350/500 m2, 4 floors, 14 m span) are constants in `roof_plan`.
 - Open: does terrain render at a coarser LOD than the building's `TerrainGrid`? Foundations have a 0.5 m margin only.
-- M0/M1 (env map, cascades, shared terrain material, budgeted apply, `ed_runtime`, tree impostors, tiles as data) is on `main` but unmeasured on the Mac: test pass in `docs/CHANGES.md`. Open: pipeline pre-warm, clouds ½ res. Next: M2 (`docs/ROADMAP.md`).
+- M0/M1 (env map, cascades, shared terrain material, budgeted apply, `ed_runtime`, tree impostors, tiles as data) is on `main` but unmeasured on the Mac: test pass in `docs/CHANGES.md`. Clouds ½ res + shadow proxies done (headless numbers in `docs/CHANGES.md`). Open: pipeline pre-warm, explode hitches. Next: M2 (`docs/ROADMAP.md`).
+
+## Flora and collision (read before adding species or plant variety)
+- Species are rows in `trees/species.rs` `SPECIES` (same order as `TreeKind`, tested). Per-tree variety goes through `Genome` (`Genome::sample` -> `build_genome`), never new hard-coded variants. Roadmap of the remaining steps (niche selection, per-instance genomes, lazy banks, ground cover/rocks on the same system): `docs/plans/procedural-flora.md`.
+- Climate/biome/land cover/geology are static real data (`ed_data`), separate from the future procedural weather sim (`ed_climate`); weather modulates, never decides what grows.
+- Collision: trunk cylinders (one static compound per tree chunk, only the full-detail tier) and rock trimeshes (within 90 m, `near_chunks.rs`). Cards and impostors never collide.

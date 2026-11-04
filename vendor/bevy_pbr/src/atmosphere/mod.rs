@@ -79,6 +79,11 @@ use environment::{
     prepare_atmosphere_probe_bind_groups, prepare_probe_textures, AtmosphereEnvironmentMap,
 };
 use node::{atmosphere_luts, render_sky};
+
+/// EveryWorld patch: the sky pass as a set, so passes can order after it
+/// (half-res clouds in `ed_game::cloud_half`).
+#[derive(bevy_ecs::schedule::SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RenderSkySet;
 use resources::{
     prepare_atmosphere_transforms, prepare_atmosphere_uniforms, queue_render_sky_pipelines,
     AtmosphereTransforms, GpuAtmosphere, RenderSkyBindGroupLayouts,
@@ -195,6 +200,7 @@ impl Plugin for AtmospherePlugin {
                         .after(Core3dSystems::Prepass)
                         .before(Core3dSystems::MainPass),
                     render_sky
+                        .in_set(RenderSkySet)
                         .after(main_opaque_pass_3d)
                         .before(main_transparent_pass_3d),
                 ),

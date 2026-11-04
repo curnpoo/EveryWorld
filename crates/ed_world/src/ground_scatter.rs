@@ -120,7 +120,7 @@ impl Kind {
     fn affinity(self, biome: Biome) -> [f32; LAYERS] {
         let mut a = [0.0; LAYERS];
         let mut set = |g: Ground, v: f32| a[g as usize] = v;
-        let dry = matches!(biome, Biome::Mediterranean | Biome::Savanna | Biome::HotDesert);
+        let dry = matches!(biome, Biome::Mediterranean | Biome::Savanna | Biome::HotDesert | Biome::Steppe);
         let wet = matches!(biome, Biome::TropicalRainforest | Biome::TemperateForest | Biome::Boreal);
         match self {
             Kind::Tuft => {
@@ -933,7 +933,7 @@ impl GroundSource {
     fn stone_color(&self, r: f32) -> [f32; 3] {
         let hex = match self.surface.biome {
             Biome::HotDesert => [0xb07a52, 0xc49a6c, 0x9a6a48][(r * 3.0) as usize % 3],
-            Biome::Savanna => [0xa0704c, 0x8f7a64, 0xb58a60][(r * 3.0) as usize % 3],
+            Biome::Savanna | Biome::Steppe => [0xa0704c, 0x8f7a64, 0xb58a60][(r * 3.0) as usize % 3],
             Biome::Mediterranean => [0xc9c1b0, 0xb0a594, 0xd8d0c0][(r * 3.0) as usize % 3],
             _ => [0x9b958c, 0x8a857c, 0xa8a196, 0x7f7a72][(r * 4.0) as usize % 4],
         };

@@ -166,6 +166,23 @@ pub fn build(job: &TileJob) -> TileBuild {
         Some((vid, t)) => SurfaceMap::from_vector(tile, *vid, t, biome, if tile.z >= 13 { 192 } else { 64 }),
         None => SurfaceMap::uniform(tile, biome),
     };
+    // ESA WorldCover fills what OSM leaves unmapped (forest, scrub, bare ground)
+    // and supplies canopy fractions for tree density. Optional: offline keeps OSM-only cover.
+    if tile.z >= 8 {
+        let (nw, se) = (tile.uv_to_geodetic(0.0, 0.0), tile.uv_to_geodetic(1.0, 1.0));
+        let n = if tile.z >= 13 { 96 } else { 64 };
+        match ed_data::worldcover::sample_area(se.lat_deg, nw.lon_deg, nw.lat_deg, se.lon_deg, n, n, 2, &job.cache) {
+            Ok(lc) => surface = surface.with_worldcover(&lc),
+            Err(e) => errors.push(format!("worldcover: {e}")),
+        }
+    }
+    if tile.z >= 10 {
+        let c = tile.center();
+        match ed_data::geology::lookup(c.lat_deg, c.lon_deg, &job.cache) {
+            Ok(l) => surface.lith = l,
+            Err(e) => errors.push(format!("geology: {e}")),
+        }
+    }
     // Real-world colour (Sentinel-2 cloudless). Optional: offline just means no tint.
     match ed_data::satellite::fetch(&job.cache, tile.ancestor(tile.z.min(ed_data::satellite::MAX_ZOOM)).0) {
         Ok(s) => {
@@ -258,10 +275,10 @@ pub fn build(job: &TileJob) -> TileBuild {
         if tile.z >= 10 {
             let occ = foliage::Occupancy::from_vector(vt, 512);
             let max = match tile.z {
-                14.. => 9_000,
-                12 | 13 => 6_000,
-                11 => 5_000,
-                _ => 4_000,
+                14.. => 16_000,
+                12 | 13 => 10_000,
+                11 => 7_000,
+                _ => 5_000,
             };
             let (trees, rocks, kept) = foliage::scatter(&proj, &grid, &surface, Some(&occ), max);
             out.stats.trees = trees.len();

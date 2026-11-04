@@ -28,6 +28,7 @@ fn capture(
     mgr: Res<TileManager>,
     mut st: Local<State>,
     mut exit: MessageWriter<AppExit>,
+    headless: Option<Res<crate::headless::HeadlessTarget>>,
 ) {
     let Some(path) = &cfg.screenshot else { return };
     st.frames += 1;
@@ -42,7 +43,11 @@ fn capture(
                 mgr.totals.trees,
                 mgr.totals.triangles
             );
-            commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path.clone()));
+            let shot = match &headless {
+                Some(t) => Screenshot::image(t.0.clone()),
+                None => Screenshot::primary_window(),
+            };
+            commands.spawn(shot).observe(save_to_disk(path.clone()));
             st.shot_at = Some(st.frames);
         }
         Some(f) if st.frames > f + 10 => {

@@ -23,6 +23,14 @@ impl Plugin for PerfPlugin {
         info!("perf logging to {path}");
         app.insert_resource(PerfLog { file: f, frames: Vec::new(), since: 0.0, reported_gpu: false })
             .add_systems(Last, record);
+        // `EW_BISECT=hide:bld,noshadow:std`: per-category content knobs for finding GPU
+        // cost headless (Metal has no in-encoder timestamps, so Bevy's per-pass GPU
+        // timers report nothing). Categories: bld (building materials), std (other
+        // StandardMaterial: props, rocks, roads, water), terrain, foliage, scatter,
+        // cloudsky (the raymarch), cloudshadow (the sun-only caster), all.
+        if let Ok(spec) = std::env::var("EW_BISECT") {
+            app.insert_resource(Bisect(spec)).add_systems(Last, bisect);
+        }
     }
 }
 
@@ -97,4 +105,41 @@ fn record(
     let _ = writeln!(log.file, "{t:.1},{:.1},{avg:.2},{p99:.2},{max:.2},{tiles},{pending},{desired},{tris:.2},{},{vt:.2},{vs:.2},{vf:.2},{vo:.2},{},{io},{build},{applying}", 1000.0 / avg.max(1e-3), entities.iter().count(), nt + ns + nf + no);
     let _ = log.file.flush();
     log.since = 0.0;
+}
+
+#[derive(Resource)]
+struct Bisect(String);
+
+fn bisect(
+    mut commands: Commands,
+    knobs: Res<Bisect>,
+    bm: Option<Res<crate::building_materials::BuildingMaterials>>,
+    std_q: Query<(Entity, &MeshMaterial3d<StandardMaterial>), Added<Mesh3d>>,
+    terrain: Query<Entity, (Added<Mesh3d>, With<MeshMaterial3d<TerrainMaterial>>)>,
+    foliage: Query<Entity, (Added<Mesh3d>, With<MeshMaterial3d<FoliageMaterial>>)>,
+    scatter: Query<Entity, (Added<Mesh3d>, With<MeshMaterial3d<ScatterMaterial>>)>,
+    clouds: Query<(Entity, Has<bevy::camera::visibility::RenderLayers>), (Added<Mesh3d>, With<MeshMaterial3d<crate::clouds::CloudMaterial>>)>,
+) {
+    let mut apply = |e: Entity, cat: &str| {
+        for kv in knobs.0.split(',') {
+            let Some((op, c)) = kv.split_once(':') else { continue };
+            if c != cat && c != "all" {
+                continue;
+            }
+            match op {
+                "hide" => { commands.entity(e).insert(Visibility::Hidden); }
+                "noshadow" => { commands.entity(e).insert(bevy::light::NotShadowCaster); }
+                _ => {}
+            }
+        }
+    };
+    for (e, m) in &std_q {
+        let is_bld = bm.as_ref().is_some_and(|bm| bm.by_mat.values().any(|h| h.id() == m.0.id()));
+        apply(e, if is_bld { "bld" } else { "std" });
+    }
+    terrain.iter().for_each(|e| apply(e, "terrain"));
+    foliage.iter().for_each(|e| apply(e, "foliage"));
+    scatter.iter().for_each(|e| apply(e, "scatter"));
+    // The cloud shadow caster is the one on the sun-only layer.
+    clouds.iter().for_each(|(e, caster)| apply(e, if caster { "cloudshadow" } else { "cloudsky" }));
 }

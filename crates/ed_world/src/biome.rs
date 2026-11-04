@@ -1,7 +1,9 @@
-//! Climate/biome classification. A coarse, deterministic stand-in for a real
-//! Köppen raster (see docs/DATA.md for the planned TerraClimate/WorldCover
-//! upgrade): latitude bands, lapse-rate cooling with altitude, and boxes for
-//! the big deserts.
+//! Climate/biome classification from real climate normals (WorldClim 2.1 via
+//! `ed_data::climate`): temperature with lapse-rate cooling, coldest-month
+//! temperature, aridity and the dry-summer signal. Biomes change on geological
+//! time scales, so this is static data, separate from the weather sim. Where
+//! the climate grid has no data (poles, open sea) the old latitude/box
+//! heuristics are the fallback.
 
 use serde::{Deserialize, Serialize};
 
@@ -13,6 +15,8 @@ pub enum Biome {
     Mediterranean,
     TemperateForest,
     Grassland,
+    /// Semi-arid: dry grass, shrubs, scattered trees.
+    Steppe,
     Boreal,
     Tundra,
     Alpine,
@@ -50,7 +54,50 @@ pub fn is_mediterranean(lat: f64, lon: f64) -> bool {
 }
 
 impl Biome {
+    /// Biome from climate normals at `elevation_m`. `None` when the grid has
+    /// no land data there.
+    pub fn from_climate(lat: f64, lon: f64, elevation_m: f64) -> Option<Biome> {
+        let c = ed_data::climate::Climate::at(lat, lon)?;
+        let e = elevation_m.max(0.0) as f32;
+        let (t, tmin, a) = (c.temp_at(e), c.tmin_at(e), c.aridity(e));
+        let treeline = (3_800.0 - 45.0 * (lat.abs() - 20.0).max(0.0)).clamp(400.0, 4_200.0);
+        if elevation_m > treeline && lat.abs() < 62.0 {
+            return Some(Biome::Alpine);
+        }
+        if t < -18.0 {
+            return Some(Biome::IceCap);
+        }
+        if t < -10.0 {
+            return Some(Biome::Tundra);
+        }
+        if a < 0.15 {
+            return Some(Biome::HotDesert); // all deserts; hot or cold is decided by temperature in colour
+        }
+        if a < 0.30 && t > 2.0 {
+            return Some(Biome::Steppe);
+        }
+        if t < 5.0 {
+            return Some(Biome::Boreal);
+        }
+        if tmin > 15.0 {
+            // Frost-free tropics: wet all year is forest, strongly seasonal is savanna.
+            return Some(if c.precip_mm > 1_800.0 && a > 1.2 && !c.dry_summer() { Biome::TropicalRainforest } else { Biome::Savanna });
+        }
+        if c.dry_summer() && tmin > -3.0 && a < 1.3 {
+            return Some(Biome::Mediterranean);
+        }
+        if a < 0.55 && t > 4.0 {
+            return Some(Biome::Grassland);
+        }
+        Some(Biome::TemperateForest)
+    }
+
     pub fn classify(lat: f64, lon: f64, elevation_m: f64) -> Biome {
+        Self::from_climate(lat, lon, elevation_m).unwrap_or_else(|| Self::classify_heuristic(lat, lon, elevation_m))
+    }
+
+    /// Latitude-band/box guess, used only where there is no climate data.
+    pub fn classify_heuristic(lat: f64, lon: f64, elevation_m: f64) -> Biome {
         let t = sea_level_temp(lat) - 0.0065 * elevation_m.max(0.0);
         // Mountains: alpine above the local treeline (glaciers on peaks come
         // from the land-cover `ice` class, not from here).

@@ -24,6 +24,7 @@ use crate::config::Config;
 use crate::meshconv::to_mesh;
 use crate::origin::{Focus, GeoAnchored, WorldOrigin};
 use avian3d::prelude::*;
+use bevy::camera::visibility::RenderLayers;
 use bevy::mesh::MeshTag;
 use bevy::prelude::*;
 use bevy::tasks::AsyncComputeTaskPool;
@@ -136,6 +137,9 @@ enum Part {
 struct ReadyTile {
     build: TileBuild,
     collider: Option<Collider>,
+    /// Shadow stand-in for a subdivided terrain mesh: the bare grid triangles
+    /// (same surface, ~1/9 the triangles; see [`Shadow::CameraOnly`]).
+    terrain_shadow: Option<Mesh>,
     parts: Vec<(Part, Mesh)>,
     /// Opaque static meshes converted to meshlets (virtual geometry) off-thread.
     meshlets: Vec<(MeshletMesh, Vec3)>,
@@ -177,6 +181,14 @@ fn merge_lod(chunks: &[((u8, u8), BuildingMeshes)]) -> BuildingBatch {
 }
 
 fn ready_tile(mut b: TileBuild) -> ReadyTile {
+    // The collider is the terrain grid without the render subdivision, so it
+    // doubles as the terrain's shadow caster (the sun never needs the splat vertices).
+    let terrain_shadow = b.collider.as_ref().filter(|(v, _)| v.len() * 4 < b.terrain.positions.len()).map(|(verts, tris)| {
+        let mut m = Mesh::new(bevy::mesh::PrimitiveTopology::TriangleList, bevy::asset::RenderAssetUsages::RENDER_WORLD);
+        m.insert_attribute(Mesh::ATTRIBUTE_POSITION, verts.clone());
+        m.insert_indices(bevy::mesh::Indices::U32(tris.iter().flatten().copied().collect()));
+        m
+    });
     let collider = b.collider.take().map(|(verts, tris)| Collider::trimesh(verts, tris));
     let parts = [
         (Part::Terrain, &b.terrain),
@@ -200,7 +212,7 @@ fn ready_tile(mut b: TileBuild) -> ReadyTile {
     let lod = merge_lod(&chunks);
     let lod_chunks = (b.building_detail.is_some() && !chunks.is_empty()).then(|| Arc::new(chunks));
     let trees = crate::foliage::prepare_trees(std::mem::take(&mut b.trees));
-    ReadyTile { build: b, collider, parts, meshlets, rock_chunks, placements, lod, lod_chunks, trees }
+    ReadyTile { build: b, collider, terrain_shadow, parts, meshlets, rock_chunks, placements, lod, lod_chunks, trees }
 }
 
 #[derive(Resource)]
@@ -354,13 +366,53 @@ const EXPLODE_CHUNKS_PER_FRAME: usize = 8;
 const DETAIL_IN_M: f32 = 230.0;
 const DETAIL_OUT_M: f32 = 320.0;
 const DETAIL_IN_FLIGHT: usize = 2;
+/// Tiles with a building chunk this close explode into per-chunk LOD so their
+/// buildings cast shadows (the far cascade ends at 700 m, `sky.rs`).
+const SHADOW_EXPLODE_M: f32 = 750.0;
 /// Rock chunks are entities only within this distance of the camera.
 const ROCK_RANGE_M: f32 = 500.0;
 
 /// Spawn one entity per material bucket under `parent`.
-fn spawn_buckets(commands: &mut Commands, meshes: &mut Assets<Mesh>, bm: &BuildingMaterials, b: BuildingBatch, parent: Entity) {
+///
+fn spawn_buckets(commands: &mut Commands, meshes: &mut Assets<Mesh>, bm: &BuildingMaterials, b: BuildingBatch, parent: Entity, shadow: Shadow) {
     for (mat, mesh) in b.buckets {
-        commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(bm.get(mat)), Transform::default(), ChildOf(parent)));
+        let mut e = commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(bm.get(mat)), Transform::default(), ChildOf(parent)));
+        match shadow {
+            Shadow::Cast => {}
+            Shadow::None => {
+                e.insert(bevy::light::NotShadowCaster);
+            }
+            Shadow::CameraOnly => {
+                e.insert(RenderLayers::layer(crate::camera::CAMERA_ONLY_LAYER));
+            }
+        }
+    }
+}
+
+/// How building meshes take part in the sun's shadow cascades.
+///
+/// Measured at Zermatt (2144x1206, M3 Pro): building shadows were 5-6 ms a frame,
+/// almost all of it the full-detail chunks (facades, frames, sills drawn again
+/// into both cascades). So detail is camera-only and the per-chunk LOD under it
+/// stays alive on the sun-only layer as its shadow stand-in. The merged per-tile
+/// LOD casts nothing: its bounds cover the whole tile, so it would be drawn whole
+/// into every cascade; per-chunk LOD (tiles within `SHADOW_EXPLODE_M`) casts.
+#[derive(Clone, Copy)]
+enum Shadow {
+    Cast,
+    None,
+    CameraOnly,
+}
+
+/// Switch a per-chunk LOD between normal and shadow-only (detail shown above it).
+fn set_shadow_proxy(commands: &mut Commands, children: &Query<&Children>, chunk: Entity, proxy: bool) {
+    let Ok(kids) = children.get(chunk) else { return };
+    for k in kids.iter() {
+        if proxy {
+            commands.entity(k).insert(RenderLayers::layer(crate::clouds::CLOUD_SHADOW_LAYER));
+        } else {
+            commands.entity(k).remove::<RenderLayers>();
+        }
     }
 }
 
@@ -631,6 +683,10 @@ fn apply_tiles(
                     if sat_tag != crate::ground_material::SAT_NONE {
                         mgr.sat_tags.insert(t, sat_tag);
                     }
+                    let terrain_proxy = a.ready.terrain_shadow.take();
+                    if let Some(m) = terrain_proxy.as_ref() {
+                        commands.spawn((Mesh3d(meshes.add(m.clone())), MeshMaterial3d(mats.matte.clone()), Transform::default(), RenderLayers::layer(crate::clouds::CLOUD_SHADOW_LAYER), ChildOf(parent_id)));
+                    }
                     for (part, mesh) in a.ready.parts.drain(..) {
                         let mut e = match part {
                             // One shared terrain material; the tile's satellite layer rides on its MeshTag.
@@ -640,6 +696,10 @@ fn apply_tiles(
                             Part::Rocks | Part::Props => commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(mats.matte.clone()), Transform::default())),
                         };
                         let shadows = match part {
+                            Part::Terrain if terrain_proxy.is_some() => {
+                                e.insert(RenderLayers::layer(crate::camera::CAMERA_ONLY_LAYER));
+                                true
+                            }
                             Part::Terrain => near,
                             Part::Water | Part::Roads => false,
                             Part::Rocks | Part::Props => true,
@@ -690,7 +750,7 @@ fn apply_tiles(
                     }
                     if !batch.buckets.is_empty() {
                         let e = commands.spawn((Transform::default(), Visibility::default(), ChildOf(parent_id))).id();
-                        spawn_buckets(&mut commands, &mut meshes, &bmats, batch, e);
+                        spawn_buckets(&mut commands, &mut meshes, &bmats, batch, e, Shadow::None);
                         a.lod_root = Some(e);
                     }
                     a.stage = Stage::Trees;
@@ -742,7 +802,7 @@ fn apply_tiles(
             );
         }
         if std::env::var_os("EW_TILE_STATS").is_some() {
-            eprintln!("TILESTAT z{} terrain={} water={} roads={} trees={} rocks={} street={} trees_n={}", t.z, b.terrain.triangle_count(), b.water.triangle_count(), b.roads.triangle_count(), b.trees.triangle_count(), b.rocks.triangle_count(), b.street_props.triangle_count(), b.stats.trees);
+            eprintln!("TILESTAT z{} terrain={} water={} roads={} trees={} rocks={} street={} bld={} total={} trees_n={}", t.z, b.terrain.triangle_count(), b.water.triangle_count(), b.roads.triangle_count(), b.trees.triangle_count(), b.rocks.triangle_count(), b.street_props.triangle_count(), b.building_lod.iter().map(|(_, m)| m.triangle_count()).sum::<usize>(), b.stats.triangles, b.stats.trees);
         }
         mgr.tile_totals.insert(t, Totals { buildings: b.stats.buildings, trees: b.stats.trees, triangles: b.stats.triangles });
         mgr.heights.insert(t, b.min_max_height);
@@ -801,6 +861,7 @@ fn stream_detail(
     focus: Query<&GlobalTransform, With<Focus>>,
     tiles: Query<&GlobalTransform, With<WorldTile>>,
     mut vis: Query<&mut Visibility>,
+    children: Query<&Children>,
 ) {
     let now = time.elapsed_secs();
     if now - dm.last < 0.3 {
@@ -815,9 +876,11 @@ fn stream_detail(
     for (tid, td) in dm.tiles.iter_mut() {
         let Ok(gt) = tiles.get(td.root) else { continue };
         let mut wants = false;
+        let mut shadow_near = false;
         for chunk in td.set.chunks.keys() {
             let c = gt.transform_point(td.set.chunk_center(*chunk));
             let d = c.distance(fp);
+            shadow_near |= d < SHADOW_EXPLODE_M;
             if d < DETAIL_IN_M && !td.loaded.contains_key(chunk) && !td.pending.contains(chunk) {
                 wants = true;
                 if matches!(td.explode, Explode::Exploded) || td.lod_src.is_none() {
@@ -827,10 +890,10 @@ fn stream_detail(
                 drop.push((*tid, *chunk));
             }
         }
-        if wants || !td.loaded.is_empty() || !td.pending.is_empty() {
+        if wants || shadow_near || !td.loaded.is_empty() || !td.pending.is_empty() {
             td.busy_at = now;
         }
-        if wants && matches!(td.explode, Explode::Merged) && td.lod_src.is_some() {
+        if (wants || shadow_near) && matches!(td.explode, Explode::Merged) && td.lod_src.is_some() {
             explode.push(*tid);
         }
         // Nothing near for a while: merge back into the one-mesh-per-material LOD.
@@ -860,8 +923,8 @@ fn stream_detail(
             if let Some(e) = td.loaded.remove(&chunk) {
                 commands.entity(e).despawn();
             }
-            if let Some(l) = td.lod.get(&chunk).and_then(|e| vis.get_mut(*e).ok()) {
-                *l.into_inner() = Visibility::Inherited;
+            if let Some(l) = td.lod.get(&chunk) {
+                set_shadow_proxy(&mut commands, &children, *l, false);
             }
         }
     }
@@ -876,7 +939,13 @@ fn stream_detail(
         let set = td.set.clone();
         dm.in_flight += 1;
         pool.spawn(async move {
-            let _ = tx.send((tid, chunk, prepare_batch(&set.build_chunk(chunk), false)));
+            let bm = set.build_chunk(chunk);
+            if std::env::var_os("EW_TILE_STATS").is_some() {
+                let mut per: Vec<_> = bm.out.meshes.iter().map(|(k, m)| (m.triangle_count(), format!("{k:?}"))).collect();
+                per.sort_by(|a, b| b.0.cmp(&a.0));
+                eprintln!("DETAILSTAT n={} tris={} {:?}", bm.count, bm.triangle_count(), &per[..per.len().min(8)]);
+            }
+            let _ = tx.send((tid, chunk, prepare_batch(&bm, false)));
         })
         .detach();
     }
@@ -887,7 +956,7 @@ fn receive_detail(
     mut dm: ResMut<DetailManager>,
     mut meshes: ResMut<Assets<Mesh>>,
     bmats: Res<BuildingMaterials>,
-    mut vis: Query<&mut Visibility>,
+    children: Query<&Children>,
 ) {
     let Ok((tid, chunk, bmesh)) = dm.rx.try_recv() else { return };
     dm.in_flight = dm.in_flight.saturating_sub(1);
@@ -898,10 +967,12 @@ fn receive_detail(
         return;
     }
     let e = commands.spawn((Transform::default(), Visibility::default(), ChildOf(td.root))).id();
-    spawn_buckets(&mut commands, &mut meshes, &bmats, bmesh, e);
+    // The chunk's LOD stays on as the detail's shadow stand-in (see `Shadow`).
+    let proxy = td.lod.get(&chunk).copied();
+    spawn_buckets(&mut commands, &mut meshes, &bmats, bmesh, e, if proxy.is_some() { Shadow::CameraOnly } else { Shadow::Cast });
     td.loaded.insert(chunk, e);
-    if let Some(l) = td.lod.get(&chunk).and_then(|e| vis.get_mut(*e).ok()) {
-        *l.into_inner() = Visibility::Hidden;
+    if let Some(l) = proxy {
+        set_shadow_proxy(&mut commands, &children, l, true);
     }
 }
 
@@ -928,7 +999,7 @@ fn receive_explode(
             let Some((chunk, batch)) = batches.pop() else { break };
             budget -= 1;
             let e = commands.spawn((Transform::default(), Visibility::default(), ChildOf(td.root))).id();
-            spawn_buckets(&mut commands, &mut meshes, &bmats, batch, e);
+            spawn_buckets(&mut commands, &mut meshes, &bmats, batch, e, Shadow::Cast);
             td.lod.insert(chunk, e);
         }
         if batches.is_empty() {

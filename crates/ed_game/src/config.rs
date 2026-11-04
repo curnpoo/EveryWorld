@@ -36,6 +36,16 @@ pub struct Config {
     pub no_post: bool,
     /// `--scale <f>`: OS scale factor override (1.0 = half the pixels of a 2x Retina display).
     pub scale: Option<f64>,
+    /// `--headless` (or `EW_HEADLESS=1`): no window, no Dock icon, no focus
+    /// steal, no sound. The 3D camera renders into an offscreen image at
+    /// `--width` x `--height`; `--screenshot` and `--perf` work as usual.
+    pub headless: bool,
+    /// `--cruise <m/s>`: fly camera moves forward on its own (scripted perf route).
+    pub cruise: Option<f32>,
+    /// `--spin <deg/s>`: fly camera yaws on its own (turn-around test).
+    pub spin: Option<f32>,
+    /// `--quit-after <s>`: exit after this many seconds (wall clock).
+    pub quit_after: Option<f32>,
 }
 
 impl Config {
@@ -112,6 +122,10 @@ impl Config {
             fly: args.iter().any(|a| a == "--fly"),
             no_post: args.iter().any(|a| a == "--no-post"),
             scale: num("--scale"),
+            headless: args.iter().any(|a| a == "--headless") || std::env::var_os("EW_HEADLESS").is_some_and(|v| v != "0"),
+            cruise: num("--cruise").map(|v| v as f32),
+            spin: num("--spin").map(|v| v as f32),
+            quit_after: num("--quit-after").map(|v| v as f32),
         }
     }
 
