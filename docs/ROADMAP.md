@@ -74,6 +74,6 @@ Weather is **procedural** (`ed_climate`, see `docs/PLAN-world-sim.md`): a determ
 
 - CI: `cargo test --workspace` + lookdev snapshot diff
 - Move style/kit tables to `assets/styles/*.ron` with hot reload
-- Tile builder: dedicated IO thread pool + cancellation for tiles that went stale
-- Profiling HUD (frame time, tiles in flight, triangles, memory)
+- [x] Tile builder: dedicated IO thread pool + cancellation for tiles that went stale (`ed_runtime::jobs`, M1)
+- Profiling HUD (frame time, tiles in flight, triangles, memory): partly done (F3/I debug stats with pipeline depth, `--perf` CSV); left: GPU pass timings, memory
 - macOS app bundle + signing

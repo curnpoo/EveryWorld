@@ -248,27 +248,64 @@ pub fn spawn_near_tree(
     root
 }
 
-/// Spawn a tile's trees under `parent` (the tile entity, whose mesh space
-/// the chunks are in). Coarse tiles (one chunk) only ever show far cards.
-pub fn spawn_tile_trees(commands: &mut Commands, meshes: &mut Assets<Mesh>, fa: &FoliageAssets, parent: Entity, trees: &TileTrees) {
+/// A tile's tree chunk with its far meshes already converted to Bevy meshes
+/// (done on the build worker, not the main thread).
+pub struct PreparedTreeChunk {
+    center: Vec3,
+    far: Mesh,
+    /// Thinned density bands with their visibility range.
+    bands: Vec<(Mesh, f32, f32)>,
+    instances: Vec<TreeInstance>,
+}
+
+/// A tile's trees, ready to spawn chunk by chunk.
+pub struct PreparedTrees {
+    pub up: Vec3,
+    /// Coarse tiles (one chunk) only ever show far cards; finer ones swap to
+    /// full-detail trees near the camera.
+    pub lod: bool,
+    pub chunks: Vec<PreparedTreeChunk>,
+}
+
+/// Worker-thread half of spawning: convert every far mesh up front.
+pub fn prepare_trees(trees: &TileTrees) -> PreparedTrees {
     let lod = trees.chunks.len() > 1;
-    for c in &trees.chunks {
-        let holder = commands.spawn((Transform::from_translation(c.center), Visibility::default(), ChildOf(parent))).id();
-        let mut far_e = commands.spawn((Mesh3d(meshes.add(wind_mesh(&c.far))), MeshMaterial3d(fa.leaves.clone()), Transform::default(), ChildOf(holder)));
-        if lod {
-            far_e.insert(VisibilityRange::abrupt(0.0, FAR_MID_M));
-        }
-        let far = far_e.id();
-        // Thinned density bands (no mesh swaps, just fewer, larger crowns).
-        for (m, a, b) in [(&c.far_mid, FAR_MID_M, FAR_LOW_M), (&c.far_low, FAR_LOW_M, f32::MAX)] {
-            if !m.mesh.positions.is_empty() {
-                commands.spawn((Mesh3d(meshes.add(wind_mesh(m))), MeshMaterial3d(fa.leaves.clone()), Transform::default(), VisibilityRange::abrupt(a, b), NotShadowCaster, ChildOf(holder)));
-            }
-        }
-        if lod {
-            commands.entity(holder).insert(TreeChunkLod { instances: c.instances.clone(), up: trees.up, center: c.center, far, near: Vec::new() });
-        }
+    let chunks = trees
+        .chunks
+        .iter()
+        .map(|c| PreparedTreeChunk {
+            center: c.center,
+            far: wind_mesh(&c.far),
+            bands: [(&c.far_mid, FAR_MID_M, FAR_LOW_M), (&c.far_low, FAR_LOW_M, f32::MAX)]
+                .into_iter()
+                .filter(|(m, _, _)| !m.mesh.positions.is_empty())
+                .map(|(m, a, b)| (wind_mesh(m), a, b))
+                .collect(),
+            instances: c.instances.clone(),
+        })
+        .collect();
+    PreparedTrees { up: trees.up, lod, chunks }
+}
+
+/// Spawn one prepared tree chunk under `parent` (the tile entity, whose mesh
+/// space the chunk is in). Returns the number of entities spawned.
+pub fn spawn_tree_chunk(commands: &mut Commands, meshes: &mut Assets<Mesh>, fa: &FoliageAssets, parent: Entity, up: Vec3, lod: bool, c: PreparedTreeChunk) -> u32 {
+    let holder = commands.spawn((Transform::from_translation(c.center), Visibility::default(), ChildOf(parent))).id();
+    let mut far_e = commands.spawn((Mesh3d(meshes.add(c.far)), MeshMaterial3d(fa.leaves.clone()), Transform::default(), ChildOf(holder)));
+    if lod {
+        far_e.insert(VisibilityRange::abrupt(0.0, FAR_MID_M));
     }
+    let far = far_e.id();
+    let mut n = 2;
+    // Thinned density bands (no mesh swaps, just fewer, larger crowns).
+    for (m, a, b) in c.bands {
+        commands.spawn((Mesh3d(meshes.add(m)), MeshMaterial3d(fa.leaves.clone()), Transform::default(), VisibilityRange::abrupt(a, b), NotShadowCaster, ChildOf(holder)));
+        n += 1;
+    }
+    if lod {
+        commands.entity(holder).insert(TreeChunkLod { instances: c.instances, up, center: c.center, far, near: Vec::new() });
+    }
+    n
 }
 
 /// Swap chunks between far cards and full-detail trees by camera distance.

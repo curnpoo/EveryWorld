@@ -2821,6 +2821,7 @@ dependencies = [
  "ed_engine_audio",
  "ed_flight",
  "ed_geo",
+ "ed_runtime",
  "ed_space",
  "ed_world",
  "glam 0.33.12",
@@ -2833,6 +2834,16 @@ version = "0.1.0"
 dependencies = [
  "glam 0.33.12",
  "serde",
+]
+
+[[package]]
+name = "ed_runtime"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "ed_geo",
+ "glam 0.33.12",
+ "log",
 ]
 
 [[package]]

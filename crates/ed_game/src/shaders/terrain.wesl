@@ -30,8 +30,12 @@ struct GroundParams {
 @group(constants::MATERIAL_BIND_GROUP) @binding(103) var normal_tex: texture_2d_array<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(104) var macro_tex: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(105) var macro_sampler: sampler;
-@group(constants::MATERIAL_BIND_GROUP) @binding(106) var sat_tex: texture_2d<f32>;
+// Satellite colour pool, one array per tile resolution class. Each terrain
+// mesh's MeshTag is (class + 1) << 24 | layer, 0 = no satellite colour.
+@group(constants::MATERIAL_BIND_GROUP) @binding(106) var sat_512: texture_2d_array<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(107) var sat_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(108) var sat_256: texture_2d_array<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(109) var sat_128: texture_2d_array<f32>;
 
 struct TerrainVertex {
     @builtin(instance_index) instance_index: u32,
@@ -56,6 +60,7 @@ struct TerrainVertexOutput {
     @location(9) splat1: vec4<f32>,
     @location(10) splat2: vec4<f32>,
     @location(11) sat: vec4<f32>,
+    @location(12) @interpolate(flat) sat_tag: u32,
 };
 
 @vertex
@@ -72,7 +77,36 @@ fn vertex(v: TerrainVertex) -> TerrainVertexOutput {
     out.splat1 = v.splat1;
     out.splat2 = v.splat2;
     out.sat = v.sat;
+    out.sat_tag = mesh_functions::get_tag(v.instance_index);
     return out;
+}
+
+// Satellite colour for this pixel from the shared pool. Texels sit on
+// vertices, so uv is remapped to texel centres. Gradients are taken up front
+// so the per-class branches stay legal in non-uniform control flow.
+fn sample_sat(uv: vec2<f32>, tag: u32) -> vec4<f32> {
+    let class = tag >> 24u;
+    let layer = i32(tag & 0x00FFFFFFu);
+    var n = 128.0;
+    if class == 1u {
+        n = 512.0;
+    } else if class == 2u {
+        n = 256.0;
+    }
+    let k = (n - 1.0) / n;
+    let st = uv * k + 0.5 / n;
+    let dx = dpdx(uv) * k;
+    let dy = dpdy(uv) * k;
+    if class == 1u {
+        return textureSampleGrad(sat_512, sat_sampler, st, layer, dx, dy);
+    }
+    if class == 2u {
+        return textureSampleGrad(sat_256, sat_sampler, st, layer, dx, dy);
+    }
+    if class == 3u {
+        return textureSampleGrad(sat_128, sat_sampler, st, layer, dx, dy);
+    }
+    return vec4<f32>(0.0);
 }
 
 struct Layer {
@@ -283,8 +317,7 @@ fn fragment(in: TerrainVertexOutput, @builtin(front_facing) is_front: bool) -> F
 
     // Satellite albedo (gamma-encoded per vertex). alpha: 0 none, ~0.5 water, 1 land.
     // Per-pixel satellite colour: texels sit on vertices, so remap uv to texel centres.
-    let sd = vec2<f32>(textureDimensions(sat_tex));
-    let sat_s = textureSample(sat_tex, sat_sampler, in.uv * (sd - 1.0) / sd + 0.5 / sd);
+    let sat_s = sample_sat(in.uv, in.sat_tag);
     let has_sat = smoothstep(0.2, 0.4, sat_s.a);
     let sat_lin = pow(max(sat_s.rgb, vec3<f32>(0.0)), vec3<f32>(2.2));
     // Water: satellite colour, very smooth, no ground texture or wet darkening.

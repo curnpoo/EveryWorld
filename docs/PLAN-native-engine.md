@@ -355,6 +355,11 @@ Mobile specifics:
 |---|---|---|
 | **M0** (now, in Bevy, 1-2 wk) | Tree impostors, far trees out of shadows, 2 cascades, env map on change, clouds ½ res, pipeline pre-warm, time-budgeted apply, shared terrain material | 45+ fps steady, no frame > 50 ms after load |
 | **M1** (3-4 wk) | `ed_runtime`: jobs, residency, budgets, streaming scheduler out of `streaming.rs`. Tiles stop being entities | Tile apply < 1 ms; flat entity count |
+
+**Status (Nov 4, `perf/m0-m1`, not yet measured on the Mac; see `docs/claude-handoff/2026-11-04-m0-m1.md`):**
+- M0 done: 2 cascades; env map refreshed only on change (patched `bevy_pbr`, `EnvironmentMapRefresh`); shared terrain material (satellite texture pool + `MeshTag`); staged, budgeted tile apply. Far leaf cards were already out of shadows.
+- M0 open: pipeline pre-warm (cause of the settings stall unconfirmed; AO/TAA toggles change every material's pipeline key), tree impostors (conflicts with PLAN-perf "no impostors": needs a decision), clouds ½ res (deferred: measured no gain while vertex bound).
+- M1 started: `ed_runtime` crate with IO and CPU job pools (priority, re-rank, cancel), frame budgets, residency LRU, height-aware view test, linear-time hole-free retire. `streaming.rs` runs on it. Open: tiles are still entity trees (the "tiles stop being entities" half of M1).
 | **M2** (6-8 wk) | `ed_gpu` RHI (wgpu backend) + `ed_render` v1: terrain clipmap, GPU-culled instancing, impostors, visibility buffer, cached shadows, own TAAU. Bevy keeps app/UI/player only | **60 fps steady** on the 6 reference scenes, High tier |
 | **G1** | **Decision gate: native backends** (§3) | Profile data written up |
 | **M3** (8-12 wk) | Native Metal backend (if G1 says so): ICBs, tile memory, MetalFX, binary archives. Cluster LOD (Nanite-like) + software raster | **120 fps** High tier on M3 Pro, 1440p output |

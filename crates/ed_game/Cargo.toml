@@ -24,6 +24,7 @@ ed_world = { path = "../ed_world" }
 ed_flight = { path = "../ed_flight" }
 ed_space = { path = "../ed_space" }
 ed_engine_audio = { path = "../ed_engine_audio" }
+ed_runtime = { path = "../ed_runtime" }
 bevy = { version = "0.20", features = ["system_font_discovery"] }
 avian3d = "0.8"
 glam = { workspace = true }

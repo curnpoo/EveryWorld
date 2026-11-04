@@ -32,7 +32,9 @@ fn setup_materials(
     mut terrain_mats: ResMut<Assets<crate::ground_material::TerrainMaterial>>,
     mut scatter_mats: ResMut<Assets<crate::ground_material::ScatterMaterial>>,
 ) {
-    let (terrain, ground) = crate::ground_material::create(&mut images, &mut terrain_mats, &mut scatter_mats);
+    let pool = crate::ground_material::SatPool::new(&mut images);
+    let (terrain, ground) = crate::ground_material::create(&mut images, &mut terrain_mats, &mut scatter_mats, &pool);
+    commands.insert_resource(pool);
     commands.insert_resource(ground);
     let matte = |mats: &mut Assets<StandardMaterial>, rough: f32| {
         mats.add(StandardMaterial { base_color: Color::WHITE, perceptual_roughness: rough, reflectance: 0.3, ..default() })

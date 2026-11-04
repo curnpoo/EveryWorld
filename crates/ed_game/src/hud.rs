@@ -200,6 +200,7 @@ fn update_text(
     weather: Option<Res<CurrentWeather>>,
     mgr: Option<Res<TileManager>>,
     dm: Option<Res<DetailManager>>,
+    sat_pool: Option<Res<crate::ground_material::SatPool>>,
     players: Query<(&Transform, &LinearVelocity, &Player)>,
     cams: Query<&Transform, (With<Camera3d>, Without<crate::globe::GlobeCamera>)>,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -253,6 +254,8 @@ fn update_text(
     let w = weather.and_then(|w| w.0.clone());
     let wtxt = w.map_or("weather n/a".to_string(), |w| format!("{} {:.0}°C wind {:.0} m/s", w.describe(), w.temperature_c, w.wind_speed_ms));
     let (tiles_loaded, tiles_pending, tiles_desired) = mgr.as_ref().map_or((0, 0, 0), |m| (m.loaded.len(), m.pending.len(), m.desired.len()));
+    let (p_io, p_build, p_apply) = mgr.as_ref().map_or((0, 0, 0), |m| m.pipeline());
+    let sat_free = sat_pool.as_ref().map_or([0; 3], |p| p.free_layers());
     let (buildings, trees, tris) = mgr.as_ref().map_or((0, 0, 0), |m| (m.totals.buildings, m.totals.trees, m.totals.triangles));
     let (detail_loaded, detail_flight) = dm.as_ref().map_or((0, 0), |d| detail_stats(d));
     let (win_w, win_h, win_scale) = windows.single().map_or((0, 0, 1.0), |w| (w.physical_width(), w.physical_height(), w.scale_factor()));
@@ -263,7 +266,8 @@ fn update_text(
          pos {:.5}, {:.5}   alt {:.0} m   AGL {:.0} m\n\
          tile {}/{}/{}   hdg {:.0}°   solar {:02}:{:02}\n\
          {:.0} fps ({:.1} ms)   render {}%   window {}x{} @{:.1}x ({}x{} px)\n\
-         tiles {} loaded / {} pending / {} desired\n\
+         tiles {} loaded / {} pending / {} desired   (io {} / build {} / apply {})\n\
+         satellite layers free {} / {} / {}\n\
          buildings {}   trees {}   tris {:.1}M\n\
          detail chunks {} loaded / {} in flight\n\
          mode {}   speed {:.0} mph   vertical {:+.0} mph\n\
@@ -289,6 +293,12 @@ fn update_text(
         tiles_loaded,
         tiles_pending,
         tiles_desired,
+        p_io,
+        p_build,
+        p_apply,
+        sat_free[0],
+        sat_free[1],
+        sat_free[2],
         buildings,
         trees,
         tris as f32 / 1e6,

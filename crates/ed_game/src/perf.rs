@@ -19,7 +19,7 @@ impl Plugin for PerfPlugin {
         }
         let path = std::env::var("EW_PERF_OUT").unwrap_or_else(|_| "perf.csv".into());
         let mut f = std::fs::File::create(&path).expect("create perf csv");
-        let _ = writeln!(f, "t_s,fps,avg_ms,p99_ms,max_ms,tiles,pending,desired,tris_m,entities,vis_terrain_m,vis_scatter_m,vis_foliage_m,vis_other_m,meshes_vis");
+        let _ = writeln!(f, "t_s,fps,avg_ms,p99_ms,max_ms,tiles,pending,desired,tris_m,entities,vis_terrain_m,vis_scatter_m,vis_foliage_m,vis_other_m,meshes_vis,io_jobs,build_jobs,applying");
         info!("perf logging to {path}");
         app.insert_resource(PerfLog { file: f, frames: Vec::new(), since: 0.0, reported_gpu: false })
             .add_systems(Last, record);
@@ -75,7 +75,8 @@ fn record(
     let avg = v.iter().sum::<f32>() / n as f32;
     let p99 = v[((n as f32 * 0.99) as usize).min(n - 1)];
     let max = v.last().copied().unwrap_or(0.0);
-    let (tiles, pending, desired, tris) = mgr.map_or((0, 0, 0, 0.0), |m| (m.loaded.len(), m.pending.len(), m.desired.len(), m.totals.triangles as f32 / 1e6));
+    let (tiles, pending, desired, tris) = mgr.as_ref().map_or((0, 0, 0, 0.0), |m| (m.loaded.len(), m.pending.len(), m.desired.len(), m.totals.triangles as f32 / 1e6));
+    let (io, build, applying) = mgr.as_ref().map_or((0, 0, 0), |m| m.pipeline());
     let t = time.elapsed_secs();
     // Visible triangles per material family (CPU-side frustum result of last frame).
     let count = |it: &mut dyn Iterator<Item = (&Mesh3d, &ViewVisibility)>| -> (f32, usize) {
@@ -92,7 +93,7 @@ fn record(
     let (vs, ns) = count(&mut scatter.iter());
     let (vf, nf) = count(&mut foliage.iter());
     let (vo, no) = count(&mut other.iter());
-    let _ = writeln!(log.file, "{t:.1},{:.1},{avg:.2},{p99:.2},{max:.2},{tiles},{pending},{desired},{tris:.2},{},{vt:.2},{vs:.2},{vf:.2},{vo:.2},{}", 1000.0 / avg.max(1e-3), entities.iter().count(), nt + ns + nf + no);
+    let _ = writeln!(log.file, "{t:.1},{:.1},{avg:.2},{p99:.2},{max:.2},{tiles},{pending},{desired},{tris:.2},{},{vt:.2},{vs:.2},{vf:.2},{vo:.2},{},{io},{build},{applying}", 1000.0 / avg.max(1e-3), entities.iter().count(), nt + ns + nf + no);
     let _ = log.file.flush();
     log.since = 0.0;
 }

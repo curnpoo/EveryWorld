@@ -31,6 +31,7 @@ Cache dir `.earthdrop-cache/` (tiles cached forever; gitignored). Dev profile: d
 | `ed_flight` | atmosphere, drag, Mach, gravity, rocket "superpower" model |
 | `ed_space` | Sun/Moon/planet ephemeris, body catalog |
 | `ed_engine_audio` | Rust port of engine-sound-kit (voice, mixer, cars.json). Parity tests vs JS renders |
+| `ed_runtime` | M1 runtime services: `jobs` (keyed pools, priority, cancel), `budget`, `residency` (LRU), `view` (height-aware cone test), `scheduler` (build priority, hole-free retire) |
 | `ed_game` | Bevy app (`earthdrop`) |
 
 ## ed_world modules (`crates/ed_world/src`)
@@ -52,8 +53,9 @@ Cache dir `.earthdrop-cache/` (tiles cached forever; gitignored). Dev profile: d
 
 ## Rendering / meshlets
 - Bevy meshlets (virtual geometry) are OFF by default (opt in `EW_MESHLET=1`; measured ~60% slower on M3 Pro). `MeshletPlugin` stays registered in `main.rs`. Meshlet meshes take position/normal/UV only: colours go through `MeshData::palettize()` + `WorldMaterials::palette_matte` (512x512 palette LUT). MSAA must stay off on every camera.
-- `vendor/bevy_pbr` is a patched copy of bevy_pbr 0.20.1 (`[patch.crates-io]`): meshlet prepass `flags`, atmosphere pipeline key, material bind group index 3, motion-vector NaN guard. Re-apply if Bevy is bumped.
-- Env knobs: `EW_MESHLET=1` (same content as meshlets, A/B), `EW_POST=bloom,taa,ssao` (subset of post), `EW_TILE_STATS=1` (per-tile tri counts), `EW_PERF=1` + `EW_PERF_OUT=path`.
+- `vendor/bevy_pbr` is a patched copy of bevy_pbr 0.20.1 (`[patch.crates-io]`): meshlet prepass `flags`, atmosphere pipeline key, material bind group index 3, motion-vector NaN guard, `EnvironmentMapRefresh` gate on the env-map probe + filter passes. Re-apply if Bevy is bumped.
+- Env knobs: `EW_MESHLET=1` (same content as meshlets, A/B), `EW_POST=bloom,taa,ssao` (subset of post), `EW_TILE_STATS=1` (per-tile tri counts), `EW_PERF=1` + `EW_PERF_OUT=path`, `EW_APPLY_BUDGET=units` (tile apply per frame, default 250), `EW_RESIDENT_TILES=n` (out-of-view tiles kept, default 192), `EW_IO_THREADS` / `EW_TILE_THREADS` (streaming pools).
+- Streaming (`streaming.rs` on `ed_runtime`): select (wanted + in-view) -> IO pool `tilegen::prefetch` -> CPU pool `tilegen::build` + `ready_tile` -> staged apply under a budget (tile hidden until complete) -> retire. Terrain uses ONE shared material: satellite colour lives in `ground_material::SatPool` (3 texture arrays by size class), the layer rides on the terrain entity's `MeshTag`. The atmosphere env map only re-renders when the sun/altitude/cloud changes (`sky::refresh_env_map` -> patched `bevy_pbr` `EnvironmentMapRefresh`).
 - Screenshots/perf runs need the window focused on macOS (an unfocused/occluded window renders black).
 
 ## Key invariants
@@ -72,5 +74,5 @@ Cache dir `.earthdrop-cache/` (tiles cached forever; gitignored). Dev profile: d
 ## Known issues / active work
 - Buildings: roof/foundation overhaul landed (see `docs/PLAN-buildings.md` for what and what's left). `buildings.rs`: `roof_plan` (Flat | Mansard | Pitched(rects)) is shared by `detail_one` and `lod_one`; `foundation()` skins walls above low terrain. Needs visual check in-game; thresholds (350/500 m2, 4 floors, 14 m span) are constants in `roof_plan`.
 - Open: does terrain render at a coarser LOD than the building's `TerrainGrid`? Foundations have a 0.5 m margin only.
-- Uncommitted work in tree: perf logger, render_scale, streaming/camera/menu tweaks (see `git status`).
+- M0/M1 work on `perf/m0-m1` needs a Mac measurement pass: see `docs/claude-handoff/2026-11-04-m0-m1.md`.
 - Roadmap items: instancing, CDLOD, landmarks, interiors, night lighting (see `docs/ROADMAP.md`).

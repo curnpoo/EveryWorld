@@ -1,6 +1,22 @@
 //! Terrain/world tile streaming. Picks the tile set from the quadtree LOD,
-//! builds missing tiles on worker threads, and swaps them in without holes
+//! builds missing tiles on worker pools, and swaps them in without holes
 //! (a coarse tile stays until every finer tile covering it has arrived).
+//!
+//! Pipeline per tile (decisions live in the engine-free `ed_runtime`):
+//! 1. **select** (4 Hz): `lod::select` gives the *wanted* set; the view test
+//!    (real tile heights, `ed_runtime::view`) gives the *in-view* subset.
+//!    Visible tiles are queued first, ranked by distance and direction of
+//!    travel; stale queued jobs are cancelled.
+//! 2. **IO pool**: download source tiles into the disk cache
+//!    (`tilegen::prefetch`), so network waits never hold a CPU worker.
+//! 3. **CPU pool**: generate the tile (`tilegen::build`) and convert meshes
+//!    and colliders off the main thread (`ready_tile`).
+//! 4. **apply**: spawn the tile in stages under a per-frame budget
+//!    (`ed_runtime::budget`), hidden until complete so the coarse tile keeps
+//!    covering the area meanwhile.
+//! 5. **retire**: hole-free where you can look (`ed_runtime::scheduler`);
+//!    loaded tiles that leave the view stay resident up to a cap
+//!    (`ed_runtime::residency`), so turning around doesn't rebuild them.
 
 use crate::assets::WorldMaterials;
 use crate::building_materials::BuildingMaterials;
@@ -8,24 +24,29 @@ use crate::config::Config;
 use crate::meshconv::to_mesh;
 use crate::origin::{Focus, GeoAnchored, WorldOrigin};
 use avian3d::prelude::*;
+use bevy::mesh::MeshTag;
 use bevy::prelude::*;
 use bevy::tasks::AsyncComputeTaskPool;
 use crossbeam_channel::{Receiver, Sender};
 use ed_geo::tile::TileId;
+use ed_runtime::budget::FrameBudget;
+use ed_runtime::jobs::JobPool;
+use ed_runtime::residency::Lru;
+use ed_runtime::scheduler;
+use ed_runtime::view::{self as rview, TileBounds, ViewCone};
 use ed_world::bparts::Mat;
 use ed_world::buildings::BuildingMeshes;
 use ed_world::lod::{self, LodParams};
 use ed_world::tilegen::{self, DetailSet, TileBuild, TileJob};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 pub struct StreamingPlugin;
 
 impl Plugin for StreamingPlugin {
     fn build(&self, app: &mut App) {
-        let (tx, rx) = crossbeam_channel::unbounded();
         let (dtx, drx) = crossbeam_channel::unbounded();
-        app.insert_resource(TileManager { tx, rx, ..default_manager() })
+        app.insert_resource(TileManager::new())
             .insert_resource(DetailManager { tx: dtx, rx: drx, tiles: HashMap::new(), in_flight: 0, last: -1.0 })
             .add_systems(Startup, resolve_vector_template)
             .add_systems(
@@ -33,7 +54,8 @@ impl Plugin for StreamingPlugin {
                 (
                     // The main menu is just a map: don't load the world until a spawn is chosen.
                     select_tiles.run_if(not(in_state(crate::menu::GameState::Menu))),
-                    receive_tiles,
+                    pump_jobs,
+                    apply_tiles,
                     retire_tiles,
                     stream_detail.run_if(not(in_state(crate::menu::GameState::Menu))),
                     receive_detail,
@@ -43,8 +65,25 @@ impl Plugin for StreamingPlugin {
     }
 }
 
-/// Tile builds are CPU-heavy; keep some cores free for the render and main threads.
-const MAX_IN_FLIGHT: usize = 4;
+/// Main-thread apply budget per frame, in cost units (about one entity
+/// spawn, or ~10k triangles of mesh upload, per unit). `EW_APPLY_BUDGET`
+/// overrides it for tuning. The first item of a frame always runs.
+const APPLY_UNITS: u32 = 250;
+/// Wall-clock cap for the apply loop itself. Spawns are deferred commands, so
+/// the units above are the real limiter; this only stops a runaway frame.
+const APPLY_MS: u64 = 4;
+/// Loaded tiles kept resident while out of view, at most (`EW_RESIDENT_TILES`).
+const RESIDENT_CAP: usize = 192;
+/// Off-screen wanted tiles closer than this many tile widths are still built
+/// (at low priority): the ground you could turn and look at right away.
+const OFFSCREEN_PREBUILD: f64 = 1.5;
+/// Height allowance above the ground for buildings and trees in the view test.
+const BUILDING_ALLOWANCE_M: f32 = 500.0;
+
+fn env_num<T: std::str::FromStr>(key: &str, default: T) -> T {
+    std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+}
+
 
 /// Building geometry already converted to Bevy meshes/colliders, so the main
 /// thread only has to register assets (trimesh BVH builds are slow).
@@ -98,6 +137,8 @@ struct ReadyTile {
     /// Opaque static meshes converted to meshlets (virtual geometry) off-thread.
     meshlets: Vec<(MeshletMesh, Vec3)>,
     lod: Vec<((u8, u8), BuildingBatch)>,
+    /// Tree far meshes, converted on the worker.
+    trees: crate::foliage::PreparedTrees,
 }
 
 fn ready_tile(mut b: TileBuild) -> ReadyTile {
@@ -122,20 +163,41 @@ fn ready_tile(mut b: TileBuild) -> ReadyTile {
         (b.rock_chunks.iter().filter_map(|m| to_meshlet(m)).collect(), parts)
     };
     let lod = std::mem::take(&mut b.building_lod).into_iter().map(|(c, m)| (c, prepare_batch(&m, true))).collect();
-    ReadyTile { build: b, collider, parts, meshlets, lod }
+    let trees = crate::foliage::prepare_trees(&b.trees);
+    ReadyTile { build: b, collider, parts, meshlets, lod, trees }
 }
 
 #[derive(Resource)]
 pub struct TileManager {
-    tx: Sender<ReadyTile>,
-    rx: Receiver<ReadyTile>,
+    /// Network: warms the disk cache for a tile's sources.
+    io: JobPool<TileId, ()>,
+    /// CPU: generates the tile and prepares Bevy meshes/colliders.
+    cpu: JobPool<TileId, ReadyTile>,
+    /// Job parameters for tiles between the IO and CPU stages.
+    jobs: HashMap<TileId, TileJob>,
+    /// Built tiles being spawned, a stage at a time.
+    applying: VecDeque<Applying>,
     template: Option<String>,
     template_resolved: bool,
     pub loaded: HashMap<TileId, Entity>,
+    /// Anywhere in the pipeline: IO, CPU or apply.
     pub pending: HashSet<TileId>,
+    /// Wanted and in view: what must be loaded for the frame to be complete.
     pub desired: HashSet<TileId>,
+    /// The full LOD selection, in every direction.
+    wanted: HashSet<TileId>,
+    in_view: HashSet<TileId>,
+    /// Ground height range of loaded tiles (for the view test of their
+    /// descendants and themselves).
+    heights: HashMap<TileId, (f32, f32)>,
+    /// Satellite pool slot per loaded/applying tile (`MeshTag` value).
+    sat_tags: HashMap<TileId, u32>,
+    /// When each loaded tile was last in view.
+    seen: Lru<TileId>,
+    resident_cap: usize,
     pub ground_estimate: f64,
     last_select: f32,
+    last_focus: Option<(Vec3, f32, u64)>,
     pub totals: Totals,
     /// Per-tile contribution to `totals`, so retiring a tile subtracts it.
     tile_totals: HashMap<TileId, Totals>,
@@ -149,7 +211,35 @@ pub struct Totals {
 }
 
 impl TileManager {
-    /// Everything requested has arrived.
+    fn new() -> Self {
+        let (io_n, cpu_n) = ed_runtime::jobs::default_threads();
+        let io_n = env_num("EW_IO_THREADS", io_n);
+        let cpu_n = env_num("EW_TILE_THREADS", cpu_n);
+        info!("tile streaming: {io_n} IO threads, {cpu_n} build threads");
+        Self {
+            io: JobPool::new("tile-io", io_n),
+            cpu: JobPool::new("tile-build", cpu_n),
+            jobs: HashMap::new(),
+            applying: VecDeque::new(),
+            template: None,
+            template_resolved: false,
+            loaded: HashMap::new(),
+            pending: HashSet::new(),
+            desired: HashSet::new(),
+            wanted: HashSet::new(),
+            in_view: HashSet::new(),
+            heights: HashMap::new(),
+            sat_tags: HashMap::new(),
+            seen: Lru::default(),
+            resident_cap: env_num("EW_RESIDENT_TILES", RESIDENT_CAP),
+            ground_estimate: 0.0,
+            last_select: -1.0,
+            last_focus: None,
+            totals: Totals::default(),
+            tile_totals: HashMap::new(),
+        }
+    }
+
     fn recount(&mut self) {
         self.totals = self.tile_totals.values().fold(Totals::default(), |a, t| Totals {
             buildings: a.buildings + t.buildings,
@@ -158,25 +248,21 @@ impl TileManager {
         });
     }
 
+    /// Everything requested has arrived.
     pub fn idle(&self) -> bool {
         self.template_resolved && self.pending.is_empty() && self.desired.iter().all(|t| self.loaded.contains_key(t))
     }
-}
 
-fn default_manager() -> TileManager {
-    let (tx, rx) = crossbeam_channel::unbounded();
-    TileManager {
-        tx,
-        rx,
-        template: None,
-        template_resolved: false,
-        loaded: HashMap::new(),
-        pending: HashSet::new(),
-        desired: HashSet::new(),
-        ground_estimate: 0.0,
-        last_select: -1.0,
-        totals: Totals::default(),
-        tile_totals: HashMap::new(),
+    /// (io queued+running, cpu queued+running, applying) for the HUD/perf log.
+    pub fn pipeline(&self) -> (usize, usize, usize) {
+        let (iq, ir) = self.io.load();
+        let (cq, cr) = self.cpu.load();
+        (iq + ir, cq + cr, self.applying.len())
+    }
+
+    /// Known ground height range for `t`: its own, else its nearest loaded ancestor's.
+    fn known_heights(&self, t: TileId) -> Option<(f32, f32)> {
+        (0..=t.z).rev().find_map(|z| self.heights.get(&t.ancestor(z).0).copied())
     }
 }
 
@@ -221,6 +307,7 @@ fn resolve_vector_template(cfg: Res<Config>, mut mgr: ResMut<TileManager>) {
     mgr.template_resolved = true;
 }
 
+/// Pick the wanted and visible tile sets, cancel stale work, queue new work.
 fn select_tiles(
     time: Res<Time>,
     cfg: Res<Config>,
@@ -238,70 +325,186 @@ fn select_tiles(
     }
     mgr.last_select = now;
     let Some(ft) = focus.iter().next() else { return };
-    let cam = origin.to_geodetic(ft.translation());
+    let focus_pos = ft.translation();
+    let cam = origin.to_geodetic(focus_pos);
+
+    // Velocity for prefetching ahead (skip the tick a floating-origin rebase jumps).
+    let vel = match mgr.last_focus {
+        Some((p, t, generation)) if generation == origin.generation && now > t => (focus_pos - p) / (now - t),
+        _ => Vec3::ZERO,
+    };
+    mgr.last_focus = Some((focus_pos, now, origin.generation));
+    let ahead_k = scheduler::ahead_weight(vel.length());
+    let vel_dir = vel.normalize_or_zero();
+
     let params = LodParams {
         // Zoom out the root set when high up so the horizon stays covered.
         root_zoom: if cam.alt_m > 200_000.0 { 3 } else if cam.alt_m > 40_000.0 { 5 } else { 6 },
         ..default()
     };
-    let view = camera.single().ok();
-    let desired: HashSet<TileId> = lod::select(cam, mgr.ground_estimate, &params)
-        .into_iter()
-        .filter(|tile| view.is_none_or(|(transform, projection)| tile_intersects_view(*tile, &origin, transform, projection)))
-        .collect();
-    // Nearest first.
-    let mut missing: Vec<TileId> =
-        desired.iter().filter(|t| !mgr.loaded.contains_key(t) && !mgr.pending.contains(t)).copied().collect();
-    missing.sort_by(|a, b| {
-        let da = cam.distance_to(a.center()) / a.width_m();
-        let db = cam.distance_to(b.center()) / b.width_m();
-        da.total_cmp(&db)
+    let wanted: HashSet<TileId> = lod::select(cam, mgr.ground_estimate, &params).into_iter().collect();
+    let cone = camera.single().ok().and_then(|(t, p)| match p {
+        Projection::Perspective(p) => Some(ViewCone {
+            pos: t.translation(),
+            forward: t.forward().as_vec3(),
+            right: t.right().as_vec3(),
+            up: t.up().as_vec3(),
+            tan_half_fov: (p.fov * 0.5).tan(),
+            aspect: p.aspect_ratio,
+        }),
+        _ => None,
     });
-    let pool = AsyncComputeTaskPool::get();
-    for tile in missing {
-        if mgr.pending.len() >= MAX_IN_FLIGHT {
-            break;
-        }
-        mgr.pending.insert(tile);
-        let job = TileJob { tile, frame: origin.frame, cache: cfg.cache.clone(), vector_template: mgr.template.clone() };
-        let tx = mgr.tx.clone();
-        pool.spawn(async move {
-            let _ = tx.send(ready_tile(tilegen::build(&job)));
+    let ground = mgr.ground_estimate as f32;
+    let in_view: HashSet<TileId> = wanted
+        .iter()
+        .copied()
+        .filter(|t| {
+            let c = t.center();
+            // Never treat the ground around the camera as off-screen: its
+            // colliders must survive looking away.
+            if cam.distance_to(c) < t.width_m() * 0.75 + 1_500.0 {
+                return true;
+            }
+            let Some(cone) = &cone else { return true };
+            let (lo, hi) = rview::height_range(mgr.known_heights(*t), ground, BUILDING_ALLOWANCE_M);
+            let b = TileBounds {
+                bottom: origin.to_render(ed_geo::Geodetic { alt_m: lo as f64, ..c }),
+                top: origin.to_render(ed_geo::Geodetic { alt_m: hi as f64, ..c }),
+                half_width: (t.width_m() * 0.5) as f32,
+            };
+            let (center, radius) = b.sphere();
+            cone.sees_sphere(center, radius)
         })
-        .detach();
+        .collect();
+
+    // Cancel queued work for tiles that are no longer wanted.
+    let mut dropped = Vec::new();
+    mgr.io.retain_queued(|t| wanted.contains(t) || { dropped.push(*t); false });
+    mgr.cpu.retain_queued(|t| wanted.contains(t) || { dropped.push(*t); false });
+    for t in dropped {
+        mgr.pending.remove(&t);
+        mgr.jobs.remove(&t);
     }
+
+    // Queue (or re-rank) wanted tiles: visible ones, then the ground right around you.
+    let priority = |t: &TileId, visible: bool| {
+        let d = cam.distance_to(t.center()) / t.width_m();
+        let to = origin.to_render(ed_geo::Geodetic { alt_m: cam.alt_m, ..t.center() }) - focus_pos;
+        let ahead = ahead_k * vel_dir.dot(to.normalize_or_zero());
+        (d, scheduler::build_priority(d, visible, ahead))
+    };
+    let mut started = 0;
+    for t in &wanted {
+        if mgr.loaded.contains_key(t) {
+            continue;
+        }
+        let visible = in_view.contains(t);
+        let (d, p) = priority(t, visible);
+        if mgr.pending.contains(t) {
+            mgr.io.set_priority(t, p);
+            mgr.cpu.set_priority(t, p);
+            continue;
+        }
+        if !visible && d > OFFSCREEN_PREBUILD {
+            continue;
+        }
+        let job = TileJob { tile: *t, frame: origin.frame, cache: cfg.cache.clone(), vector_template: mgr.template.clone() };
+        let io_job = job.clone();
+        if mgr.io.submit(*t, p, move || tilegen::prefetch(&io_job)) {
+            mgr.jobs.insert(*t, job);
+            mgr.pending.insert(*t);
+            started += 1;
+        }
+    }
+    if started > 0 {
+        debug!("streaming: queued {started} tiles");
+    }
+
+    // Residency: loaded tiles in view are fresh; the oldest unseen ones go
+    // once over the cap (never ones near the camera, which count as in view).
+    mgr.seen.tick();
+    let loaded: Vec<TileId> = mgr.loaded.keys().copied().collect();
+    for t in loaded.iter().filter(|t| in_view.contains(t)) {
+        mgr.seen.touch(t);
+    }
+    let desired = wanted.intersection(&in_view).copied().collect();
+    mgr.wanted = wanted;
+    mgr.in_view = in_view;
     mgr.desired = desired;
 }
 
-/// Keep tiles whose conservative bounds intersect the camera frustum.
-/// The bounds include extra height for buildings; nearby tiles stay loaded
-/// while the camera looks away from the ground.
-fn tile_intersects_view(tile: TileId, origin: &WorldOrigin, camera: &GlobalTransform, projection: &Projection) -> bool {
-    let Projection::Perspective(p) = projection else { return true };
-    let center_geo = tile.center();
-    let center = origin.to_render(ed_geo::Geodetic { alt_m: 0.0, ..center_geo });
-    let to_center = center - camera.translation();
-    let radius = tile.width_m() as f32 * std::f32::consts::FRAC_1_SQRT_2 + 500.0;
-    // Never cull tiles around the camera: their colliders must survive looking away.
-    if to_center.length() < tile.width_m() as f32 * 1.5 + 500.0 {
-        return true;
+/// Move tiles between pipeline stages: IO done -> CPU queue, CPU done -> apply queue.
+fn pump_jobs(mut mgr: ResMut<TileManager>) {
+    let mgr = &mut *mgr;
+    while let Some((t, _)) = mgr.io.try_recv() {
+        let Some(job) = mgr.jobs.remove(&t) else { continue };
+        if !mgr.wanted.contains(&t) {
+            mgr.pending.remove(&t);
+            continue;
+        }
+        // Visible tiles first; `select_tiles` refines the rank every 0.25 s.
+        let p = if mgr.in_view.contains(&t) { 0.0 } else { 1_000.0 };
+        if !mgr.cpu.submit(t, p, move || ready_tile(tilegen::build(&job))) {
+            mgr.pending.remove(&t);
+        }
     }
-    let depth = to_center.dot(camera.forward().as_vec3());
-    if depth + radius < 0.0 {
-        return false;
+    while let Some((t, ready)) = mgr.cpu.try_recv() {
+        match ready {
+            Some(r) if mgr.wanted.contains(&t) => {
+                for e in &r.build.errors {
+                    debug!("tile {t:?}: {e}");
+                }
+                mgr.applying.push_back(Applying::new(r));
+            }
+            Some(_) => {
+                mgr.pending.remove(&t);
+            }
+            None => {
+                warn!("tile {t:?}: build panicked");
+                mgr.pending.remove(&t);
+            }
+        }
     }
-
-    let half_depth = depth.max(0.0) + radius;
-    let tan_half_fov = (p.fov * 0.5).tan();
-    let horizontal = to_center.dot(camera.right().as_vec3()).abs();
-    let vertical = to_center.dot(camera.up().as_vec3()).abs();
-    (horizontal <= half_depth * tan_half_fov * p.aspect_ratio + radius
-        && vertical <= half_depth * tan_half_fov + radius)
-        || origin.to_geodetic(camera.translation()).distance_to(center_geo) < 1_500.0
 }
 
+/// Triangles in a Bevy mesh (for apply cost estimates).
+fn tris(m: &Mesh) -> u32 {
+    m.indices().map_or(0, |i| i.len() as u32 / 3)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Stage {
+    /// Tile entity, terrain collider, terrain and ground-level meshes.
+    Base,
+    /// Library placements and meshlet chunks.
+    Extras,
+    /// Distant building chunks (meshes + physics shells), one chunk at a time.
+    Buildings,
+    /// Tree chunks, one at a time.
+    Trees,
+    /// Reveal the tile and hand it to retirement / detail streaming.
+    Finish,
+}
+
+/// A built tile being spawned over several frames.
+struct Applying {
+    tile: TileId,
+    stage: Stage,
+    parent: Option<Entity>,
+    ready: ReadyTile,
+    lod_entities: HashMap<(u8, u8), Entity>,
+}
+
+impl Applying {
+    fn new(ready: ReadyTile) -> Self {
+        Self { tile: ready.build.tile, stage: Stage::Base, parent: None, ready, lod_entities: HashMap::new() }
+    }
+}
+
+/// Spawn built tiles under a per-frame budget. Each tile stays hidden until
+/// its last stage, so the coarser tile it replaces keeps covering the area.
 #[allow(clippy::too_many_arguments)]
-fn receive_tiles(
+fn apply_tiles(
     mut commands: Commands,
     mut mgr: ResMut<TileManager>,
     mut dm: ResMut<DetailManager>,
@@ -312,139 +515,194 @@ fn receive_tiles(
     focus: Query<&GlobalTransform, With<Focus>>,
     origin: Res<WorldOrigin>,
     foliage: Res<crate::foliage::FoliageAssets>,
-    mut terrain_mats: ResMut<Assets<crate::ground_material::TerrainMaterial>>,
-    mut images: ResMut<Assets<Image>>,
+    mut sat_pool: ResMut<crate::ground_material::SatPool>,
     library: Option<Res<crate::library::CookedLibrary>>,
 ) {
+    let mut budget = FrameBudget::new(env_num("EW_APPLY_BUDGET", APPLY_UNITS), Some(std::time::Duration::from_millis(APPLY_MS)));
     let focus_pos = focus.iter().next().map(|t| t.translation());
-    // Bound per-frame upload work: one tile per frame. A tile is hundreds of
-    // entities + static colliders + texture uploads; two in one frame made
-    // 100-280 ms hitches while streaming.
-    for _ in 0..1 {
-        let Ok(ReadyTile { build: mut b, collider, parts, meshlets, lod }) = mgr.rx.try_recv() else { break };
-        mgr.pending.remove(&b.tile);
-        for e in &b.errors {
-            debug!("tile {:?}: {e}", b.tile);
+    let mgr = &mut *mgr;
+    while !budget.exhausted() {
+        let Some(mut a) = mgr.applying.pop_front() else { break };
+        let t = a.tile;
+        // Went stale mid-apply: undo and drop.
+        if !mgr.wanted.contains(&t) {
+            if let Some(p) = a.parent {
+                commands.entity(p).despawn();
+            }
+            if let Some(tag) = mgr.sat_tags.remove(&t) {
+                sat_pool.release(tag);
+            }
+            mgr.pending.remove(&t);
+            continue;
         }
-        if !mgr.desired.contains(&b.tile) {
-            continue; // stale by the time it arrived
+        let mut blocked = false;
+        while !blocked && a.stage != Stage::Finish {
+            match a.stage {
+                Stage::Base => {
+                    let cost = 4 + a.ready.parts.len() as u32 + a.ready.parts.iter().map(|(_, m)| tris(m)).sum::<u32>() / 10_000;
+                    if !budget.try_spend(cost) {
+                        blocked = true;
+                        continue;
+                    }
+                    let b = &mut a.ready.build;
+                    let anchor = GeoAnchored::from_render(&b.frame, b.anchor);
+                    let mut parent = commands.spawn((WorldTile, anchor, Transform::default(), Visibility::Hidden, Name::new(format!("tile {}", t.path()))));
+                    if let Some(collider) = a.ready.collider.take() {
+                        parent.insert((RigidBody::Static, collider));
+                    }
+                    if let Some(g) = b.ground.take() {
+                        parent.insert(crate::ground_scatter::GroundCover(g));
+                    }
+                    let parent_id = parent.id();
+                    a.parent = Some(parent_id);
+                    let near = t.z >= 13;
+                    let sat_tag = match b.sat_tex.take() {
+                        Some((n, data)) => {
+                            dump_sat(t, n, &data);
+                            sat_pool.alloc(n, data)
+                        }
+                        None => crate::ground_material::SAT_NONE,
+                    };
+                    if sat_tag != crate::ground_material::SAT_NONE {
+                        mgr.sat_tags.insert(t, sat_tag);
+                    }
+                    for (part, mesh) in a.ready.parts.drain(..) {
+                        let mut e = match part {
+                            // One shared terrain material; the tile's satellite layer rides on its MeshTag.
+                            Part::Terrain => commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(mats.terrain.clone()), MeshTag::new(sat_tag), Transform::default())),
+                            Part::Water => commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(mats.water.clone()), Transform::default())),
+                            Part::Roads => commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(mats.matte.clone()), Transform::default())),
+                            Part::Rocks | Part::Props => commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(mats.matte.clone()), Transform::default())),
+                        };
+                        let shadows = match part {
+                            Part::Terrain => near,
+                            Part::Water | Part::Roads => false,
+                            Part::Rocks | Part::Props => true,
+                        };
+                        if !shadows {
+                            e.insert(bevy::light::NotShadowCaster);
+                        }
+                        e.insert(ChildOf(parent_id));
+                    }
+                    a.stage = Stage::Extras;
+                }
+                Stage::Extras => {
+                    let cost = 1 + a.ready.build.placements.len() as u32 / 20 + a.ready.meshlets.len() as u32;
+                    if !budget.try_spend(cost) {
+                        blocked = true;
+                        continue;
+                    }
+                    let parent_id = a.parent.unwrap();
+                    if let Some(lib) = &library {
+                        crate::library::spawn_placements(&mut commands, lib, &mats, parent_id, &a.ready.build.placements);
+                    }
+                    for (m, off) in a.ready.meshlets.drain(..) {
+                        commands.spawn((MeshletMesh3d(meshlet_assets.add(m)), MeshMaterial3d(mats.palette_matte.clone()), Transform::from_translation(off), ChildOf(parent_id)));
+                    }
+                    a.stage = Stage::Buildings;
+                }
+                Stage::Buildings => {
+                    let Some((_, batch)) = a.ready.lod.last() else {
+                        a.stage = Stage::Trees;
+                        continue;
+                    };
+                    let cost = 1 + batch.buckets.len() as u32 + if batch.collider.is_some() { 3 } else { 0 } + batch.buckets.iter().map(|(_, m)| tris(m)).sum::<u32>() / 10_000;
+                    if !budget.try_spend(cost) {
+                        blocked = true;
+                        continue;
+                    }
+                    let (chunk, mut batch) = a.ready.lod.pop().unwrap();
+                    let parent_id = a.parent.unwrap();
+                    let e = commands.spawn((Transform::default(), Visibility::default(), ChildOf(parent_id))).id();
+                    if let Some(col) = batch.collider.take() {
+                        commands.spawn((RigidBody::Static, col, Transform::default(), ChildOf(parent_id)));
+                    }
+                    spawn_buckets(&mut commands, &mut meshes, &bmats, batch, e);
+                    a.lod_entities.insert(chunk, e);
+                }
+                Stage::Trees => {
+                    if a.ready.trees.chunks.is_empty() {
+                        a.stage = Stage::Finish;
+                        continue;
+                    }
+                    if !budget.try_spend(4) {
+                        blocked = true;
+                        continue;
+                    }
+                    let c = a.ready.trees.chunks.pop().unwrap();
+                    let (up, lod) = (a.ready.trees.up, a.ready.trees.lod);
+                    crate::foliage::spawn_tree_chunk(&mut commands, &mut meshes, &foliage, a.parent.unwrap(), up, lod, c);
+                }
+                Stage::Finish => unreachable!(),
+            }
         }
-        // Ground height estimate under the player for LOD (finest tile wins).
+        if blocked {
+            mgr.applying.push_front(a);
+            break;
+        }
+        // Finish: reveal and register.
+        let parent_id = a.parent.unwrap();
+        commands.entity(parent_id).insert(Visibility::Inherited);
+        let b = &a.ready.build;
         if let Some(fp) = focus_pos {
+            // Ground height estimate under the player for LOD (finest tile wins).
             let g = origin.to_geodetic(fp);
-            let (u, v) = b.tile.geodetic_to_uv(g.lat_deg, g.lon_deg);
-            if (0.0..1.0).contains(&u) && (0.0..1.0).contains(&v) && b.tile.z >= 12 {
+            let (u, v) = t.geodetic_to_uv(g.lat_deg, g.lon_deg);
+            if (0.0..1.0).contains(&u) && (0.0..1.0).contains(&v) && t.z >= 12 {
                 mgr.ground_estimate = ((b.min_max_height.0 + b.min_max_height.1) * 0.5) as f64;
             }
         }
-        let anchor = GeoAnchored::from_render(&b.frame, b.anchor);
-        let mut parent = commands.spawn((
-            WorldTile,
-            anchor,
-            Transform::default(),
-            Visibility::default(),
-            Name::new(format!("tile {}", b.tile.path())),
-        ));
-        if let Some(collider) = collider {
-            parent.insert((RigidBody::Static, collider));
-        }
-        if let Some(g) = b.ground.take() {
-            parent.insert(crate::ground_scatter::GroundCover(g));
-        }
-        let parent_id = parent.id();
-        let near = b.tile.z >= 13;
-        for (part, mesh) in parts {
-            if matches!(part, Part::Terrain) {
-                // Per-tile material: same ground splat, plus this tile's satellite texture.
-                let tile_mat = match (b.sat_tex.take(), terrain_mats.get(&mats.terrain).cloned()) {
-                    (Some((n, data)), Some(mut m)) => {
-                        if let Some(dir) = std::env::var_os("EW_DUMP_SAT") {
-                            let _ = std::fs::create_dir_all(&dir);
-                            let mut ppm = format!("P6\n{n} {n}\n255\n").into_bytes();
-                            for px in data.chunks_exact(4) {
-                                ppm.extend_from_slice(&px[..3]);
-                            }
-                            let _ = std::fs::write(std::path::Path::new(&dir).join(format!("{}_{}_{}.ppm", b.tile.z, b.tile.x, b.tile.y)), ppm);
-                        }
-                        m.extension.sat_tex = images.add(crate::ground_material::sat_image(n, data));
-                        terrain_mats.add(m)
-                    }
-                    _ => mats.terrain.clone(),
-                };
-                let mut e = commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(tile_mat), Transform::default()));
-                if !near {
-                    e.insert(bevy::light::NotShadowCaster);
-                }
-                e.insert(ChildOf(parent_id));
-                continue;
-            }
-            let (mat, shadows) = match part {
-                Part::Terrain => unreachable!(),
-                Part::Water => (&mats.water, false),
-                Part::Roads => (&mats.matte, false),
-                Part::Rocks | Part::Props => (&mats.matte, true),
-            };
-            let mut e = commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(mat.clone()), Transform::default()));
-            if !shadows {
-                e.insert(bevy::light::NotShadowCaster);
-            }
-            e.insert(ChildOf(parent_id));
-        }
-        if let Some(lib) = &library {
-            crate::library::spawn_placements(&mut commands, lib, &mats, parent_id, &b.placements);
-        }
-        for (m, off) in meshlets {
-            commands.spawn((MeshletMesh3d(meshlet_assets.add(m)), MeshMaterial3d(mats.palette_matte.clone()), Transform::from_translation(off), ChildOf(parent_id)));
-        }
-        // Distant buildings, one entity per detail chunk, with physics shells.
-        let mut lod_entities = HashMap::new();
-        for (chunk, mut batch) in lod {
-            let e = commands.spawn((Transform::default(), Visibility::default(), ChildOf(parent_id))).id();
-            if let Some(col) = batch.collider.take() {
-                commands.spawn((RigidBody::Static, col, Transform::default(), ChildOf(parent_id)));
-            }
-            spawn_buckets(&mut commands, &mut meshes, &bmats, batch, e);
-            lod_entities.insert(chunk, e);
-        }
         if let Some(set) = &b.building_detail {
-            dm.tiles.insert(b.tile, TileDetail { set: set.clone(), root: parent_id, lod: lod_entities, loaded: HashMap::new(), pending: HashSet::new() });
+            dm.tiles.insert(t, TileDetail { set: set.clone(), root: parent_id, lod: std::mem::take(&mut a.lod_entities), loaded: HashMap::new(), pending: HashSet::new() });
         }
-        crate::foliage::spawn_tile_trees(&mut commands, &mut meshes, &foliage, parent_id, &b.trees);
         if std::env::var_os("EW_TILE_STATS").is_some() {
-            eprintln!("TILESTAT z{} terrain={} water={} roads={} trees={} rocks={} street={} bldg_lod={} trees_n={}", b.tile.z, b.terrain.triangle_count(), b.water.triangle_count(), b.roads.triangle_count(), b.trees.triangle_count(), b.rocks.triangle_count(), b.street_props.triangle_count(), b.building_lod.iter().map(|(_, m)| m.triangle_count()).sum::<usize>(), b.stats.trees);
+            eprintln!("TILESTAT z{} terrain={} water={} roads={} trees={} rocks={} street={} trees_n={}", t.z, b.terrain.triangle_count(), b.water.triangle_count(), b.roads.triangle_count(), b.trees.triangle_count(), b.rocks.triangle_count(), b.street_props.triangle_count(), b.stats.trees);
         }
-        mgr.tile_totals.insert(b.tile, Totals { buildings: b.stats.buildings, trees: b.stats.trees, triangles: b.stats.triangles });
+        mgr.tile_totals.insert(t, Totals { buildings: b.stats.buildings, trees: b.stats.trees, triangles: b.stats.triangles });
+        mgr.heights.insert(t, b.min_max_height);
         mgr.recount();
-        mgr.loaded.insert(b.tile, parent_id);
+        mgr.loaded.insert(t, parent_id);
+        mgr.pending.remove(&t);
+        mgr.seen.touch(&t);
     }
 }
 
-fn is_ancestor(a: TileId, of: TileId) -> bool {
-    a.z < of.z && of.ancestor(a.z).0 == a
+/// `EW_DUMP_SAT=dir` writes each tile's satellite texture as a PPM (debugging).
+fn dump_sat(t: TileId, n: u32, data: &[u8]) {
+    let Some(dir) = std::env::var_os("EW_DUMP_SAT") else { return };
+    let _ = std::fs::create_dir_all(&dir);
+    let mut ppm = format!("P6\n{n} {n}\n255\n").into_bytes();
+    for px in data.chunks_exact(4) {
+        ppm.extend_from_slice(&px[..3]);
+    }
+    let _ = std::fs::write(std::path::Path::new(&dir).join(format!("{}_{}_{}.ppm", t.z, t.x, t.y)), ppm);
 }
 
-/// Despawn tiles we no longer want, once their replacements are all in.
-fn retire_tiles(mut commands: Commands, mut mgr: ResMut<TileManager>, mut dm: ResMut<DetailManager>) {
-    let mut retire = Vec::new();
-    for (&t, &e) in &mgr.loaded {
-        if mgr.desired.contains(&t) {
-            continue;
-        }
-        let covering: Vec<&TileId> = mgr.desired.iter().filter(|d| is_ancestor(t, **d) || is_ancestor(**d, t)).collect();
-        if covering.iter().all(|d| mgr.loaded.contains_key(d)) {
-            retire.push((t, e));
-        }
+/// Despawn tiles we no longer want once their replacements are in (where
+/// you can look), and the oldest out-of-view tiles once over the residency cap.
+fn retire_tiles(mut commands: Commands, mut mgr: ResMut<TileManager>, mut dm: ResMut<DetailManager>, mut sat_pool: ResMut<crate::ground_material::SatPool>) {
+    let mgr = &mut *mgr;
+    let mut retire = scheduler::retire(mgr.loaded.keys().copied(), &mgr.wanted, |t| mgr.loaded.contains_key(t), |t| mgr.in_view.contains(t));
+    // Over the cap: oldest unseen first. `over_cap` never returns tiles seen
+    // this tick, and in-view tiles are touched every select.
+    if mgr.loaded.len() > mgr.resident_cap {
+        retire.extend(mgr.seen.over_cap(mgr.resident_cap).into_iter().filter(|t| !mgr.in_view.contains(t)));
     }
-    let retired = !retire.is_empty();
-    for (t, e) in retire {
+    if retire.is_empty() {
+        return;
+    }
+    for t in retire {
+        let Some(e) = mgr.loaded.remove(&t) else { continue };
         commands.entity(e).despawn();
-        mgr.loaded.remove(&t);
         mgr.tile_totals.remove(&t);
+        mgr.heights.remove(&t);
+        mgr.seen.remove(&t);
         dm.tiles.remove(&t);
+        if let Some(tag) = mgr.sat_tags.remove(&t) {
+            sat_pool.release(tag);
+        }
     }
-    if retired {
-        mgr.recount();
-    }
+    mgr.recount();
 }
 
 /// Build full-detail building chunks near the focus; drop them when far.

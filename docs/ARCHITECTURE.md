@@ -25,6 +25,7 @@ crates/
   ed_flight  atmosphere, drag, Mach, gravity, "superpower" rockets         (no engine)
   ed_space   Moon + planet positions (real ephemeris), body catalog        (no engine)
   ed_engine_audio  engine sound kit port: engine voices, mixer, game adapter  (no engine)
+  ed_runtime jobs (IO + CPU pools, priority, cancel), frame budgets, residency, streaming scheduler  (no engine)
   ed_game    the Bevy app: streaming, rendering, player, vehicles, HUD
 ```
 
