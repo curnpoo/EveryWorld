@@ -110,6 +110,23 @@ pub fn fetch(cache: &DiskCache, id: TileId) -> anyhow::Result<HeightTile> {
     HeightTile::decode_terrarium(id, &bytes)
 }
 
+/// Download `id`'s elevation bytes into the cache without decoding them.
+/// Run on an IO thread so a later [`fetch`] is a disk read. Mirrors
+/// [`fetch`]'s source order (Mapterhorn, then AWS Terrarium).
+pub fn prefetch(cache: &DiskCache, id: TileId) -> anyhow::Result<()> {
+    let id = if id.z > MAX_ZOOM { id.ancestor(MAX_ZOOM).0 } else { id };
+    let mt_key = format!("mapterhorn/{}.webp", id.path());
+    let mt = cache.get_or_fetch(&mt_key, None, || {
+        Ok(crate::http::get_bytes_opt(&format!("{MAPTERHORN_URL}/{}.webp", id.path()))?.unwrap_or_default())
+    });
+    if matches!(&mt, Ok(b) if !b.is_empty()) {
+        return Ok(());
+    }
+    let key = format!("terrarium/{}.png", id.path());
+    cache.get_or_fetch(&key, None, || crate::http::get_bytes(&format!("{AWS_URL}/{}.png", id.path())))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

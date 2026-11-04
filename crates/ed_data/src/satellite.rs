@@ -66,12 +66,21 @@ impl SatTile {
 
 /// Fetch (cached forever) and decode one tile. `id.z` must be <= [`MAX_ZOOM`].
 pub fn fetch(cache: &DiskCache, id: TileId) -> anyhow::Result<SatTile> {
+    let bytes = fetch_bytes(cache, id)?;
+    SatTile::decode(id, &bytes)
+}
+
+/// Download `id` into the cache without decoding it (for IO threads).
+pub fn prefetch(cache: &DiskCache, id: TileId) -> anyhow::Result<()> {
+    fetch_bytes(cache, id).map(|_| ())
+}
+
+fn fetch_bytes(cache: &DiskCache, id: TileId) -> anyhow::Result<Vec<u8>> {
     anyhow::ensure!(id.z <= MAX_ZOOM, "satellite tiles stop at z{MAX_ZOOM}");
     let key = format!("eox-s2/{}.jpg", id.path());
     // WMTS REST order is {TileMatrix}/{TileRow}/{TileCol} = z/y/x (not slippy z/x/y).
     let url = format!("{URL}/{}/{}/{}.jpg", id.z, id.y, id.x);
-    let bytes = cache.get_or_fetch(&key, None, || crate::http::get_bytes(&url))?;
-    SatTile::decode(id, &bytes)
+    cache.get_or_fetch(&key, None, || crate::http::get_bytes(&url))
 }
 
 #[cfg(test)]

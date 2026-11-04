@@ -70,6 +70,27 @@ pub struct TileBuild {
 }
 
 /// Elevation zoom for a terrain tile.
+/// Network half of [`build`]: download every source tile `build` will read
+/// into the disk cache, without decoding. Meant for an IO thread so the CPU
+/// workers that run [`build`] never block on the network. Errors are ignored
+/// here; `build` retries and records them (including its coarser-zoom
+/// elevation fallbacks, which are rare and stay on the build path).
+pub fn prefetch(job: &TileJob) {
+    let tile = job.tile;
+    let _ = elevation::prefetch(&job.cache, tile.ancestor(elevation_zoom(tile.z)).0);
+    if tile.z >= 7
+        && let Some(tpl) = &job.vector_template
+    {
+        let _ = vector::prefetch(&job.cache, tpl, tile.ancestor(tile.z.min(vector::MAX_ZOOM)).0);
+    }
+    let sat_max = ed_data::satellite::MAX_ZOOM;
+    if ed_data::satellite::prefetch(&job.cache, tile.ancestor(tile.z.min(sat_max)).0).is_ok() && tile.z < sat_max && tile.z <= 9 {
+        for c in tile.children() {
+            let _ = ed_data::satellite::prefetch(&job.cache, c);
+        }
+    }
+}
+
 fn elevation_zoom(z: u8) -> u8 {
     z.min(13)
 }

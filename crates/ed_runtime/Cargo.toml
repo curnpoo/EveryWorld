@@ -1,0 +1,15 @@
+[package]
+name = "ed_runtime"
+version.workspace = true
+edition.workspace = true
+
+# Engine-free runtime services (PLAN-native-engine.md M1): job pools with
+# priorities and cancellation, per-frame budgets, residency, and the
+# streaming scheduler. No Bevy dependency, so it is unit-tested and moves
+# with us when the renderer leaves Bevy.
+
+[dependencies]
+ed_geo = { path = "../ed_geo" }
+glam = { workspace = true }
+crossbeam-channel = "0.5"
+log = { workspace = true }

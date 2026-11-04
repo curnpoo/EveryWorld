@@ -30,6 +30,19 @@ pub fn tile_template(cache: &DiskCache) -> anyhow::Result<String> {
 
 /// Fetch and decode a vector tile. `id.z` must be <= [`MAX_ZOOM`].
 pub fn fetch(cache: &DiskCache, template: &str, id: TileId) -> anyhow::Result<mvt::Tile> {
+    let bytes = fetch_bytes(cache, template, id)?;
+    if bytes.is_empty() {
+        return Ok(mvt::Tile::default());
+    }
+    mvt::Tile::decode(&bytes)
+}
+
+/// Download `id` into the cache without decoding it (for IO threads).
+pub fn prefetch(cache: &DiskCache, template: &str, id: TileId) -> anyhow::Result<()> {
+    fetch_bytes(cache, template, id).map(|_| ())
+}
+
+fn fetch_bytes(cache: &DiskCache, template: &str, id: TileId) -> anyhow::Result<Vec<u8>> {
     anyhow::ensure!(id.z <= MAX_ZOOM, "vector tiles stop at z{MAX_ZOOM}");
     // Key by template so a new planet build doesn't serve stale tiles.
     let build = template.split('/').rev().nth(3).unwrap_or("planet");
@@ -38,11 +51,7 @@ pub fn fetch(cache: &DiskCache, template: &str, id: TileId) -> anyhow::Result<mv
         .replace("{z}", &id.z.to_string())
         .replace("{x}", &id.x.to_string())
         .replace("{y}", &id.y.to_string());
-    let bytes = cache.get_or_fetch(&key, None, || Ok(crate::http::get_bytes_opt(&url)?.unwrap_or_default()))?;
-    if bytes.is_empty() {
-        return Ok(mvt::Tile::default());
-    }
-    mvt::Tile::decode(&bytes)
+    cache.get_or_fetch(&key, None, || Ok(crate::http::get_bytes_opt(&url)?.unwrap_or_default()))
 }
 
 #[cfg(test)]
