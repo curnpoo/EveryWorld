@@ -291,8 +291,12 @@ pub fn atmosphere_environment(
     probe_query: Query<(&AtmosphereProbeBindGroups, &AtmosphereEnvironmentMap)>,
     pipeline_cache: Res<PipelineCache>,
     pipelines: Res<AtmosphereProbePipeline>,
+    refresh: Option<Res<crate::EnvironmentMapRefresh>>,
     mut ctx: RenderContext,
 ) {
+    if refresh.is_some_and(|r| !r.0) {
+        return;
+    }
     let Some(environment_pipeline) = pipeline_cache.get_compute_pipeline(pipelines.environment)
     else {
         return;

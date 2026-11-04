@@ -22,7 +22,8 @@ impl Plugin for SkyPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(Clock { unix_s: 0.0, rate: 1.0 })
             .add_systems(Startup, (setup_sky, fetch_weather))
-            .add_systems(Update, (tick_clock, update_sun, update_bodies, follow_ocean, follow_ocean_globe));
+            .add_systems(Update, (tick_clock, update_sun, update_bodies, follow_ocean, follow_ocean_globe))
+            .add_systems(PostUpdate, refresh_env_map);
     }
 }
 
@@ -290,4 +291,55 @@ fn follow_ocean_globe(
     mesh.0 = meshes.add(crate::meshconv::to_mesh(&m));
     *built_gen = Some(origin.generation);
     info!("ocean globe built: {} verts", m.positions.len());
+}
+
+/// The atmosphere environment map (ambient light + reflections) used to be
+/// re-rendered and re-filtered every frame (~2 ms on M3 Pro). The sky only
+/// changes when the sun moves, the camera changes altitude, or the weather
+/// dims the sun, so refresh on those and reuse the last map otherwise.
+#[derive(Default)]
+struct EnvRefreshState {
+    to_sun: Vec3,
+    alt_m: f64,
+    cloud: f32,
+    frames_left: u8,
+    started: bool,
+}
+
+/// Sun direction change that triggers a refresh (about 0.3 degrees; at the
+/// real clock rate that is roughly once a minute).
+const ENV_SUN_COS: f32 = 0.999_986;
+
+fn refresh_env_map(
+    mut st: Local<EnvRefreshState>,
+    mut refresh: ResMut<bevy::pbr::EnvironmentMapRefresh>,
+    origin: Res<WorldOrigin>,
+    sun: Query<&GlobalTransform, With<Sun>>,
+    focus: Query<&GlobalTransform, With<Focus>>,
+    added: Query<(), Added<bevy::light::AtmosphereEnvironmentMapLight>>,
+    clouds: Option<Res<crate::clouds::CloudSunFactor>>,
+) {
+    let to_sun = sun.single().map(|t| -t.forward().as_vec3()).unwrap_or(Vec3::Y);
+    let alt = focus.iter().next().map_or(0.0, |f| origin.to_geodetic(f.translation()).alt_m);
+    let cloud = clouds.map_or(1.0, |c| c.0);
+    let alt_step = (alt.abs() * 0.03).max(50.0);
+    let changed = !st.started
+        || !added.is_empty()
+        || to_sun.dot(st.to_sun) < ENV_SUN_COS
+        || (alt - st.alt_m).abs() > alt_step
+        || (cloud - st.cloud).abs() > 0.02;
+    if changed {
+        st.started = true;
+        st.to_sun = to_sun;
+        st.alt_m = alt;
+        st.cloud = cloud;
+        // Generate on one frame, filter on the next (filtering runs first in
+        // the render schedule), plus one spare frame for the new image upload.
+        st.frames_left = st.frames_left.max(3);
+    }
+    let run = st.frames_left > 0;
+    st.frames_left = st.frames_left.saturating_sub(1);
+    if refresh.0 != run {
+        refresh.0 = run;
+    }
 }

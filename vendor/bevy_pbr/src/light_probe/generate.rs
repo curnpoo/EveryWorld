@@ -28,6 +28,7 @@ use bevy_image::Image;
 use bevy_math::{Quat, UVec2, Vec2};
 use bevy_render::{
     diagnostic::RecordDiagnostics,
+    extract_resource::{ExtractResource, ExtractResourcePlugin},
     init_gpu_resource,
     render_asset::RenderAssets,
     render_resource::{
@@ -102,8 +103,30 @@ pub struct DownsamplingConfig {
 
 pub struct EnvironmentMapGenerationPlugin;
 
+/// EveryWorld patch: gates the per-frame GPU work behind generated environment
+/// maps (the atmosphere probe pass and the downsample + filter passes).
+///
+/// When `0` is `false` those passes are skipped and the last result is reused.
+/// The game sets it only when the sky actually changed (sun moved, altitude,
+/// weather). Defaults to `true`, which is upstream behaviour.
+///
+/// Filtering runs before the atmosphere probe pass within a frame, so a
+/// refresh needs two consecutive frames with `true` to fully land.
+#[derive(Resource, Clone, Copy, Debug, ExtractResource)]
+#[extract_app(RenderApp)]
+pub struct EnvironmentMapRefresh(pub bool);
+
+impl Default for EnvironmentMapRefresh {
+    fn default() -> Self {
+        Self(true)
+    }
+}
+
 impl Plugin for EnvironmentMapGenerationPlugin {
-    fn build(&self, _: &mut App) {}
+    fn build(&self, app: &mut App) {
+        app.init_resource::<EnvironmentMapRefresh>()
+            .add_plugins(ExtractResourcePlugin::<EnvironmentMapRefresh>::default());
+    }
     fn finish(&self, app: &mut App) {
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             let adapter = render_app.world().resource::<RenderAdapter>();
@@ -747,8 +770,12 @@ pub fn downsampling_system(
     query: Query<(&GeneratorBindGroups, &RenderEnvironmentMap)>,
     pipeline_cache: Res<PipelineCache>,
     pipelines: Option<Res<GeneratorPipelines>>,
+    refresh: Option<Res<EnvironmentMapRefresh>>,
     mut ctx: RenderContext,
 ) {
+    if refresh.is_some_and(|r| !r.0) {
+        return;
+    }
     let Some(pipelines) = pipelines else {
         return;
     };
@@ -847,8 +874,12 @@ pub fn filtering_system(
     query: Query<(&GeneratorBindGroups, &RenderEnvironmentMap)>,
     pipeline_cache: Res<PipelineCache>,
     pipelines: Option<Res<GeneratorPipelines>>,
+    refresh: Option<Res<EnvironmentMapRefresh>>,
     mut ctx: RenderContext,
 ) {
+    if refresh.is_some_and(|r| !r.0) {
+        return;
+    }
     let Some(pipelines) = pipelines else {
         return;
     };
