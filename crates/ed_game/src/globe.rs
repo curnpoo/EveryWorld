@@ -632,7 +632,7 @@ fn control(
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
     canvases: Query<(&RelativeCursorPosition, &ComputedNode, &InheritedVisibility), With<MapCanvas>>,
-    popups: Query<&RelativeCursorPosition, (With<Popup>, Without<MapCanvas>)>,
+    popups: Query<(&RelativeCursorPosition, &InheritedVisibility), (With<Popup>, Without<MapCanvas>)>,
     mut map: ResMut<MapState>,
     mut g: ResMut<GlobeState>,
 ) {
@@ -652,7 +652,10 @@ fn control(
         _ => motion.delta,
     };
     g.last_px = cur_px;
-    let over_popup = popups.iter().any(|p| p.cursor_over());
+    // Bevy stops updating RelativeCursorPosition on hidden nodes, so a popup
+    // hidden while hovered (e.g. after "Drop from the sky") keeps a stale
+    // `cursor_over = true` forever. Only a visible popup may block the globe.
+    let over_popup = popups.iter().any(|(p, vis)| vis.get() && p.cursor_over());
     let hover = over && !over_popup;
     g.cursor_pick = norm.filter(|_| hover).and_then(|n| gl::ray_sphere(g.cam_pos, g.ray(n)));
 

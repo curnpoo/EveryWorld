@@ -621,7 +621,7 @@ fn time_slider(
     origin: Res<crate::origin::WorldOrigin>,
     players: Query<&Transform, With<Player>>,
     mut gfx: ResMut<GraphicsSettings>,
-    track: Query<&RelativeCursorPosition, With<TimeTrack>>,
+    track: Query<(&RelativeCursorPosition, &InheritedVisibility), With<TimeTrack>>,
     mut knob: Query<&mut Node, With<TimeKnob>>,
     mut readout: Query<&mut Text, With<TimeReadout>>,
     mut dragging: Local<bool>,
@@ -632,8 +632,9 @@ fn time_slider(
     }
     let lon = players.single().map(|pt| origin.to_geodetic(pt.translation).lon_deg).unwrap_or(0.0);
     let solar_hour = |unix_s: f64| (unix_s / 3600.0 + lon / 15.0).rem_euclid(24.0);
-    let Ok(rcp) = track.single() else { return };
-    if buttons.just_pressed(MouseButton::Left) && rcp.cursor_over {
+    let Ok((rcp, vis)) = track.single() else { return };
+    // Hidden nodes keep a stale RelativeCursorPosition; ignore the track off its tab.
+    if buttons.just_pressed(MouseButton::Left) && vis.get() && rcp.cursor_over {
         *dragging = true;
     }
     if !buttons.pressed(MouseButton::Left) {
