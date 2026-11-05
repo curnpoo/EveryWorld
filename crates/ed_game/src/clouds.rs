@@ -270,6 +270,9 @@ fn noise_image(size: usize, data: Vec<u8>) -> Image {
 /// Raw RGBA8 noise volumes (shape 128^3, detail 64^3) kept for the native renderer.
 pub static CLOUD_NOISE_CPU: std::sync::OnceLock<(Vec<u8>, Vec<u8>)> = std::sync::OnceLock::new();
 
+/// This frame's flat cloud uniform for the native renderer (written by `update_uniforms`).
+pub static CLOUD_FLAT: std::sync::Mutex<Vec<f32>> = std::sync::Mutex::new(Vec::new());
+
 impl CloudUniform {
     /// Flat f32 image of the uniform for the native renderer: 32 vec4s in declaration order, the Mat3 as three
     /// padded columns (the same layout `clouds.metal` declares).
@@ -503,6 +506,7 @@ fn update_uniforms(
         storm_pos,
         storm_up,
     };
+    *CLOUD_FLAT.lock().unwrap() = u.to_flat();
     for handle in &layers {
         if let Some(mut m) = mats.get_mut(&handle.0) {
             m.u = u.clone();

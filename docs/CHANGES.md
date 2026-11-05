@@ -1,5 +1,17 @@
 # Changes
 
+## 2026-11-05: native shadows to 20 km (cached), screen-space contact shadows
+- `world.rs`: cascades 4 (to 4 km) and 5 (to 20 km) are now camera-centred spheres, so turning the camera no longer changes their matrices; the existing per-cascade hash (matrix + caster list, texel-snapped positions) then skips the re-render until you move a texel (`shadow_skipped`). Cascade 5 now casts buildings too (casters smaller than 1.5 texels, ~29 m at 20 km, are culled; terrain always casts).
+- `post.metal` `post_contact` + `post.rs`: port of Bevy's `ContactShadows` (12 steps, 0.25 m thickness, 1.5 m reach, scaled with distance). Marches toward the sun through the linear depth buffer, darkens HDR by 0.45 x N.L-gated, in place before SSR. `EW_CONTACT=0` disables it (same switch as Bevy).
+- Known: NYC window frames render detached from the facades (visible at street level in `ct1.png`); unrelated to shadows, still to fix.
+
+## 2026-11-05: volumetric clouds in the native Metal renderer, stable at every altitude
+- Port of `clouds.wesl` to `ed_metal/shaders/clouds.metal` + `ed_metal/src/clouds.rs`. Passes between the main pass and post: half-res compute march (checkerboard of the 2x2 block's nearest/farthest depth, clipped against scene depth), temporal resolve (reproject by cloud-weighted hit distance, depth validity, 3x3 variance clip), depth-aware bilateral composite premultiplied onto HDR (so AO/SSR/bloom/MetalFX see clouds). Noise bytes come from `clouds::CLOUD_NOISE_CPU`, the flat uniform from `clouds::CLOUD_FLAT` (both set by the existing Bevy cloud systems, which still run the climate/wind/storm logic).
+- Altitude fixes (marked `STABLE:` in the shader): weather coverage sampled on a fixed sea-level plane (it slid with camera altitude before); reach grows with the horizon distance above the layer and fades out instead of a hard 300 km ring; step size coarsens to cover the whole span in the step budget; mip LOD on the noise from step length (no distance sparkle); sun elevation at each sample's own vertical; haze uses the native `sky_rad` so cloud and fog agree. Addresses B11.
+- Cost: not yet measured on the Mac (headless shots only). Estimated 1.5-3 ms at 1440p HIGH. Off switch `EW_NATIVE_NOCLOUDS=1`, lux->HDR gain `EW_NATIVE_CLOUD_GAIN` (default 6.4/130000), quality via `--cloud-quality`, `--no-clouds`.
+- Checked headless (43.53, 5.45, `--weather fair`): ground, 800-9000 m sweep and straight-down at 3.5/8/20 km show a continuous cloud field with no pops at the layer boundaries.
+- Check on the Mac: fly a climb through the layer at speed (B11), look for shimmer at cloud edges, MetalFX on/off, sunset colour vs the old Bevy look, GPU ms (`times`). Known gaps: no cloud shadows on terrain in the native path, clouds are not in SSR reflections of water below, clouds still look softer than Bevy's (mip LOD / detail fade to tune).
+
 ## 2026-11-05: native shadows reach buildings and trees out to 4 km
 - `ed_metal/src/world.rs` + `world.metal`: 6 cascades. 0-3 unchanged (to 700 m), new cascade 4 (700 m - 4 km) casts everything (buildings, trees, terrain; small casters culled by texel size), cascade 5 is the old terrain-only far cascade (to 20 km). Previously building/tree shadows ended at 700 m.
 - Check on the Mac: NYC low sun from the west at 1-3 km; shadow map cost (one more 2048 layer).

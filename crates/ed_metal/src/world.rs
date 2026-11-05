@@ -182,8 +182,13 @@ fn fit_cascades(p: &FrameParams) -> Cascades {
                 k += 1;
             }
         }
-        let centroid = corners.iter().fold(Vec3::ZERO, |a, c| a + *c) / 8.0;
+        let mut centroid = corners.iter().fold(Vec3::ZERO, |a, c| a + *c) / 8.0;
         let mut radius = corners.iter().map(|c| (*c - centroid).length()).fold(0.0, f32::max);
+        if i >= 4 {
+            // Far cascades: a sphere around the camera, so turning never changes them (cacheable).
+            centroid = cam;
+            radius = split;
+        }
         radius = (radius * 16.0).ceil() / 16.0;
         let c_ls = v0.transform_point3(centroid);
         let texel = 2.0 * radius / SHADOW_RES as f32;
@@ -246,6 +251,8 @@ pub struct WorldRenderer {
     filmic: Tex,
     targets: Option<Targets>,
     post: Option<crate::post::PostChain>,
+    clouds: Option<crate::clouds::CloudRenderer>,
+    cloud_u: Vec<f32>,
     upscaler: Option<crate::upscale::Upscaler>,
     /// Internal render scale (1 = native, <1 = MetalFX temporal upscale). `EW_NATIVE_SCALE` sets the default.
     pub render_scale: f32,
@@ -333,6 +340,7 @@ impl WorldRenderer {
         let terrain_pso = mk("terrain_vs", Some("terrain_fs"), true, &[HDR, NRM], false, false)?;
         let impostor_pso = mk("impostor_vs", Some("impostor_fs"), true, &[HDR, NRM], false, false)?;
         let post = crate::post::PostChain::new(&ctx);
+        let clouds = crate::clouds::CloudRenderer::new(&ctx, HDR);
         let upscaler = crate::upscale::Upscaler::new(&ctx);
         let resolve_pso = mk("fs_vs", Some("resolve_fs"), false, &[MTLPixelFormat::BGRA8Unorm], false, false)?;
         let ds_shadow = depth_state(&ctx, MTLCompareFunction::Less, true)?;
@@ -431,6 +439,8 @@ impl WorldRenderer {
             neutral,
             filmic,
             post,
+            clouds,
+            cloud_u: Vec::new(),
             upscaler,
             fxaa: true,
             render_scale: std::env::var("EW_NATIVE_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(0.67),
@@ -759,6 +769,27 @@ impl WorldRenderer {
         self.textures.insert(id, t);
     }
 
+    /// Upload the cloud noise volumes (once). Returns false if the cloud renderer is unavailable.
+    pub fn upload_cloud_noise(&mut self, shape: &[u8], ns: usize, detail: &[u8], nd: usize) -> bool {
+        match self.clouds.as_mut() {
+            Some(c) => {
+                c.upload_noise(&self.ctx.queue, shape, ns, detail, nd);
+                c.has_noise()
+            }
+            None => false,
+        }
+    }
+
+    pub fn clouds_ready(&self) -> bool {
+        self.clouds.as_ref().is_some_and(|c| c.has_noise())
+    }
+
+    /// This frame's flat cloud uniform (`CloudUniform::to_flat`); empty = no clouds.
+    pub fn set_cloud_uniform(&mut self, u: &[f32]) {
+        self.cloud_u.clear();
+        self.cloud_u.extend_from_slice(u);
+    }
+
     fn targets(&mut self, w: usize, h: usize) -> (Tex, Tex, Tex) {
         if let Some(t) = &self.targets {
             if t.w == w && t.h == h {
@@ -924,13 +955,14 @@ impl WorldRenderer {
             for ci in 0..NCASC {
                 // Caster set for this cascade: in range, and big enough to matter at this texel size.
                 let texel = casc.info[ci][0];
-                let min_r = if ci == 0 || ci == 5 { 0.0 } else { texel * 1.5 };
+                let min_r0 = if ci == 0 { 0.0 } else { texel * 1.5 };
                 let mut list: Vec<usize> = Vec::new();
                 let mut key: u64 = 0xcbf29ce484222325;
                 let mix = |k: u64, v: u64| (k ^ v).wrapping_mul(0x100000001b3);
                 for (i, (d, b)) in draws.iter().zip(&bounds).enumerate() {
                     let Some(b) = b else { continue };
-                    if !d.cast_shadow || d.blend == Blend::Alpha || b.r < min_r || (ci == 5 && !d.terrain) {
+                    let min_r = if ci == 5 && d.terrain { 0.0 } else { min_r0 };
+                    if !d.cast_shadow || d.blend == Blend::Alpha || b.r < min_r {
                         continue;
                     }
                     let l = casc.v0.transform_point3(b.c);
@@ -993,7 +1025,7 @@ impl WorldRenderer {
                             let b = bounds[i].as_ref().unwrap();
                             for cl in &m.clusters {
                                 let r = cl.r * b.s;
-                                if r < min_r {
+                                if r < min_r0 && !(ci == 5 && d.terrain) {
                                     continue;
                                 }
                                 let l = casc.v0.transform_point3(b.mm.transform_point3(Vec3::from(cl.c)));
@@ -1178,9 +1210,27 @@ impl WorldRenderer {
         }
         re.endEncoding();
 
+        // ---- volumetric clouds (composited onto HDR before post, so AO/SSR/bloom/upscaler see them) ----
+        if let Some(cr) = self.clouds.as_mut().filter(|c| c.on && c.has_noise()) {
+            let cf = crate::clouds::CloudFrame {
+                uniform: &self.cloud_u,
+                cam_right: p.cam_right,
+                cam_up: p.cam_up,
+                cam_fwd: p.cam_fwd,
+                tan_half_fov: p.tan_half_fov,
+                aspect: p.aspect,
+                near: p.near,
+                vp_unjit: vp_unjit.to_cols_array(),
+                cam_pos: p.cam_pos,
+                sun: p.sun,
+                frame: self.frames as u32,
+            };
+            cr.encode(&cb, &cf, &hdr, &depth);
+        }
+
         // ---- screen-space post: GTAO + bloom ----
         let post_tex = self.post.as_mut().map(|pc| {
-            let pp = crate::post::PostParams { cam_right: p.cam_right, cam_up: p.cam_up, cam_fwd: p.cam_fwd, tan_half_fov: p.tan_half_fov, aspect: p.aspect, near: p.near };
+            let pp = crate::post::PostParams { cam_right: p.cam_right, cam_up: p.cam_up, cam_fwd: p.cam_fwd, tan_half_fov: p.tan_half_fov, aspect: p.aspect, near: p.near, sun: [p.sun[0], p.sun[1], p.sun[2]] };
             let t = pc.encode(&cb, &pp, &hdr, &nrm, &depth);
             (t, pc.ao_on, pc.bloom_on, pc.bounce_on)
         });

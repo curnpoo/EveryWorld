@@ -1,6 +1,7 @@
 //! Native Metal backend. macOS only.
 #![cfg(target_os = "macos")]
 
+pub mod clouds;
 pub mod context;
 pub mod post;
 pub mod timers;

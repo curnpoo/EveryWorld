@@ -18,6 +18,7 @@ struct PostU {
     float4 fin;         // exposure_comp (stops), vignette, dither, tonemap id
     float4 fin2;        // auto_exposure (0/1), dt, exposure_min, exposure_max
     float4 fin3;        // ae_key, fxaa_subpix, fxaa_edge_thr, fxaa_edge_thr_min
+    float4 sunv;        // view-space direction TOWARD the sun (xyz), w = contact strength (0 = off)
     uint4 ints;         // frame, 0, 0, 0
 };
 
@@ -298,6 +299,46 @@ kernel void post_ssr_composite(texture2d<float, access::read_write> hdr [[textur
     float4 c = hdr.read(gid);
     c.rgb += col * conf * fres * u.ssr.w;
     hdr.write(c, gid);
+}
+
+// ---------------------------------------------------------------- Contact shadows (full res, in place on HDR)
+// March a short ray toward the sun through the linear depth buffer; hits within `thickness` of the
+// surface occlude. Fills the small-scale contact the cascades miss. Scales the lit colour down
+// (ambient is kept by the strength cap), gated by N.L so already-dark faces are untouched.
+kernel void post_contact(texture2d<float, access::read_write> hdr [[texture(0)]],
+                         texture2d<float, access::read> lin [[texture(1)]],
+                         texture2d<float, access::read> nr [[texture(2)]],
+                         constant PostU& u [[buffer(0)]], uint2 gid [[thread_position_in_grid]]) {
+    if (gid.x >= hdr.get_width() || gid.y >= hdr.get_height() || u.sunv.w <= 0.0) return;
+    float d = lin.read(gid).x;
+    if (d > 9e4) return;
+    float2 uv = (float2(gid) + 0.5) * u.size.zw;
+    float3 P = vpos(u, uv, d);
+    float3 N = world_to_view_n(u, nr.read(gid).xyz * 2.0 - 1.0);
+    float3 L = normalize(u.sunv.xyz);
+    float ndl = dot(N, L);
+    if (ndl <= 0.02) return;
+    const int STEPS = 12;
+    const float LEN = 1.5, THICK = 0.25;
+    float len = LEN * clamp(d / 60.0, 0.5, 4.0); // reach grows a little with distance
+    float j = ign(float2(gid), u.ints.x);
+    float occ = 0.0;
+    float3 origin = P + N * (0.01 * d + 0.02);
+    for (int i = 0; i < STEPS; i++) {
+        float t = (float(i) + j) / float(STEPS);
+        float3 q = origin + L * (len * t * t + 0.02);
+        if (-q.z <= 0.01) break;
+        float2 quv = proj_uv(u, q);
+        if (any(quv < 0.0) || any(quv > 1.0)) break;
+        float sd = lin.read(uint2(quv * u.size.xy)).x;
+        float diff = -q.z - sd; // >0: ray point is behind the stored surface
+        if (diff > 0.01 * d && diff < THICK * max(1.0, d * 0.02)) { occ = 1.0; break; }
+    }
+    if (occ > 0.0) {
+        float4 c = hdr.read(gid);
+        c.rgb *= 1.0 - u.sunv.w * saturate(ndl * 2.0);
+        hdr.write(c, gid);
+    }
 }
 
 // ---------------------------------------------------------------- Bloom

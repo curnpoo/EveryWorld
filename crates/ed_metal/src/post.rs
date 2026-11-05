@@ -32,6 +32,7 @@ struct PostU {
     fin: [f32; 4],
     fin2: [f32; 4],
     fin3: [f32; 4],
+    sunv: [f32; 4],
     ints: [u32; 4],
 }
 
@@ -42,6 +43,8 @@ pub struct PostParams {
     pub tan_half_fov: f32,
     pub aspect: f32,
     pub near: f32,
+    /// World-space direction toward the sun.
+    pub sun: [f32; 3],
 }
 
 struct Sized {
@@ -67,6 +70,8 @@ pub struct PostChain {
     bloom_up: Pso,
     ssr_trace: Pso,
     ssr_comp: Pso,
+    contact: Pso,
+    contact_on: bool,
     sized: Option<Sized>,
     device: Retained<ProtocolObject<dyn MTLDevice>>,
     pub ao_on: bool,
@@ -101,6 +106,8 @@ impl PostChain {
             bloom_up: pso("post_bloom_up")?,
             ssr_trace: pso("post_ssr_trace")?,
             ssr_comp: pso("post_ssr_composite")?,
+            contact: pso("post_contact")?,
+            contact_on: std::env::var("EW_CONTACT").map(|v| v != "0").unwrap_or(true),
             sized: None,
             device: ctx.device.clone(),
             ao_on: std::env::var("EW_NATIVE_NOAO").is_err(),
@@ -190,6 +197,7 @@ impl PostChain {
             fin: [0.0; 4],
             fin2: [0.0; 4],
             fin3: [0.0; 4],
+            sunv: { let sv = (view * Vec3::from(p.sun).extend(0.0)).truncate().normalize_or_zero(); [sv.x, sv.y, sv.z, if self.contact_on { 0.45 } else { 0.0 }] },
             ints: [self.frame, 0, 0, 0],
         };
         let (hw, hh) = (s.ao_a.width(), s.ao_a.height());
@@ -199,6 +207,9 @@ impl PostChain {
             self.run(cb, &self.blur, &[&*s.ao_a, &*s.lin, &*s.ao_b], Some(&u), Some([1, 0]), hw, hh);
             self.run(cb, &self.blur, &[&*s.ao_b, &*s.lin, &*s.ao_a], Some(&u), Some([0, 1]), hw, hh);
             self.run(cb, &self.upsample, &[&*s.ao_a, &*s.lin, &*s.ao_full], Some(&u), None, w, h);
+        }
+        if self.contact_on {
+            self.run(cb, &self.contact, &[&**hdr, &*s.lin, &**nrm], Some(&u), None, w, h);
         }
         if self.ssr_on {
             let (qw, qh) = (s.ssr.width(), s.ssr.height());

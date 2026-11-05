@@ -103,6 +103,7 @@ mod imp {
         idle_frames: u32,
         shot_done: Option<u64>,
         ground_sent: bool,
+        clouds_failed: bool,
     }
 
     /// Replaces `render_scale::sync_cameras` while native: 3D camera off, UI camera owns the window.
@@ -392,6 +393,15 @@ mod imp {
         }
 
         let to_sun = sun.single().map(|g| -g.forward().as_vec3()).unwrap_or(Vec3::new(0.4, 0.8, 0.3).normalize());
+        if let Some((sh, de)) = crate::clouds::CLOUD_NOISE_CPU.get() {
+            if !r.clouds_ready() && !st.clouds_failed {
+                st.clouds_failed = !r.upload_cloud_noise(sh, crate::clouds::SHAPE_RES, de, crate::clouds::DETAIL_RES);
+                if !st.clouds_failed {
+                    info!("native: cloud noise uploaded");
+                }
+            }
+        }
+        r.set_cloud_uniform(&crate::clouds::CLOUD_FLAT.lock().unwrap());
         let day = (to_sun.y * 6.0).clamp(0.03, 1.0);
         let sky = Vec3::new(0.38, 0.55, 0.95) * day * 1.4;
         {
