@@ -1,5 +1,10 @@
 # Changes
 
+## 2026-11-05: boot rocket flames reworked
+- `boot_plume.rs`: three nested triangle flame layers (wide at the nozzle, taper to a tip), 2.6-8.6 m long, vibrating (95 rad/s shear) and bending back along -velocity (`f^2` displacement, up to 0.55 of length at 40 m/s).
+- No HDR gain: colours stay <= 1 so bloom no longer whites out the scene under the flame. Smoke particles live 1.4-2.8 s and grow 3.5-5.5x for a trail.
+- `body.rs`: the emissive inner core cone is hidden whenever the plume runs (it was the bloom-white blob at each nozzle).
+
 ## 2026-11-05: probe GI in the native renderer, sun-aware; AA mode selector
 - Menu "Upscaler / AA" is now one mutually exclusive choice (MetalFX upscaler / Anti-aliasing / Off, `menu::AaMode`); the upscaler does its own AA so FXAA is skipped under it. FSR 4 (community Metal port, macOS 26+) is planned as a fourth entry.
 - Probe GI: the Bevy bake (`ed_game/src/probe_gi.rs`, `ed_world::probes`) is reused; `native::send_probes` uploads the volume to a 3D RGBA16F texture (`WorldRenderer::upload_probe_volume`, texture slot 8) whenever it re-bakes. `probe_gi()` in `world.metal` ports `irradiance_volume.wesl` (terrain-following layers, ambient-cube faces) and `shade_ex` blends `amb*skyVis + up*bounce`. `EW_PROBE_GI=0` turns it off.

@@ -30,7 +30,7 @@ use crate::player::{Player, RIDE_HEIGHT};
 /// Particles per boot (IceRunner's `PARTICLE_CAPACITY`).
 const CAP: usize = 192;
 /// IceRunner's plume is sized for a hover-bike; a boot is smaller.
-const SIZE_K: f32 = 0.5;
+const SIZE_K: f32 = 0.8;
 const SPEED_K: f32 = 0.6;
 
 pub struct BootPlumePlugin;
@@ -261,11 +261,11 @@ fn update_plume(
                 }
                 // A tight jet: little sideways spread, small sprites at the nozzle
                 // that only bloom into smoke once they're well behind it.
-                let lateral = (s.rand() * 2.0 - 1.0) * (0.02 + i * 0.015 + b * 0.01);
-                let vertical = (s.rand() * 2.0 - 1.0) * (0.015 + i * 0.01 + b * 0.008);
-                let life = 0.6 + s.rand() * 0.35 + i * 0.3 + b * 0.2;
-                let size0 = (0.2 + i * 0.1 + b * 0.05) * SIZE_K;
-                let size1 = size0 * (1.8 + s.rand() * 1.2 + b * 0.8);
+                let lateral = (s.rand() * 2.0 - 1.0) * (0.035 + i * 0.03 + b * 0.02);
+                let vertical = (s.rand() * 2.0 - 1.0) * (0.03 + i * 0.02 + b * 0.015);
+                let life = 1.4 + s.rand() * 0.8 + i * 0.6 + b * 0.5;
+                let size0 = (0.3 + i * 0.15 + b * 0.08) * SIZE_K;
+                let size1 = size0 * (3.5 + s.rand() * 2.0 + b * 1.5);
                 let spin = (s.rand() - 0.5) * (1.8 + i * 0.8);
                 let rot = s.rand() * std::f32::consts::TAU;
                 // Sub-frame emission time, so a fast burn has no gaps.
@@ -331,9 +331,9 @@ fn update_plume(
         let hot = c_hot.lerp(c_boost, p.boost * 0.35);
         let c = c_start.lerp(hot, 1.0 - hot_t).lerp(c_ember, lt.powf(0.6)).lerp(c_tail, smoke_t.powf(1.2));
         // Unlit + HDR: the young, hot core blooms; the smoke stays a plain grey.
-        let glow = 1.0 + 5.0 * hot_t * hot_t * (1.0 - smoke_t);
+        let glow = 1.0;
         // Fade in over the first few frames and out at the very end so nothing pops.
-        let alpha = opacity * (lt / 0.04).min(1.0) * ((1.0 - lt) / 0.15).min(1.0) * (1.0 - 0.35 * smoke_t);
+        let alpha = 0.55 * opacity * (lt / 0.04).min(1.0) * ((1.0 - lt) / 0.15).min(1.0) * (1.0 - 0.35 * smoke_t);
         let (sn, cs) = p.rot.sin_cos();
         let ax = (cr * cs + cu * sn) * w;
         let ay = (cu * cs - cr * sn) * h;
@@ -358,26 +358,43 @@ fn update_plume(
             let axis = (dir * (14.0 + 16.0 * i + 10.0 * b) - world_vel * 0.5).normalize_or(dir);
             let ph = t * 53.0 + k as f32 * 2.3;
             let flick = 0.9 + 0.1 * ph.sin() * (ph * 1.37).cos();
-            let base_len = (0.28 + 0.4 * i + 0.35 * b) * stretch * flick;
-            // (length, width, colour, HDR gain, alpha): orange sheath, then white-hot core.
+            let base_len = (2.6 + 3.4 * i + 2.6 * b) * stretch * flick;
+            // Wind-relative bend: the tip trails back along -velocity.
+            let wind = (-world_vel).normalize_or_zero();
+            let bendk = (speed / 40.0).min(1.0) * 0.55;
+            // Triangle flame, three nested layers: (length, base width, colour, alpha).
+            // No HDR gain: only a faint tint, nothing that blooms over the scene.
             let layers = [
-                (base_len * 1.5, 0.07 + 0.04 * i + 0.03 * b, c_hot.lerp(c_boost, b * 0.5), 3.0, 0.55),
-                (base_len, 0.035 + 0.02 * i + 0.015 * b, srgb(0xfff2d0), 9.0, 0.9),
+                (base_len * 1.2, 0.42 + 0.2 * i + 0.14 * b, c_hot.lerp(c_boost, b * 0.5), 0.6),
+                (base_len, 0.3 + 0.14 * i + 0.1 * b, srgb(0xff9a30), 0.75),
+                (base_len * 0.62, 0.15 + 0.07 * i + 0.05 * b, srgb(0xffd890), 0.85),
             ];
-            for (len, wid, c, glow, alpha) in layers {
-                // Starts just inside the nozzle so the blob's soft end hides in the boot.
-                let a = noz.pos[k] - axis * len * 0.12;
-                let z = noz.pos[k] + axis * len;
-                let mid = (a + z) * 0.5;
-                let side = axis.cross(cp - mid).normalize_or(cr) * wid;
+            const SEG: usize = 10;
+            for (li, (len, wid, c, alpha)) in layers.into_iter().enumerate() {
+                let side = axis.cross(cp - noz.pos[k]).normalize_or(cr);
                 let base = pos.len() as u32;
-                for (p, u, v) in [(a - side, 0.0, 0.0), (a + side, 1.0, 0.0), (z + side, 1.0, 1.0), (z - side, 0.0, 1.0)] {
-                    pos.push(p.to_array());
-                    nor.push((-cf).to_array());
-                    uv.push([u, v]);
-                    col.push([c.x * glow, c.y * glow, c.z * glow, alpha * (0.6 + 0.4 * i)]);
+                for sg in 0..=SEG {
+                    let f = sg as f32 / SEG as f32;
+                    let at = noz.pos[k] - axis * len * 0.05 * (1.0 - f) + axis * len * f + wind * len * bendk * f * f;
+                    // Triangle: full width at the nozzle, straight taper to a point.
+                    let prof = (1.0 - f).max(0.0);
+                    // Vibration: fast shear along the flame, strongest toward the tip.
+                    let vib = (t * 95.0 + f * 11.0 + li as f32 * 2.1 + k as f32 * 1.7).sin();
+                    let rip = 1.0 + 0.12 * (ph * 1.7 + f * 8.0 + li as f32 * 1.9).sin();
+                    let off = side * vib * wid * 0.18 * f;
+                    let w = wid * prof * rip;
+                    let al = alpha * (0.55 + 0.45 * i) * (1.0 - 0.7 * f);
+                    for (sgn, u) in [(-1.0f32, 0.0f32), (1.0, 1.0)] {
+                        pos.push((at + off + side * w * sgn).to_array());
+                        nor.push((-cf).to_array());
+                        uv.push([u, 0.5 + 0.5 * f.min(0.9)]);
+                        col.push([c.x, c.y, c.z, al]);
+                    }
                 }
-                idx.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+                for sg in 0..SEG as u32 {
+                    let r = base + sg * 2;
+                    idx.extend_from_slice(&[r, r + 1, r + 3, r, r + 3, r + 2]);
+                }
             }
         }
     }

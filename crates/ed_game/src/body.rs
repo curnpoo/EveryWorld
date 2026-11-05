@@ -1018,7 +1018,7 @@ fn animate_body(
                         n.throttle = p.throttle;
                     }
                 }
-                if p.throttle <= 0.01 || (!inner && nozzles.is_some()) {
+                if p.throttle <= 0.01 || nozzles.is_some() {
                     *vis = Visibility::Hidden;
                 } else {
                     let (p0, q) = frame(f_frame);
