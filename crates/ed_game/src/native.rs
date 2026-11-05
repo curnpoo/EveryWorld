@@ -125,6 +125,7 @@ mod imp {
         scat_mats: Res<Assets<crate::ground_material::ScatterMaterial>>,
         images: Res<Assets<Image>>,
         sat: Option<Res<crate::ground_material::SatPool>>,
+        gfx: Res<crate::menu::GraphicsSettings>,
         items: Query<(&Mesh3d, &GlobalTransform, &InheritedVisibility, Option<&MeshMaterial3d<StandardMaterial>>, Option<&bevy::mesh::MeshTag>, Has<MeshMaterial3d<crate::ground_material::TerrainMaterial>>, Has<bevy::light::NotShadowCaster>, Has<crate::boot_plume::PlumeMesh>, Has<crate::body::WingMesh>, Option<&MeshMaterial3d<crate::foliage::FoliageMaterial>>, Option<&MeshMaterial3d<crate::ground_material::ScatterMaterial>>), (Without<MeshMaterial3d<ImpostorMaterial>>, Without<MeshMaterial3d<crate::clouds::CloudMaterial>>)>,
     ) {
         let st = &mut *st;
@@ -341,6 +342,11 @@ mod imp {
         let to_sun = sun.single().map(|g| -g.forward().as_vec3()).unwrap_or(Vec3::new(0.4, 0.8, 0.3).normalize());
         let day = (to_sun.y * 6.0).clamp(0.03, 1.0);
         let sky = Vec3::new(0.38, 0.55, 0.95) * day * 1.4;
+        if std::env::var_os("EW_NATIVE_SCALE").is_some() {
+            r.set_options(gfx.ambient_occlusion, gfx.bloom, gfx.aa, r.render_scale);
+        } else {
+            r.set_options(gfx.ambient_occlusion, gfx.bloom, gfx.aa, gfx.render_pct as f32 / 100.0);
+        }
         let fp = FrameParams {
                 view_proj: raster.to_cols_array_2d(),
                 cam_pos: cam_pos.to_array(),
@@ -355,7 +361,7 @@ mod imp {
                 fog_density: 1.0 / 200_000.0,
                 shadow_far: 700.0,
                 terrain_shadow_far: 20_000.0,
-                shadows: std::env::var_os("EW_NATIVE_NOSHADOW").is_none(),
+                shadows: gfx.shadows && std::env::var_os("EW_NATIVE_NOSHADOW").is_none(),
                 exposure: 1.7,
                 size: (w, h),
                 scale: window.map(|(w, _)| w.scale_factor() as f64).unwrap_or(1.0),

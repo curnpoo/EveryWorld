@@ -1,5 +1,10 @@
 # Changes
 
+## 2026-11-05: menu graphics options drive the native renderer
+- `native_frame` reads `GraphicsSettings` every frame: shadows, ambient occlusion, bloom, anti-aliasing (FXAA-lite at native scale), and render % (-> MetalFX internal scale; 100% = native). New `WorldRenderer::set_options`. `EW_NATIVE_SCALE` still overrides the render %, and `EW_GFX=...` works as before.
+- Verified headless: shadows off -> 0 shadow draws; res=100 turns MetalFX off. Resolve stays ~7.8 ms at native scale even with AA/AO/bloom off, so that cost is the full-res resolve itself (not FXAA); MetalFX at 0.67 brings it to ~0.8 ms.
+- Still open: SSR / bounce toggles and an upscaler-mode choice (MetalFX vs FSR 4) are not in the menu yet.
+
 ## 2026-11-05: MetalFX temporal upscaler (native renderer)
 - New `ed_metal::upscale::Upscaler` (`crates/ed_metal/src/upscale.rs`, `shaders/upscale.metal`). The world now renders at `EW_NATIVE_SCALE` (default 0.67) of the output size with a Halton(2,3) jittered projection, then `MTLFXTemporalScaler` brings it to full res before `resolve_fs`. `EW_NATIVE_SCALE>=0.99` disables it (native res + FXAA-lite).
 - Inputs: HDR colour, Depth32F (reversed-Z), RG16F motion computed in a compute pass from depth + previous view-projection (camera motion only; moving objects/boots may ghost slightly, per-object velocity is future work), auto-exposure, reset flag on camera jumps > 300 m.

@@ -231,6 +231,8 @@ pub struct WorldRenderer {
     upscaler: Option<crate::upscale::Upscaler>,
     /// Internal render scale (1 = native, <1 = MetalFX temporal upscale). `EW_NATIVE_SCALE` sets the default.
     pub render_scale: f32,
+    /// FXAA-lite at native scale (menu "Anti-aliasing").
+    pub fxaa: bool,
     prev_cam: Option<[f32; 3]>,
     meshes: HashMap<u64, GpuMesh>,
     textures: HashMap<u64, Tex>,
@@ -404,6 +406,7 @@ impl WorldRenderer {
             filmic,
             post,
             upscaler,
+            fxaa: true,
             render_scale: std::env::var("EW_NATIVE_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(0.67),
             prev_cam: None,
             targets: None,
@@ -709,6 +712,16 @@ impl WorldRenderer {
     }
 
     /// Render one frame into a CPU-readable texture and return tightly packed RGBA8 rows (w*h*4).
+    /// Menu graphics options (AO / bloom are env-overridable defaults in `PostChain`).
+    pub fn set_options(&mut self, ao: bool, bloom: bool, aa: bool, render_scale: f32) {
+        if let Some(pc) = self.post.as_mut() {
+            pc.ao_on = ao && std::env::var_os("EW_NATIVE_NOAO").is_none();
+            pc.bloom_on = bloom && std::env::var_os("EW_NATIVE_NOBLOOM").is_none();
+        }
+        self.fxaa = aa;
+        self.render_scale = render_scale.clamp(0.4, 1.0);
+    }
+
     pub fn render_offscreen(&mut self, p: &FrameParams, draws: &[DrawItem]) -> Option<Vec<u8>> {
         let (w, h) = (p.size.0 as usize, p.size.1 as usize);
         let d = unsafe { MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(MTLPixelFormat::BGRA8Unorm, w, h, false) };
@@ -765,7 +778,7 @@ impl WorldRenderer {
             sun: p.sun,
             cam: [p.cam_pos[0], p.cam_pos[1], p.cam_pos[2], 0.0],
             sky: [p.sky[0], p.sky[1], p.sky[2], 1.0],
-            fog: [p.fog_density, if up_on || std::env::var_os("EW_NATIVE_NOAA").is_some() { 1.0 } else { 0.0 }, 0.0, 0.0],
+            fog: [p.fog_density, if up_on || !self.fxaa || std::env::var_os("EW_NATIVE_NOAA").is_some() { 1.0 } else { 0.0 }, 0.0, 0.0],
             csm: [[[0.0; 4]; 4]; NCASC],
             csm_info: casc.info,
             csm_split: [casc.splits[0], casc.splits[1], casc.splits[2], casc.splits[3]],
