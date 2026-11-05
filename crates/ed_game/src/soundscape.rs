@@ -379,7 +379,7 @@ fn drive_soundscape(
         p.spread = pl.fall_spread;
         p.wing_load = (0.6 * pl.wing_turn.abs() + 0.6 * pl.wing_arch.max(0.0)).min(1.0);
         p.roll_rate = ang.map(|a| a.0.dot(vel.normalize_or_zero())).unwrap_or(0.0);
-        let boots_on = pl.mode == MoveMode::RocketShoes && pl.throttle > 0.01;
+        let boots_on = pl.thrust_held && pl.throttle > 0.01;
         if boots_on {
             let wob = pl.leg_steer.x * 0.25;
             p.boots = [pl.throttle * (1.0 + wob), pl.throttle * (1.0 - wob)];

@@ -211,52 +211,6 @@ fn update_plume(
     s.boost += ((boosting as u8 as f32) - s.boost) * (1.0 - (-rate * dt).exp());
     let b = s.boost;
 
-    // ---- spawn (per boot)
-    if firing && i > 0.0 {
-        for k in 0..2 {
-            let dir = noz.dir[k].normalize_or(-up);
-            let fwd = noz.fwd[k].reject_from(dir).normalize_or(Vec3::X);
-            let side = dir.cross(fwd).normalize_or(Vec3::Z);
-            s.acc[k] += (72.0 + i * 104.0 + b * 54.0) * dt;
-            while s.acc[k] >= 1.0 {
-                s.acc[k] -= 1.0;
-                if s.parts.len() >= CAP * 2 {
-                    break;
-                }
-                // A tight jet: little sideways spread, small sprites at the nozzle
-                // that only bloom into smoke once they're well behind it.
-                let lateral = (s.rand() * 2.0 - 1.0) * (0.02 + i * 0.015 + b * 0.01);
-                let vertical = (s.rand() * 2.0 - 1.0) * (0.015 + i * 0.01 + b * 0.008);
-                let life = 0.6 + s.rand() * 0.35 + i * 0.3 + b * 0.2;
-                let size0 = (0.2 + i * 0.1 + b * 0.05) * SIZE_K;
-                let size1 = size0 * (1.8 + s.rand() * 1.2 + b * 0.8);
-                let spin = (s.rand() - 0.5) * (1.8 + i * 0.8);
-                let rot = s.rand() * std::f32::consts::TAU;
-                // Spread the spawn point a little along the first frame's travel, so a fast burn has no gaps.
-                let jitter = s.rand() * dt;
-                let vel = dir * (14.0 + i * 16.0 + b * 12.0) * SPEED_K
-                    + side * lateral * (10.0 + b * 4.0)
-                    + fwd * vertical * (6.0 + b * 2.0)
-                    // Exhaust leaves at the boot's own velocity; drag then hands it to the air.
-                    + world_vel;
-                s.parts.push(Particle {
-                    pos: noz.pos[k] + vel * jitter,
-                    vel,
-                    age: 0.0,
-                    life,
-                    size0,
-                    size1,
-                    boost: b,
-                    rot,
-                    spin,
-                    side,
-                });
-            }
-        }
-    } else {
-        s.acc = [0.0; 2];
-    }
-
     // ---- advance (IceRunner's per-frame drags, made frame-rate independent)
     let drag = 0.972f32.powf(dt * 60.0);
     let cool_drag = 0.992f32.powf(dt * 60.0);
@@ -292,6 +246,55 @@ fn update_plume(
         }
         true
     });
+
+    // ---- spawn (per boot)
+    if firing && i > 0.0 {
+        for k in 0..2 {
+            let dir = noz.dir[k].normalize_or(-up);
+            let fwd = noz.fwd[k].reject_from(dir).normalize_or(Vec3::X);
+            let side = dir.cross(fwd).normalize_or(Vec3::Z);
+            s.acc[k] += (72.0 + i * 104.0 + b * 54.0) * dt;
+            while s.acc[k] >= 1.0 {
+                s.acc[k] -= 1.0;
+                if s.parts.len() >= CAP * 2 {
+                    break;
+                }
+                // A tight jet: little sideways spread, small sprites at the nozzle
+                // that only bloom into smoke once they're well behind it.
+                let lateral = (s.rand() * 2.0 - 1.0) * (0.02 + i * 0.015 + b * 0.01);
+                let vertical = (s.rand() * 2.0 - 1.0) * (0.015 + i * 0.01 + b * 0.008);
+                let life = 0.6 + s.rand() * 0.35 + i * 0.3 + b * 0.2;
+                let size0 = (0.2 + i * 0.1 + b * 0.05) * SIZE_K;
+                let size1 = size0 * (1.8 + s.rand() * 1.2 + b * 0.8);
+                let spin = (s.rand() - 0.5) * (1.8 + i * 0.8);
+                let rot = s.rand() * std::f32::consts::TAU;
+                // Sub-frame emission time, so a fast burn has no gaps.
+                let jitter = s.rand() * dt;
+                let vel = dir * (14.0 + i * 16.0 + b * 12.0) * SPEED_K
+                    + side * lateral * (10.0 + b * 4.0)
+                    + fwd * vertical * (6.0 + b * 2.0)
+                    // Exhaust leaves at the boot's own velocity; drag then hands it to the air.
+                    + world_vel;
+                s.parts.push(Particle {
+                    // Emitted `jitter` seconds ago from where the nozzle was then
+                    // (noz - world_vel*τ) and moving at `vel` since: net offset is
+                    // only the exhaust part, so nothing appears ahead of the boot.
+                    pos: noz.pos[k] + (vel - world_vel) * jitter,
+                    vel,
+                    age: jitter,
+                    life,
+                    size0,
+                    size1,
+                    boost: b,
+                    rot,
+                    spin,
+                    side,
+                });
+            }
+        }
+    } else {
+        s.acc = [0.0; 2];
+    }
 
     // ---- light
     if let Ok((mut l, mut lt)) = light_q.single_mut() {

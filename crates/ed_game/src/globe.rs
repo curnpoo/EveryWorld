@@ -58,6 +58,10 @@ const MAX_CACHED: usize = 380;
 /// Radial offset per quadtree level so overlapping coarse/fine tiles never z-fight.
 const LEVEL_BIAS: f32 = 1.5e-6;
 
+/// The globe's input system; other systems that read the same pad press order against it.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct GlobeControl;
+
 pub struct GlobePlugin;
 
 impl Plugin for GlobePlugin {
@@ -73,7 +77,7 @@ impl Plugin for GlobePlugin {
                     attach_canvas,
                     resize_target,
                     fly_to_requests,
-                    control,
+                    control.in_set(GlobeControl),
                     update_camera,
                     update_space,
                     stream_tiles,
@@ -633,7 +637,6 @@ fn control(
     scroll: Res<AccumulatedMouseScroll>,
     pad: Res<crate::gamepad::Pad>,
     mode: Res<crate::gamepad::InputMode>,
-    mut spawns: MessageWriter<crate::spawn::SpawnRequest>,
     menu_focus: Res<crate::menu::MenuFocus>,
     canvases: Query<(&RelativeCursorPosition, &ComputedNode, &InheritedVisibility), With<MapCanvas>>,
     popups: Query<(&RelativeCursorPosition, &InheritedVisibility), (With<Popup>, Without<MapCanvas>)>,
@@ -664,7 +667,8 @@ fn control(
     // `cursor_over = true` forever. Only a visible popup may block the globe.
     let over_popup = popups.iter().any(|(p, vis)| vis.get() && p.cursor_over());
     let hover = over && !over_popup;
-    let aim = if pad_mode { Some(Vec2::splat(0.5)) } else { norm };
+    // `ray` takes canvas offsets from the centre (-0.5..0.5), so the crosshair is ZERO.
+    let aim = if pad_mode { Some(Vec2::ZERO) } else { norm };
     g.cursor_pick = aim.filter(|_| hover).and_then(|n| gl::ray_sphere(g.cam_pos, g.ray(n)));
 
     // Drag to spin.
@@ -712,6 +716,10 @@ fn control(
             }
     }
 
+    // Any controller steering cancels a pending fly-to, so the map never snaps back to the player.
+    if pad_mode && (pad.left != Vec2::ZERO || pad.right != Vec2::ZERO || pad.a_just) {
+        g.fly = None;
+    }
     // Controller: left stick pans like a drag, right stick zooms, A picks the crosshair.
     let mut pad_zoom_in = false;
     if pad_mode && hover && !dragging {
@@ -730,20 +738,8 @@ fn control(
             pad_zoom_in = pad.right.y > 0.0;
         }
     }
-    // Drop popup open (a spot is selected): A drops from the sky, B cancels. The popup's
-    // buttons are otherwise clicked, so this is the controller path to them.
-    // Handled here, in order, so one A press can never both select and drop.
+    // While the popup is open, `mapview::pad_popup` owns A / B / D-pad.
     let popup_open = map.selected.is_some();
-    if popup_open && pad_mode {
-        if let Some(sel) = map.selected {
-            if pad.a_just {
-                spawns.write(crate::spawn::SpawnRequest::At { pos: sel, name: String::new(), height: crate::spawn::SpawnHeight::Sky });
-                map.selected = None;
-            } else if pad.b_just {
-                map.selected = None;
-            }
-        }
-    }
     // Otherwise A picks the spot under the crosshair.
     // A presses a focused menu button instead, when the D-pad is on one.
     if pad_mode && pad.a_just && hover && !popup_open && menu_focus.0.is_none() {

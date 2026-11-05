@@ -26,6 +26,10 @@ pub const TRIM_NEUTRAL: f32 = 0.20;
 pub const TRIM_RANGE: (f32, f32) = (-0.30, 0.85);
 /// Steady roll rate at full twist, rad/s (a barrel roll in under 2 s).
 pub const WING_ROLL_RATE: f32 = 3.6;
+/// Dynamic pressure (Pa) above which the suit stops making more lift (~60 m/s at sea level).
+/// Past it the fabric spills air, so a fast, boosted flyer keeps going where it faces instead
+/// of being hauled upward by lift that grows with speed squared.
+pub const LIFT_Q_MAX: f32 = 2200.0;
 /// Extra arch the auto-pilot adds while carving a turn onto the view.
 const PULL: f32 = 0.9;
 
@@ -106,7 +110,8 @@ pub fn wingsuit(rot: Quat, v: Vec3, rho: f32, omega: Vec3, inertia: Vec3, pose: 
     // Lift is perpendicular to the wind, on the back side of the suit; drag opposes the wind.
     let lift_dir = Vec3::X.cross(vh).normalize_or(Vec3::Z);
     let side = -(Vec3::X - vh * vh.x).normalize_or_zero() * (0.6 * beta.sin());
-    let fb = lift_dir * (qs * wing_cl(alpha)) - vh * (qs * wing_cd(alpha)) + side * qs;
+    let q_lift = qs * (LIFT_Q_MAX / q.max(1.0)).min(1.0);
+    let fb = lift_dir * (q_lift * wing_cl(alpha)) - vh * (qs * wing_cd(alpha)) + side * q_lift;
 
     // Pitch: restoring moment toward the trim AoA (sin keeps the stable/unstable points right
     // when tumbling), roll: twist, yaw: weathervane into the wind.

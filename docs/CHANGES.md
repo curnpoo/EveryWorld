@@ -4,6 +4,20 @@ Recent work, newest first, and what still needs checking. When an entry is verif
 
 ---
 
+## 2026-11-05: controller menus, button prompts, analog triggers
+- Controller menus: D-pad or left stick moves focus to the nearest button in that direction (`menu.rs` `pad_focus`), A selects, B goes back (resume when paused, main menu from a tab), LB/RB switch tabs. Focus auto-starts on the top button; the Map tab has none (crosshair is its cursor).
+- Button prompts: a bottom strip of Xbox-style glyphs (A green, B red, pills for LB/RB/RT/LT/D-pad/Start) that changes per screen, in controller mode only (`gamepad.rs` `update_hints`).
+- Analog triggers: RT travel scales rocket thrust, LT travel scales the afterburner boost (`Pad.rt/lt`, `Player.rocket_amt/boost_amt`). Keys stay full strength.
+- Test hook: `EW_PAD_SCRIPT="30:down,60:a,90:rt=0.3,120:shot=/tmp/x.png"` injects pad input and screenshots (no controller needed).
+- Check on a real pad: stick-flick menu stepping feel, thrust at light trigger pulls, glyph legibility in game (not screenshot-tested in Playing).
+
+## 2026-11-04: quieter wind, nozzle-anchored boot jet, no beeps on spawn
+- Wind: ear wind follows a capped log curve of q (about -10 dB at freefall speed); howl, suit flutter and world wind roughly halved; height shear capped lower (`ed_audio/src/scape.rs prepare`, `soundscape.rs`).
+- Spawn beeping was the ground-proximity warning: any fall faster than 1 m/s with under 4 s to impact set it off, including the default 40 m spawn drop. GPW now needs > 20 m/s down and 4 s of sustained fall; the altimeter also needs Skydive mode and a fall that started above 1800 m AGL.
+- Boot plume: particles inherit the full player velocity (were 8 %), so the jet stays on the nozzle and trails back at speed. Spread and sprite growth are tighter, and there are new per-nozzle core streaks (orange sheath + white core) that bend into the airflow and stretch up to 3.5x with airspeed.
+- Fix (same day): fresh particles were placed one to two frames *ahead* of the nozzle (sub-frame jitter added the full inherited velocity, then the same frame advanced them again). Now they are advanced before spawning, and the jitter offset is only the exhaust part (`vel - world_vel`).
+- Check on the Mac: hover, full Shift boost, fast level flight (jet should lengthen, not smear), and that the default spawn is silent.
+
 ## 2026-11-04: gamepad support, auto-detected (unverified: no controller tested)
 - New `ed_game::gamepad`: one `Pad` snapshot per frame (sticks with a 0.18 deadzone, triggers, button edges) merged over all pads, and `InputMode` (Keyboard / Controller). The first stick or button input switches to Controller; the first key, mouse button or real mouse movement switches back.
 - Gameplay: left stick = WASD, right stick = look (same invert setting and sensitivity as the mouse), RT = Space, LT = Shift, A = F (wingsuit), B = P (parachute), Start = Esc (pause and resume). Keyboard and pad inputs add together.

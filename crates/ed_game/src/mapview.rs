@@ -16,7 +16,8 @@ pub struct MapViewPlugin;
 
 impl Plugin for MapViewPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<MapState>().add_systems(Update, popup_buttons);
+        app.init_resource::<MapState>()
+            .add_systems(Update, (popup_buttons, pad_popup.after(crate::globe::GlobeControl)));
     }
 }
 
@@ -34,7 +35,7 @@ pub(crate) struct Popup;
 #[derive(Component)]
 pub(crate) struct PopupTitle;
 
-#[derive(Component, Clone, Copy)]
+#[derive(Component, Clone, Copy, PartialEq)]
 enum PopupAction {
     Sky,
     Ground,
@@ -130,6 +131,62 @@ fn popup_buttons(
                 let height = if matches!(a, PopupAction::Sky) { SpawnHeight::Sky } else { SpawnHeight::Ground };
                 spawns.write(SpawnRequest::At { pos: sel, name: String::new(), height });
                 st.selected = None;
+            }
+        }
+    }
+}
+
+const POPUP_ORDER: [PopupAction; 3] = [PopupAction::Sky, PopupAction::Ground, PopupAction::Close];
+
+/// Controller path through the "drop here" popup: D-pad up/down moves the
+/// highlight, A presses it, B cancels. Runs after the globe's `control`, so the
+/// A press that opened the popup is never also read as a choice (`was_open`).
+#[allow(deprecated)]
+fn pad_popup(
+    pad: Res<crate::gamepad::Pad>,
+    mode: Res<crate::gamepad::InputMode>,
+    mut st: ResMut<MapState>,
+    mut spawns: MessageWriter<SpawnRequest>,
+    mut idx: Local<usize>,
+    mut was_open: Local<bool>,
+    mut buttons: Query<(&PopupAction, &mut BackgroundColor)>,
+) {
+    let open = st.selected.is_some();
+    let live = open && *was_open && *mode == crate::gamepad::InputMode::Controller;
+    if open && !*was_open {
+        *idx = 0;
+    }
+    *was_open = open;
+    if live {
+        if pad.nav.y != 0 {
+            *idx = (*idx as i32 + pad.nav.y.signum()).clamp(0, POPUP_ORDER.len() as i32 - 1) as usize;
+        }
+        if pad.b_just {
+            st.selected = None;
+        } else if pad.a_just {
+            let (Some(sel), action) = (st.selected, POPUP_ORDER[*idx]) else { return };
+            match action {
+                PopupAction::Close => {}
+                PopupAction::Sky | PopupAction::Ground => {
+                    let height = if action == PopupAction::Sky { SpawnHeight::Sky } else { SpawnHeight::Ground };
+                    spawns.write(SpawnRequest::At { pos: sel, name: String::new(), height });
+                }
+            }
+            st.selected = None;
+        }
+    }
+    // Paint: the highlighted row only in controller mode; otherwise leave hover alone.
+    if open && *mode == crate::gamepad::InputMode::Controller {
+        for (a, mut bg) in &mut buttons {
+            let want = if *a == POPUP_ORDER[*idx] {
+                Color::srgba(1.0, 1.0, 1.0, 0.35)
+            } else if *a == PopupAction::Sky {
+                Color::srgb(0.98, 0.45, 0.12)
+            } else {
+                Color::srgba(1.0, 1.0, 1.0, 0.08)
+            };
+            if bg.0 != want {
+                bg.0 = want;
             }
         }
     }

@@ -80,19 +80,50 @@ impl Default for Settling {
     }
 }
 
+/// Height above the real ground (m) the player is re-placed at once their tile
+/// has a collider, so they drop in gently rather than start inside the terrain.
+const SETTLE_DROP_M: f32 = 4.0;
+
 fn hold_until_ground(
     time: Res<Time<Real>>,
+    spatial: SpatialQuery,
+    origin: Res<WorldOrigin>,
     mut settling: ResMut<Settling>,
     mut commands: Commands,
-    mut q: Query<(Entity, &Player, &mut LinearVelocity, Option<&mut AngularVelocity>)>,
+    mut q: Query<(
+        Entity,
+        &Player,
+        &Transform,
+        &mut LinearVelocity,
+        Option<&mut AngularVelocity>,
+    )>,
 ) {
     let Some(deadline) = settling.until_s else { return };
-    let Ok((e, p, mut v, ang_v)) = q.single_mut() else { return };
+    let Ok((e, p, t, mut v, ang_v)) = q.single_mut() else { return };
     let now = time.elapsed_secs();
     let deadline = if deadline == f32::MAX { now + 20.0 } else { deadline };
+    // Ground-level spawns: wait for a collider under the player (looking from
+    // well above, in case the spawn point ended up under the surface).
+    const LOOK_FROM_M: f32 = 1000.0;
+    let up = origin.up_at(t.translation);
+    let hit = (p.mode == MoveMode::Fall)
+        .then(|| {
+            let filter = SpatialQueryFilter::from_excluded_entities([e]);
+            let from = t.translation + up * LOOK_FROM_M;
+            let down = Dir3::new(-up).unwrap_or(Dir3::NEG_Y);
+            spatial.cast_ray(from, down, 3.0 * LOOK_FROM_M, true, &filter).map(|h| from - up * h.distance)
+        })
+        .flatten();
     if p.agl < 19_000.0 || now > deadline {
         settling.until_s = None;
         commands.entity(e).remove::<GravityScale>();
+        // Only a ground spawn (within ~30 m of the surface) is re-placed.
+        if let Some(g) = hit.filter(|g| (t.translation - *g).length() < 30.0) {
+            let np = g + up * (RIDE_HEIGHT + SETTLE_DROP_M);
+            // Deferred writes: `SpatialQuery` already borrows Position/Transform.
+            commands.entity(e).insert((Transform { translation: np, ..*t }, Position(np)));
+            v.0 = Vec3::ZERO;
+        }
     } else {
         settling.until_s = Some(deadline);
         v.0 = Vec3::ZERO;
@@ -149,6 +180,9 @@ pub struct Player {
     pub boost_stage: usize,
     /// Current rocket thrust level (0.0 = off, ~1.0 = Space cruise, 1.5..4.0 = Shift afterburner).
     pub throttle: f32,
+    /// How far the rocket (Space / RT) and afterburner (Shift / LT) are pressed, 0..1. Keys are 1.
+    pub rocket_amt: f32,
+    pub boost_amt: f32,
     pub afterburner: bool,
     pub crouch: bool,
     pub mach: MachTracker,
@@ -242,6 +276,8 @@ impl Player {
             agl: 0.0,
             boost_stage: 0,
             throttle: 0.0,
+            rocket_amt: 1.0,
+            boost_amt: 1.0,
             afterburner: false,
             crouch: false,
             mach: MachTracker::default(),
@@ -417,6 +453,8 @@ fn player_input(
     // Left trigger is Shift; right trigger is Space. Each pad button acts like its key.
     p.shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) || pad.lt_held;
     p.space_held = keys.pressed(KeyCode::Space) || pad.rt_held;
+    p.rocket_amt = if keys.pressed(KeyCode::Space) { 1.0 } else { pad.rt };
+    p.boost_amt = if keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) { 1.0 } else { pad.lt };
     if keys.just_pressed(KeyCode::Space) || pad.rt_just {
         p.space_just_pressed = true;
     }
@@ -579,8 +617,14 @@ fn drive_player(
         };
 
         // Mode transitions:
-        let wants_glide = !grounded && !p.thrust_held && (speed_flat > 10.0 || (p.agl > 8.0 && v_up_scalar < -8.0));
+        // Wingsuit on and already flying: the rockets just add thrust to the suit, no mode change.
+        let winged_boost = p.thrust_held
+            && p.wingsuit_on
+            && !grounded
+            && (speed_total > 12.0 || (p.mode == MoveMode::Skydive && speed_total > 6.0));
+        let wants_glide = !grounded && (!p.thrust_held || winged_boost) && (speed_flat > 10.0 || (p.agl > 8.0 && v_up_scalar < -8.0));
         p.mode = match p.mode {
+            _ if winged_boost => MoveMode::Skydive,
             _ if p.thrust_held => MoveMode::RocketShoes,
             _ if grounded => MoveMode::Walk,
             MoveMode::Walk if !grounded => {
@@ -602,7 +646,7 @@ fn drive_player(
 
         // --- Plane-style stick. Only the mouse moves the view; W/S/A/D tilt the body's aim
         // relative to it (see the rocket and wingsuit sections), never the camera. ---
-        let wingsuit = p.wingsuit_on && matches!(p.mode, MoveMode::Skydive | MoveMode::Fall) && !p.thrust_held && !grounded;
+        let wingsuit = p.wingsuit_on && matches!(p.mode, MoveMode::Skydive | MoveMode::Fall) && (!p.thrust_held || winged_boost) && !grounded;
         // Suit off: a plain skydiver. W somersaults, A/D barrel roll, S spreads eagle.
         let freefall = !p.wingsuit_on && p.mode == MoveMode::Skydive && !p.thrust_held && !grounded;
         {
@@ -789,13 +833,25 @@ fn drive_player(
         // wingsuit only through the air, so for them it fades out.
         let mut muscle = 1.0f32;
 
-        if p.thrust_held {
+        if winged_boost {
+            // (thrust only; orientation falls through to the normal wingsuit code below)
+            // Winged: same boost strength, but it just pushes along the head; the suit and the
+            // normal wingsuit posture stay exactly as they are.
+            let ramp = flyer::boost_ramp(p.boost_time, 10.0);
+            let (rk, bo) = (p.rocket_amt.clamp(0.0, 1.0), p.boost_amt.clamp(0.0, 1.0));
+            let thrust_acc = if p.afterburner { g * (1.5 * rk + (36.0 - 1.5) * ramp * bo) } else { g * 1.5 * rk };
+            p.throttle = if p.afterburner { (0.65 * rk + ramp * 2.5 * bo + 0.35 * bo).max(0.1) } else { 0.65 * rk };
+            forces.apply_force(t.rotation * Vec3::Y * (mass * thrust_acc));
+        }
+        if p.thrust_held && !winged_boost {
             // Space = gentle boost (1.5 g: hovers with room to climb, ~1.1 g along a level aim).
             // Shift = extra boost, ramping slowly from there to 36 g over 10 s.
             const SPACE_G: f32 = 1.5;
             let ramp = flyer::boost_ramp(p.boost_time, 10.0);
-            let thrust_acc = if p.afterburner { g * (SPACE_G + (36.0 - SPACE_G) * ramp) } else { g * SPACE_G };
-            p.throttle = if p.afterburner { 1.0 + ramp * 2.5 } else { 0.65 };
+            // Trigger travel scales both: a light RT is a gentle push, a light LT a small boost.
+            let (rk, bo) = (p.rocket_amt.clamp(0.0, 1.0), p.boost_amt.clamp(0.0, 1.0));
+            let thrust_acc = if p.afterburner { g * (SPACE_G * rk + (36.0 - SPACE_G) * ramp * bo) } else { g * SPACE_G * rk };
+            p.throttle = if p.afterburner { (0.65 * rk + ramp * 2.5 * bo + 0.35 * bo).max(0.1) } else { 0.65 * rk };
 
             // Aim = the view (offset so the default slightly-down camera means level flight),
             // tilted by the held keys: S noses up, W down, A/D swing left/right.
@@ -890,7 +946,7 @@ fn drive_player(
             forces.apply_torque(flyer::freefall_torque(t.rotation, ang_v, speed_total, belly_down, cmd));
             muscle = 0.0;
         }
-        if !p.thrust_held {
+        if !p.thrust_held || winged_boost {
             p.leg_steer *= (1.0 - 6.0 * dt).max(0.0);
         }
         let rot_err = rotation_error_vec(t.rotation, target_rot);

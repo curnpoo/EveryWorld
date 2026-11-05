@@ -574,41 +574,62 @@ fn rest_bg(action: &MenuAction, view: MenuView) -> Color {
     }
 }
 
-/// D-pad moves the focus through the visible buttons in spawn order (wrapping).
+/// D-pad or left stick moves the focus to the nearest button in that direction.
 /// A presses the focused button by setting its `Interaction`, so `menu_buttons`
-/// handles it exactly like a click. B resumes from the pause menu.
+/// handles it exactly like a click. B goes back: resume from the pause menu, or
+/// to the main menu from a tab. Tabs are skipped (the bumpers switch them), and
+/// the Map tab has no focus because the crosshair is its cursor.
 #[allow(deprecated, clippy::too_many_arguments)]
 fn pad_focus(
     pad: Res<Pad>,
     mode: Res<InputMode>,
     state: Res<State<GameState>>,
-    view: Res<MenuView>,
+    mut view: ResMut<MenuView>,
     map: Res<MapState>,
     mut focus: ResMut<MenuFocus>,
     mut next: ResMut<NextState<GameState>>,
-    mut buttons: Query<(Entity, &MenuAction, &InheritedVisibility, &mut Interaction, &mut BackgroundColor)>,
+    mut buttons: Query<(Entity, &MenuAction, &InheritedVisibility, &mut Interaction, &mut BackgroundColor, &UiGlobalTransform)>,
 ) {
-    // The drop popup takes A and B; the map has its own A/B handling in `globe::control`.
-    let active = menu_showing(state.get(), *view) && map.selected.is_none() && *mode == InputMode::Controller;
-    if pad.b_just && *state.get() == GameState::Paused && map.selected.is_none() {
-        next.set(GameState::Playing);
+    let popup = map.selected.is_some();
+    let active = menu_showing(state.get(), *view) && !popup && *mode == InputMode::Controller && *view != MenuView::Map;
+    if pad.b_just && !popup {
+        match state.get() {
+            GameState::Paused => next.set(GameState::Playing),
+            GameState::Menu if *view != MenuView::Home => *view = MenuView::Home,
+            _ => {}
+        }
     }
 
-    // Visible buttons in spawn order (an entity's index follows spawn order).
-    let mut vis: Vec<Entity> = buttons.iter().filter(|(_, _, v, _, _)| v.get()).map(|(e, _, _, _, _)| e).collect();
-    vis.sort();
-
-    let cur = focus.0.filter(|e| vis.contains(e));
-    let want = if !active {
+    let cands: Vec<(Entity, Vec2)> = buttons
+        .iter()
+        .filter(|(_, a, v, ..)| v.get() && !matches!(a, MenuAction::Tab(_)))
+        .map(|(e, _, _, _, _, t)| (e, t.translation))
+        .collect();
+    let cur = focus.0.filter(|e| cands.iter().any(|c| c.0 == *e));
+    let want = if !active || cands.is_empty() {
         None
-    } else if (pad.dpad_next_just || pad.dpad_prev_just) && !vis.is_empty() {
-        let n = vis.len();
-        match cur.and_then(|e| vis.iter().position(|x| *x == e)) {
-            None => Some(if pad.dpad_next_just { vis[0] } else { vis[n - 1] }),
-            Some(i) => Some(if pad.dpad_next_just { vis[(i + 1) % n] } else { vis[(i + n - 1) % n] }),
+    } else if let Some(cur) = cur {
+        let from = cands.iter().find(|c| c.0 == cur).map(|c| c.1).unwrap_or_default();
+        let dir = Vec2::new(pad.nav.x as f32, pad.nav.y as f32);
+        if dir == Vec2::ZERO {
+            Some(cur)
+        } else {
+            // Nearest button whose offset lies in the pressed direction, weighting off-axis drift.
+            let best = cands
+                .iter()
+                .filter(|c| c.0 != cur)
+                .filter_map(|c| {
+                    let d = c.1 - from;
+                    let along = d.dot(dir);
+                    let across = (d - dir * along).length();
+                    (along > 4.0 && across <= along * 2.0 + 40.0).then_some((c.0, along + across * 2.0))
+                })
+                .min_by(|a, b| a.1.total_cmp(&b.1));
+            Some(best.map(|b| b.0).unwrap_or(cur))
         }
     } else {
-        cur
+        // First open: the top-most, then left-most button.
+        cands.iter().min_by(|a, b| (a.1.y.round(), a.1.x).partial_cmp(&(b.1.y.round(), b.1.x)).unwrap()).map(|c| c.0)
     };
     if focus.0 != want {
         focus.0 = want;
@@ -616,7 +637,7 @@ fn pad_focus(
 
     if active && pad.a_just {
         if let Some(e) = focus.0 {
-            if let Ok((_, _, _, mut interaction, _)) = buttons.get_mut(e) {
+            if let Ok((_, _, _, mut interaction, ..)) = buttons.get_mut(e) {
                 *interaction = Interaction::Pressed;
             }
         }
@@ -624,7 +645,7 @@ fn pad_focus(
 
     // Repaint every button when the focus or the tab changes. In between, hover still works.
     if focus.is_changed() || view.is_changed() {
-        for (e, action, _, _, mut bg) in &mut buttons {
+        for (e, action, _, _, mut bg, _) in &mut buttons {
             let want_bg = if focus.0 == Some(e) { FOCUS_BG } else { rest_bg(action, *view) };
             if bg.0 != want_bg {
                 bg.0 = want_bg;
