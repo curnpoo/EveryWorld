@@ -89,8 +89,35 @@ pub enum MenuView {
     Controls,
 }
 
+/// How the frame is anti-aliased: the temporal upscaler (renders low, AA included), plain AA at native
+/// resolution, or neither. Mutually exclusive: the upscaler already does the AA.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AaMode {
+    Upscale,
+    Aa,
+    Off,
+}
+
+impl AaMode {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Upscale => Self::Aa,
+            Self::Aa => Self::Off,
+            Self::Off => Self::Upscale,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Upscale => "MetalFX upscaler",
+            Self::Aa => "Anti-aliasing",
+            Self::Off => "Off",
+        }
+    }
+}
+
 #[derive(Resource, Clone)]
 pub struct GraphicsSettings {
+    pub aa_mode: AaMode,
     pub shadows: bool,
     pub ambient_occlusion: bool,
     pub bloom: bool,
@@ -108,7 +135,7 @@ pub struct GraphicsSettings {
 impl Default for GraphicsSettings {
     fn default() -> Self {
         let post = !std::env::args().any(|a| a == "--no-post");
-        let mut g = Self { shadows: !std::env::args().any(|a| a == "--no-shadows"), ambient_occlusion: post, bloom: post, render_pct: 67, aa: post, show_stats: false, time_live: false, hour_offset: 0.0 };
+        let mut g = Self { shadows: !std::env::args().any(|a| a == "--no-shadows"), ambient_occlusion: post, bloom: post, render_pct: 67, aa: post, aa_mode: if post { AaMode::Upscale } else { AaMode::Off }, show_stats: false, time_live: false, hour_offset: 0.0 };
         // Perf bisecting: `EW_GFX=ao=0,bloom=0,aa=0,shadows=0,res=50,stats=1`.
         if let Ok(spec) = std::env::var("EW_GFX") {
             for kv in spec.split(',') {
@@ -117,10 +144,16 @@ impl Default for GraphicsSettings {
                 match k {
                     "ao" => g.ambient_occlusion = b,
                     "bloom" => g.bloom = b,
-                    "aa" => g.aa = b,
+                    "aa" => {
+                        g.aa = b;
+                        g.aa_mode = if b { AaMode::Aa } else { AaMode::Off };
+                    }
                     "shadows" => g.shadows = b,
                     "stats" => g.show_stats = b,
-                    "res" => g.render_pct = v.parse().unwrap_or(g.render_pct),
+                    "res" => {
+                        g.render_pct = v.parse().unwrap_or(g.render_pct);
+                        g.aa_mode = if g.render_pct < 100 { AaMode::Upscale } else if g.aa { AaMode::Aa } else { AaMode::Off };
+                    }
                     _ => {}
                 }
             }
@@ -469,12 +502,12 @@ fn build_menus(mut commands: Commands, assets: Res<AssetServer>) {
                     ("Shadows", MenuAction::ToggleShadows),
                     ("Ambient occlusion", MenuAction::ToggleAo),
                     ("Bloom", MenuAction::ToggleBloom),
-                    ("Anti-aliasing", MenuAction::ToggleAa),
+                    ("Upscaler / AA", MenuAction::ToggleAa),
                     ("Debug stats", MenuAction::ToggleStats),
                 ] {
                     setting_row(t, label, &[("Toggle", a)], a);
                 }
-                setting_row(t, "Resolution", &[("Change", MenuAction::CycleResolution)], MenuAction::CycleResolution);
+                setting_row(t, "Upscaler render scale", &[("Change", MenuAction::CycleResolution)], MenuAction::CycleResolution);
                 setting_row(t, "Time of day", &[("-1 h", MenuAction::TimeMinus), ("+1 h", MenuAction::TimePlus), ("Now", MenuAction::TimeNow)], MenuAction::TimePlus);
                 t.spawn(Node { column_gap: Val::Px(12.0), align_items: AlignItems::Center, ..default() }).with_children(|r| {
                     r.spawn(Node { width: Val::Px(220.0), ..default() }).with_children(|c| text(c, "Local solar time", 17.0, INK));
@@ -886,7 +919,10 @@ fn menu_buttons(
             MenuAction::ToggleShadows => gfx.shadows = !gfx.shadows,
             MenuAction::ToggleAo => gfx.ambient_occlusion = !gfx.ambient_occlusion,
             MenuAction::ToggleBloom => gfx.bloom = !gfx.bloom,
-            MenuAction::ToggleAa => gfx.aa = !gfx.aa,
+            MenuAction::ToggleAa => {
+                gfx.aa_mode = gfx.aa_mode.next();
+                gfx.aa = gfx.aa_mode != AaMode::Off;
+            }
             MenuAction::ToggleStats => gfx.show_stats = !gfx.show_stats,
             MenuAction::CycleResolution => gfx.render_pct = match gfx.render_pct { 100 => 90, 90 => 85, 85 => 75, 75 => 67, 67 => 50, _ => 100 },
             MenuAction::TimeMinus => {
@@ -994,8 +1030,8 @@ fn refresh_menu(
             MenuAction::ToggleShadows => on(gfx.shadows),
             MenuAction::ToggleAo => on(gfx.ambient_occlusion),
             MenuAction::ToggleBloom => on(gfx.bloom),
-            MenuAction::ToggleAa => on(gfx.aa),
-            MenuAction::CycleResolution => format!("{}%", gfx.render_pct),
+            MenuAction::ToggleAa => gfx.aa_mode.label().to_string(),
+            MenuAction::CycleResolution => if gfx.aa_mode == AaMode::Upscale { format!("{}%", gfx.render_pct) } else { "native".to_string() },
             MenuAction::ToggleStats => on(gfx.show_stats),
             MenuAction::TimePlus => if gfx.time_live { "Now".into() } else { "Custom".into() },
             MenuAction::SetWeather(_) => pick.name.to_string(),

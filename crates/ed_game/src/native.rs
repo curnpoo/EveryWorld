@@ -375,10 +375,16 @@ mod imp {
         let to_sun = sun.single().map(|g| -g.forward().as_vec3()).unwrap_or(Vec3::new(0.4, 0.8, 0.3).normalize());
         let day = (to_sun.y * 6.0).clamp(0.03, 1.0);
         let sky = Vec3::new(0.38, 0.55, 0.95) * day * 1.4;
-        if std::env::var_os("EW_NATIVE_SCALE").is_some() {
-            r.set_options(gfx.ambient_occlusion, gfx.bloom, gfx.aa, r.render_scale);
-        } else {
-            r.set_options(gfx.ambient_occlusion, gfx.bloom, gfx.aa, gfx.render_pct as f32 / 100.0);
+        {
+            use crate::menu::AaMode;
+            let scale = if std::env::var_os("EW_NATIVE_SCALE").is_some() {
+                r.render_scale
+            } else if gfx.aa_mode == AaMode::Upscale {
+                gfx.render_pct as f32 / 100.0
+            } else {
+                1.0
+            };
+            r.set_options(gfx.ambient_occlusion, gfx.bloom, gfx.aa_mode == AaMode::Aa, scale);
         }
         let fp = FrameParams {
                 view_proj: raster.to_cols_array_2d(),
