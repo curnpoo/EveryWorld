@@ -157,7 +157,7 @@ fn array_image(size: u32, layers: u32, mips: u32, format: TextureFormat, data: V
         Extent3d { width: size, height: size, depth_or_array_layers: layers },
         TextureDimension::D2,
         format,
-        RenderAssetUsages::RENDER_WORLD,
+        crate::native::mesh_usage(),
     );
     img.texture_descriptor.mip_level_count = mips;
     img.data = Some(data);
@@ -240,7 +240,7 @@ pub fn to_mesh(m: ImpostorMesh) -> (Mesh, Aabb) {
     }
     let pad = Vec3::splat(r * GROW_MAX * 1.1 + 1.0);
     let aabb = Aabb::from_min_max(lo - pad, hi + pad);
-    let mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
+    let mesh = Mesh::new(PrimitiveTopology::TriangleList, crate::native::mesh_usage())
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, m.positions)
         .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, m.normals)
         .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, m.corners)

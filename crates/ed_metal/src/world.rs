@@ -66,6 +66,8 @@ pub struct GpuMesh {
     ib2: Option<Buf>,
     /// Per-vertex ground-layer weights (12 x u8) for the splat terrain shader.
     splat: Option<Buf>,
+    /// Impostor per-vertex params(4) + axis(4) + tile uv(2), 10 floats each.
+    extra: Option<Buf>,
 }
 
 #[derive(Clone, Copy)]
@@ -107,6 +109,8 @@ pub struct DrawItem {
     pub cast_shadow: bool,
     /// Terrain tile: also casts into the far (terrain-only) cascade.
     pub terrain: bool,
+    /// Far-tree impostor quads (needs `upload_extra` + the atlas).
+    pub impostor: bool,
 }
 
 pub struct FrameParams {
@@ -197,6 +201,11 @@ fn fit_cascades(p: &FrameParams) -> Cascades {
 }
 
 /// Splat-terrain material: layer texture arrays, macro variation, per-layer size/bump.
+struct ImpAtlas {
+    al: Tex,
+    nr: Tex,
+}
+
 struct Ground {
     al: Tex,
     nr: Tex,
@@ -217,6 +226,8 @@ pub struct WorldRenderer {
     blend_pso: Pso,
     terrain_pso: Pso,
     ground: Option<Ground>,
+    imp: Option<ImpAtlas>,
+    impostor_pso: Pso,
     resolve_pso: Pso,
     ds_shadow: Retained<ProtocolObject<dyn MTLDepthStencilState>>,
     ds_opaque: Retained<ProtocolObject<dyn MTLDepthStencilState>>,
@@ -312,6 +323,7 @@ impl WorldRenderer {
         let opaque_pso = mk("world_vs", Some("world_fs"), true, &[HDR, NRM], false, false)?;
         let blend_pso = mk("world_vs", Some("world_fs_blend"), true, &[HDR, NRM], true, true)?;
         let terrain_pso = mk("terrain_vs", Some("terrain_fs"), true, &[HDR, NRM], false, false)?;
+        let impostor_pso = mk("impostor_vs", Some("impostor_fs"), true, &[HDR, NRM], false, false)?;
         let post = crate::post::PostChain::new(&ctx);
         let upscaler = crate::upscale::Upscaler::new(&ctx);
         let resolve_pso = mk("fs_vs", Some("resolve_fs"), false, &[MTLPixelFormat::BGRA8Unorm], false, false)?;
@@ -395,6 +407,8 @@ impl WorldRenderer {
             blend_pso,
             terrain_pso,
             ground: None,
+            imp: None,
+            impostor_pso,
             resolve_pso,
             ds_shadow,
             ds_opaque,
@@ -564,7 +578,7 @@ impl WorldRenderer {
         let mk = |ptr: *const u8, len: usize| unsafe { self.ctx.device.newBufferWithBytes_length_options(NonNull::new(ptr as *mut c_void).unwrap(), len, MTLResourceOptions::StorageModeShared) };
         let (Some(vb), Some(ib)) = (mk(data.as_ptr() as *const u8, data.len() * 4), mk(idx.as_ptr() as *const u8, idx.len() * 4)) else { return };
         let ib2 = if pidx.is_empty() { None } else { mk(pidx.as_ptr() as *const u8, pidx.len() * 4) };
-        self.meshes.insert(id, GpuMesh { vb, ib, index_count: indices.len(), center, radius, clusters, ib2, splat: None });
+        self.meshes.insert(id, GpuMesh { vb, ib, index_count: indices.len(), center, radius, clusters, ib2, splat: None, extra: None });
     }
 
     /// Per-vertex splat weights (12 bytes per vertex: 12 layer weights) for an uploaded terrain mesh.
@@ -574,6 +588,71 @@ impl WorldRenderer {
             return;
         }
         m.splat = unsafe { self.ctx.device.newBufferWithBytes_length_options(NonNull::new(weights.as_ptr() as *mut c_void).unwrap(), weights.len() * 12, MTLResourceOptions::StorageModeShared) };
+    }
+
+    /// Impostor vertex stream: `params` (radius, layer, kept share, near), `axes` (xyz + thinning rank), tile uv.
+    pub fn upload_extra(&mut self, id: u64, params: &[[f32; 4]], axes: &[[f32; 4]], tile_uv: &[[f32; 2]]) {
+        let Some(m) = self.meshes.get_mut(&id) else { return };
+        let n = params.len().min(axes.len()).min(tile_uv.len());
+        if n == 0 {
+            return;
+        }
+        let mut d: Vec<f32> = Vec::with_capacity(n * 10);
+        for i in 0..n {
+            d.extend_from_slice(&params[i]);
+            d.extend_from_slice(&axes[i]);
+            d.extend_from_slice(&tile_uv[i]);
+        }
+        // Quads must never be simplified, and cluster bounds only cover the tree centres: pad by the grown radius.
+        m.ib2 = None;
+        let pad = params.iter().take(n).map(|q| q[0]).fold(0.0f32, f32::max) * 6.6 + 1.0;
+        for c in &mut m.clusters {
+            c.r += pad;
+        }
+        m.extra = unsafe { self.ctx.device.newBufferWithBytes_length_options(NonNull::new(d.as_ptr() as *mut c_void).unwrap(), d.len() * 4, MTLResourceOptions::StorageModeShared) };
+    }
+
+    pub fn has_atlas(&self) -> bool {
+        self.imp.is_some()
+    }
+
+    /// Hemi-octahedral impostor atlas: `layers` slices of `size`^2, `mips` levels each, layer-major
+    /// (all mips of layer 0, then layer 1, ...). Albedo is sRGB, normals linear.
+    pub fn upload_impostor_atlas(&mut self, size: usize, layers: usize, mips: usize, albedo: &[u8], normal: &[u8]) {
+        let mk = |fmt: MTLPixelFormat, data: &[u8]| -> Option<Tex> {
+            let d = unsafe { MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(fmt, size, size, true) };
+            d.setTextureType(MTLTextureType::Type2DArray);
+            unsafe {
+                d.setArrayLength(layers);
+                d.setMipmapLevelCount(mips);
+            }
+            d.setUsage(MTLTextureUsage::ShaderRead);
+            let t = self.ctx.device.newTextureWithDescriptor(&d)?;
+            let mut off = 0usize;
+            for l in 0..layers {
+                for m in 0..mips {
+                    let w = (size >> m).max(1);
+                    let bytes = w * w * 4;
+                    if off + bytes > data.len() {
+                        return Some(t);
+                    }
+                    unsafe {
+                        t.replaceRegion_mipmapLevel_slice_withBytes_bytesPerRow_bytesPerImage(
+                            MTLRegion { origin: MTLOrigin { x: 0, y: 0, z: 0 }, size: MTLSize { width: w, height: w, depth: 1 } },
+                            m,
+                            l,
+                            NonNull::new(data[off..].as_ptr() as *mut c_void).unwrap(),
+                            w * 4,
+                            bytes,
+                        );
+                    }
+                    off += bytes;
+                }
+            }
+            Some(t)
+        };
+        let (Some(al), Some(nr)) = (mk(MTLPixelFormat::RGBA8Unorm_sRGB, albedo), mk(MTLPixelFormat::RGBA8Unorm, normal)) else { return };
+        self.imp = Some(ImpAtlas { al, nr });
     }
 
     /// Ground layers: `al`/`nr` are 12 RGBA8 layers of `size`^2 (level 0 only; mips are generated),
@@ -778,7 +857,7 @@ impl WorldRenderer {
             sun: p.sun,
             cam: [p.cam_pos[0], p.cam_pos[1], p.cam_pos[2], 0.0],
             sky: [p.sky[0], p.sky[1], p.sky[2], 1.0],
-            fog: [p.fog_density, if up_on || !self.fxaa || std::env::var_os("EW_NATIVE_NOAA").is_some() { 1.0 } else { 0.0 }, 0.0, 0.0],
+            fog: [p.fog_density, if up_on || !self.fxaa || std::env::var_os("EW_NATIVE_NOAA").is_some() { 1.0 } else { 0.0 }, ih as f32 / p.tan_half_fov.max(1e-4), 0.0],
             csm: [[[0.0; 4]; 4]; NCASC],
             csm_info: casc.info,
             csm_split: [casc.splits[0], casc.splits[1], casc.splits[2], casc.splits[3]],
@@ -964,7 +1043,7 @@ impl WorldRenderer {
             }
             v.dot(vu).abs() - r * (1.0 + vty * vty).sqrt() <= z * vty
         };
-        let mut draw_one = |re: &ProtocolObject<dyn MTLRenderCommandEncoder>, d: &DrawItem, m: &GpuMesh, tex_cache: &mut u64, cur_t: &mut bool| {
+        let mut draw_one = |re: &ProtocolObject<dyn MTLRenderCommandEncoder>, d: &DrawItem, m: &GpuMesh, tex_cache: &mut u64, cur_t: &mut u8| {
             let du = DrawU {
                 model: d.model,
                 tint: d.tint,
@@ -972,10 +1051,17 @@ impl WorldRenderer {
                 mat: [d.rough, d.metal, if d.blend == Blend::Mask { d.cutoff.max(0.01) } else { 0.0 }, if d.unlit { 1.0 } else { 0.0 }],
             };
             let use_t = d.terrain && d.blend != Blend::Alpha && m.splat.is_some() && self.ground.is_some();
+            let use_i = d.impostor && d.blend != Blend::Alpha && m.extra.is_some() && self.imp.is_some();
+            let mode: u8 = if use_i { 2 } else if use_t { 1 } else { 0 };
             unsafe {
-                if d.blend != Blend::Alpha && use_t != *cur_t {
-                    *cur_t = use_t;
-                    if use_t {
+                if d.blend != Blend::Alpha && mode != *cur_t {
+                    *cur_t = mode;
+                    if use_i {
+                        let a = self.imp.as_ref().unwrap();
+                        re.setRenderPipelineState(&self.impostor_pso);
+                        re.setFragmentTexture_atIndex(Some(&a.al), 6);
+                        re.setFragmentTexture_atIndex(Some(&a.nr), 7);
+                    } else if use_t {
                         let g = self.ground.as_ref().unwrap();
                         re.setRenderPipelineState(&self.terrain_pso);
                         re.setFragmentTexture_atIndex(Some(&g.al), 3);
@@ -989,7 +1075,10 @@ impl WorldRenderer {
                 if use_t {
                     re.setVertexBuffer_offset_atIndex(m.splat.as_deref(), 0, 3);
                 }
-                re.setCullMode(if d.double_sided || d.blend != Blend::Opaque { MTLCullMode::None } else { MTLCullMode::Back });
+                if use_i {
+                    re.setVertexBuffer_offset_atIndex(m.extra.as_deref(), 0, 3);
+                }
+                re.setCullMode(if use_i { MTLCullMode::None } else if d.double_sided || d.blend != Blend::Opaque { MTLCullMode::None } else { MTLCullMode::Back });
                 re.setVertexBuffer_offset_atIndex(Some(&m.vb), 0, 0);
                 let ptr = NonNull::new(&du as *const DrawU as *mut c_void).unwrap();
                 re.setVertexBytes_length_atIndex(ptr, std::mem::size_of::<DrawU>(), 2);
@@ -1034,7 +1123,7 @@ impl WorldRenderer {
         re.setRenderPipelineState(&self.opaque_pso);
         re.setDepthStencilState(Some(&self.ds_opaque));
         let mut tc = u64::MAX;
-        let mut cur_t = false;
+        let mut cur_t = 0u8;
         for d in draws.iter().filter(|d| d.visible && d.blend != Blend::Alpha) {
             if let Some(m) = self.meshes.get(&d.mesh) {
                 draw_one(&re, d, m, &mut tc, &mut cur_t);

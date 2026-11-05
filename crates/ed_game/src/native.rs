@@ -34,7 +34,7 @@ impl Plugin for NativePlugin {
             return;
         }
         app.insert_non_send(imp::NativeState::default())
-            .add_systems(Update, imp::manage_cameras)
+            .add_systems(Update, (imp::manage_cameras, imp::send_atlas))
             .add_systems(Last, imp::native_frame);
     }
 }
@@ -49,6 +49,24 @@ mod imp {
     use raw_window_handle::RawWindowHandle;
     use std::collections::HashMap;
     use std::time::Instant;
+
+    /// Hand the baked impostor atlas to the Metal renderer once it exists.
+    pub fn send_atlas(mut st: NonSendMut<NativeState>, imps: Option<Res<crate::impostors::Impostors>>, mats: Res<Assets<ImpostorMaterial>>, images: Res<Assets<Image>>) {
+        let st = &mut *st;
+        let (Some(r), Some(imps)) = (st.renderer.as_mut(), imps) else { return };
+        if r.has_atlas() {
+            return;
+        }
+        let Some(m) = mats.get(&imps.material) else { return };
+        let (Some(a), Some(n)) = (images.get(&m.extension.albedo), images.get(&m.extension.normal)) else { return };
+        let (Some(ad), Some(nd)) = (&a.data, &n.data) else { return };
+        let sz = a.texture_descriptor.size;
+        if sz.depth_or_array_layers <= 1 {
+            return; // still the 1x1 placeholder
+        }
+        r.upload_impostor_atlas(sz.width as usize, sz.depth_or_array_layers as usize, a.texture_descriptor.mip_level_count as usize, ad, nd);
+        info!("native: impostor atlas uploaded ({} layers)", sz.depth_or_array_layers);
+    }
 
     #[derive(Default)]
     pub struct NativeState {
@@ -126,7 +144,7 @@ mod imp {
         images: Res<Assets<Image>>,
         sat: Option<Res<crate::ground_material::SatPool>>,
         gfx: Res<crate::menu::GraphicsSettings>,
-        items: Query<(&Mesh3d, &GlobalTransform, &InheritedVisibility, Option<&MeshMaterial3d<StandardMaterial>>, Option<&bevy::mesh::MeshTag>, Has<MeshMaterial3d<crate::ground_material::TerrainMaterial>>, Has<bevy::light::NotShadowCaster>, Has<crate::boot_plume::PlumeMesh>, Has<crate::body::WingMesh>, Option<&MeshMaterial3d<crate::foliage::FoliageMaterial>>, Option<&MeshMaterial3d<crate::ground_material::ScatterMaterial>>), (Without<MeshMaterial3d<ImpostorMaterial>>, Without<MeshMaterial3d<crate::clouds::CloudMaterial>>)>,
+        items: Query<(&Mesh3d, &GlobalTransform, &InheritedVisibility, Option<&MeshMaterial3d<StandardMaterial>>, Option<&bevy::mesh::MeshTag>, Has<MeshMaterial3d<crate::ground_material::TerrainMaterial>>, Has<bevy::light::NotShadowCaster>, Has<crate::boot_plume::PlumeMesh>, Has<crate::body::WingMesh>, Option<&MeshMaterial3d<crate::foliage::FoliageMaterial>>, Option<&MeshMaterial3d<crate::ground_material::ScatterMaterial>>, Has<MeshMaterial3d<ImpostorMaterial>>), (Without<MeshMaterial3d<crate::clouds::CloudMaterial>>)>,
     ) {
         let st = &mut *st;
         let headless = cfg.headless;
@@ -182,7 +200,7 @@ mod imp {
         st.draw_scratch.clear();
         let mut uploads = 0;
         let mut tex_uploads = 0;
-        for (m3, gt, vis, mat, mtag, is_terrain, no_cast, plume, wing, fol, scat) in &items {
+        for (m3, gt, vis, mat, mtag, is_terrain, no_cast, plume, wing, fol, scat, is_imp) in &items {
             let dynamic = plume || wing;
             if !vis.get() {
                 continue;
@@ -243,6 +261,10 @@ mod imp {
                 if blend == Blend::Opaque && tint[3] < 0.99 {
                     blend = Blend::Alpha;
                 }
+            }
+            if is_imp {
+                rough = 0.95;
+                double_sided = true;
             }
             if is_terrain {
                 rough = 0.95;
@@ -312,6 +334,16 @@ mod imp {
                         r.upload_splat(id, &w);
                     }
                 }
+                if is_imp {
+                    use bevy::mesh::VertexAttributeValues as V;
+                    if let (Some(V::Float32x4(pa)), Some(V::Float32x4(ax)), Some(V::Float32x2(tu))) = (
+                        mesh.attribute(crate::impostors::ATTRIBUTE_IMP_PARAMS),
+                        mesh.attribute(crate::impostors::ATTRIBUTE_IMP_AXIS),
+                        mesh.attribute(crate::impostors::ATTRIBUTE_IMP_TILE_UV),
+                    ) {
+                        r.upload_extra(id, pa, ax, tu);
+                    }
+                }
                 uploads += 1;
             }
             let Some(gm) = r.mesh(id) else { continue };
@@ -336,6 +368,7 @@ mod imp {
                 visible,
                 cast_shadow: !no_cast,
                 terrain: is_terrain,
+                impostor: is_imp,
             });
         }
 

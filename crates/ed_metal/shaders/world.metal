@@ -634,3 +634,130 @@ fragment float4 resolve_fs(FsOut in [[stage_in]], constant FrameU& F [[buffer(1)
     c *= mix(float3(1.0), float3(1.03, 1.0, 0.95), smoothstep(0.35, 0.9, l));
     return float4(pow(saturate(c), float3(1.0 / 2.2)), 1.0);
 }
+
+// ---- Tree impostors: camera-facing quads textured from a hemi-octahedral atlas ----
+// (ed_world::trees::impostor; port of ed_game/src/shaders/impostor.wesl). Far shadows are not ported yet.
+struct ImpX { packed_float4 params; packed_float4 axis; packed_float2 tile; };
+struct IOut {
+    float4 pos [[position]];
+    float2 uv;
+    float3 wpos;
+    float4 tint [[flat]];
+    uint layer [[flat]];
+    float3 ax [[flat]];
+    float3 up [[flat]];
+    float3 br [[flat]];
+    float3 bu [[flat]];
+    float3 vl [[flat]];
+};
+constant float IMP_FRAMES = 8.0;
+constant float IMP_PAD = 1.0666667;
+constant float IMP_FULL_M = 1000.0;
+constant float IMP_GROW_MAX = 6.0;
+constant float IMP_MIN_PX = 2.5;
+
+float2 imp_oct_encode(float3 d) {
+    float3 dd = float3(d.x, max(d.y, 0.0), d.z);
+    float3 n = dd / max(abs(dd.x) + abs(dd.y) + abs(dd.z), 1e-6);
+    return float2(n.x + n.z, n.x - n.z) * 0.5 + 0.5;
+}
+float3 imp_oct_decode(float2 uv) {
+    float2 g = uv * 2.0 - 1.0;
+    float x = (g.x + g.y) * 0.5, z = (g.x - g.y) * 0.5;
+    return normalize(float3(x, 1.0 - abs(x) - abs(z), z));
+}
+float3 imp_bu(float3 v) {
+    float3 u0 = float3(0.0, 1.0, 0.0) - v * v.y;
+    return dot(u0, u0) > 1e-6 ? normalize(u0) : float3(0.0, 0.0, 1.0);
+}
+
+vertex IOut impostor_vs(uint vid [[vertex_id]], device const Vtx* verts [[buffer(0)]], constant FrameU& F [[buffer(1)]],
+                        constant DrawU& D [[buffer(2)]], device const ImpX* ex [[buffer(3)]]) {
+    Vtx v = verts[vid];
+    ImpX x = ex[vid];
+    float3 c = (D.model * float4(float3(v.p), 1.0)).xyz;
+    float3 up = normalize((D.model * float4(float3(v.n), 0.0)).xyz);
+    float3 ax = (D.model * float4(float3(x.axis.xyz), 0.0)).xyz;
+    ax = normalize(ax - up * dot(ax, up));
+    float3 az = cross(ax, up);
+    float3 to_cam = F.cam.xyz - c;
+    float d = max(length(to_cam), 1e-3);
+    float3 vw = to_cam / d;
+    float3 vl = float3(dot(vw, ax), max(dot(vw, up), 0.0), dot(vw, az));
+    vl = normalize(vl + float3(0.0, 1e-4, 0.0));
+    float3 bu = imp_bu(vl);
+    float3 br = normalize(cross(bu, vl));
+    float3 right_w = ax * br.x + up * br.y + az * br.z;
+    float3 up_w = ax * bu.x + up * bu.y + az * bu.z;
+
+    float radius = x.params.x, kept = max(x.params[2], 1e-6), nearc = x.params[3];
+    float f = min(1.0, pow(IMP_FULL_M / d, 2.0));
+    float keep_here = f / kept;
+    float s = clamp((keep_here - x.axis[3]) / max(0.4 * keep_here, 0.004), 0.0, 1.0);
+    float grow = pow(min(rsqrt(max(min(f, kept), 1e-6)), IMP_GROW_MAX), 0.75);
+    if (nearc > 0.0) {
+        grow = mix(1.0, grow, smoothstep(nearc + 300.0, nearc + 1500.0, d));
+        s *= smoothstep(nearc - 20.0, nearc + 20.0, d);
+    }
+    float r = radius * grow;
+    float px = r * F.fog.z / d; // fog.z = viewport height / tan(fov/2)
+    s *= smoothstep(IMP_MIN_PX * 0.8, IMP_MIN_PX * 1.3, px);
+    float tie = fract(sin(dot(c.xz * 0.01, float2(12.9898, 78.233))) * 43758.5453);
+    float2 corner = float2(v.uv);
+    float3 off = (right_w * corner.x + up_w * corner.y) * (r * IMP_PAD * s) + vw * (r * (0.2 + 0.4 * tie) * s);
+    float3 wp = c + off;
+    IOut o;
+    o.pos = F.vp * float4(wp, 1.0);
+    o.wpos = wp;
+    o.uv = float2(corner.x * 0.5 + 0.5, 0.5 - corner.y * 0.5);
+    o.tint = float4(v.c);
+    o.layer = uint(x.params[1] + 0.5);
+    o.ax = ax; o.up = up; o.br = br; o.bu = bu; o.vl = vl;
+    return o;
+}
+
+fragment GOut impostor_fs(IOut in [[stage_in]], bool front [[front_facing]],
+                          constant FrameU& F [[buffer(1)]], constant DrawU& D [[buffer(2)]],
+                          depth2d_array<float> sm [[texture(1)]],
+                          texture2d_array<float> albedo_t [[texture(6)]], texture2d_array<float> normal_t [[texture(7)]]) {
+    float2 c = float2(in.uv.x * 2.0 - 1.0, 1.0 - in.uv.y * 2.0);
+    float3 p = in.br * c.x + in.bu * c.y;
+    float2 g = imp_oct_encode(in.vl) * IMP_FRAMES - 0.5;
+    float2 g0 = floor(g);
+    float2 t = g - g0;
+    float3 acc = 0.0, nacc = 0.0;
+    float asum = 0.0, wsum = 0.0;
+    for (uint k = 0; k < 4; k++) {
+        float2 o = float2(float(k & 1u), float(k >> 1));
+        float w = mix(1.0 - t.x, t.x, o.x) * mix(1.0 - t.y, t.y, o.y);
+        float2 fr = clamp(g0 + o, 0.0, IMP_FRAMES - 1.0);
+        float3 dk = imp_oct_decode((fr + 0.5) / IMP_FRAMES);
+        float3 buk = imp_bu(dk);
+        float3 brk = normalize(cross(buk, dk));
+        float2 q = float2(dot(p, brk), dot(p, buk));
+        float inside = step(abs(q.x), 1.0) * step(abs(q.y), 1.0);
+        float2 uvk = clamp(float2(q.x * 0.5 + 0.5, 0.5 - q.y * 0.5), 0.015, 0.985);
+        float2 auv = (fr + uvk) / IMP_FRAMES;
+        float4 a = albedo_t.sample(tsc, auv, in.layer);
+        float3 n = normal_t.sample(tsc, auv, in.layer).xyz * 2.0 - 1.0;
+        float wa = w * a.a * inside;
+        acc += a.rgb * wa; nacc += n * wa; asum += wa; wsum += w;
+    }
+    float cov = asum / max(wsum, 1e-5);
+    if (cov < 0.5) discard_fragment();
+    float3 alb = acc / max(asum, 1e-5);
+    float3 nt = nacc / max(asum, 1e-5);
+    float3 az = cross(in.ax, in.up);
+    float3 nrm = normalize(in.ax * nt.x + in.up * nt.y + az * nt.z + float3(0.0, 1e-5, 0.0));
+    float dist = length(F.cam.xyz - in.wpos);
+    // Far crowns take the satellite canopy colour (keeping the impostor's shading) and a smoother normal.
+    float shade = clamp(dot(alb, float3(0.3, 0.6, 0.1)) / 0.08, 0.85, 1.15);
+    float wt = in.tint.a * smoothstep(400.0, 2500.0, dist);
+    alb = mix(alb, in.tint.rgb * shade, wt);
+    nrm = normalize(mix(nrm, in.up, smoothstep(500.0, 2500.0, dist) * 0.85));
+    VOut iv; iv.pos = in.pos; iv.nrm = nrm; iv.uv = in.uv; iv.col = float4(1.0); iv.wpos = in.wpos;
+    float3 N;
+    float3 col = shade_ex(iv, float4(alb, 1.0), true, F, D, sm, N, 0.95, 1.0);
+    GOut out; out.c = float4(col, 1.0); out.n = float4(N * 0.5 + 0.5, 0.95);
+    return out;
+}
