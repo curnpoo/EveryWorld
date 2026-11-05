@@ -258,6 +258,8 @@ pub struct WorldRenderer {
     targets: Option<Targets>,
     post: Option<crate::post::PostChain>,
     clouds: Option<crate::clouds::CloudRenderer>,
+    ocean: Option<crate::ocean::Ocean>,
+    ocean_dummy: Tex,
     cloud_u: Vec<f32>,
     upscaler: Option<crate::upscale::Upscaler>,
     /// Internal render scale (1 = native, <1 = MetalFX temporal upscale). `EW_NATIVE_SCALE` sets the default.
@@ -348,6 +350,14 @@ impl WorldRenderer {
         let impostor_pso = mk("impostor_vs", Some("impostor_fs"), true, &[HDR, NRM], false, false)?;
         let post = crate::post::PostChain::new(&ctx);
         let clouds = crate::clouds::CloudRenderer::new(&ctx, HDR);
+        let ocean = if std::env::var_os("EW_NATIVE_NOFFT").is_some() { None } else { crate::ocean::Ocean::new(&ctx) };
+        let ocean_dummy = {
+            let d = unsafe { MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(MTLPixelFormat::RGBA16Float, 1, 1, false) };
+            d.setTextureType(MTLTextureType::Type2DArray);
+            unsafe { d.setArrayLength(3) };
+            d.setUsage(MTLTextureUsage::ShaderRead);
+            ctx.device.newTextureWithDescriptor(&d)?
+        };
         let upscaler = crate::upscale::Upscaler::new(&ctx);
         let resolve_pso = mk("fs_vs", Some("resolve_fs"), false, &[MTLPixelFormat::BGRA8Unorm], false, false)?;
         let ds_shadow = depth_state(&ctx, MTLCompareFunction::Less, true)?;
@@ -448,6 +458,8 @@ impl WorldRenderer {
             filmic,
             post,
             clouds,
+            ocean,
+            ocean_dummy,
             cloud_u: Vec::new(),
             upscaler,
             fxaa: true,
@@ -958,6 +970,9 @@ impl WorldRenderer {
 
         self.timers.begin_frame();
         let cb = self.ctx.queue.commandBuffer().unwrap();
+        if let Some(o) = self.ocean.as_ref().filter(|_| draws.iter().any(|d| d.visible && d.water)) {
+            o.encode(&cb, fu.cam[3]);
+        }
         let mut shadow_draws = 0usize;
 
         // ---- shadow cascades ----
@@ -1239,6 +1254,12 @@ impl WorldRenderer {
                 re.setFragmentTexture_atIndex(Some(self.probe.as_ref().unwrap_or(&self.probe_dummy)), 8);
                 re.setFragmentTexture_atIndex(Some(&dc), 9);
                 re.setFragmentTexture_atIndex(Some(&hc), 10);
+                let ov: [f32; 4] = match self.ocean.as_ref() {
+                    Some(o) => [o.variance[0], o.variance[1], o.variance[2], 1.0],
+                    None => [0.0; 4],
+                };
+                re.setFragmentTexture_atIndex(Some(self.ocean.as_ref().map(|o| &o.tex).unwrap_or(&self.ocean_dummy)), 11);
+                re.setFragmentBytes_length_atIndex(NonNull::new(ov.as_ptr() as *mut c_void).unwrap(), 16, 3);
             }
             re.setRenderPipelineState(&self.water_pso);
             re.setDepthStencilState(Some(&self.ds_opaque));

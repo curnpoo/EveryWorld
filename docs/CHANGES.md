@@ -1,5 +1,13 @@
 # Changes
 
+## 2026-11-05: water stage 3 - GPU FFT ocean
+
+- `crates/ed_metal/src/ocean.rs` + `shaders/ocean.metal`: 3 cascades (600/85/12 m, 128^2) of a seeded JONSWAP spectrum (9 m/s wind, 120 km fetch), evolved + inverse-FFT'd each frame in compute (Stockham radix-2, 2 real fields per complex FFT). Output: RGBA16F texture array (slope x, slope z, Jacobian, height), mipmapped, bound to `water_fs` at texture 11; per-cascade slope variance at fragment buffer 3 (w = FFT on).
+- Omega is quantised so the sea loops exactly every 300 s (`LOOP_S`); `h0` comes from a fixed-seed xorshift RNG, so phase 6 (CPU wave model for buoyancy) can rebuild identical `h0` on every client.
+- `water_fs` uses FFT slopes (mip-filtered, lost energy re-added as roughness variance) and Jacobian < 0.35 foam. `EW_NATIVE_NOFFT=1` falls back to the analytic 8-wave normals.
+- Not yet: vertex displacement (the water mesh is still flat; height/disp channels are computed but unused), planar reflection.
+- Phases 6 and 7 are NOT done (see docs/plans/ultra-water-port.md).
+
 ## 2026-11-05: water stage 2 - dedicated water pass (Ultra-Water port, see docs/plans/ultra-water-port.md)
 - `world.rs`: `DrawItem.water` (set in `native.rs` from `StandardMaterial::attenuation_distance == assets::WATER_MARK`, which `wm.water`/`wm.ocean` carry). Water draws skip the opaque loop; after it the pass ends, depth + HDR are blit-copied to `Targets.dcopy/hcopy`, and a second pass (Load/Store, depth-tested, `water_pso`) draws water, then the blended list. `FrameU.csm_far.z` now carries the camera near plane (reverse-Z depth = near/z). `EW_NATIVE_NOWATER=1` falls back to the old opaque draw.
 - `world.metal` `water_fs`: 8 analytic waves (62 m .. 0.78 m) whose sub-pixel energy becomes GGX slope variance, Lagarde Fresnel (F0 0.02), sun GGX + glitter, Beer-Lambert through the real water column (scene depth behind the surface), body scatter, SSS, soft shoreline (surface dissolves over 0.3 m depth) plus lace foam under 1.1 m. Shallows over carved terrain go turquoise (checked Palm Jumeirah 25.118,55.135 and SF Bay). ~3.3 ms at 1280x720 when much of the frame is water.

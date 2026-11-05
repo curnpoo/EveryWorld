@@ -837,10 +837,29 @@ float3 wave_normal(float2 p, float t, float pix, thread float& svar) {
     return normalize(float3(-g.x, 1.0, -g.y));
 }
 
+// FFT ocean (shaders/ocean.metal): 3 cascades of slope(x,z), Jacobian, height in a tiled texture array.
+// OV = per-cascade slope variance (xyz) + FFT-on flag (w). Mip-filtered slopes lose energy as the footprint
+// outgrows a cascade, so that energy is re-added as roughness variance.
+constant float OLEN[3] = { 600.0, 85.0, 12.0 };
+float3 fft_normal(texture2d_array<float> oc, float2 p, float pix, float4 OV, thread float& svar, thread float& jac) {
+    constexpr sampler os(filter::linear, mip_filter::linear, address::repeat, max_anisotropy(4));
+    float2 g = float2(0.0);
+    svar = 0.0003;
+    jac = 1.0;
+    for (int c = 0; c < 3; c++) {
+        float4 v = oc.sample(os, p / OLEN[c], uint(c));
+        g += v.xy;
+        jac += v.z - 1.0;
+        svar += OV[c] * smoothstep(0.4, 2.0, pix / (OLEN[c] / 128.0));
+    }
+    return normalize(float3(-g.x, 1.0, -g.y));
+}
+
 struct WOut { float4 c [[color(0)]]; float4 n [[color(1)]]; };
 fragment WOut water_fs(VOut in [[stage_in]], constant FrameU& F [[buffer(1)]], constant DrawU& D [[buffer(2)]],
                        depth2d_array<float> sm [[texture(1)]], texture3d<float> pv [[texture(8)]],
-                       depth2d<float> dcopy [[texture(9)]], texture2d<float> hcopy [[texture(10)]]) {
+                       depth2d<float> dcopy [[texture(9)]], texture2d<float> hcopy [[texture(10)]],
+                       texture2d_array<float> oc [[texture(11)]], constant float4& OV [[buffer(3)]]) {
     float3 toCam = F.cam.xyz - in.wpos;
     float dist = max(length(toCam), 1e-3);
     float3 V = toCam / dist;
@@ -849,7 +868,8 @@ fragment WOut water_fs(VOut in [[stage_in]], constant FrameU& F [[buffer(1)]], c
     float t = F.cam.w;
     float pix = 2.0 * dist / max(F.fog.z, 1.0);   // metres per pixel (fog.z = viewport height / tan(fov/2))
     float svar;
-    float3 N = wave_normal(in.wpos.xz, t, pix, svar);
+    float jac = 1.0;
+    float3 N = OV.w > 0.5 ? fft_normal(oc, in.wpos.xz, pix, OV, svar, jac) : wave_normal(in.wpos.xz, t, pix, svar);
     N = normalize(mix(N, float3(0, 1, 0), smoothstep(8000.0, 40000.0, dist)));
     float ndv = max(dot(N, V), 0.02);
     // Water column behind this fragment.
@@ -892,6 +912,7 @@ fragment WOut water_fs(VOut in [[stage_in]], constant FrameU& F [[buffer(1)]], c
         float lace = fbm3(in.wpos.xz * 1.7 + float2(t * 0.15, -t * 0.1)) * 0.6 + fbm3(in.wpos.xz * 5.0 - t * 0.2) * 0.4;
         foam = (1.0 - smoothstep(0.0, 1.1, hdep)) * smoothstep(0.30, 0.65, lace + (1.0 - smoothstep(0.0, 0.5, hdep)) * 0.45);
     }
+    foam = max(foam, smoothstep(0.35, 0.05, jac) * (1.0 - smoothstep(60.0, 400.0, dist)) * 0.8);
     float3 col = under * (1.0 - fr * edge) + (refl * fr + spec) * edge + glow;
     col = mix(col, float3(0.9, 0.93, 0.95) * lightk * 0.9 + sunc * 0.05 * vis, saturate(foam) * 0.85);
     float3 fd = -V; fd.y = max(fd.y, 0.10);
