@@ -41,6 +41,12 @@ Priority: **P1** breaks the look or feel on first contact, **P2** clearly wrong,
 |---|---|---|---|
 | B12 | P1 | **Camera lags behind the character**, even at low speed when accelerating; at high speed follow does not work (screenshot 5: character visible far ahead/offset). | `camera.rs`. Desired: camera is positionally **locked** to the character (no spring lag on position). Keep a little motion on walk/jump (head bob, landing dip, small easing on the vertical axis). In flight, only light smoothing, and it must be velocity-compensated (smooth in the character's frame, or integrate camera in the same step after physics) so speed never produces a growing lag. Likely cause: smoothing in world space with a fixed time constant, or camera updated before the player transform. |
 
+## Buildings
+
+| # | Pri | Issue | Notes / suspected area |
+|---|---|---|---|
+| B13 | P1 | **NYC window frames render detached from facades** (floating frames in front of the walls at street level, native renderer; check if Bevy too). | Likely a transform/offset in the window geometry or its mirroring in `native.rs`; repro: `--fly --lat 40.7484 --lon -73.9857 --alt 60 --heading 200 --pitch -15 --hour 16`. |
+
 ## Cross-cutting notes
 
 - B9, B10, B11 are all altitude-dependent transitions. Consider one `AltitudeBlend` resource (smooth 0..1 per regime) that atmosphere, sat/ground texture, fog and clouds all read, so regimes cannot pop independently.

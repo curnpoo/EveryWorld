@@ -107,7 +107,9 @@ fn setup_sky(
 
 fn fetch_weather(mut commands: Commands, cfg: Res<Config>) {
     // `--weather <preset>` (and lookdev, which must be deterministic) skip the network.
-    if let Some(w) = crate::clouds::weather_override().or_else(|| cfg.lookdev.as_ref().and_then(|_| ed_world::clouds::weather_preset("fair"))) {
+    let explicit = std::env::args().any(|a| a == "--weather");
+    let lookdev_fair = if explicit { None } else { cfg.lookdev.as_ref().and_then(|_| ed_world::clouds::weather_preset("fair")) };
+    if let Some(w) = lookdev_fair.or_else(crate::clouds::weather_override) {
         info!("weather (override): {} {:.0}% clouds", w.describe(), w.cloud_cover_pct);
         commands.insert_resource(CurrentWeather(Some(w)));
         return;

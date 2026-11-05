@@ -60,9 +60,13 @@ fn arg(name: &str) -> Option<String> {
     args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
 }
 
-/// `--weather <preset>`: synthetic weather instead of the live report.
+/// Synthetic weather: `--weather <preset>` (default `clear`); `live` uses the real report.
 pub fn weather_override() -> Option<ed_data::weather::Weather> {
-    let name = arg("--weather")?;
+    // Default is clear sky; `--weather live` (or EW_WEATHER=live) uses the real report.
+    let name = arg("--weather").or_else(|| std::env::var("EW_WEATHER").ok()).unwrap_or_else(|| "clear".into());
+    if name.eq_ignore_ascii_case("live") {
+        return None;
+    }
     let w = wc::weather_preset(&name);
     if w.is_none() {
         warn!("unknown --weather {name:?} (try clear, fair, overcast, rain, showers, storm, fog)");
