@@ -31,6 +31,10 @@ Native is the default; `EW_NATIVE=0` returns to Bevy. `ed_game::native` mirrors 
 `--play` shows the player (boots; with `EW_HOLD_SPACE=1`); `--fly` has none. Streaming is slow (~30 fps), probes need several hundred frames.
 Filter FPS with `grep "native: [0-9]* fps"`.
 
+## Water (2026-11-05)
+
+Native water is a dedicated pass: `WorldRenderer::encode` draws opaque, blits depth+HDR copies (`dcopy`/`hcopy`), then draws meshes marked `attenuation_distance == WATER_MARK` (`assets.rs`) with `water_fs`. GPU FFT ocean (`ocean.rs`, 3 cascades) feeds slopes and Jacobian foam; shoaling, breakers, refraction and caustics come from scene depth. Switches: `EW_NATIVE_NOWATER=1` (opaque water draw), `EW_NATIVE_NOFFT=1` (analytic waves). Full status and the specs for **phase 6 (CPU deterministic wave model / buoyancy / spray)** and **phase 7 (underwater pass)**, which are NOT done, are in `docs/plans/ultra-water-port.md`. Also open: vertex displacement, per-tile shore map, terrain swash, planar reflection, double-counted sky where SSR hits.
+
 ## Open work, in priority order
 1. **NYC window frames render detached** from facades (street level). Likely transform/offset in the window geometry mirrored by `native.rs`. See BUGS B13.
 2. **Far buildings to 20 km** per `docs/plans/far-buildings-and-nanite.md` (tiers 3-8 km merged footprints, 8-20 km simplified; `ed_world/src/lod.rs` floor 16 km).

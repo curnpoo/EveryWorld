@@ -1,5 +1,10 @@
 # Changes
 
+## 2026-11-05: water stages 4 + 5 - coast, refraction, caustics
+
+- `water_fs`: breaker bands + swash foam keyed on the real water column depth (shoaling), validated refraction (shifted lookup only accepted when behind the surface), two-layer ridged caustics on the bed. Verified at the Palm Jumeirah (smooth turquoise shallows, complete shoreline) and open ocean (36.96,-122.02).
+- Not done: baked shore map, terrain swash, vertex displacement, planar reflection. Phases 6 (CPU wave model) and 7 (underwater) NOT done, see docs/plans/ultra-water-port.md.
+
 ## 2026-11-05: water stage 3 - GPU FFT ocean
 
 - `crates/ed_metal/src/ocean.rs` + `shaders/ocean.metal`: 3 cascades (600/85/12 m, 128^2) of a seeded JONSWAP spectrum (9 m/s wind, 120 km fetch), evolved + inverse-FFT'd each frame in compute (Stockham radix-2, 2 real fields per complex FFT). Output: RGBA16F texture array (slope x, slope z, Jacobian, height), mipmapped, bound to `water_fs` at texture 11; per-cascade slope variance at fragment buffer 3 (w = FFT on).

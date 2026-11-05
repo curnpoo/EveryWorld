@@ -51,3 +51,35 @@ Target 1.5-2.5 ms total on M3 Pro at 1440p (FFT 0.4, surface 1.0, caustics 0.2, 
 ## Verify
 `earthdrop --headless --fly --lat 37.80 --lon -122.46 --alt 40 --heading 60 --pitch -8 --hour 16 ...` (SF Bay), open ocean (lat 36 lon -123.5), a beach (Santa Cruz 36.96,-122.02).
 The interactive reference page of four shader styles was published as an Artifact (EveryWorld Water Options).
+
+## Status (2026-11-05)
+
+| Phase | State |
+|---|---|
+| 1 Analytic shading (Fresnel/GGX/SSS/glitter) | DONE (`water_fs`, `world.metal`) |
+| 2 Dedicated water pass, depth-aware Beer-Lambert, soft shoreline | DONE (`WorldRenderer::encode`, `WATER_MARK` in `assets.rs`) |
+| 3 GPU FFT (3 cascades), slope + Jacobian foam | DONE (`ed_metal/src/ocean.rs`, `shaders/ocean.metal`). Vertex displacement NOT done (height/disp channels computed but unused) |
+| 4 Coast | PARTIAL: shoaling, breaker bands and swash foam are driven by scene depth in `water_fs`. NOT done: baked per-tile shore map (EDT/eikonal), terrain-side swash/wet sand |
+| 5 Refraction, caustics, seabed | DONE in `water_fs` (depth-validated refraction, 2-layer ridged caustics). Seabed is the carved terrain, no special seabed shading |
+| 6 CPU deterministic wave model | NOT DONE, spec below |
+| 7 Underwater pass | NOT DONE, spec below |
+| Planar reflection | NOT DONE (analytic sky + SSR only) |
+
+## Phase 6 (NOT DONE): CPU deterministic wave model, buoyancy, spray
+
+Goal: floaters (boats, swimmers) sit on the same surface the GPU draws, identically on every client (multiplayer-safe). Never read the GPU texture back: readback is nondeterministic and lags.
+
+- Rebuild the spectrum on the CPU: `ocean::jonswap_f` and the xorshift `Rng(SEED)` generation loop in `Ocean::new` are already deterministic (f64, fixed seed `0x5EED_0CEA_4001`, bands `[0,.62) [.62,4.4) [4.4,inf)`, wind 9 m/s, fetch 120 km, dir (0.8, 0.6)). Factor that loop into a pure function returning `h0` and share it between the GPU upload and a new `ed_sim`-side module.
+- Evaluate height at a point with a small direct sum (not a full FFT): take the ~32 strongest modes per cascade (sorted by amplitude, deterministic tie-break on index), `h = sum a*cos(k.x - w*t + phi)` with `w = sqrt(9.81k + 7.4e-5 k^3)` quantised to multiples of `2*pi/LOOP_S` (`LOOP_S = 300`, same as the GPU, see `ocean_spec`). Use the sim clock, not wall time. Add the choppy horizontal shift (`lambda = Ocean::choppy`) when computing the sample point if you need parity with displacement.
+- Buoyancy: sample 4 hull points, apply force `k * submerged_depth` plus damping; use fixed-step sim ticks.
+- Floating origin: the GPU samples the FFT with origin-relative world xz, so wave phase jumps when the origin rebases. Fix by passing the absolute (f64) origin offset into `water_fs` (modulo cascade length) and using absolute coords in the CPU model.
+- Spray: spawn particles where the CPU model's Jacobian < ~0.2 or at breaker bands; keep spawn decisions on the CPU sim so clients agree.
+- Verify: a test comparing the CPU height against a CPU FFT of the same `h0` at 100 random points (tolerance ~5 cm), and a determinism test (two runs, identical bytes).
+
+## Phase 7 (NOT DONE): underwater pass
+
+- Trigger: camera below the water surface height (sea level 0 on the curved planet; use the local wave height for the transition band, +/-0.3 m).
+- Skip `water_pso` surface shading from below or render it with inverted Fresnel + total internal reflection (critical angle ~48.6 deg), showing Snell's window.
+- Full-screen underwater composite after the opaque pass: Beer-Lambert extinction by linear depth using the same `absorb = (0.40, 0.062, 0.032)`, in-scatter colour `(0.030, 0.150, 0.210)`, god-rays by marching the cascaded shadow map along the view ray, and caustics projected on the seabed (reuse the caustic function in `water_fs`).
+- Disable fog / sky and volumetric clouds below the surface; adjust bloom and exposure so it does not blow out.
+- Likely files: `ed_metal/src/world.rs` (new pass after the water pass), `shaders/world.metal` or a new `underwater.metal`, `FrameU` for the "underwater" flag (e.g. `fog.w`).
