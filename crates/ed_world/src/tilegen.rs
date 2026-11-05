@@ -222,6 +222,12 @@ pub fn build(job: &TileJob) -> TileBuild {
     }
 
     let uncarved = grid.clone();
+    // Coastal tiles: the cover mask is finer than the DEM grid, so densify before carving (2x here, so
+    // the waterline follows the mask at ~6 m instead of stepping with the coarse quads).
+    let coastal = vt.is_some() && tile.z >= 12 && grid.segments * 2 <= 400 && surface.has_coast();
+    if coastal {
+        grid = grid.upsampled(2);
+    }
     if vt.is_some() {
         water::carve_terrain(&mut grid, &surface, 2.5);
     }
@@ -231,8 +237,11 @@ pub fn build(job: &TileJob) -> TileBuild {
         Some((vid, t)) if tile.z >= 14 && *vid == tile => {
             let mut p = roads::plan(t, &proj, &grid, &surface);
             if p.grades_terrain() {
-                // Roads are narrower than a source cell: densify so the bed can be cut in.
-                grid = grid.upsampled(2);
+                // Roads are narrower than a source cell: densify so the bed can be cut in
+                // (coastal tiles were already densified above; keep the mesh bounded).
+                if !coastal {
+                    grid = grid.upsampled(2);
+                }
                 p = roads::plan(t, &proj, &grid, &surface);
                 roads::grade(&mut grid, &p);
             }

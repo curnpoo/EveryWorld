@@ -418,6 +418,26 @@ impl SurfaceMap {
         }
     }
 
+    /// Does this tile have both mapped water and land cells (a coast worth densifying)?
+    pub fn has_coast(&self) -> bool {
+        let w = self.cover.iter().filter(|c| **c == Cover::Water).count();
+        w > 0 && w < self.cover.len()
+    }
+
+    /// Smooth water coverage 0..1 at (u, v): the water mask bilinearly filtered between cell centres, so
+    /// a coastline carved from it follows a smooth contour instead of the cover grid's staircase.
+    pub fn water_fraction(&self, u: f64, v: f64) -> f32 {
+        let r = self.res as f64;
+        let (fx, fy) = ((u * r - 0.5).clamp(0.0, r - 1.0), (v * r - 0.5).clamp(0.0, r - 1.0));
+        let (x0, y0) = ((fx.floor() as usize).min(self.res - 1), (fy.floor() as usize).min(self.res - 1));
+        let (x1, y1) = ((x0 + 1).min(self.res - 1), (y0 + 1).min(self.res - 1));
+        let (tx, ty) = ((fx - x0 as f64) as f32, (fy - y0 as f64) as f32);
+        let w = |x: usize, y: usize| if self.cover[y * self.res + x] == Cover::Water { 1.0f32 } else { 0.0 };
+        let a = w(x0, y0) + (w(x1, y0) - w(x0, y0)) * tx;
+        let b = w(x0, y1) + (w(x1, y1) - w(x0, y1)) * tx;
+        a + (b - a) * ty
+    }
+
     pub fn cover_at(&self, u: f64, v: f64) -> Cover {
         let x = ((u * self.res as f64) as usize).min(self.res - 1);
         let y = ((v * self.res as f64) as usize).min(self.res - 1);

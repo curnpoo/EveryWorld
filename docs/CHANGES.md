@@ -1,5 +1,12 @@
 # Changes
 
+## 2026-11-05: smooth coastlines (terrain carve)
+
+- Cause of the stepped shoreline: `water::carve_terrain` lowered the ground by 2.5 m per coarse DEM vertex using a binary `cover_at == Water` test, so the waterline followed the cover-grid staircase.
+- Fix: `SurfaceMap::water_fraction` (bilinear-filtered water mask) drives a smoothstep carve ramp, and `tilegen::build` densifies coastal tiles (`SurfaceMap::has_coast`, z >= 12, grid <= 200 segments) 2x before carving. Coastal tiles skip the second road-grade upsample to bound mesh size.
+- Cost: up to ~4x terrain vertices on coastal tiles only. Checked at the Palm Jumeirah; `cargo test -p ed_world` passes (115).
+- Possible follow-up: adaptive refinement only within a few cells of the coast, 3x density, and filtered `is_water` in `sat_vertex`/`splat` (colour is still per cover cell).
+
 ## 2026-11-05: water stages 4 + 5 - coast, refraction, caustics
 
 - `water_fs`: breaker bands + swash foam keyed on the real water column depth (shoaling), validated refraction (shifted lookup only accepted when behind the surface), two-layer ridged caustics on the bed. Verified at the Palm Jumeirah (smooth turquoise shallows, complete shoreline) and open ocean (36.96,-122.02).

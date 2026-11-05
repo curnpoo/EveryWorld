@@ -5,7 +5,7 @@
 
 use crate::mesh::{MeshData, rgb};
 use crate::project::TileProjector;
-use crate::surface::{Cover, SurfaceMap};
+use crate::surface::SurfaceMap;
 use crate::terrain::TerrainGrid;
 use ed_data::mvt::{self, GeomType};
 use glam::Vec3;
@@ -16,9 +16,13 @@ pub fn carve_terrain(grid: &mut TerrainGrid, surface: &SurfaceMap, depth: f32) {
     for j in 0..n {
         for i in 0..n {
             let (u, v) = (i as f64 / grid.segments as f64, j as f64 / grid.segments as f64);
-            if surface.cover_at(u, v) == Cover::Water {
-                let h = &mut grid.heights[j * n + i];
-                *h -= depth;
+            // Smooth ramp over the filtered mask: the bank slopes into the bed instead of dropping a
+            // cover-cell-sized step, so the waterline (terrain crossing the water plane) is a clean curve.
+            let f = surface.water_fraction(u, v);
+            let k = ((f - 0.2) / 0.6).clamp(0.0, 1.0);
+            let k = k * k * (3.0 - 2.0 * k);
+            if k > 0.0 {
+                grid.heights[j * n + i] -= depth * k;
             }
         }
     }
