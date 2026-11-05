@@ -1,5 +1,10 @@
 # Changes
 
+## 2026-11-05: water stage 2 - dedicated water pass (Ultra-Water port, see docs/plans/ultra-water-port.md)
+- `world.rs`: `DrawItem.water` (set in `native.rs` from `StandardMaterial::attenuation_distance == assets::WATER_MARK`, which `wm.water`/`wm.ocean` carry). Water draws skip the opaque loop; after it the pass ends, depth + HDR are blit-copied to `Targets.dcopy/hcopy`, and a second pass (Load/Store, depth-tested, `water_pso`) draws water, then the blended list. `FrameU.csm_far.z` now carries the camera near plane (reverse-Z depth = near/z). `EW_NATIVE_NOWATER=1` falls back to the old opaque draw.
+- `world.metal` `water_fs`: 8 analytic waves (62 m .. 0.78 m) whose sub-pixel energy becomes GGX slope variance, Lagarde Fresnel (F0 0.02), sun GGX + glitter, Beer-Lambert through the real water column (scene depth behind the surface), body scatter, SSS, soft shoreline (surface dissolves over 0.3 m depth) plus lace foam under 1.1 m. Shallows over carved terrain go turquoise (checked Palm Jumeirah 25.118,55.135 and SF Bay). ~3.3 ms at 1280x720 when much of the frame is water.
+- Not yet: planar reflection (SSR misses still fall back to analytic sky), FFT displacement, shore field/breakers, refraction offset, caustics. Phases 6 (CPU wave model for buoyancy) and 7 (underwater) are NOT done; see the plan doc.
+
 ## 2026-11-05: native shadows to 20 km (cached), screen-space contact shadows
 - `world.rs`: cascades 4 (to 4 km) and 5 (to 20 km) are now camera-centred spheres, so turning the camera no longer changes their matrices; the existing per-cascade hash (matrix + caster list, texel-snapped positions) then skips the re-render until you move a texel (`shadow_skipped`). Cascade 5 now casts buildings too (casters smaller than 1.5 texels, ~29 m at 20 km, are culled; terrain always casts).
 - `post.metal` `post_contact` + `post.rs`: port of Bevy's `ContactShadows` (12 steps, 0.25 m thickness, 1.5 m reach, scaled with distance). Marches toward the sun through the linear depth buffer, darkens HDR by 0.45 x N.L-gated, in place before SSR. `EW_CONTACT=0` disables it (same switch as Bevy).

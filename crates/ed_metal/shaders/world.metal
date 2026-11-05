@@ -812,3 +812,91 @@ fragment GOut impostor_fs(IOut in [[stage_in]], bool front [[front_facing]],
     GOut out; out.c = float4(col, 1.0); out.n = float4(N * 0.5 + 0.5, 0.95);
     return out;
 }
+
+// ---- Water surface (stage 2 of docs/plans/ultra-water-port.md) ----
+// Analytic multi-wave normals with slope-variance roughness (waves finer than a pixel turn into roughness,
+// not aliasing), Lagarde Fresnel, GGX sun, Beer-Lambert absorption through the real column of water
+// (scene depth behind the surface), SSS, glitter and a soft shoreline. Sampled copies of scene depth/colour
+// come from a blit made between the opaque and water passes.
+constant float2 WDIR[8] = { float2(0.80, 0.60), float2(0.62, 0.78), float2(0.95, 0.31), float2(0.40, 0.92), float2(0.99, -0.10), float2(0.70, 0.71), float2(0.88, 0.47), float2(0.30, -0.95) };
+constant float WLEN[8] = { 62.0, 33.0, 17.5, 9.6, 5.3, 2.8, 1.45, 0.78 };
+constant float WSTEEP[8] = { 0.050, 0.055, 0.060, 0.060, 0.055, 0.050, 0.045, 0.040 };
+
+float3 wave_normal(float2 p, float t, float pix, thread float& svar) {
+    float2 g = float2(0.0);
+    svar = 0.0003;
+    for (int i = 0; i < 8; i++) {
+        float k = 2.0 * M_PI_F / WLEN[i];
+        float w = sqrt(9.81 * k);
+        float fade = 1.0 - smoothstep(0.35, 1.2, pix * k * 0.5);   // wave narrower than ~2 px -> variance
+        float s = WSTEEP[i];
+        float ph = dot(WDIR[i], p) * k - w * t + float(i) * 1.7;
+        g += WDIR[i] * (cos(ph) * s * fade);
+        svar += 0.5 * s * s * (1.0 - fade);
+    }
+    return normalize(float3(-g.x, 1.0, -g.y));
+}
+
+struct WOut { float4 c [[color(0)]]; float4 n [[color(1)]]; };
+fragment WOut water_fs(VOut in [[stage_in]], constant FrameU& F [[buffer(1)]], constant DrawU& D [[buffer(2)]],
+                       depth2d_array<float> sm [[texture(1)]], texture3d<float> pv [[texture(8)]],
+                       depth2d<float> dcopy [[texture(9)]], texture2d<float> hcopy [[texture(10)]]) {
+    float3 toCam = F.cam.xyz - in.wpos;
+    float dist = max(length(toCam), 1e-3);
+    float3 V = toCam / dist;
+    float3 L = F.sun.xyz;
+    float day = F.sun.w;
+    float t = F.cam.w;
+    float pix = 2.0 * dist / max(F.fog.z, 1.0);   // metres per pixel (fog.z = viewport height / tan(fov/2))
+    float svar;
+    float3 N = wave_normal(in.wpos.xz, t, pix, svar);
+    N = normalize(mix(N, float3(0, 1, 0), smoothstep(8000.0, 40000.0, dist)));
+    float ndv = max(dot(N, V), 0.02);
+    // Water column behind this fragment.
+    float near = F.csm_far.z;
+    uint2 px = uint2(in.pos.xy);
+    float dbg = dcopy.read(px);
+    float zw = near / max(in.pos.z, 1e-9);
+    float cosf = max(dot(-V, F.cf.xyz), 0.05);
+    bool has_bg = dbg > 1e-7;
+    float thick = has_bg ? clamp((near / dbg - zw) / cosf, 0.0, 400.0) : 400.0;
+    float hdep = thick * abs(V.y);
+    float3 bg = has_bg ? hcopy.read(px).rgb : sky_rad(refract(-V, N, 0.75), L, day, 0.0) * 0.3;
+    // Beer-Lambert: red goes first, shallow sand reads turquoise, deep water goes blue-green.
+    float3 absorb = float3(0.40, 0.062, 0.032);
+    float3 T = exp(-absorb * thick);
+    float lightk = day * (0.30 + 0.70 * saturate(L.y));
+    float3 body = float3(0.030, 0.150, 0.210) * lightk * (1.0 - exp(-thick * 0.30));
+    float3 under = bg * T + body;
+    // Reflection (analytic sky + sun); Lagarde roughness-aware Fresnel with F0 = 0.02.
+    float a = clamp(sqrt(svar), 0.02, 0.7);
+    float3 R = reflect(-V, N); R.y = abs(R.y);
+    float fr = 0.02 + (max(1.0 - a, 0.02) - 0.02) * pow(1.0 - ndv, 5.0);
+    float3 refl = sky_rad(R, L, day, 0.0);
+    float3 H = normalize(L + V);
+    float ndl = saturate(dot(N, L)), ndh = saturate(dot(N, H));
+    float vd = dot(in.wpos - F.cam.xyz, F.cf.xyz);
+    float vis = ndl > 0.0 ? shadow_vis(in.wpos, float3(0, 1, 0), vd, F, sm) : 0.0;
+    float a2 = a * a, dd = ndh * ndh * (a2 - 1.0) + 1.0;
+    float Dg = a2 / (M_PI_F * dd * dd);
+    float3 sunc = mix(float3(1.0, 0.62, 0.34), float3(1.0, 0.96, 0.88), saturate(L.y * 2.5)) * 6.4 * day;
+    float glit = mix(1.0, 0.75 + 0.5 * vnoise(in.wpos.xz * 3.1 + t * 0.7), (1.0 - smoothstep(10.0, 120.0, dist)) * 0.6);
+    float3 spec = sunc * min(Dg * fr / max(4.0 * ndv, 0.05), 45.0) * ndl * vis * glit;
+    // Sub-surface glow through thin crests, strongest looking toward the sun.
+    float sss = pow(saturate(dot(-V, L) * 0.5 + 0.5), 4.0) * pow(1.0 - ndv, 2.0) * lightk;
+    float3 glow = float3(0.04, 0.22, 0.16) * sss * 0.6 * saturate(1.0 - exp(-thick));
+    // Soft shoreline: the surface dissolves into the bed instead of cutting a hard line; lace foam on the wet edge.
+    float edge = smoothstep(0.0, 0.30, hdep);
+    float foam = 0.0;
+    if (hdep < 1.2 && has_bg) {
+        float lace = fbm3(in.wpos.xz * 1.7 + float2(t * 0.15, -t * 0.1)) * 0.6 + fbm3(in.wpos.xz * 5.0 - t * 0.2) * 0.4;
+        foam = (1.0 - smoothstep(0.0, 1.1, hdep)) * smoothstep(0.30, 0.65, lace + (1.0 - smoothstep(0.0, 0.5, hdep)) * 0.45);
+    }
+    float3 col = under * (1.0 - fr * edge) + (refl * fr + spec) * edge + glow;
+    col = mix(col, float3(0.9, 0.93, 0.95) * lightk * 0.9 + sunc * 0.05 * vis, saturate(foam) * 0.85);
+    float3 fd = -V; fd.y = max(fd.y, 0.10);
+    float f = 1.0 - exp(-dist * F.fog.x);
+    col = mix(col, sky_rad(normalize(fd), L, day, 0.0), saturate(f));
+    WOut o; o.c = float4(col, 1.0); o.n = float4(N * 0.5 + 0.5, 0.04);
+    return o;
+}

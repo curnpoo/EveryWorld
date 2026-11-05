@@ -12,6 +12,9 @@ impl Plugin for AssetsPlugin {
     }
 }
 
+/// Marker stored in `StandardMaterial::attenuation_distance` so the native renderer can recognise water surfaces.
+pub const WATER_MARK: f32 = 1234.5;
+
 #[derive(Resource, Clone)]
 pub struct WorldMaterials {
     /// Ground v2 splat material (see `ground_material`).
@@ -55,12 +58,14 @@ fn setup_materials(
             base_color: Color::srgb(0.24, 0.45, 0.55),
             perceptual_roughness: 0.06,
             reflectance: 0.6,
+            attenuation_distance: WATER_MARK,
             ..default()
         }),
         ocean: mats.add(StandardMaterial {
             base_color: Color::srgb(0.12, 0.32, 0.45),
             perceptual_roughness: 0.08,
             reflectance: 0.55,
+            attenuation_distance: WATER_MARK,
             ..default()
         }),
     };

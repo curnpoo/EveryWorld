@@ -114,6 +114,8 @@ pub struct DrawItem {
     pub terrain: bool,
     /// Far-tree impostor quads (needs `upload_extra` + the atlas).
     pub impostor: bool,
+    /// Ocean / inland water surface: drawn in the water pass with scene-depth-aware shading.
+    pub water: bool,
 }
 
 pub struct FrameParams {
@@ -145,6 +147,9 @@ struct Targets {
     hdr: Tex,
     nrm: Tex,
     depth: Tex,
+    /// Copies of the opaque-pass depth / colour that the water pass samples (depth for column thickness, colour for the seabed).
+    dcopy: Tex,
+    hcopy: Tex,
 }
 
 struct Cascades {
@@ -232,6 +237,7 @@ pub struct WorldRenderer {
     sky_pso: Pso,
     opaque_pso: Pso,
     blend_pso: Pso,
+    water_pso: Pso,
     terrain_pso: Pso,
     ground: Option<Ground>,
     imp: Option<ImpAtlas>,
@@ -337,6 +343,7 @@ impl WorldRenderer {
         let sky_pso = mk("fs_vs", Some("sky_fs"), true, &[HDR, NRM], false, true)?;
         let opaque_pso = mk("world_vs", Some("world_fs"), true, &[HDR, NRM], false, false)?;
         let blend_pso = mk("world_vs", Some("world_fs_blend"), true, &[HDR, NRM], true, true)?;
+        let water_pso = mk("world_vs", Some("water_fs"), true, &[HDR, NRM], false, false)?;
         let terrain_pso = mk("terrain_vs", Some("terrain_fs"), true, &[HDR, NRM], false, false)?;
         let impostor_pso = mk("impostor_vs", Some("impostor_fs"), true, &[HDR, NRM], false, false)?;
         let post = crate::post::PostChain::new(&ctx);
@@ -421,6 +428,7 @@ impl WorldRenderer {
             sky_pso,
             opaque_pso,
             blend_pso,
+            water_pso,
             terrain_pso,
             ground: None,
             imp: None,
@@ -803,7 +811,7 @@ impl WorldRenderer {
             self.ctx.device.newTextureWithDescriptor(&d).unwrap()
         };
         let u = MTLTextureUsage::RenderTarget | MTLTextureUsage::ShaderRead | MTLTextureUsage::ShaderWrite;
-        let t = Targets { w, h, hdr: mk(HDR, u), nrm: mk(NRM, u), depth: mk(DEPTH, u) };
+        let t = Targets { w, h, hdr: mk(HDR, u), nrm: mk(NRM, u), depth: mk(DEPTH, u), dcopy: mk(DEPTH, MTLTextureUsage::ShaderRead | MTLTextureUsage::RenderTarget), hcopy: mk(HDR, MTLTextureUsage::ShaderRead | MTLTextureUsage::RenderTarget) };
         let r = (t.hdr.clone(), t.nrm.clone(), t.depth.clone());
         self.targets = Some(t);
         r
@@ -919,7 +927,7 @@ impl WorldRenderer {
             csm: [[[0.0; 4]; 4]; NCASC],
             csm_info: casc.info,
             csm_split: [casc.splits[0], casc.splits[1], casc.splits[2], casc.splits[3]],
-            csm_far: [casc.splits[5], casc.splits[4], 0.0, 0.0],
+            csm_far: [casc.splits[5], casc.splits[4], p.near, 0.0],
             cr: [0.0; 4],
             cu: [0.0; 4],
             cf: [p.cam_fwd[0], p.cam_fwd[1], p.cam_fwd[2], 0.0],
@@ -1186,11 +1194,69 @@ impl WorldRenderer {
         re.setDepthStencilState(Some(&self.ds_opaque));
         let mut tc = u64::MAX;
         let mut cur_t = 0u8;
-        for d in draws.iter().filter(|d| d.visible && d.blend != Blend::Alpha) {
+        for d in draws.iter().filter(|d| d.visible && d.blend != Blend::Alpha && !d.water) {
             if let Some(m) = self.meshes.get(&d.mesh) {
                 draw_one(&re, d, m, &mut tc, &mut cur_t);
             }
         }
+        // ---- water pass: copy the opaque depth/colour, then shade water against the column behind it ----
+        let has_water = draws.iter().any(|d| d.visible && d.water);
+        let re = if has_water && self.targets.is_some() && std::env::var_os("EW_NATIVE_NOWATER").is_none() {
+            re.endEncoding();
+            let (dc, hc) = {
+                let t = self.targets.as_ref().unwrap();
+                (t.dcopy.clone(), t.hcopy.clone())
+            };
+            if let Some(bl) = cb.blitCommandEncoder() {
+                let sz = MTLSize { width: iw, height: ih, depth: 1 };
+                let o = MTLOrigin { x: 0, y: 0, z: 0 };
+                unsafe {
+                    bl.copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(&depth, 0, 0, o, sz, &dc, 0, 0, o);
+                    bl.copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(&hdr, 0, 0, o, sz, &hc, 0, 0, o);
+                }
+                bl.endEncoding();
+            }
+            let pass = MTLRenderPassDescriptor::new();
+            let ca = unsafe { pass.colorAttachments().objectAtIndexedSubscript(0) };
+            ca.setTexture(Some(&hdr));
+            ca.setLoadAction(MTLLoadAction::Load);
+            ca.setStoreAction(MTLStoreAction::Store);
+            let cn = unsafe { pass.colorAttachments().objectAtIndexedSubscript(1) };
+            cn.setTexture(Some(&nrm));
+            cn.setLoadAction(MTLLoadAction::Load);
+            cn.setStoreAction(MTLStoreAction::Store);
+            let da = pass.depthAttachment();
+            da.setTexture(Some(&depth));
+            da.setLoadAction(MTLLoadAction::Load);
+            da.setStoreAction(MTLStoreAction::Store);
+            self.timers.attach(&pass, "water");
+            let re = cb.renderCommandEncoderWithDescriptor(&pass).unwrap();
+            re.setFrontFacingWinding(MTLWinding::CounterClockwise);
+            unsafe {
+                re.setVertexBytes_length_atIndex(fbytes, std::mem::size_of::<FrameU>(), 1);
+                re.setFragmentBytes_length_atIndex(fbytes, std::mem::size_of::<FrameU>(), 1);
+                re.setFragmentTexture_atIndex(Some(&self.shadow_map), 1);
+                re.setFragmentTexture_atIndex(Some(self.probe.as_ref().unwrap_or(&self.probe_dummy)), 8);
+                re.setFragmentTexture_atIndex(Some(&dc), 9);
+                re.setFragmentTexture_atIndex(Some(&hc), 10);
+            }
+            re.setRenderPipelineState(&self.water_pso);
+            re.setDepthStencilState(Some(&self.ds_opaque));
+            let mut wtc = u64::MAX;
+            let mut wct = 0u8;
+            for d in draws.iter().filter(|d| d.visible && d.water && d.blend != Blend::Alpha) {
+                if let Some(m) = self.meshes.get(&d.mesh) {
+                    // draw_one switches pipelines by mode; water meshes are plain (mode 0), so force our PSO after it.
+                    draw_one(&re, d, m, &mut wtc, &mut wct);
+                    re.setRenderPipelineState(&self.water_pso);
+                }
+            }
+            tc = u64::MAX;
+            cur_t = 0xff;
+            re
+        } else {
+            re
+        };
         // blended, far to near
         let cam = Vec3::from(p.cam_pos);
         let mut blended: Vec<(f32, usize)> = draws

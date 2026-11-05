@@ -228,6 +228,7 @@ mod imp {
             let (mut tint, mut emissive, mut rough, mut metal, mut cutoff, mut unlit, mut blend, mut double_sided) = ([1.0f32; 4], [0.0f32; 3], 0.8f32, 0.0f32, 0.5f32, false, Blend::Opaque, false);
             let mut tex = 0u64;
             let mut tex2 = 0u64;
+            let mut water = false;
             let base_mat = mat
                 .and_then(|m| std_mats.get(&m.0))
                 .or_else(|| fol.and_then(|m| fol_mats.get(&m.0)).map(|e| &e.base))
@@ -241,6 +242,7 @@ mod imp {
                 metal = sm.metallic;
                 unlit = sm.unlit;
                 double_sided = sm.double_sided;
+                water = sm.attenuation_distance == crate::assets::WATER_MARK && matches!(sm.alpha_mode, AlphaMode::Opaque);
                 match sm.alpha_mode {
                     AlphaMode::Opaque => {}
                     AlphaMode::Mask(c) => {
@@ -389,6 +391,7 @@ mod imp {
                 cast_shadow: !no_cast,
                 terrain: is_terrain,
                 impostor: is_imp,
+                water,
             });
         }
 
