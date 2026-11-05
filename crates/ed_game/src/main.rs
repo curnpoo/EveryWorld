@@ -96,6 +96,8 @@ fn main() {
     }
     if let Some(dir) = &cfg.lookdev {
         std::fs::create_dir_all(dir).expect("create lookdev dir");
+        // render_scale::sync_cameras needs these; the menu plugin that owns them isn't loaded here.
+        app.insert_state(menu::GameState::Playing).init_resource::<menu::GraphicsSettings>();
         app.insert_resource(lookdev::Lookdev { out_dir: dir.clone(), only: cfg.lookdev_only.clone() })
             .add_plugins((lookdev::LookdevPlugin, body::BodyPlugin));
     } else {

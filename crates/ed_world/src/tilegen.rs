@@ -317,7 +317,12 @@ pub fn build(job: &TileJob) -> TileBuild {
             out.placements.extend(props::place_street_props(crate::library::get(), &r.props, up));
             out.stats.props = r.props.len();
             let ctx = BuildingContext { proj: &proj, grid: &grid, surface: &surface, biome, roads: &r.centerlines };
-            let specs = buildings::prepare(vt, &ctx, region);
+            let mut specs = buildings::prepare(vt, &ctx, region);
+            // Buildings (bridge towers, riverside sheds) inside a water-spanning bridge's corridor go.
+            let cor = road_plan.as_ref().unwrap().corridors();
+            if !cor.is_empty() {
+                specs.retain(|s| !roads::in_bridge_corridor(&cor, s.center) && !s.ring_points().iter().any(|p| roads::in_bridge_corridor(&cor, *p)));
+            }
             out.stats.buildings = specs.len();
             if crate::farshadow::enabled() {
                 far_bldgs.extend(specs.iter().map(|s| s.shadow_outline()));

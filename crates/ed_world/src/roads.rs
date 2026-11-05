@@ -40,8 +40,20 @@ pub enum SignalLayout {
 }
 
 /// Everything about streets that changes when you cross a border.
+/// Bridge character of a region: what gets built, by wealth and history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeFlavor {
+    /// Concrete girders, parapets, steel arches/cable-stayed for big spans.
+    Modern,
+    /// Stone parapets, masonry arches and piers, stone-towered suspension.
+    Historic,
+    /// Cheap and sturdy: steel trusses, plain rails, timber footbridges.
+    Utilitarian,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct StreetKit {
+    pub bridge: BridgeFlavor,
     pub drive_side: Side,
     pub center_line: CenterLine,
     pub utility_poles: PoleKind,
@@ -66,7 +78,14 @@ impl StreetKit {
             sidewalk: 0xc9c6bf,
             curb_height: 0.15,
             stop_sign_text: "STOP",
+            bridge: BridgeFlavor::Modern,
         };
+        let flavor = match r {
+            Paris | Mediterranean | British | WesternEurope | Alpine => BridgeFlavor::Historic,
+            LatinAmerica | SubSaharan | SouthAsia | SoutheastAsia | NorthAfricaMiddleEast | EasternEurope => BridgeFlavor::Utilitarian,
+            _ => BridgeFlavor::Modern,
+        };
+        let base = StreetKit { bridge: flavor, ..base };
         match r {
             NorthAmericaCity | NorthAmericaSuburb => StreetKit {
                 center_line: CenterLine::DoubleYellow,
@@ -267,6 +286,20 @@ struct Item {
     urban: bool,
     /// Bridge deck that spans water (gets piers and clearance).
     over_water: bool,
+    /// OSM lane count (0 = unknown) and a deterministic 0..1 variation seed.
+    lanes: u8,
+    seed: f32,
+}
+
+impl Item {
+    /// Deck half-width: bridges follow lane count (3.4 m lanes + shoulders), not the class default.
+    fn deck_hw(&self) -> f32 {
+        if self.kind != Bed::Bridge || !self.class.is_car_road() {
+            return self.class.width() / 2.0;
+        }
+        let lanes = if self.lanes > 0 { self.lanes as f32 } else { (self.class.width() / 3.4).round().max(2.0) };
+        (lanes * 3.4 + 1.2) / 2.0
+    }
 }
 
 /// Road layout for one tile: bed heights decided once, used both to carve the
@@ -308,6 +341,7 @@ pub fn plan(vt: &mvt::Tile, proj: &TileProjector, grid: &TerrainGrid, surface: &
         let oneway = f.num("oneway").unwrap_or(0.0) != 0.0;
         let paved = !matches!(f.str("surface"), Some("unpaved"));
         let bridge = f.str("brunnel") == Some("bridge");
+        let lanes = f.num("lanes").unwrap_or(0.0).clamp(0.0, 12.0) as u8;
         for line in &f.rings {
             if line.len() < 2 {
                 continue;
@@ -324,6 +358,7 @@ pub fn plan(vt: &mvt::Tile, proj: &TileProjector, grid: &TerrainGrid, surface: &
                 continue;
             }
             let urban = surface.cover_at(line[0][0] as f64 / ext, line[0][1] as f64 / ext).is_urban();
+            let seed = hash2(line[0][0] as i32, line[0][1] as i32) * 0.5 + 0.5;
             // Water under each sample: a road that crosses water without a mapped bridge gets
             // one anyway, anchored on the dry samples either side.
             let wf: Vec<f32> = uv.iter().map(|&(u, v)| surface.water_fraction(u, v)).collect();
@@ -375,37 +410,106 @@ pub fn plan(vt: &mvt::Tile, proj: &TileProjector, grid: &TerrainGrid, surface: &
                 } else {
                     Bed::Conform
                 };
-                let wet = wf.iter().any(|&f| f >= 0.3);
+                let (ea, eb) = (ground[0], ground[ground.len() - 1]);
+                let gap = ground.iter().cloned().fold(f32::MAX, f32::min) < ea.min(eb) - 1.0;
+                let wet = wf.iter().any(|&f| f >= 0.2) || (is_bridge && gap);
                 let bed = match kind {
                     Bed::Graded => smooth(&ground, 10, 3),
-                    Bed::Bridge => bridge_bed(&ground, wet),
+                    Bed::Bridge => bridge_bed(&ground, wet, seed),
                     Bed::Conform => smooth(&ground, 5, 2),
                 };
                 let pts = uv.iter().zip(&bed).map(|(&(u, v), &h)| proj.local(u, v, h as f64)).collect();
-                plan.items.push(Item { class, kind, uv, bed, pts, oneway, paved, urban, over_water: wet && kind == Bed::Bridge });
+                plan.items.push(Item { class, kind, uv, bed, pts, oneway, paved, urban, over_water: wet && kind == Bed::Bridge, lanes, seed });
             }
         }
     }
     plan.junctions = junctions.into_iter().collect();
+    plan.cut_under_bridges();
     plan
+}
+
+impl RoadPlan {
+    /// Corridors (centerline xz, half-width) of every deck that spans water, ends trimmed so
+    /// the approaches still connect.
+    pub fn corridors(&self) -> Vec<(Vec<Vec3>, f32)> {
+        self.items
+            .iter()
+            .filter(|i| i.kind == Bed::Bridge && i.over_water && i.pts.len() >= 4)
+            .map(|i| {
+                let trim = ((i.pts.len() as f32 * STEP_M) * 0.15).clamp(4.0, 12.0);
+                let k = (trim / STEP_M).ceil() as usize;
+                let hi = i.pts.len().saturating_sub(k);
+                (i.pts[k.min(hi)..=hi.max(k.min(hi))].to_vec(), i.deck_hw())
+            })
+            .collect()
+    }
+
+    /// Old roads running through a bridge's corridor (the mapped road the bridge replaces,
+    /// parallel ways, ramps) are cut out, so nothing sits under or inside the deck.
+    fn cut_under_bridges(&mut self) {
+        let cor = self.corridors();
+        if cor.is_empty() {
+            return;
+        }
+        let mut out = Vec::new();
+        for it in std::mem::take(&mut self.items) {
+            if it.kind == Bed::Bridge {
+                out.push(it);
+                continue;
+            }
+            let hw = it.class.width() / 2.0;
+            let inside = |p: Vec3| cor.iter().any(|(line, bhw)| dist_xz(p, line) < bhw + hw + 1.5);
+            let mut start = 0usize;
+            let n = it.pts.len();
+            for i in 0..=n {
+                if i == n || inside(it.pts[i]) {
+                    if i > start + 1 {
+                        out.push(Item { uv: it.uv[start..i].to_vec(), bed: it.bed[start..i].to_vec(), pts: it.pts[start..i].to_vec(), ..it.clone() });
+                    }
+                    start = i + 1;
+                }
+            }
+        }
+        self.items = out;
+    }
+
+}
+
+/// Footprint test for buildings: true if `p` lies in a water-spanning bridge's corridor.
+pub fn in_bridge_corridor(cor: &[(Vec<Vec3>, f32)], p: Vec3) -> bool {
+    cor.iter().any(|(line, hw)| dist_xz(p, line) < hw + 10.0)
+}
+
+fn dist_xz(p: Vec3, line: &[Vec3]) -> f32 {
+    let mut best = f32::MAX;
+    for w in line.windows(2) {
+        let (a, b) = (glam::Vec2::new(w[0].x, w[0].z), glam::Vec2::new(w[1].x, w[1].z));
+        let q = glam::Vec2::new(p.x, p.z);
+        let ab = b - a;
+        let t = ((q - a).dot(ab) / ab.length_squared().max(1e-6)).clamp(0.0, 1.0);
+        best = best.min(q.distance(a + ab * t));
+    }
+    best
 }
 
 /// Bridge deck heights: a straight line between the (firmest) end heights; over water it
 /// ramps up to clear the surface and arches slightly, so the deck never dips under waves.
-fn bridge_bed(ground: &[f32], wet: bool) -> Vec<f32> {
+fn bridge_bed(ground: &[f32], wet: bool, seed: f32) -> Vec<f32> {
     let n = ground.len() - 1;
     let k = 2.min(n);
     let a = if wet { ground[..=k].iter().cloned().fold(f32::MIN, f32::max) } else { ground[0] };
     let b = if wet { ground[n - k..].iter().cloned().fold(f32::MIN, f32::max) } else { ground[n] };
     let span = n as f32 * STEP_M;
+    // Clearance grows with the span (ships pass under long bridges) and varies per bridge.
+    let clear = (1.8 + span * 0.02).min(9.0) * (0.8 + 0.5 * seed);
     (0..=n)
         .map(|i| {
             let t = i as f32 / n as f32;
             let mut h = a + (b - a) * t;
             if wet {
-                let edge = (t.min(1.0 - t) * span / 12.0).clamp(0.0, 1.0);
+                let edge = (t.min(1.0 - t) * span / (6.0 + clear * 4.0)).clamp(0.0, 1.0);
                 let edge = edge * edge * (3.0 - 2.0 * edge);
-                h += 1.8 * edge + (std::f32::consts::PI * t).sin() * (span * 0.02).min(2.0);
+                h += clear * edge + (std::f32::consts::PI * t).sin() * (span * 0.02).min(2.0);
             }
             h
         })
@@ -531,14 +635,19 @@ pub fn generate(plan: &RoadPlan, proj: &TileProjector, grid: &TerrainGrid, surfa
             snapped = it.uv.iter().map(|&(u, v)| proj.local(u, v, grid.sample(u, v) as f64)).collect();
             &snapped
         };
-        let w = class.width();
-        let hw = w / 2.0;
+        let hw = it.deck_hw();
         match it.kind {
             Bed::Bridge if !class.is_car_road() => {
                 let prof = conform_profile(class, it.paved, false, &kit);
                 let way = simplify_deck(pts, WAY_TOL_M, WAY_MAX_SPAN_M);
                 sweep(&mut out.mesh, &way, up, &prof, None, false, 1.2, 0.0, 0.06);
                 sweep(&mut out.collider, &way, up, &prof, None, false, 1.2, 0.0, 0.06);
+                let st = bridge_style(kit.bridge, class, bridge_len(pts), it.over_water, it.seed);
+                for s in [1.0f32, -1.0] {
+                    let g = offset_line(pts, up, s * (hw + 0.1), |_, _| 0.0);
+                    parapet(&mut out.mesh, &mut out.collider, &g, up, &st);
+                }
+                bridge_structure(&mut out.mesh, &mut out.collider, pts, &it.bed, up, hw, &ground, &st);
             }
             Bed::Graded | Bed::Bridge => {
                 let deck = simplify_deck(pts, DECK_TOL_M, DECK_MAX_SPAN_M);
@@ -549,12 +658,19 @@ pub fn generate(plan: &RoadPlan, proj: &TileProjector, grid: &TerrainGrid, surfa
                 if it.paved && class.rank() >= 1 {
                     markings(&mut out.mesh, &deck, up, if it.kind == Bed::Bridge { None } else { Some(&ground as &dyn Fn(Vec3) -> f32) }, true, class, &kit, it.oneway);
                 }
-                if it.over_water {
-                    piers(&mut out.mesh, pts, &it.bed, up, hw, &ground);
-                    piers(&mut out.collider, pts, &it.bed, up, hw, &ground);
+                if it.kind == Bed::Bridge {
+                    let st = bridge_style(kit.bridge, class, bridge_len(pts), it.over_water, it.seed);
+                    bridge_structure(&mut out.mesh, &mut out.collider, pts, &it.bed, up, hw, &ground, &st);
                 }
                 let rail_on_deck = it.kind == Bed::Bridge;
-                if rail_on_deck || (matches!(class, RoadClass::Motorway | RoadClass::Trunk) && !it.urban) {
+                if rail_on_deck {
+                    // Solid parapet on every bridge, so nobody walks or drives off the edge.
+                    let st = bridge_style(kit.bridge, class, bridge_len(pts), it.over_water, it.seed);
+                    for s in [1.0f32, -1.0] {
+                        let g = offset_line(pts, up, s * (hw + 0.15), |_, _| 0.0);
+                        parapet(&mut out.mesh, &mut out.collider, &g, up, &st);
+                    }
+                } else if matches!(class, RoadClass::Motorway | RoadClass::Trunk) && !it.urban {
                     let off = if rail_on_deck { hw + 0.15 } else { hw + 1.5 };
                     for s in [1.0f32, -1.0] {
                         let g = offset_line(pts, up, s * off, |i, p| if rail_on_deck { 0.0 } else { ground(p) - it.bed[i] });
@@ -973,26 +1089,294 @@ fn guardrail(m: &mut MeshData, g: &[Vec3], up: Vec3, s: f32) {
     }
 }
 
-/// Concrete piers under a water-spanning deck every ~16 m, down to the (carved) bed.
-fn piers(m: &mut MeshData, pts: &[Vec3], bed: &[f32], up: Vec3, hw: f32, ground: &dyn Fn(Vec3) -> f32) {
-    let concrete = rgb(0x9a9893);
-    let side = side_dirs(pts, up);
-    let mut dist = 0.0f32;
-    let mut next = 8.0f32;
-    for i in 0..pts.len() - 1 {
-        let seg = pts[i + 1] - pts[i];
-        let len = seg.length();
-        while next <= dist + len {
-            let t = ((next - dist) / len.max(1e-4)).clamp(0.0, 1.0);
-            let c = pts[i].lerp(pts[i + 1], t);
-            let sd = side[i].lerp(side[i + 1], t).normalize_or(side[i]);
-            let fw = seg.normalize_or_zero();
-            let deck_h = bed[i] + (bed[i + 1] - bed[i]) * t;
-            let depth = ground(c) - 3.0 - deck_h;
-            box_post(m, c, up, sd, fw, concrete, (hw * 0.8).max(1.0), 0.6, depth.min(-1.5), -0.35);
-            next += 16.0;
+/// Thin box between two points (beams, cables, hangers).
+fn beam(m: &mut MeshData, a: Vec3, b: Vec3, up: Vec3, half: f32, color: [f32; 4]) {
+    let d = (b - a).normalize_or_zero();
+    if d == Vec3::ZERO {
+        return;
+    }
+    let mut s1 = d.cross(up);
+    if s1.length_squared() < 1e-4 {
+        s1 = d.cross(Vec3::X);
+    }
+    let s1 = s1.normalize() * half;
+    let s2 = d.cross(s1).normalize() * half;
+    let corner = |p: Vec3, i: usize| p + s1 * if i & 1 == 0 { -1.0 } else { 1.0 } + s2 * if i & 2 == 0 { -1.0 } else { 1.0 };
+    let mid = (a + b) * 0.5;
+    for (i, j) in [(0usize, 1usize), (1, 3), (3, 2), (2, 0)] {
+        let q = [corner(a, i), corner(a, j), corner(b, j), corner(b, i)];
+        let face = (q[0] + q[1] + q[2] + q[3]) * 0.25 - mid;
+        let nrm = (q[1] - q[0]).cross(q[3] - q[0]);
+        if nrm.dot(face) >= 0.0 { m.quad(q, [[0.0; 2]; 4], color) } else { m.quad([q[1], q[0], q[3], q[2]], [[0.0; 2]; 4], color) }
+    }
+}
+
+/// Position and across-road direction at fraction `t` of a polyline.
+fn at_frac(pts: &[Vec3], side: &[Vec3], t: f32) -> (Vec3, Vec3, usize) {
+    let f = (t * (pts.len() - 1) as f32).clamp(0.0, (pts.len() - 1) as f32 - 1e-3);
+    let i = f.floor() as usize;
+    let k = f - i as f32;
+    (pts[i].lerp(pts[i + 1], k), side[i].lerp(side[i + 1], k).normalize_or(side[i]), i)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Structure {
+    Beam,
+    ThroughArch,
+    StoneArch,
+    Truss,
+    Suspension,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Edge {
+    Concrete,
+    Stone,
+    Steel,
+    Timber,
+}
+
+/// Everything that makes one bridge look like it belongs where it is: picked from
+/// the region's flavor, the road class and the span (data, not per-bridge code).
+#[derive(Debug, Clone, Copy)]
+struct BridgeStyle {
+    structure: Structure,
+    edge: Edge,
+    main: u32,
+    pier: u32,
+    /// 0..1 per-bridge variation: tower height, arch rise, truss depth.
+    var: f32,
+}
+
+fn bridge_len(pts: &[Vec3]) -> f32 {
+    pts.windows(2).map(|w| (w[1] - w[0]).length()).sum()
+}
+
+fn bridge_style(flavor: BridgeFlavor, class: RoadClass, len: f32, over_water: bool, var: f32) -> BridgeStyle {
+    use BridgeFlavor::*;
+    let foot = !class.is_car_road();
+    let (structure, edge, main, pier) = match (flavor, foot) {
+        (_, true) if class == RoadClass::Rail => (if len > 25.0 { Structure::Truss } else { Structure::Beam }, Edge::Steel, 0x59606a, 0x8d8b86),
+        (Modern, true) => (if len > 60.0 { Structure::ThroughArch } else { Structure::Beam }, Edge::Steel, 0x7d868f, 0xa9a7a1),
+        (Historic, true) => (Structure::StoneArch, Edge::Stone, 0xb5a98f, 0xb5a98f),
+        (Utilitarian, true) => (Structure::Beam, Edge::Timber, 0x7a5c3e, 0x6e5a46),
+        (Modern, false) if len >= 150.0 && over_water => (Structure::Suspension, Edge::Concrete, 0x9aa0a6, 0xb4b2ac),
+        (Modern, false) if len >= 70.0 && over_water => (Structure::ThroughArch, Edge::Concrete, 0x5d7a99, 0xb4b2ac),
+        (Modern, false) => (Structure::Beam, Edge::Concrete, 0xb4b2ac, 0xb4b2ac),
+        (Historic, false) if len >= 150.0 && over_water => (Structure::Suspension, Edge::Stone, 0x7a766d, 0xa89c82),
+        (Historic, false) if over_water && len >= 18.0 => (Structure::StoneArch, Edge::Stone, 0xb5a98f, 0xa89c82),
+        (Historic, false) => (Structure::Beam, Edge::Stone, 0xb5a98f, 0xa89c82),
+        (Utilitarian, false) if len >= 45.0 && over_water => (Structure::Truss, Edge::Steel, 0x6b7480, 0x8d8b86),
+        (Utilitarian, false) => (Structure::Beam, Edge::Steel, 0x80878f, 0x8d8b86),
+    };
+    // Arches, trusses and cables need a real span: short or dry decks are girders on piers.
+    let structure = match structure {
+        Structure::Beam => Structure::Beam,
+        Structure::ThroughArch if len < 60.0 || !over_water => Structure::Beam,
+        Structure::StoneArch if len < 18.0 => Structure::Beam,
+        Structure::Truss if len < 40.0 || !(over_water || class == RoadClass::Rail) => Structure::Beam,
+        Structure::Suspension if len < 150.0 || !over_water => Structure::Beam,
+        s => s,
+    };
+    BridgeStyle { structure, edge, main, pier, var }
+}
+
+/// Solid edge along one side of a bridge: visible parapet/handrail plus an invisible
+/// 1.6 m collision wall, so players and vehicles stay on the deck.
+fn parapet(m: &mut MeshData, col: &mut MeshData, g: &[Vec3], up: Vec3, st: &BridgeStyle) {
+    if g.len() < 2 {
+        return;
+    }
+    let side = side_dirs(g, up);
+    let (h, thick, color) = match st.edge {
+        Edge::Concrete => (1.1, 0.3, rgb(0xb8b6b0)),
+        Edge::Stone => (1.0, 0.5, rgb(0xb5a98f)),
+        Edge::Steel => (1.15, 0.12, rgb(0x6b7480)),
+        Edge::Timber => (1.1, 0.1, rgb(0x7a5c3e)),
+    };
+    for i in 0..g.len() - 1 {
+        let (a, b) = (g[i], g[i + 1]);
+        let fw = (b - a).normalize_or_zero();
+        let len = (b - a).length();
+        let mid = (a + b) * 0.5;
+        let sd = (side[i] + side[i + 1]).normalize_or(side[i]);
+        // Collision wall (two-sided).
+        let w = [a, b, b + up * 1.6, a + up * 1.6];
+        col.quad(w, [[0.0; 2]; 4], color);
+        col.quad([w[1], w[0], w[3], w[2]], [[0.0; 2]; 4], color);
+        match st.edge {
+            Edge::Concrete | Edge::Stone => box_post(m, mid, up, sd, fw, color, thick * 0.5, len * 0.5 + 0.02, -0.3, h),
+            Edge::Steel | Edge::Timber => {
+                box_post(m, mid, up, sd, fw, color, thick * 0.5, len * 0.5 + 0.02, h - 0.1, h);
+                box_post(m, mid, up, sd, fw, color, thick * 0.5, len * 0.5 + 0.02, h * 0.5, h * 0.5 + 0.08);
+            }
         }
-        dist += len;
+    }
+    if matches!(st.edge, Edge::Steel | Edge::Timber) {
+        let mut dist = 0.0f32;
+        let mut next = 0.0f32;
+        for i in 0..g.len() - 1 {
+            let seg = g[i + 1] - g[i];
+            let l = seg.length();
+            while next <= dist + l {
+                let t = ((next - dist) / l.max(1e-4)).clamp(0.0, 1.0);
+                let c = g[i].lerp(g[i + 1], t);
+                box_post(m, c, up, side[i], seg.normalize_or_zero(), color, 0.05, 0.05, -0.2, h);
+                next += 2.2;
+            }
+            dist += l;
+        }
+    }
+}
+
+/// Procedural bridge structure for decks over water, by style: beam (piers only), through
+/// arch, masonry arch, steel truss, or suspension with towers, cables and hangers.
+#[allow(clippy::too_many_arguments)]
+fn bridge_structure(m: &mut MeshData, col: &mut MeshData, pts: &[Vec3], bed: &[f32], up: Vec3, hw: f32, ground: &dyn Fn(Vec3) -> f32, st: &BridgeStyle) {
+    let len = bridge_len(pts);
+    if len < 12.0 || pts.len() < 3 {
+        return;
+    }
+    let steel = rgb(0x6b7480);
+    let paint = rgb(st.main);
+    let pier_col = rgb(st.pier);
+    let side = side_dirs(pts, up);
+    let off = hw + 0.4;
+    let tower_legs = |m: &mut MeshData, col: &mut MeshData, t: f32, h: f32| -> [Vec3; 2] {
+        let (c, sd, i) = at_frac(pts, &side, t);
+        let fw = (pts[i + 1] - pts[i]).normalize_or_zero();
+        let mut tops = [Vec3::ZERO; 2];
+        for (k, s) in [1.0f32, -1.0].into_iter().enumerate() {
+            let base = c + sd * (s * off);
+            let depth = ground(base) - 3.0 - bed[i];
+            for mm in [&mut *m, &mut *col] {
+                box_post(mm, base, up, sd, fw, paint, 0.9, 1.1, depth.min(-1.5), h);
+            }
+            tops[k] = base + up * h;
+        }
+        beam(m, tops[0] - up * 1.5, tops[1] - up * 1.5, up, 0.5, paint);
+        beam(m, tops[0] - up * (h * 0.5), tops[1] - up * (h * 0.5), up, 0.4, paint);
+        tops
+    };
+    match st.structure {
+        Structure::Suspension => {
+            let (t0, t1) = (0.2f32, 0.8f32);
+            let h = ((22.0 + len * 0.06).min(70.0)) * (0.85 + 0.3 * st.var);
+            let a = tower_legs(m, col, t0, h);
+            let b = tower_legs(m, col, t1, h);
+            for k in 0..2 {
+                let s = if k == 0 { 1.0 } else { -1.0 };
+                let end0 = pts[0] + side[0] * (s * off) + up * 3.0;
+                let end1 = pts[pts.len() - 1] + side[pts.len() - 1] * (s * off) + up * 3.0;
+                let sag = h * 0.85;
+                let mut prev: Option<Vec3> = None;
+                let n = ((len * 0.6 / 6.0).round() as usize).clamp(8, 40);
+                for j in 0..=n {
+                    let u = j as f32 / n as f32;
+                    let (c, sd, _) = at_frac(pts, &side, t0 + (t1 - t0) * u);
+                    let base = c + sd * (s * off);
+                    let p = a[k].lerp(b[k], u) - up * (4.0 * u * (1.0 - u) * sag);
+                    if let Some(q) = prev {
+                        beam(m, q, p, up, 0.12, steel);
+                    }
+                    if j > 0 && j < n {
+                        beam(m, p, base + up * 0.9, up, 0.04, steel);
+                    }
+                    prev = Some(p);
+                }
+                beam(m, end0, a[k], up, 0.12, steel);
+                beam(m, b[k], end1, up, 0.12, steel);
+            }
+        }
+        Structure::ThroughArch => {
+            let rise = len * (0.10 + 0.06 * st.var);
+            for s in [1.0f32, -1.0] {
+                let mut prev: Option<Vec3> = None;
+                let n = ((len / 7.0).round() as usize).clamp(6, 30);
+                for j in 0..=n {
+                    let t = j as f32 / n as f32;
+                    let (c, sd, _) = at_frac(pts, &side, t);
+                    let base = c + sd * (s * off);
+                    let p = base + up * (4.0 * t * (1.0 - t) * rise + 1.0);
+                    if let Some(q) = prev {
+                        beam(m, q, p, up, 0.35, paint);
+                    }
+                    if j > 0 && j < n {
+                        beam(m, base + up * 0.9, p, up, 0.07, steel);
+                    }
+                    prev = Some(p);
+                }
+            }
+        }
+        Structure::Truss => {
+            // Warren truss: top chord, verticals and alternating diagonals each side.
+            let hgt = (len * 0.1).clamp(4.0, 8.0) * (0.8 + 0.4 * st.var);
+            let n = ((len / 5.0).round() as usize).max(3);
+            for s in [1.0f32, -1.0] {
+                let mut prev_top: Option<Vec3> = None;
+                let mut prev_base = Vec3::ZERO;
+                for j in 0..=n {
+                    let t = j as f32 / n as f32;
+                    let (c, sd, _) = at_frac(pts, &side, t);
+                    let base = c + sd * (s * off) + up * 0.2;
+                    let top = base + up * hgt;
+                    beam(m, base, top, up, 0.12, paint);
+                    if let Some(q) = prev_top {
+                        beam(m, q, top, up, 0.18, paint);
+                        if j % 2 == 0 { beam(m, prev_base, top, up, 0.1, paint) } else { beam(m, base, q, up, 0.1, paint) }
+                    }
+                    prev_top = Some(top);
+                    prev_base = base;
+                }
+            }
+        }
+        Structure::StoneArch => {
+            // Masonry fascia down each side with an arcade look (deeper at the piers).
+            for i in 0..pts.len() - 1 {
+                let seg = pts[i + 1] - pts[i];
+                let mid = (pts[i] + pts[i + 1]) * 0.5;
+                let sd = (side[i] + side[i + 1]).normalize_or(side[i]);
+                for s in [1.0f32, -1.0] {
+                    box_post(m, mid + sd * (s * (hw + 0.1)), up, sd, seg.normalize_or_zero(), pier_col, 0.3, seg.length() * 0.5 + 0.02, -1.4, -0.05);
+                }
+            }
+        }
+        Structure::Beam => {}
+    }
+    // Periodic piers (about every 26 m, wider than the deck's lanes, thin along it) wherever the
+    // deck stands well above whatever is below: water, a valley, another road.
+    let wide = if st.structure == Structure::StoneArch { 1.0 } else { 0.8 };
+    let spacing = if st.structure == Structure::Suspension { 40.0 } else { 26.0 };
+    let n_piers = ((len / spacing).round() as usize).max(1);
+    let mut targets: Vec<f32> = (1..n_piers).map(|k| len * k as f32 / n_piers as f32).collect();
+    if st.structure != Structure::Suspension && len >= 24.0 {
+        targets.push(2.5); // abutments just inside each end
+        targets.push(len - 2.5);
+    }
+    for want in targets {
+        let mut dist = 0.0f32;
+        for i in 0..pts.len() - 1 {
+            let seg = pts[i + 1] - pts[i];
+            let l = seg.length();
+            if want <= dist + l {
+                let t = ((want - dist) / l.max(1e-4)).clamp(0.0, 1.0);
+                let c = pts[i].lerp(pts[i + 1], t);
+                let sd = side[i].lerp(side[i + 1], t).normalize_or(side[i]);
+                let fw = seg.normalize_or_zero();
+                let deck_h = bed[i] + (bed[i + 1] - bed[i]) * t;
+                let gap = deck_h - ground(c);
+                if gap > 2.0 {
+                    let depth = ground(c) - 3.0 - deck_h;
+                    for mm in [&mut *m, &mut *col] {
+                        // Pier shaft plus a cap beam under the deck.
+                        box_post(mm, c, up, sd, fw, pier_col, (hw * wide).max(1.0), 0.6, depth.min(-1.5), -0.8);
+                        box_post(mm, c, up, sd, fw, pier_col, hw + 0.3, 1.0, -0.8, -0.3);
+                    }
+                }
+                break;
+            }
+            dist += l;
+        }
     }
 }
 
@@ -1186,4 +1570,40 @@ mod deck_tests {
         hill.extend((1..=10).map(|i| Vec3::new(30.0 + i as f32 * 3.0, i as f32 * 0.6, 0.0)));
         assert!(simplify_deck(&hill, DECK_TOL_M, DECK_MAX_SPAN_M).contains(&Vec3::new(30.0, 0.0, 0.0)));
     }
+}
+
+/// Isolated bridge for the lookdev board: a straight deck from `a` along `dir` over a
+/// water surface at `a`'s height (bed 3 m below), built by the same code as the world.
+#[allow(clippy::too_many_arguments)]
+pub fn demo_bridge(
+    class: RoadClass, flavor: BridgeFlavor, len: f32, lanes: u8, clearance: f32, seed: f32, a: Vec3, dir: Vec3, up: Vec3,
+) -> MeshData {
+    let n = (len / STEP_M).ceil() as usize;
+    let water_y = a.dot(up);
+    let it_pts: Vec<Vec3> = (0..=n)
+        .map(|i| {
+            let t = i as f32 / n as f32;
+            let edge = (t.min(1.0 - t) * len / (6.0 + clearance * 4.0)).clamp(0.0, 1.0);
+            let edge = edge * edge * (3.0 - 2.0 * edge);
+            a + dir * (len * t) + up * (clearance * edge + (std::f32::consts::PI * t).sin() * (len * 0.02).min(2.0))
+        })
+        .collect();
+    let bed: Vec<f32> = it_pts.iter().map(|p| p.dot(up)).collect();
+    let it = Item { class, kind: Bed::Bridge, uv: Vec::new(), bed: bed.clone(), pts: it_pts.clone(), oneway: false, paved: true, urban: false, over_water: true, lanes, seed };
+    let hw = it.deck_hw();
+    let ground = move |p: Vec3| if (p - a).dot(dir) < 8.0 || (p - a).dot(dir) > len - 8.0 { water_y } else { water_y - 3.0 };
+    let kit = StreetKit::for_region(Region::NorthAmericaCity);
+    let mut m = MeshData::default();
+    let mut col = MeshData::default();
+    let prof = paved_profile(hw, false, &kit);
+    let deck = simplify_deck(&it_pts, DECK_TOL_M, DECK_MAX_SPAN_M);
+    sweep(&mut m, &deck, up, &prof, None, true, 1.2, 0.04, 0.05);
+    markings(&mut m, &deck, up, None, true, class, &kit, false);
+    let st = bridge_style(flavor, class, bridge_len(&it_pts), true, seed);
+    for s in [1.0f32, -1.0] {
+        let g = offset_line(&it_pts, up, s * (hw + 0.15), |_, _| 0.0);
+        parapet(&mut m, &mut col, &g, up, &st);
+    }
+    bridge_structure(&mut m, &mut col, &it_pts, &bed, up, hw, &ground, &st);
+    m
 }

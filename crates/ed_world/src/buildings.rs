@@ -113,6 +113,13 @@ pub struct BuildingSpec {
 }
 
 impl BuildingSpec {
+    /// Footprint corners (tile-local), for corridor tests.
+    pub fn ring_points(&self) -> &[Vec3] {
+        &self.ring
+    }
+}
+
+impl BuildingSpec {
     /// Footprint (tile-local, at the base) and eave height above street
     /// level, for the far-shadow surface map (`farshadow.rs`).
     pub fn shadow_outline(&self) -> (Vec<Vec3>, f32) {
@@ -159,6 +166,11 @@ pub fn prepare(vt: &mvt::Tile, ctx: &BuildingContext, region: Region) -> Vec<Bui
             let (cx, cy) = (outer.iter().map(|p| p[0]).sum::<f32>() / n, outer.iter().map(|p| p[1]).sum::<f32>() / n);
             if !(0.0..ext as f32).contains(&cx) || !(0.0..ext as f32).contains(&cy) {
                 continue; // the neighbouring tile owns it
+            }
+            // Bridge towers and piers are mapped as buildings; the road generator builds its own.
+            let wet = outer.iter().filter(|p| ctx.surface.water_fraction(p[0] as f64 / ext, p[1] as f64 / ext) >= 0.3).count();
+            if wet * 2 >= outer.len() {
+                continue;
             }
             let seed = f.id.unwrap_or(0) ^ ((cx as u64) << 32) ^ (cy as u64);
             let party: Vec<bool> = (0..outer.len())

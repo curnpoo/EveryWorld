@@ -1,5 +1,20 @@
 # Changes
 
+
+## 2026-11-05 Bridge supports + isolated bridge lookdev board
+- Bridges get periodic piers sampled from real ground (`bridge_structure`), spike geometry fixed; structures (girder, through-arch, stone arch, truss, suspension) vary by region/class/length/lanes.
+- `roads::demo_bridge` + lookdev "Bridges" board (8 types over still water): `EW_NATIVE=0 earthdrop --lookdev DIR --only bridge` (shots `bridge_*_side/_deck`, `bridge_overview`).
+- Lookdev no longer panics at startup (inserted `GameState` + `GraphicsSettings` that `render_scale::sync_cameras` needs).
+- Needs Mac check: real-world bridges (Brooklyn/Manhattan); girder hump on short spans looks a bit steep; road dip on a shore in Brooklyn shot unexplained.
+
+## 2026-11-05 Road/bridge collision + bridges over water
+- `roads.rs`: roads crossing water (mask fraction >= 0.4) are split into dry spans + a `Bed::Bridge` span anchored on land, even when OSM has no `brunnel=bridge`. Wet decks ramp 1.8 m above shore height with a small arch (no more decks under the surface) and get concrete piers every ~16 m (`piers`, `box_post`).
+- New `RoadOutput::collider` / `TileBuild::road_collider`: decks, bridge rails, guardrails, piers as one static trimesh per tile (`streaming.rs`). Street props already had cylinder colliders; grass/pebble ground scatter still does not collide.
+- Procedural bridge styles (`roads.rs` `bridge_style`, `BridgeFlavor` on `StreetKit`): Modern / Historic (Paris, Mediterranean, British, W. Europe, Alpine: stone parapets, masonry fascia) / Utilitarian (LatAm, Africa, S/SE Asia, MENA, E. Europe: steel truss, timber footbridges). Structure by span: beam, through arch, masonry arch, truss, suspension (towers + cables + hangers). Width from OSM `lanes`, clearance/tower/arch/truss size vary per bridge by a position hash.
+- Every bridge gets a solid parapet and a 1.6 m invisible collision wall, so you can't fall off. Old roads inside a water-spanning deck's corridor are cut (`RoadPlan::cut_under_bridges`) and buildings in the corridor (OSM bridge towers) are dropped in `tilegen.rs`.
+- Later: accurate famous bridges (London first), keyed by OSM id/name.
+- Needs Mac check: walking on bridges/roads, bridge frequency in other cities, tri/collider cost per tile.
+
 ## 2026-11-05: water/ground z-fight and inland foam
 
 - `water_fs`: fragments whose water depth is under `thr = 0.02 + 0.0005*dist` m are discarded (water coplanar with the beach z-fought and its noisy depth made foam speckle inland); `edge` and all foam fade in from `thr` via `shore`. Verified top-down at the Palm Jumeirah (25.118,55.135, alt 120, pitch -75).
