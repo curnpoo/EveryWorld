@@ -23,7 +23,8 @@ type Tex = Retained<ProtocolObject<dyn MTLTexture>>;
 type Pso = Retained<ProtocolObject<dyn MTLRenderPipelineState>>;
 
 const SHADOW_RES: usize = 2048;
-const NCASC: usize = 5; // 0-3 near/mid cascades (everything), 4 = far terrain-only
+const NCASC: usize = 6; // 0-3 near cascades (everything), 4 = mid (everything, to MID_SHADOW m), 5 = far terrain-only
+const MID_SHADOW: f32 = 4000.0;
 const HDR: MTLPixelFormat = MTLPixelFormat::RGBA16Float;
 const NRM: MTLPixelFormat = MTLPixelFormat::RGBA8Unorm;
 const DEPTH: MTLPixelFormat = MTLPixelFormat::Depth32Float;
@@ -149,7 +150,7 @@ struct Targets {
 struct Cascades {
     vp: [Mat4; NCASC],
     info: [[f32; 4]; NCASC],
-    splits: [f32; 5],
+    splits: [f32; NCASC],
     /// Light-space (x,y) circle each cascade covers, for caster culling.
     ctr: [[f32; 2]; NCASC],
     rad: [f32; NCASC],
@@ -163,13 +164,13 @@ fn fit_cascades(p: &FrameParams) -> Cascades {
     let (cam, r, u, f) = (Vec3::from(p.cam_pos), Vec3::from(p.cam_right), Vec3::from(p.cam_up), Vec3::from(p.cam_fwd));
     let near = p.near.max(0.3);
     let far = p.shadow_far.max(near * 4.0);
-    let mut out = Cascades { vp: [Mat4::IDENTITY; NCASC], info: [[0.0; 4]; NCASC], splits: [0.0; 5], ctr: [[0.0; 2]; NCASC], rad: [0.0; NCASC], v0 };
+    let mut out = Cascades { vp: [Mat4::IDENTITY; NCASC], info: [[0.0; 4]; NCASC], splits: [0.0; NCASC], ctr: [[0.0; 2]; NCASC], rad: [0.0; NCASC], v0 };
     let mut prev = near;
     for i in 0..NCASC {
         let t = (i + 1) as f32 / 4.0;
         let log = near * (far / near).powf(t.min(1.0));
         let uni = near + (far - near) * t.min(1.0);
-        let split = if i == 4 { p.terrain_shadow_far.max(far * 2.0) } else { uni * 0.25 + log * 0.75 };
+        let split = if i == 5 { p.terrain_shadow_far.max(MID_SHADOW * 2.0) } else if i == 4 { MID_SHADOW.max(far * 2.0) } else { uni * 0.25 + log * 0.75 };
         out.splits[i] = split;
         let hy = p.tan_half_fov;
         let hx = hy * p.aspect;
@@ -187,7 +188,7 @@ fn fit_cascades(p: &FrameParams) -> Cascades {
         let c_ls = v0.transform_point3(centroid);
         let texel = 2.0 * radius / SHADOW_RES as f32;
         let (cx, cy) = ((c_ls.x / texel).floor() * texel, (c_ls.y / texel).floor() * texel);
-        let zpad = if i == 4 { 12000.0 } else { 4000.0 };
+        let zpad = if i == 5 { 12000.0 } else if i == 4 { 6000.0 } else { 4000.0 };
         let dc = -c_ls.z;
         // Quantised depth range so the cache key only changes when the window really moves.
         let q = (radius * 0.5).max(16.0);
@@ -884,7 +885,7 @@ impl WorldRenderer {
             csm: [[[0.0; 4]; 4]; NCASC],
             csm_info: casc.info,
             csm_split: [casc.splits[0], casc.splits[1], casc.splits[2], casc.splits[3]],
-            csm_far: [casc.splits[4], 0.0, 0.0, 0.0],
+            csm_far: [casc.splits[5], casc.splits[4], 0.0, 0.0],
             cr: [0.0; 4],
             cu: [0.0; 4],
             cf: [p.cam_fwd[0], p.cam_fwd[1], p.cam_fwd[2], 0.0],
@@ -923,13 +924,13 @@ impl WorldRenderer {
             for ci in 0..NCASC {
                 // Caster set for this cascade: in range, and big enough to matter at this texel size.
                 let texel = casc.info[ci][0];
-                let min_r = if ci == 0 || ci == 4 { 0.0 } else { texel * 1.5 };
+                let min_r = if ci == 0 || ci == 5 { 0.0 } else { texel * 1.5 };
                 let mut list: Vec<usize> = Vec::new();
                 let mut key: u64 = 0xcbf29ce484222325;
                 let mix = |k: u64, v: u64| (k ^ v).wrapping_mul(0x100000001b3);
                 for (i, (d, b)) in draws.iter().zip(&bounds).enumerate() {
                     let Some(b) = b else { continue };
-                    if !d.cast_shadow || d.blend == Blend::Alpha || b.r < min_r || (ci == 4 && !d.terrain) {
+                    if !d.cast_shadow || d.blend == Blend::Alpha || b.r < min_r || (ci == 5 && !d.terrain) {
                         continue;
                     }
                     let l = casc.v0.transform_point3(b.c);

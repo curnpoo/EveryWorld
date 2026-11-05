@@ -1,5 +1,9 @@
 # Changes
 
+## 2026-11-05: native shadows reach buildings and trees out to 4 km
+- `ed_metal/src/world.rs` + `world.metal`: 6 cascades. 0-3 unchanged (to 700 m), new cascade 4 (700 m - 4 km) casts everything (buildings, trees, terrain; small casters culled by texel size), cascade 5 is the old terrain-only far cascade (to 20 km). Previously building/tree shadows ended at 700 m.
+- Check on the Mac: NYC low sun from the west at 1-3 km; shadow map cost (one more 2048 layer).
+
 ## 2026-11-05: boot rocket flames reworked
 - `boot_plume.rs`: three nested triangle flame layers (wide at the nozzle, taper to a tip), 2.6-8.6 m long, vibrating (95 rad/s shear) and bending back along -velocity (`f^2` displacement, up to 0.55 of length at 40 m/s).
 - No HDR gain: colours stay <= 1 so bloom no longer whites out the scene under the flame. Smoke particles live 1.4-2.8 s and grow 3.5-5.5x for a trail.

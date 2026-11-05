@@ -11,10 +11,10 @@ struct FrameU {
     float4 cam;
     float4 sky;
     float4 fog;        // x density
-    float4x4 csm[5];
-    float4 csm_info[5]; // x world texel size, y 1/zrange
+    float4x4 csm[6];
+    float4 csm_info[6]; // x world texel size, y 1/zrange
     float4 csm_split;   // view-depth far of cascades 0-3
-    float4 csm_far;     // x = view-depth far of the terrain-only cascade 4
+    float4 csm_far;     // x = far of terrain-only cascade 5, y = far of mid cascade 4
     float4 cr; float4 cu; float4 cf;  // camera basis; cr/cu pre-scaled by tan(fov/2)
     float4 params;      // x exposure, y shadows on, z 1/shadow size
     float4 pb0;         // probe volume: xyz world min corner, w bounce intensity (0 = no volume)
@@ -92,12 +92,12 @@ fragment SkyOut sky_fs(FsOut in [[stage_in]], constant FrameU& F [[buffer(1)]]) 
 // ---- Lighting ----
 float shadow_vis(float3 wpos, float3 N, float vd, constant FrameU& F, depth2d_array<float> sm) {
     if (F.params.y < 0.5 || vd > F.csm_far.x) return 1.0;
-    int ci = 4;
+    int ci = vd < F.csm_far.y ? 4 : 5;
     for (int i = 0; i < 4; i++) { if (vd < F.csm_split[i]) { ci = i; break; } }
     if (F.params.w > 5.5 && F.params.w < 9.5) { ci = int(F.params.w + 0.5) - 6; }
     float4 inf = F.csm_info[ci];
     // Cascades >=1 render decimated proxies (grid 1.5-4 m), so receivers need a bias that covers that error.
-    float nb = ci == 0 ? 2.0 : (ci == 1 ? 4.0 : (ci == 4 ? 0.8 : 6.0));
+    float nb = ci == 0 ? 2.0 : (ci == 1 ? 4.0 : (ci == 4 ? 2.0 : (ci == 5 ? 0.8 : 6.0)));
     float3 p = wpos + N * inf.x * nb;
     float4 c = F.csm[ci] * float4(p, 1.0);
     float2 uv = float2(c.x * 0.5 + 0.5, 0.5 - c.y * 0.5);

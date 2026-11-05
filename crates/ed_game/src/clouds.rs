@@ -267,6 +267,28 @@ fn noise_image(size: usize, data: Vec<u8>) -> Image {
     img
 }
 
+/// Raw RGBA8 noise volumes (shape 128^3, detail 64^3) kept for the native renderer.
+pub static CLOUD_NOISE_CPU: std::sync::OnceLock<(Vec<u8>, Vec<u8>)> = std::sync::OnceLock::new();
+
+impl CloudUniform {
+    /// Flat f32 image of the uniform for the native renderer: 32 vec4s in declaration order, the Mat3 as three
+    /// padded columns (the same layout `clouds.metal` declares).
+    pub fn to_flat(&self) -> Vec<f32> {
+        let mut v = Vec::with_capacity(128);
+        let m = self.noise_from_render;
+        for c in [m.x_axis, m.y_axis, m.z_axis] {
+            v.extend([c.x, c.y, c.z, 0.0]);
+        }
+        for f in [self.cam_noise, self.cam_pos, self.cam_up, self.planet, self.cu, self.st, self.misc, self.wind, self.shell, self.sun, self.sky_ambient, self.ground_ambient, self.haze] {
+            v.extend(f.to_array());
+        }
+        for f in self.storm_pos.iter().chain(self.storm_up.iter()) {
+            v.extend(f.to_array());
+        }
+        v
+    }
+}
+
 pub const SHAPE_RES: usize = 128;
 pub const DETAIL_RES: usize = 64;
 
@@ -288,6 +310,8 @@ fn setup_clouds(
         (a.join().unwrap(), b.join().unwrap())
     });
     info!("clouds: noise volumes built in {:.2} s", t0.elapsed().as_secs_f32());
+    // The native Metal renderer uploads these itself (the Bevy images are RENDER_WORLD-only).
+    let _ = CLOUD_NOISE_CPU.set((shape.clone(), detail.clone()));
     let sky = CloudMaterial {
         shadow_caster: false,
         u: CloudUniform::default(),
