@@ -249,15 +249,17 @@ pub fn render_at(id: TileId, vt: Option<&mvt::Tile>, src: (f64, f64, f64), heigh
                     "secondary" | "tertiary" => (1.8, 0xffffff),
                     "minor" | "service" => (1.1, 0xffffff),
                     "rail" | "transit" => (0.8, 0xb0a8a0),
-                    "path" | "track" => (0.6, 0xe8d8c4),
+                    "path" | "track" => (0.32, 0xe8d8c4),
                     _ => continue,
                 };
                 let w = w * zoom_k;
+                // Trails get a hairline casing; the fixed 1.2 px one made them look like roads.
+                let casing = if matches!(f.str("class"), Some("path" | "track")) { 0.45 } else { 1.2 };
                 for r in &f.rings {
                     for s in r.windows(2) {
                         let map = |p: [f32; 2]| [(p[0] as f64 / ext - u0) / scale, (p[1] as f64 / ext - v0) / scale];
                         let (a, b) = (map(s[0]), map(s[1]));
-                        cv.line(a, b, w + 1.2, hex(0xb9b2a6));
+                        cv.line(a, b, w + casing, hex(0xb9b2a6));
                         cv.line(a, b, w, hex(fill));
                     }
                 }

@@ -168,7 +168,7 @@ fn build_stage(
         let biome = region_biome(*region);
         let mut sm = SurfaceMap::uniform(tile, biome);
         sm.cover = vec![Cover::Residential];
-        let r = roads::generate(&vt, &proj, &grid, &sm, *region);
+        let r = roads::generate(&roads::plan(&vt, &proj, &grid, &sm), &proj, &grid, &sm, *region);
         add(&r.mesh, &mats.matte);
         add(&props::bake_street_props(&r.props, up), &mats.matte);
         let ctx = BuildingContext { proj: &proj, grid: &grid, surface: &sm, biome, roads: &r.centerlines };

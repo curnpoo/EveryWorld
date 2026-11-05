@@ -222,6 +222,20 @@ pub struct TreeChunks {
     chunks: Vec<ChunkState>,
 }
 
+impl TreeChunks {
+    /// Trees within `r` of `local` (tile mesh space). Chunk-culled, so cheap
+    /// enough for the soundscape to call every frame.
+    pub fn trees_near(&self, local: Vec3, r: f32) -> impl Iterator<Item = &TreeInstance> {
+        // Chunks are ~150 m wide; anything whose centre is within r + 120 m may hold a hit.
+        let reach = r + 120.0;
+        self.chunks
+            .iter()
+            .filter(move |c| c.center.distance_squared(local) < reach * reach)
+            .flat_map(|c| c.instances.iter())
+            .filter(move |t| t.pos.distance_squared(local) < r * r)
+    }
+}
+
 struct ChunkState {
     /// Chunk center in the tile's mesh space.
     center: Vec3,
@@ -306,10 +320,10 @@ pub fn prepare_trees(trees: TileTrees) -> PreparedTrees {
 
 /// Spawn a tile's trees under `parent` (the tile entity): one impostor
 /// entity, plus one chunk-set entity on fine tiles. Returns the entity count.
-pub fn spawn_tile_trees(commands: &mut Commands, meshes: &mut Assets<Mesh>, imp: &crate::impostors::Impostors, parent: Entity, p: PreparedTrees) -> u32 {
+pub fn spawn_tile_trees(commands: &mut Commands, meshes: &mut Assets<Mesh>, imp: &crate::impostors::Impostors, parent: Entity, p: PreparedTrees, far_tag: u32) -> u32 {
     let mut n = 0;
     if let Some((mesh, aabb)) = p.impostors {
-        crate::impostors::spawn(commands, meshes, imp, parent, mesh, aabb);
+        crate::impostors::spawn(commands, meshes, imp, parent, mesh, aabb, far_tag);
         n += 1;
     }
     if !p.chunks.is_empty() {

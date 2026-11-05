@@ -9,15 +9,20 @@
 //! is here"; the regional style says "in Provence that means ochre stucco,
 //! green shutters and a terracotta hip roof".
 
+pub mod amplify;
 pub mod archkit;
 pub mod biome;
 pub mod bparts;
 pub mod buildings;
+pub mod cliffs;
 pub mod clouds;
+pub mod detail_normal;
+pub mod farshadow;
 pub mod foliage;
 pub mod globe;
 pub mod ground_scatter;
 pub mod ground_tex;
+pub mod horizon;
 pub mod library;
 pub mod lod;
 pub mod maprender;
@@ -30,6 +35,7 @@ pub mod project;
 pub mod props;
 pub mod roads;
 pub mod starfield;
+pub mod soundmap;
 pub mod style;
 pub mod surface;
 pub mod terrain;

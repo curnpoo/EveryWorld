@@ -71,11 +71,13 @@ fn setup(mut commands: Commands, mut assets: ResMut<Assets<BoomAudio>>) {
     commands.insert_resource(BoomSound(assets.add(BoomAudio { samples: synth_boom().into() })));
 }
 
-fn play_booms(mut commands: Commands, mut booms: MessageReader<SonicBoom>, sound: Res<BoomSound>) {
+fn play_booms(mut commands: Commands, mut booms: MessageReader<SonicBoom>, sound: Res<BoomSound>, mix: Option<Res<crate::settings::AudioSettings>>) {
+    // The boom is an air sound: master x the wind-and-rockets slider.
+    let gain = mix.map(|m| m.level() * m.air.clamp(0.0, 1.0)).unwrap_or(1.0);
     for SonicBoom(pos) in booms.read() {
         commands.spawn((
             AudioPlayer(sound.0.clone()),
-            PlaybackSettings::DESPAWN.with_volume(Volume::Linear(0.9)),
+            PlaybackSettings::DESPAWN.with_volume(Volume::Linear((0.9 * gain).min(1.0))),
             Transform::from_translation(*pos),
             Name::new("sonic boom"),
         ));

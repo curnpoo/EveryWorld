@@ -76,6 +76,34 @@ impl HeightTile {
     }
 }
 
+impl HeightTile {
+    /// Catmull-Rom bicubic sample. Passes through the texel values (so shared
+    /// tile edges still agree with neighbours) but has continuous slope, which
+    /// removes the pyramid/crease look bilinear gives summits and ridges when
+    /// the mesh is denser than the source texels.
+    pub fn sample_cubic(&self, u: f64, v: f64) -> f32 {
+        let s = (self.size - 1) as f64;
+        let fx = u.clamp(0.0, 1.0) * s;
+        let fy = v.clamp(0.0, 1.0) * s;
+        let (x0, y0) = (fx.floor() as isize, fy.floor() as isize);
+        let (tx, ty) = ((fx - x0 as f64) as f32, (fy - y0 as f64) as f32);
+        let at = |x: isize, y: isize| {
+            let m = (self.size - 1) as isize;
+            self.heights[(y.clamp(0, m) as usize) * self.size + x.clamp(0, m) as usize]
+        };
+        let cr = |p: [f32; 4], t: f32| {
+            let (a, b, c, d) = (p[0], p[1], p[2], p[3]);
+            b + 0.5 * t * (c - a + t * (2.0 * a - 5.0 * b + 4.0 * c - d + t * (3.0 * (b - c) + d - a)))
+        };
+        let mut col = [0.0f32; 4];
+        for (k, dy) in (-1..=2).enumerate() {
+            let row = [at(x0 - 1, y0 + dy), at(x0, y0 + dy), at(x0 + 1, y0 + dy), at(x0 + 2, y0 + dy)];
+            col[k] = cr(row, tx);
+        }
+        cr(col, ty)
+    }
+}
+
 /// Fetch (through the cache) and decode an elevation tile. Zooms above
 /// [`MAX_ZOOM`] are served by sampling the z15 ancestor.
 pub fn fetch(cache: &DiskCache, id: TileId) -> anyhow::Result<HeightTile> {

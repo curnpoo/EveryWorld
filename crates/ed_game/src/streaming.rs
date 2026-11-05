@@ -124,7 +124,7 @@ fn to_meshlet(m: &ed_world::mesh::MeshData) -> Option<(MeshletMesh, Vec3)> {
     crate::library::meshlet_mesh(&local).map(|ml| (ml, c))
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Part {
     Terrain,
     Water,
@@ -320,8 +320,8 @@ pub struct WorldTile;
 /// Full-detail building chunks near the player.
 #[derive(Resource)]
 pub struct DetailManager {
-    tx: Sender<(TileId, (u8, u8), BuildingBatch)>,
-    rx: Receiver<(TileId, (u8, u8), BuildingBatch)>,
+    tx: Sender<(TileId, (u8, u8), bool, BuildingBatch)>,
+    rx: Receiver<(TileId, (u8, u8), bool, BuildingBatch)>,
     /// Per-chunk LOD batches for a tile being exploded.
     etx: Sender<(TileId, Vec<((u8, u8), BuildingBatch)>)>,
     erx: Receiver<(TileId, Vec<((u8, u8), BuildingBatch)>)>,
@@ -341,7 +341,8 @@ struct TileDetail {
     explode: Explode,
     /// Last time this tile had detail loaded, pending or wanted.
     busy_at: f32,
-    loaded: HashMap<(u8, u8), Entity>,
+    /// Shown detail chunks and whether each is the mid (`lite`) level.
+    loaded: HashMap<(u8, u8), (Entity, bool)>,
     pending: HashSet<(u8, u8)>,
 }
 
@@ -366,6 +367,11 @@ const EXPLODE_CHUNKS_PER_FRAME: usize = 8;
 const DETAIL_IN_M: f32 = 230.0;
 const DETAIL_OUT_M: f32 = 320.0;
 const DETAIL_IN_FLIGHT: usize = 2;
+/// Full kit (mullions, louvres, balusters, flower heads) inside NEAR_IN; the
+/// mid level beyond NEAR_OUT, where those parts are under a pixel
+/// (~18k -> a few k triangles per building). Hysteresis between the two.
+const NEAR_IN_M: f32 = 70.0;
+const NEAR_OUT_M: f32 = 100.0;
 /// Tiles with a building chunk this close explode into per-chunk LOD so their
 /// buildings cast shadows (the far cascade ends at 700 m, `sky.rs`).
 const SHADOW_EXPLODE_M: f32 = 750.0;
@@ -375,6 +381,9 @@ const ROCK_RANGE_M: f32 = 500.0;
 /// Spawn one entity per material bucket under `parent`.
 ///
 fn spawn_buckets(commands: &mut Commands, meshes: &mut Assets<Mesh>, bm: &BuildingMaterials, b: BuildingBatch, parent: Entity, shadow: Shadow) {
+    if hidden_part("lod") {
+        return;
+    }
     for (mat, mesh) in b.buckets {
         let mut e = commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(bm.get(mat)), Transform::default(), ChildOf(parent)));
         match shadow {
@@ -584,6 +593,14 @@ fn pump_jobs(mut mgr: ResMut<TileManager>) {
     }
 }
 
+/// Debug bisect: `EW_HIDE=terrain,roads,rocks,props,water,lod` skips spawning those tile parts.
+fn hidden_part(name: &str) -> bool {
+    static H: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    H.get_or_init(|| std::env::var("EW_HIDE").map(|v| v.to_lowercase().split(',').map(str::to_string).collect()).unwrap_or_default())
+        .iter()
+        .any(|h| h == &name.to_lowercase())
+}
+
 /// Triangles in a Bevy mesh (for apply cost estimates).
 fn tris(m: &Mesh) -> u32 {
     m.indices().map_or(0, |i| i.len() as u32 / 3)
@@ -632,9 +649,10 @@ fn apply_tiles(
     focus: Query<&GlobalTransform, With<Focus>>,
     origin: Res<WorldOrigin>,
     impostors: Res<crate::impostors::Impostors>,
-    mut sat_pool: ResMut<crate::ground_material::SatPool>,
+    mut pools: (ResMut<crate::ground_material::SatPool>, ResMut<crate::far_shadows::FarPool>),
     library: Option<Res<crate::library::CookedLibrary>>,
 ) {
+    let (sat_pool, far_pool) = (&mut *pools.0, &mut *pools.1);
     let mut budget = FrameBudget::new(env_num("EW_APPLY_BUDGET", APPLY_UNITS), Some(std::time::Duration::from_millis(APPLY_MS)));
     let focus_pos = focus.iter().next().map(|t| t.translation());
     let mgr = &mut *mgr;
@@ -648,6 +666,7 @@ fn apply_tiles(
             }
             if let Some(tag) = mgr.sat_tags.remove(&t) {
                 sat_pool.release(tag);
+                far_pool.release(tag);
             }
             mgr.pending.remove(&t);
             continue;
@@ -670,16 +689,22 @@ fn apply_tiles(
                     if let Some(g) = b.ground.take() {
                         parent.insert(crate::ground_scatter::GroundCover(g));
                     }
+                    if let Some(sm) = b.sound.take() {
+                        parent.insert(crate::soundscape::TileSound(sm));
+                    }
                     let parent_id = parent.id();
                     a.parent = Some(parent_id);
                     let near = t.z >= 13;
-                    let sat_tag = match b.sat_tex.take() {
+                    let mut sat_tag = match b.sat_tex.take() {
                         Some((n, data)) => {
                             dump_sat(t, n, &data);
-                            sat_pool.alloc(n, data)
+                            let detail = b.detail_tex.take().filter(|(dn, _)| *dn == n).map(|(_, d)| d);
+                            sat_pool.alloc(n, data, detail)
                         }
                         None => crate::ground_material::SAT_NONE,
                     };
+                    // Far-shadow layer + 1 in bits 12-23 of the same tag.
+                    sat_tag |= b.far_shadow.take().map_or(0, |f| far_pool.alloc(f));
                     if sat_tag != crate::ground_material::SAT_NONE {
                         mgr.sat_tags.insert(t, sat_tag);
                     }
@@ -688,6 +713,9 @@ fn apply_tiles(
                         commands.spawn((Mesh3d(meshes.add(m.clone())), MeshMaterial3d(mats.matte.clone()), Transform::default(), RenderLayers::layer(crate::clouds::CLOUD_SHADOW_LAYER), ChildOf(parent_id)));
                     }
                     for (part, mesh) in a.ready.parts.drain(..) {
+                        if hidden_part(&format!("{part:?}")) {
+                            continue;
+                        }
                         let mut e = match part {
                             // One shared terrain material; the tile's satellite layer rides on its MeshTag.
                             Part::Terrain => commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(mats.terrain.clone()), MeshTag::new(sat_tag), Transform::default())),
@@ -763,7 +791,8 @@ fn apply_tiles(
                         continue;
                     }
                     let tr = std::mem::replace(&mut a.ready.trees, crate::foliage::PreparedTrees { up: Vec3::Y, chunks: Vec::new(), impostors: None });
-                    crate::foliage::spawn_tile_trees(&mut commands, &mut meshes, &impostors, a.parent.unwrap(), tr);
+                    let far_tag = mgr.sat_tags.get(&t).map_or(0, |g| g & 0x00FF_F000);
+                    crate::foliage::spawn_tile_trees(&mut commands, &mut meshes, &impostors, a.parent.unwrap(), tr, far_tag);
                     a.stage = Stage::Finish;
                 }
                 Stage::Finish => unreachable!(),
@@ -826,7 +855,7 @@ fn dump_sat(t: TileId, n: u32, data: &[u8]) {
 
 /// Despawn tiles we no longer want once their replacements are in (where
 /// you can look), and the oldest out-of-view tiles once over the residency cap.
-fn retire_tiles(mut commands: Commands, mut mgr: ResMut<TileManager>, mut dm: ResMut<DetailManager>, mut sat_pool: ResMut<crate::ground_material::SatPool>) {
+fn retire_tiles(mut commands: Commands, mut mgr: ResMut<TileManager>, mut dm: ResMut<DetailManager>, mut sat_pool: ResMut<crate::ground_material::SatPool>, mut far_pool: ResMut<crate::far_shadows::FarPool>) {
     let mgr = &mut *mgr;
     let mut retire = scheduler::retire(mgr.loaded.keys().copied(), &mgr.wanted, |t| mgr.loaded.contains_key(t), |t| mgr.in_view.contains(t));
     // Over the cap: oldest unseen first. `over_cap` never returns tiles seen
@@ -846,6 +875,7 @@ fn retire_tiles(mut commands: Commands, mut mgr: ResMut<TileManager>, mut dm: Re
         dm.tiles.remove(&t);
         if let Some(tag) = mgr.sat_tags.remove(&t) {
             sat_pool.release(tag);
+            far_pool.release(tag);
         }
     }
     mgr.recount();
@@ -870,7 +900,7 @@ fn stream_detail(
     dm.last = now;
     let Some(fp) = focus.iter().next().map(|t| t.translation()) else { return };
     let pool = AsyncComputeTaskPool::get();
-    let mut want: Vec<(f32, TileId, (u8, u8))> = Vec::new();
+    let mut want: Vec<(f32, TileId, (u8, u8), bool)> = Vec::new();
     let mut drop: Vec<(TileId, (u8, u8))> = Vec::new();
     let mut explode: Vec<TileId> = Vec::new();
     for (tid, td) in dm.tiles.iter_mut() {
@@ -881,10 +911,14 @@ fn stream_detail(
             let c = gt.transform_point(td.set.chunk_center(*chunk));
             let d = c.distance(fp);
             shadow_near |= d < SHADOW_EXPLODE_M;
-            if d < DETAIL_IN_M && !td.loaded.contains_key(chunk) && !td.pending.contains(chunk) {
+            let cur = td.loaded.get(chunk).map(|l| l.1);
+            // Level this chunk should show: keep the current one inside the band.
+            let lite = if d < NEAR_IN_M { false } else if d > NEAR_OUT_M { true } else { cur.unwrap_or(true) };
+            if d < DETAIL_IN_M && cur != Some(lite) && !td.pending.contains(chunk) {
                 wants = true;
                 if matches!(td.explode, Explode::Exploded) || td.lod_src.is_none() {
-                    want.push((d, *tid, *chunk));
+                    // Level swaps rank after first loads (holes matter more).
+                    want.push((d + if cur.is_some() { 1000.0 } else { 0.0 }, *tid, *chunk, lite));
                 }
             } else if d > DETAIL_OUT_M && td.loaded.contains_key(chunk) {
                 drop.push((*tid, *chunk));
@@ -920,7 +954,7 @@ fn stream_detail(
     }
     for (tid, chunk) in drop {
         if let Some(td) = dm.tiles.get_mut(&tid) {
-            if let Some(e) = td.loaded.remove(&chunk) {
+            if let Some((e, _)) = td.loaded.remove(&chunk) {
                 commands.entity(e).despawn();
             }
             if let Some(l) = td.lod.get(&chunk) {
@@ -929,7 +963,7 @@ fn stream_detail(
         }
     }
     want.sort_by(|a, b| a.0.total_cmp(&b.0));
-    for (_, tid, chunk) in want {
+    for (_, tid, chunk, lite) in want {
         if dm.in_flight >= DETAIL_IN_FLIGHT {
             break;
         }
@@ -939,13 +973,13 @@ fn stream_detail(
         let set = td.set.clone();
         dm.in_flight += 1;
         pool.spawn(async move {
-            let bm = set.build_chunk(chunk);
+            let bm = set.build_chunk(chunk, lite);
             if std::env::var_os("EW_TILE_STATS").is_some() {
                 let mut per: Vec<_> = bm.out.meshes.iter().map(|(k, m)| (m.triangle_count(), format!("{k:?}"))).collect();
                 per.sort_by(|a, b| b.0.cmp(&a.0));
-                eprintln!("DETAILSTAT n={} tris={} {:?}", bm.count, bm.triangle_count(), &per[..per.len().min(8)]);
+                eprintln!("DETAILSTAT lite={lite} n={} tris={} {:?}", bm.count, bm.triangle_count(), &per[..per.len().min(8)]);
             }
-            let _ = tx.send((tid, chunk, prepare_batch(&bm, false)));
+            let _ = tx.send((tid, chunk, lite, prepare_batch(&bm, false)));
         })
         .detach();
     }
@@ -958,7 +992,7 @@ fn receive_detail(
     bmats: Res<BuildingMaterials>,
     children: Query<&Children>,
 ) {
-    let Ok((tid, chunk, bmesh)) = dm.rx.try_recv() else { return };
+    let Ok((tid, chunk, lite, bmesh)) = dm.rx.try_recv() else { return };
     dm.in_flight = dm.in_flight.saturating_sub(1);
     let Some(td) = dm.tiles.get_mut(&tid) else { return };
     td.pending.remove(&chunk);
@@ -970,7 +1004,11 @@ fn receive_detail(
     // The chunk's LOD stays on as the detail's shadow stand-in (see `Shadow`).
     let proxy = td.lod.get(&chunk).copied();
     spawn_buckets(&mut commands, &mut meshes, &bmats, bmesh, e, if proxy.is_some() { Shadow::CameraOnly } else { Shadow::Cast });
-    td.loaded.insert(chunk, e);
+    // Level swap: the old level goes in the same command flush the new one
+    // spawns in, so the chunk is never empty.
+    if let Some((old, _)) = td.loaded.insert(chunk, (e, lite)) {
+        commands.entity(old).despawn();
+    }
     if let Some(l) = proxy {
         set_shadow_proxy(&mut commands, &children, l, true);
     }

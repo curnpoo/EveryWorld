@@ -55,6 +55,11 @@ pub struct GroundParams {
     /// xy: world-space UV offset (meters) that keeps textures still across
     /// floating-origin rebases. z: global detail-normal strength. w: unused.
     pub offset: Vec4,
+    /// Far shadows (`far_shadows.rs`): Earth centre in render space (xyz);
+    /// w = 1 when enabled.
+    pub far_c: Vec4,
+    /// Far shadows: Earth's pole axis in render space.
+    pub far_p: Vec4,
 }
 
 #[derive(Asset, AsBindGroup, TypePath, Debug, Clone)]
@@ -80,6 +85,20 @@ pub struct GroundExt {
     pub sat_256: Handle<Image>,
     #[texture(109, dimension = "2d_array")]
     pub sat_128: Handle<Image>,
+    /// Far-shadow pool (`far_shadows.rs`): horizon maps (RGBA8) and surface
+    /// maps (RGBA16F), sharing one layer index per tile. Sampler 107.
+    #[texture(110, dimension = "2d_array")]
+    pub far_horizon: Handle<Image>,
+    #[texture(111, dimension = "2d_array")]
+    pub far_surface: Handle<Image>,
+    /// Baked DEM detail (`ed_world::detail_normal`), same class/layer as the
+    /// satellite colour. Sampler 107.
+    #[texture(112, dimension = "2d_array")]
+    pub detail_512: Handle<Image>,
+    #[texture(113, dimension = "2d_array")]
+    pub detail_256: Handle<Image>,
+    #[texture(114, dimension = "2d_array")]
+    pub detail_128: Handle<Image>,
 }
 
 impl MaterialExtension for GroundExt {
@@ -217,8 +236,11 @@ fn array_image(layers: &[&[u8]], size: u32, format: TextureFormat, srgb: bool) -
 /// `ed_world::tilegen` (z<=9: 512, z<=12: 256, finer: 128). Layer counts cover
 /// the ~90 resident tiles plus the coarse tiles kept during hole-free swaps;
 /// if a class runs out, the tile simply renders without satellite colour.
-/// Memory is fixed: 40 MB + 24 MB + 12 MB.
-pub const SAT_CLASSES: [(u32, u32); 3] = [(512, 40), (256, 96), (128, 192)];
+/// Memory is fixed: ~100 MB + 24 MB + 12 MB.
+pub const SAT_CLASSES: [(u32, u32); 3] = [(512, 72), (256, 96), (128, 192)];
+
+/// Tag bit: the satellite layer also has baked DEM detail.
+pub const DETAIL_BIT: u32 = 1 << 23;
 
 /// Tag value for "no satellite colour".
 pub const SAT_NONE: u32 = 0;
@@ -226,34 +248,44 @@ pub const SAT_NONE: u32 = 0;
 /// Fixed pool of satellite layers shared by every terrain tile.
 ///
 /// The layer index rides on the terrain entity's `MeshTag`:
-/// `(class + 1) << 24 | layer`, 0 = none. Uploads go straight to the GPU array
+/// `(class + 1) << 24 | layer`, 0 = none. Bits 12-23 carry the far-shadow
+/// layer + 1 (`far_shadows::FarPool`), so the sat layer is `tag & 0xFFF`. Uploads go straight to the GPU array
 /// with `queue.write_texture` in the render world, so adding a tile never
 /// creates an image or material asset and never re-uploads the whole array.
 #[derive(Resource)]
 pub struct SatPool {
     pub images: [Handle<Image>; 3],
+    /// Baked DEM detail, one array per class, sharing the satellite layer.
+    pub detail: [Handle<Image>; 3],
     free: [Vec<u32>; 3],
-    uploads: Vec<SatUpload>,
+    uploads: Vec<LayerUpload>,
 }
 
-struct SatUpload {
-    image: AssetId<Image>,
-    layer: u32,
-    size: u32,
-    data: Vec<u8>,
+/// One texture-array layer waiting for `queue.write_texture`.
+pub(crate) struct LayerUpload {
+    pub image: AssetId<Image>,
+    pub layer: u32,
+    pub width: u32,
+    pub height: u32,
+    pub bytes_per_px: u32,
+    pub data: Vec<u8>,
 }
 
 impl SatPool {
     pub fn new(images: &mut Assets<Image>) -> Self {
+        let detail = SAT_CLASSES.map(|(n, layers)| images.add(sat_array_image(n, layers)));
         let images = SAT_CLASSES.map(|(n, layers)| images.add(sat_array_image(n, layers)));
         let free = SAT_CLASSES.map(|(_, layers)| (0..layers).rev().collect());
-        Self { images, free, uploads: Vec::new() }
+        Self { images, detail, free, uploads: Vec::new() }
     }
 
     /// Reserve a layer for `data` (`size`^2 RGBA8) and queue its upload.
     /// Returns the `MeshTag` value, or [`SAT_NONE`] if the class is full or
     /// the size is unknown.
-    pub fn alloc(&mut self, size: u32, data: Vec<u8>) -> u32 {
+    /// `detail` (same size) fills the matching layer of the detail array;
+    /// without it that layer keeps stale data, so the shader is told via
+    /// bit 23 of the tag (set = detail present).
+    pub fn alloc(&mut self, size: u32, data: Vec<u8>, detail: Option<Vec<u8>>) -> u32 {
         let Some(class) = SAT_CLASSES.iter().position(|(n, _)| *n == size) else { return SAT_NONE };
         if data.len() != (size * size * 4) as usize {
             return SAT_NONE;
@@ -262,8 +294,13 @@ impl SatPool {
             warn!("satellite pool full for {size}px tiles; tile drawn without satellite colour");
             return SAT_NONE;
         };
-        self.uploads.push(SatUpload { image: self.images[class].id(), layer, size, data });
-        ((class as u32 + 1) << 24) | layer
+        self.uploads.push(LayerUpload { image: self.images[class].id(), layer, width: size, height: size, bytes_per_px: 4, data });
+        let mut tag = ((class as u32 + 1) << 24) | layer;
+        if let Some(d) = detail.filter(|d| d.len() == (size * size * 4) as usize) {
+            self.uploads.push(LayerUpload { image: self.detail[class].id(), layer, width: size, height: size, bytes_per_px: 4, data: d });
+            tag |= DETAIL_BIT;
+        }
+        tag
     }
 
     /// Return a layer to the pool once its tile is gone.
@@ -272,9 +309,10 @@ impl SatPool {
         if class == 0 || class > SAT_CLASSES.len() {
             return;
         }
-        let layer = tag & 0x00FF_FFFF;
+        let layer = tag & 0xFFF;
         // Drop a still-queued upload for this slot: the slot is free again.
-        self.uploads.retain(|u| !(u.image == self.images[class - 1].id() && u.layer == layer));
+        let (img, det) = (self.images[class - 1].id(), self.detail[class - 1].id());
+        self.uploads.retain(|u| !((u.image == img || u.image == det) && u.layer == layer));
         self.free[class - 1].push(layer);
     }
 
@@ -285,7 +323,7 @@ impl SatPool {
 
 /// Render-world queue of satellite layers waiting for their GPU array.
 #[derive(Resource, Default)]
-struct RenderSatUploads(Vec<SatUpload>);
+struct RenderSatUploads(Vec<LayerUpload>);
 
 fn extract_sat_uploads(mut main: ResMut<bevy::render::MainWorld>, mut out: ResMut<RenderSatUploads>) {
     if let Some(mut pool) = main.get_resource_mut::<SatPool>()
@@ -300,15 +338,24 @@ fn write_sat_uploads(
     gpu_images: Res<bevy::render::render_asset::RenderAssets<bevy::render::texture::GpuImage>>,
     queue: Res<bevy::render::renderer::RenderQueue>,
 ) {
+    write_layers(&mut pending.0, &gpu_images, &queue);
+}
+
+/// Write queued layers whose array is on the GPU; the rest wait.
+pub(crate) fn write_layers(
+    pending: &mut Vec<LayerUpload>,
+    gpu_images: &bevy::render::render_asset::RenderAssets<bevy::render::texture::GpuImage>,
+    queue: &bevy::render::renderer::RenderQueue,
+) {
     use bevy::render::render_resource::{Origin3d, TexelCopyBufferLayout, TexelCopyTextureInfo, TextureAspect};
     // Uploads whose array isn't on the GPU yet (first frames) wait.
-    pending.0.retain(|u| {
+    pending.retain(|u| {
         let Some(gpu) = gpu_images.get(u.image) else { return true };
         queue.write_texture(
             TexelCopyTextureInfo { texture: &gpu.texture, mip_level: 0, origin: Origin3d { x: 0, y: 0, z: u.layer }, aspect: TextureAspect::All },
             &u.data,
-            TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(u.size * 4), rows_per_image: Some(u.size) },
-            Extent3d { width: u.size, height: u.size, depth_or_array_layers: 1 },
+            TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(u.width * u.bytes_per_px), rows_per_image: Some(u.height) },
+            Extent3d { width: u.width, height: u.height, depth_or_array_layers: 1 },
         );
         false
     });
@@ -317,10 +364,15 @@ fn write_sat_uploads(
 /// One satellite class: an uninitialised `n`x`n`x`layers` array, filled per
 /// layer by [`write_sat_uploads`].
 fn sat_array_image(n: u32, layers: u32) -> Image {
+    layer_array_image(n, n, layers, TextureFormat::Rgba8Unorm)
+}
+
+/// An uninitialised 2D array (clamped, linear), filled per layer by [`write_layers`].
+pub(crate) fn layer_array_image(w: u32, h: u32, layers: u32, format: TextureFormat) -> Image {
     let mut img = Image::new_uninit(
-        Extent3d { width: n, height: n, depth_or_array_layers: layers },
+        Extent3d { width: w, height: h, depth_or_array_layers: layers },
         TextureDimension::D2,
-        TextureFormat::Rgba8Unorm,
+        format,
         RenderAssetUsages::RENDER_WORLD,
     );
     img.texture_view_descriptor = Some(TextureViewDescriptor { dimension: Some(TextureViewDimension::D2Array), ..default() });
@@ -344,6 +396,7 @@ pub fn create(
     terrain_mats: &mut Assets<TerrainMaterial>,
     scatter_mats: &mut Assets<ScatterMaterial>,
     pool: &SatPool,
+    far: &crate::far_shadows::FarPool,
 ) -> (Handle<TerrainMaterial>, GroundMaterials) {
     let t0 = std::time::Instant::now();
     let layers = ground_tex::all_layers(TEX_SIZE);
@@ -370,10 +423,16 @@ pub fn create(
         size: [v4(&size, 0), v4(&size, 1), v4(&size, 2)],
         bump: [v4(&bump, 0), v4(&bump, 1), v4(&bump, 2)],
         offset: Vec4::new(0.0, 0.0, 1.0, 0.0),
+        far_c: Vec4::ZERO,
+        far_p: Vec4::Y,
     };
     let terrain = terrain_mats.add(ExtendedMaterial {
         base: StandardMaterial { base_color: Color::WHITE, perceptual_roughness: 0.95, reflectance: 0.3, ..default() },
-        extension: GroundExt { params, albedo, normal, macro_tex, sat_512: pool.images[0].clone(), sat_256: pool.images[1].clone(), sat_128: pool.images[2].clone() },
+        extension: GroundExt { params, albedo, normal, macro_tex, sat_512: pool.images[0].clone(), sat_256: pool.images[1].clone(), sat_128: pool.images[2].clone(),
+            far_horizon: far.horizon.clone(),
+            far_surface: far.surface.clone(),
+            detail_512: pool.detail[0].clone(), detail_256: pool.detail[1].clone(), detail_128: pool.detail[2].clone(),
+        },
     });
     let scatter = scatter_mats.add(ExtendedMaterial {
         base: StandardMaterial {
@@ -433,7 +492,22 @@ fn update_params(
     mut scatter_mats: ResMut<Assets<ScatterMaterial>>,
     cam: Query<&GlobalTransform, (With<Camera3d>, Without<crate::globe::GlobeCamera>)>,
     mut last_offset: Local<Option<glam::DVec2>>,
+    origin: Res<crate::origin::WorldOrigin>,
+    mut last_gen: Local<Option<u64>>,
 ) {
+    // Far shadows build a local up/north per fragment from the Earth's centre
+    // and pole in render space; both move only when the origin re-anchors.
+    if let Some(wm) = &wm
+        && *last_gen != Some(origin.generation)
+        && let Some(mut m) = terrain_mats.get_mut(&wm.terrain)
+    {
+        let (c, p) = ed_world::farshadow::earth_axes(origin.frame.ecef_to_render());
+        let on = if ed_world::farshadow::enabled() { 1.0 } else { 0.0 };
+        m.extension.params.far_c = c.as_vec3().extend(on);
+        let dbg = if crate::far_shadows::DEBUG.load(std::sync::atomic::Ordering::Relaxed) { 1.0 } else { 0.0 };
+        m.extension.params.far_p = p.as_vec3().extend(dbg);
+        *last_gen = Some(origin.generation);
+    }
     if let Some(wm) = wm
         && *last_offset != Some(uv.offset)
         && let Some(mut m) = terrain_mats.get_mut(&wm.terrain)

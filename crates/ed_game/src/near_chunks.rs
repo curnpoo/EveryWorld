@@ -27,6 +27,10 @@ struct Item {
     /// Uploaded on first approach, then kept by handle.
     src: Option<Mesh>,
     handle: Option<Handle<Mesh>>,
+    /// CPU-only positions+indices for the collider. The uploaded mesh is
+    /// RENDER_WORLD-only, so its data is gone after extraction and
+    /// `trimesh_from_mesh(uploaded)` panics. Dropped once the collider exists.
+    col_src: Option<Mesh>,
     entity: Option<Entity>,
     /// Static collision, built from the uploaded mesh when first within
     /// [`COLLIDE_M`], then kept; the entity exists only while in range.
@@ -37,9 +41,22 @@ struct Item {
 impl NearMeshes {
     /// `meshes`: (chunk centre in tile space, mesh).
     pub fn new(range: f32, material: Handle<StandardMaterial>, meshes: Vec<(Vec3, Mesh)>) -> Self {
-        let items = meshes.into_iter().map(|(center, m)| Item { center, src: Some(m), handle: None, entity: None, collider: None, col_entity: None }).collect();
+        let items = meshes.into_iter().map(|(center, m)| Item { center, col_src: Some(cpu_copy(&m)), src: Some(m), handle: None, entity: None, collider: None, col_entity: None }).collect();
         Self { range, material, items }
     }
+}
+
+/// Positions + indices only, kept in the main world for collider building.
+fn cpu_copy(m: &Mesh) -> Mesh {
+    use bevy::asset::RenderAssetUsages;
+    let mut c = Mesh::new(bevy::mesh::PrimitiveTopology::TriangleList, RenderAssetUsages::MAIN_WORLD);
+    if let Some(p) = m.attribute(Mesh::ATTRIBUTE_POSITION) {
+        c.insert_attribute(Mesh::ATTRIBUTE_POSITION, p.clone());
+    }
+    if let Some(i) = m.indices() {
+        c.insert_indices(i.clone());
+    }
+    c
 }
 
 /// Centre of a mesh's bounding box (worker side, to place a chunk).
@@ -90,9 +107,9 @@ fn stream_near_meshes(
             let want_col = d < COLLIDE_M;
             if want_col && it.col_entity.is_none() {
                 if it.collider.is_none() && built < COLLIDERS_PER_FRAME {
-                    if let Some(m) = it.handle.as_ref().and_then(|h| meshes.get(h)) {
+                    if let Some(m) = it.col_src.take() {
                         built += 1;
-                        it.collider = Collider::trimesh_from_mesh(m);
+                        it.collider = Collider::trimesh_from_mesh(&m);
                     }
                 }
                 if let Some(c) = &it.collider {

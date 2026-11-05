@@ -465,11 +465,15 @@ impl SurfaceMap {
         }
         normalize(&mut w);
         // Break uniform mixes into patches (a meadow with bare dirt spots
-        // rather than a flat 80/20 blend). Two noise scales per layer.
+        // rather than a flat 80/20 blend). These weights live on mesh
+        // vertices (3-30 m apart), so the noise must stay coarser than that:
+        // anything finer is random per vertex, and the shader's height blend
+        // turns it into one blob per vertex, i.e. a grid visible from the air.
+        // Sub-vertex breakup is the shader's job (per pixel, aperiodic).
         for (l, x) in w.iter_mut().enumerate() {
             if *x > 0.0 {
                 let s = 200 + l as u64 * 17;
-                let n = 0.65 * noise::fbm(gx * 60.0, gy * 60.0, s, 3, 0) + 0.35 * noise::value(gx * 400.0, gy * 400.0, s + 5, 0);
+                let n = 0.6 * noise::fbm(gx * 30.0, gy * 30.0, s, 2, 0) + 0.4 * noise::fbm(gx * 11.0, gy * 11.0, s + 5, 2, 0);
                 *x *= 0.25 + 1.5 * n;
             }
         }
@@ -604,6 +608,12 @@ impl SurfaceMap {
     /// Tree-canopy share (0..1) from WorldCover at tile (u, v), if loaded.
     pub fn canopy_at(&self, u: f64, v: f64) -> Option<f32> {
         (!self.canopy.is_empty()).then(|| self.wc_cell(&self.canopy, u, v))
+    }
+
+    /// Canopy density 0..1 for far shadows: WorldCover share when loaded,
+    /// else the scatterer's tree density relative to a closed forest.
+    pub fn canopy_share(&self, u: f64, v: f64) -> f32 {
+        self.canopy_at(u, v).unwrap_or_else(|| (self.tree_density(u, v) / forest_max(self.biome)).min(1.0))
     }
 
     pub fn shrub_at(&self, u: f64, v: f64) -> Option<f32> {

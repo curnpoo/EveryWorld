@@ -465,6 +465,8 @@ pub struct ImpostorMesh {
     pub axes: Vec<[f32; 4]>,
     pub normals: Vec<[f32; 3]>,
     pub colors: Vec<[f32; 4]>,
+    /// Tile (u, v) of the tree's base, for per-tile lookups (far shadows).
+    pub tile_uv: Vec<[f32; 2]>,
     pub indices: Vec<u32>,
 }
 
@@ -483,7 +485,7 @@ impl ImpostorMesh {
 /// tiles; less on coarse tiles, which the shader compensates for).
 /// `near_cut` hides impostors closer than this (where full trees or leaf
 /// cards take over); 0 shows them at any distance.
-pub fn build_mesh(trees: &[TreeInstance], up: Vec3, origin: Vec3, kept: f32, near_cut: f32) -> ImpostorMesh {
+pub fn build_mesh(trees: &[TreeInstance], up: Vec3, origin: Vec3, kept: f32, near_cut: f32, uv: Option<&crate::project::UvMap>) -> ImpostorMesh {
     let mut out = ImpostorMesh::default();
     for t in trees {
         let var = variant_for(t);
@@ -493,6 +495,7 @@ pub fn build_mesh(trees: &[TreeInstance], up: Vec3, origin: Vec3, kept: f32, nea
         let ax = rot * Vec3::X;
         let rank = crate::hash01(t.pos.x.to_bits() as u64 ^ 0x1A7E, t.pos.z.to_bits() as u64);
         let base = out.positions.len() as u32;
+        let tuv = uv.map_or([0.5, 0.5], |m| m.uv(t.pos));
         for corner in [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]] {
             out.positions.push(c.to_array());
             out.corners.push(corner);
@@ -500,6 +503,7 @@ pub fn build_mesh(trees: &[TreeInstance], up: Vec3, origin: Vec3, kept: f32, nea
             out.axes.push([ax.x, ax.y, ax.z, rank]);
             out.normals.push(up.to_array());
             out.colors.push(t.tint);
+            out.tile_uv.push(tuv);
         }
         out.indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
     }
@@ -578,7 +582,7 @@ mod tests {
         let trees: Vec<TreeInstance> = (0..10)
             .map(|i| TreeInstance { kind: TreeKind::ALL[i % 5], pos: Vec3::new(i as f32 * 10.0, 0.0, 0.0), scale: 1.0, yaw: i as f32, tint: [1.0; 4] })
             .collect();
-        let m = build_mesh(&trees, Vec3::Y, Vec3::ZERO, 0.5, 0.0);
+        let m = build_mesh(&trees, Vec3::Y, Vec3::ZERO, 0.5, 0.0, None);
         assert_eq!(m.len(), 10);
         assert_eq!(m.indices.len(), 60);
         for p in &m.params {
@@ -600,6 +604,22 @@ fn dump_atlas() {
     let t0 = std::time::Instant::now();
     let a = bake(&BakeSources { leaves: &l, bark: &b, palm_bark: &p });
     eprintln!("baked {} layers in {:?}", a.layers, t0.elapsed());
+    {
+        let per: usize = (0..MIP_LEVELS).map(|k| ((ATLAS_PX >> k) as usize).pow(2) * 4).sum();
+        for layer in [0usize, 3, 7] {
+            let mut off = layer * per;
+            for k in 0..MIP_LEVELS {
+                let n = ((ATLAS_PX >> k) as usize).pow(2);
+                let (mut sum, mut cnt) = ([0u64; 3], 0u64);
+                for px in a.albedo[off..off + n * 4].chunks_exact(4) {
+                    if px[3] > 127 { for c in 0..3 { sum[c] += px[c] as u64; } cnt += 1; }
+                }
+                let m = |c: usize| sum[c] / cnt.max(1);
+                eprintln!("layer {layer} mip {k}: opaque {cnt}/{n} mean rgb ({}, {}, {})", m(0), m(1), m(2));
+                off += n * 4;
+            }
+        }
+    }
     let Ok(dir) = std::env::var("EW_IMPOSTOR_DUMP") else { return };
     let per: usize = (0..MIP_LEVELS).map(|k| ((ATLAS_PX >> k) as usize).pow(2) * 4).sum();
     let s = ATLAS_PX as usize;

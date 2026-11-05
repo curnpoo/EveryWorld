@@ -19,20 +19,21 @@ pub fn world_size_m(g: Ground) -> f32 {
         Ground::Snow => 8.0,
         Ground::Paving => 4.8,
         Ground::Sand => 4.0,
-        _ => 3.0,
+        Ground::Grass | Ground::DryGrass => 6.0,
+        _ => 4.0,
     }
 }
 
 /// Normal-map strength per layer (shader scales detail normals by this too).
 pub fn bumpiness(g: Ground) -> f32 {
     match g {
-        Ground::Snow => 0.5,
+        Ground::Snow => 0.25,
         Ground::Sand => 0.9,
         Ground::Paving => 1.4,
         Ground::Rock => 2.2,
         Ground::Gravel => 2.0,
-        Ground::Grass | Ground::DryGrass => 0.7,
-        Ground::ForestFloor | Ground::Moss => 1.0,
+        Ground::Grass | Ground::DryGrass => 0.3,
+        Ground::ForestFloor | Ground::Moss => 0.6,
         _ => 1.6,
     }
 }
@@ -250,16 +251,25 @@ pub fn layer(g: Ground, size: u32) -> LayerTexture {
         }
         Ground::Dirt | Ground::Mud => {
             let mud = g == Ground::Mud;
+            // No lattice features: a Worley grid of equal stones or an even
+            // crack net reads as a repeating stud pattern once normal-mapped,
+            // whatever the tiling. Undulation + patchy, warped cracks here;
+            // pebbles are painted below with heavy-tailed sizes and clustering.
             cv.fill(|s, t| {
                 let f = fbm(s * 8.0, t * 8.0, seed, 5, 8);
-                let (d1, d2, id) = worley(s * 70.0, t * 70.0, seed + 3, 70, 1.0);
-                let stone = (1.0 - d1 * 2.2).clamp(0.0, 1.0) * (crate::hash01(id, 1) > 0.72) as u8 as f32;
-                let crack = 1.0 - smoothstep(0.0, 0.05, worley(s * 9.0, t * 9.0, seed + 4, 9, 1.0).1 - worley(s * 9.0, t * 9.0, seed + 4, 9, 1.0).0);
-                let _ = d2;
-                let mut h = 0.5 * f + 0.4 * stone - 0.25 * crack * (!mud) as u8 as f32;
+                let swell = fbm(s * 3.0, t * 3.0, seed + 6, 3, 3);
+                let wx = (fbm(s * 5.0, t * 5.0, seed + 7, 3, 5) - 0.5) as f64 * 0.25;
+                let wy = (fbm(s * 5.0, t * 5.0, seed + 8, 3, 5) - 0.5) as f64 * 0.25;
+                let (c1, c2, _) = worley(s * 7.0 + wx, t * 7.0 + wy, seed + 4, 7, 1.0);
+                // Cracks only where the ground dried out (patchy), width varies.
+                let dried = smoothstep(0.5, 0.62, fbm(s * 4.0, t * 4.0, seed + 9, 3, 4));
+                let cw = 0.02 + 0.05 * fbm(s * 20.0, t * 20.0, seed + 10, 2, 20);
+                let crack = (1.0 - smoothstep(0.0, cw, c2 - c1)) * dried;
+                let fine = fbm(s * 60.0, t * 60.0, seed + 3, 3, 60);
+                let mut h = 0.35 * f + 0.35 * swell + 0.12 * fine - 0.22 * crack * (!mud) as u8 as f32;
                 let (lo, hi) = if mud { (lin(0x2e261e), lin(0x5a4a3a)) } else { (lin(0x5e4630), lin(0x9a7a58)) };
-                let mut c = mix3(lo, hi, f);
-                c = mix3(c, lin(0x8f8678), stone * 0.4);
+                let mut c = mix3(lo, hi, 0.6 * f + 0.25 * swell + 0.15 * fine);
+                c = mix3(c, mul3(lo, 0.75), crack * 0.6);
                 let mut r = 0.92;
                 if mud {
                     // Puddles: flat, dark, glossy in the low spots.
@@ -270,6 +280,22 @@ pub fn layer(g: Ground, size: u32) -> LayerTexture {
                 }
                 (h, c, r)
             });
+            // Pebbles: random positions, heavy-tailed sizes (mostly grit, a few
+            // stones), clustered by noise, half sunk so they read as embedded.
+            let cols: Vec<[f32; 3]> = [0x8f8678, 0x7a6e60, 0x9c9384, 0x6a5e50, 0xa89a86].iter().map(|&h| lin(h)).collect();
+            let count = (n * n) / if mud { 900 } else { 260 };
+            for _ in 0..count {
+                let (x, y) = (rng.f() * n as f32, rng.f() * n as f32);
+                let cl = fbm(x as f64 / n as f64 * 5.0, y as f64 / n as f64 * 5.0, seed + 12, 3, 5);
+                if rng.f() > smoothstep(0.35, 0.7, cl) {
+                    continue;
+                }
+                let r = (0.004 + 0.03 * rng.f().powi(3)) * px_per_m;
+                let k = cv.idx(x as i64, y as i64);
+                let base_h = cv.h[k];
+                let col = mul3(cols[(rng.f() * 5.0) as usize % 5], rng.range(0.75, 1.1));
+                cv.blob(x, y, r, r * rng.range(0.55, 0.95), rng.f() * 6.283, base_h + 0.08 + r / px_per_m * 4.0, col, rng.range(0.6, 0.85), 0.6);
+            }
         }
         Ground::Farmland => {
             let rows = 9.0; // 6 m tile -> ~0.67 m spacing
@@ -356,7 +382,7 @@ pub fn layer(g: Ground, size: u32) -> LayerTexture {
                 let f = fbm(s * 4.0, t * 4.0, seed, 5, 4);
                 let wind = ((t + 0.08 * f as f64) * 18.0 * 6.283).sin() as f32 * 0.5 + 0.5;
                 let fine = value(s * 300.0, t * 300.0, seed + 2, 300);
-                let h = 0.75 * f + 0.15 * wind + 0.1 * fine;
+                let h = 0.85 * f + 0.12 * wind + 0.03 * fine;
                 let c = mix3(lin(0xdfe8f2), lin(0xffffff), 0.5 + 0.5 * h);
                 // Sparkle: a few very smooth crystals.
                 let r = if fine > 0.93 { 0.25 } else { 0.62 };

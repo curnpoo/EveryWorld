@@ -109,15 +109,19 @@ pub fn bake_rocks(rocks: &[RockInstance], up: Vec3) -> MeshData {
 /// Rocks bucketed into a `grid` x `grid` set of chunk meshes (tile mesh space),
 /// so the renderer can frustum-cull and distance-cull them per chunk.
 pub fn bake_rocks_chunked(rocks: &[RockInstance], up: Vec3, width: f32, grid: usize) -> Vec<MeshData> {
+    bake_instances_chunked(rocks, &rock_mesh([1.0; 4]), up, width, grid)
+}
+
+/// Bake instances of `model` into a `grid`x`grid` set of culled chunks.
+pub fn bake_instances_chunked(rocks: &[RockInstance], model: &MeshData, up: Vec3, width: f32, grid: usize) -> Vec<MeshData> {
     let grid = grid.max(1);
-    let model = rock_mesh([1.0; 4]);
     let mut cells: Vec<MeshData> = (0..grid * grid).map(|_| MeshData::default()).collect();
     let cell = (width / grid as f32).max(1.0);
     let half = width * 0.5;
     for r in rocks {
         let i = (((r.pos.x + half) / cell).floor() as i64).clamp(0, grid as i64 - 1) as usize;
         let j = (((r.pos.z + half) / cell).floor() as i64).clamp(0, grid as i64 - 1) as usize;
-        place(&mut cells[j * grid + i], &model, r.pos, up, r.yaw, r.scale, Some(r.tint));
+        place(&mut cells[j * grid + i], model, r.pos, up, r.yaw, r.scale, Some(r.tint));
     }
     cells.retain(|m| !m.is_empty());
     for m in &mut cells {

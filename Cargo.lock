@@ -2777,6 +2777,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ed_audio"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "ed_world",
+]
+
+[[package]]
 name = "ed_data"
 version = "0.1.0"
 dependencies = [
@@ -2818,6 +2826,7 @@ dependencies = [
  "avian3d",
  "bevy",
  "crossbeam-channel",
+ "ed_audio",
  "ed_data",
  "ed_engine_audio",
  "ed_flight",
@@ -2827,6 +2836,8 @@ dependencies = [
  "ed_world",
  "glam 0.33.12",
  "log",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -1,0 +1,9 @@
+[package]
+name = "ed_audio"
+version.workspace = true
+edition.workspace = true
+description = "Procedural soundscape: beds, one-shots, mixing rules (docs/plans/sound.md). Engine-free; the audio thread owns a Scape, the game sends Params + Events."
+
+[dependencies]
+ed_world = { path = "../ed_world" }
+crossbeam-channel = "0.5"

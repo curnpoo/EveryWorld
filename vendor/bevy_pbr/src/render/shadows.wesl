@@ -256,9 +256,16 @@ fn fetch_directional_shadow(
             );
             shadow = mix(shadow, next_shadow, (-view_z - next_near_bound) / (this_far_bound - next_near_bound));
         }
+    } else {
+        // EveryWorld patch (B3): fade the last cascade to lit instead of a hard
+        // cut at maximum_distance. Keep in sync with ed_runtime::shadows::FADE_START.
+        let far_bound = (*light).cascades[cascade_index].far_bound;
+        shadow = mix(shadow, 1.0, smoothstep(FAR_FADE_START * far_bound, far_bound, -view_z));
     }
     return shadow;
 }
+
+const FAR_FADE_START: f32 = 0.8;
 
 fn cascade_debug_visualization(
     output_color: vec3<f32>,

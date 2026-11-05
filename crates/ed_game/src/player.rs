@@ -31,7 +31,7 @@ use crate::origin::{Focus, Rebased, WorldOrigin};
 use avian3d::prelude::*;
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::prelude::*;
-use ed_flight::{MachEvent, MachTracker, atmosphere};
+use ed_flight::{MachEvent, MachTracker, atmosphere, flyer};
 
 pub struct PlayerPlugin;
 
@@ -187,6 +187,15 @@ pub struct Player {
     pub wingsuit_on: bool,
     /// Smoothed turn demand while gliding: +1 = hard left (look left of the flight path), -1 = hard right.
     pub wing_turn: f32,
+    /// Smoothed wingsuit arch: +1 = wings pulled up / body arched (flare), -1 = straightened out (dive).
+    pub wing_arch: f32,
+    /// Rocket legs: body-local swing of the feet away from their rest pose (x sideways, z fore/aft),
+    /// which moves the boots' thrust line off the centre of mass and steers the body. Drives `body.rs`.
+    pub leg_steer: Vec3,
+    /// Freefall without the suit, 0..1: balled up for a somersault/barrel roll. Drives `body.rs`.
+    pub fall_tuck: f32,
+    /// Freefall without the suit, 0..1: spread eagle (S). Drives `body.rs`.
+    pub fall_spread: f32,
     /// Radians the view still trails behind the character's own turning; eases to 0 so the camera slowly catches up.
     pub view_lag: f32,
     /// Actual world-space ankle/foot positions and planted state updated by `body.rs`.
@@ -258,6 +267,10 @@ impl Player {
             intent_dir: Vec3::ZERO,
             wingsuit_on: true,
             wing_turn: 0.0,
+            wing_arch: 0.0,
+            leg_steer: Vec3::ZERO,
+            fall_tuck: 0.0,
+            fall_spread: 0.0,
             view_lag: 0.0,
             foot_world_pos: [Vec3::new(-HIP_HALF_W, -RIDE_HEIGHT, 0.0), Vec3::new(HIP_HALF_W, -RIDE_HEIGHT, 0.0)],
             foot_up_dir: [Vec3::Y; 2],
@@ -369,6 +382,7 @@ fn player_input(
     mouse: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
     settings: Res<ControlSettings>,
+    pad: Res<crate::gamepad::Pad>,
     mut q: Query<&mut Player>,
 ) {
     let Ok(mut p) = q.single_mut() else { return };
@@ -376,6 +390,11 @@ fn player_input(
     let dy = if settings.invert_y { -mouse.delta.y } else { mouse.delta.y };
     p.cam_yaw -= mouse.delta.x * k;
     p.cam_pitch = (p.cam_pitch - dy * k).clamp(-1.48, 1.42);
+    // Right stick: same direction and invert setting as the mouse, at a rate per second.
+    let rate = crate::gamepad::PAD_LOOK_RATE * settings.mouse_sensitivity * time.delta_secs();
+    let pad_dy = if settings.invert_y { -pad.right.y } else { pad.right.y };
+    p.cam_yaw -= pad.right.x * rate;
+    p.cam_pitch = (p.cam_pitch + pad_dy * rate).clamp(-1.48, 1.42);
     let notches = crate::mapview::scroll_notches(&scroll);
     if notches != 0.0 {
         p.cam_dist_goal = (p.cam_dist_goal * 0.92f32.powf(notches)).clamp(2.0, 60.0);
@@ -388,25 +407,28 @@ fn player_input(
     let axis = |pos: KeyCode, neg: KeyCode| {
         keys.pressed(pos) as i32 as f32 - keys.pressed(neg) as i32 as f32
     };
-    p.fwd_in = axis(KeyCode::KeyW, KeyCode::KeyS);
-    p.strafe = axis(KeyCode::KeyD, KeyCode::KeyA);
+    // Left stick adds to WASD; both are clamped so using both never overshoots.
+    p.fwd_in = (axis(KeyCode::KeyW, KeyCode::KeyS) + pad.left.y).clamp(-1.0, 1.0);
+    p.strafe = (axis(KeyCode::KeyD, KeyCode::KeyA) + pad.left.x).clamp(-1.0, 1.0);
     let (s, c) = p.cam_yaw.sin_cos();
     let fwd = Vec3::new(-s, 0.0, -c);
     let right = Vec3::new(c, 0.0, -s);
     p.wish = (fwd * p.fwd_in + right * p.strafe).normalize_or_zero();
-    p.shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
-    p.space_held = keys.pressed(KeyCode::Space);
-    if keys.just_pressed(KeyCode::Space) {
+    // Left trigger is Shift; right trigger is Space. Each pad button acts like its key.
+    p.shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) || pad.lt_held;
+    p.space_held = keys.pressed(KeyCode::Space) || pad.rt_held;
+    if keys.just_pressed(KeyCode::Space) || pad.rt_just {
         p.space_just_pressed = true;
     }
-    if keys.just_released(KeyCode::Space) {
+    if keys.just_released(KeyCode::Space) || pad.rt_released {
         p.space_just_released = true;
     }
     p.crouch = keys.pressed(KeyCode::KeyC);
-    if keys.just_pressed(KeyCode::KeyF) {
+    // A: wingsuit (F). B: parachute (P).
+    if keys.just_pressed(KeyCode::KeyF) || pad.a_just {
         p.wingsuit_on = !p.wingsuit_on;
     }
-    if keys.just_pressed(KeyCode::KeyP) {
+    if keys.just_pressed(KeyCode::KeyP) || pad.b_just {
         p.mode = match p.mode {
             MoveMode::Skydive | MoveMode::Fall => MoveMode::Parachute,
             MoveMode::Parachute => MoveMode::Skydive,
@@ -417,6 +439,9 @@ fn player_input(
         p.jump = true;
     }
 }
+
+/// Camera pitch that counts as "level" for flight aiming (the default chase view looks slightly down).
+const CAM_LEVEL_PITCH: f32 = -0.25;
 
 /// Computes shortest-arc rotation error vector in world space from `current` to `target`.
 pub fn rotation_error_vec(current: Quat, target: Quat) -> Vec3 {
@@ -548,7 +573,7 @@ fn drive_player(
             p.boost_time = (p.boost_time - dt * 2.5).max(0.0);
         }
         p.boost_stage = if p.afterburner {
-            (1 + (p.boost_time / 3.5) as usize).min(3)
+            (1 + (p.boost_time / 4.0) as usize).min(3)
         } else {
             0
         };
@@ -575,12 +600,21 @@ fn drive_player(
             m => m,
         };
 
-        // --- Wingsuit steering: while falling/gliding, A/D turn the flight path and the camera follows ---
+        // --- Plane-style stick. Only the mouse moves the view; W/S/A/D tilt the body's aim
+        // relative to it (see the rocket and wingsuit sections), never the camera. ---
         let wingsuit = p.wingsuit_on && matches!(p.mode, MoveMode::Skydive | MoveMode::Fall) && !p.thrust_held && !grounded;
-        if wingsuit && (-v_up_scalar) > 3.0 {
-            p.cam_yaw -= p.strafe * 1.0 * dt;
-            // The character carves; the camera trails and slowly follows instead of snapping with it.
-            p.view_lag = (p.view_lag + p.strafe * 1.0 * dt).clamp(-1.0, 1.0);
+        // Suit off: a plain skydiver. W somersaults, A/D barrel roll, S spreads eagle.
+        let freefall = !p.wingsuit_on && p.mode == MoveMode::Skydive && !p.thrust_held && !grounded;
+        {
+            let (tuck, spread) = if freefall {
+                let spin = p.fwd_in.max(0.0).max(p.strafe.abs() * 0.5);
+                (spin, (-p.fwd_in).max(0.0))
+            } else {
+                (0.0, 0.0)
+            };
+            let k = 1.0 - (-6.0 * dt).exp();
+            p.fall_tuck += (tuck - p.fall_tuck) * k;
+            p.fall_spread += (spread - p.fall_spread) * k;
         }
 
         // --- Facing Yaw ---
@@ -627,51 +661,46 @@ fn drive_player(
         // cross-section; tumbling or lying belly-to-wind exposes the full ~0.7 m^2.
         let axial = body_head.dot(wind_dir).abs().clamp(0.0, 1.0);
         let broadside_sq = 1.0 - axial * axial;
+        // The inflated suit carries its own drag (flyer::wingsuit); the bare-body drag fades out as it opens.
+        let wing_open = if wingsuit { ((speed_total - 4.0) / 10.0).clamp(0.0, 1.0) } else { 0.0 };
         if p.mode != MoveMode::Parachute {
-            let cd_area = 0.04 + 0.62 * broadside_sq;
-            forces.apply_force(wind_dir * (q_dyn * cd_area));
-        } else if p.mode == MoveMode::Parachute {
+            // Balled up presents less area; spread eagle more.
+            let pose_area = 1.0 + 0.4 * p.fall_spread - 0.35 * p.fall_tuck;
+            let cd_area = (0.04 + 0.62 * broadside_sq) * pose_area;
+            forces.apply_force(wind_dir * (q_dyn * cd_area * (1.0 - wing_open)));
+        } else {
             let k = 0.5 * rho * 28.0;
             let drag_v = -v_up * (k * v_up.length() * 1.5);
             let glide = (wish_world * 10.0 - v_flat) * (mass * 1.5);
             forces.apply_force(drag_v + glide);
         }
 
-        // Wingsuit aerodynamics: lift converts sink into forward speed along the facing.
-        // W dives (more sink and speed), S flares (slower fall), turbulence buffets the body.
+        // Wingsuit: the flyer only reshapes the suit (arch for S/W and looking up/down, twist for
+        // A/D and for banking toward the view); lift, drag and every moment come from the air.
         let mut wing_shake = 0.0f32;
-        if !wingsuit {
-            p.wing_turn *= (1.0 - 4.0 * dt).max(0.0);
-        }
         if wingsuit {
-            let fall_speed = (-v_up_scalar).max(0.0);
-            let engage = ((fall_speed - 3.0) / 6.0).clamp(0.0, 1.0);
-            let dive = p.fwd_in.max(0.0);
-            let flare = (-p.fwd_in).max(0.0);
-            let fwd_h = _fwd_world;
-            let along = v_flat.dot(fwd_h);
-            let v_target = 8.0 + fall_speed.min(60.0) * (1.4 + 0.8 * dive - 0.7 * flare);
-            let a_fwd = ((v_target - along) * 1.2).clamp(-20.0, 25.0);
-            let side = v_flat - fwd_h * along;
-            // Look direction vs flight path: the wing on the side you look toward catches air and carves the glide round.
-            let vdir = v_flat.normalize_or_zero();
-            let turn_raw = if v_flat.length() > 4.0 { up.dot(vdir.cross(fwd_h)).clamp(-1.0, 1.0) * 2.5 } else { 0.0 };
-            let turn_target = (turn_raw + p.strafe * -0.6).clamp(-1.0, 1.0) * engage;
-            p.wing_turn += (turn_target - p.wing_turn) * (1.0 - (-5.0 * dt).exp());
-            let a_h = fwd_h * a_fwd - side * (1.5 + 1.2 * p.wing_turn.abs());
-            let vt = 28.0 - 14.0 * flare + 18.0 * dive;
-            let a_up = (g + (-vt - v_up_scalar) * 0.9).clamp(0.0, 2.2 * g);
-            forces.apply_force((a_h + up * a_up) * mass * engage);
-
-            let amp = (speed_total / 70.0).clamp(0.0, 1.0) * engage;
-            let tt = time.elapsed_secs();
-            let buffet = Vec3::new(
-                (tt * 13.1).sin() + 0.6 * (tt * 29.7).sin(),
-                (tt * 9.7 + 1.3).sin(),
-                (tt * 11.3 + 2.1).sin() + 0.5 * (tt * 31.0).sin(),
-            );
-            let _ = buffet; // buffeting is cosmetic (limbs, wing, camera): no invisible torque on the body
-            wing_shake = 0.12 * amp;
+            let (s, c) = p.cam_yaw.sin_cos();
+            let cmd = flyer::WingCmd {
+                pitch: -p.fwd_in,
+                roll: p.strafe,
+                heading: if p.strafe.abs() > 0.05 { Vec3::ZERO } else { base_globe * Vec3::new(-s, 0.0, -c) },
+                arch_bias: ((p.cam_pitch - CAM_LEVEL_PITCH) * 1.2).clamp(-0.6, 0.6),
+            };
+            let want = flyer::wing_pilot(t.rotation, v, up, ang_v, cmd);
+            // Limbs move at a finite rate: the suit responds loosely, not instantly.
+            let k = 1.0 - (-10.0 * dt).exp();
+            p.wing_arch += (want.arch - p.wing_arch) * k;
+            let twist = -p.wing_turn + (want.twist + p.wing_turn) * k;
+            p.wing_turn = -twist;
+            let pose = flyer::WingPose { arch: p.wing_arch, twist, open: wing_open };
+            let aero = flyer::wingsuit(t.rotation, v, rho, ang_v, flyer::BODY_INERTIA, pose);
+            forces.apply_force(aero.force);
+            forces.apply_torque(aero.torque);
+            wing_shake = 0.12 * (speed_total / 70.0).clamp(0.0, 1.0) * wing_open;
+        } else {
+            let k = (1.0 - 4.0 * dt).max(0.0);
+            p.wing_turn *= k;
+            p.wing_arch *= k;
         }
 
         // =========================================================================
@@ -756,98 +785,43 @@ fn drive_player(
 
         p.intent_dir = cmd_dir_3d;
         let target_rot: Quat;
+        // Weight of the posture "muscles" PD below. Rockets steer only through the soles and the
+        // wingsuit only through the air, so for them it fades out.
+        let mut muscle = 1.0f32;
 
         if p.thrust_held {
-            // Smooth S-curve ramp for Shift afterburner (`0.0` -> `1.0` over 3.5 seconds):
-            let ramp = (p.boost_time / 9.0).clamp(0.0, 1.0);
-            let smooth_ramp = ramp * ramp * (3.0 - 2.0 * ramp);
+            // Space = gentle boost (1.5 g: hovers with room to climb, ~1.1 g along a level aim).
+            // Shift = extra boost, ramping slowly from there to 36 g over 10 s.
+            const SPACE_G: f32 = 1.5;
+            let ramp = flyer::boost_ramp(p.boost_time, 10.0);
+            let thrust_acc = if p.afterburner { g * (SPACE_G + (36.0 - SPACE_G) * ramp) } else { g * SPACE_G };
+            p.throttle = if p.afterburner { 1.0 + ramp * 2.5 } else { 0.65 };
 
-            // Determine desired body/foot orientation and thrust based on the exact button combination:
-            // Every case builds the thrust vector (m/s^2) the boots must deliver. The body then turns
-            // to point the boots along it, so tilting never costs altitude: the vertical part is
-            // always requested explicitly.
-            let thrust_vec: Vec3 = match (space_rocket, p.afterburner, has_dir_input) {
-                // A: Space only -> hover. Thrust opposes horizontal velocity and slowly climbs.
-                (true, false, false) => {
-                    let a_h = (-v_flat * 0.9).clamp_length_max(40.0);
-                    let climb = (g + 8.0 - v_up_scalar * 0.25).clamp(g - 4.0, g + 22.0);
-                    up * climb + a_h
-                }
-                // B: Space + Shift -> human rocket straight up, cancel drift with thrust.
-                (true, true, false) => {
-                    let a_h = (-v_flat * 0.3).clamp_length_max(8.0);
-                    up * (g * (2.0 + smooth_ramp * 3.5)) + a_h
-                }
-                // C: Space + WASD -> cruise along the camera-relative direction, easing off near ~70 m/s.
-                (true, false, true) => {
-                    let along = v.dot(cmd_dir_3d);
-                    let ease = (1.0 - along / 70.0).clamp(0.0, 1.0);
-                    let sideways = (v - cmd_dir_3d * along) - up * (v - cmd_dir_3d * along).dot(up);
-                    cmd_dir_3d * (26.0 * ease) + cmd_dir_3d * ((-along * 1.1).clamp(0.0, 55.0)) - sideways.clamp_length_max(30.0) * 0.5 + up * (g * 0.95)
-                }
-                // D: Space + Shift + WASD -> afterburner along the camera-relative direction.
-                (true, true, true) => {
-                    {
-                        // Pushing against the current velocity = retro-burn: add strong braking on top.
-                        let along = v.dot(cmd_dir_3d);
-                        cmd_dir_3d * (15.0 + smooth_ramp * 45.0 + (-along * 1.2).clamp(0.0, 70.0)) + up * (g * 0.9)
-                    }
-                }
-                // E: Shift only -> raw boots along the way the feet currently point.
-                (false, true, _) => {
-                    let cur_up = t.rotation * Vec3::Y;
-                    let axis = if has_dir_input {
-                        (cur_up + cmd_dir_3d * 0.35).normalize_or(cur_up)
-                    } else {
-                        cur_up
-                    };
-                    axis * (g * (1.3 + smooth_ramp * 2.6))
-                }
-                _ => up * (g * 1.35),
-            };
-            let braking = has_dir_input && v.dot(cmd_dir_3d) < -5.0;
-            let max_g = if braking { 10.0 } else if p.afterburner { 6.5 } else { 4.5 };
-            let thrust_g = (thrust_vec.length() / g).min(max_g);
-            let desired_body_up = thrust_vec.normalize_or(up);
+            // Aim = the view (offset so the default slightly-down camera means level flight),
+            // tilted by the held keys: S noses up, W down, A/D swing left/right.
+            let aim_pitch = (p.cam_pitch - CAM_LEVEL_PITCH - p.fwd_in * 0.6).clamp(-1.5, 1.5);
+            let aim_yaw = p.cam_yaw - p.strafe * 0.4;
+            let aim = base_globe * Quat::from_euler(EulerRot::YXZ, aim_yaw, aim_pitch, 0.0) * Vec3::NEG_Z;
+            // Point the boots so thrust + gravity accelerates along the aim (no altitude lost in turns).
+            let axis = flyer::rocket_axis(aim, up, thrust_acc, g);
+            // Bank: D rolls right, A left, plus a lean into whatever turn the view is making.
+            let roll = (p.strafe * 0.55 - yaw_vel * 0.2).clamp(-0.8, 0.8);
+            target_rot = flyer::rocket_attitude(axis, cam_up_3d, up, roll);
 
-            p.throttle = if p.afterburner {
-                1.0 + smooth_ramp * 1.8
-            } else {
-                0.85
-            };
-
-            // Flight computer throttles the boots until the body has swung onto the aimed axis,
-            // so we never blast in the wrong direction while rotating.
-            let axis_now = t.rotation * Vec3::Y;
-            let gate = if space_rocket {
-                ((axis_now.dot(desired_body_up) - 0.6) / 0.35).clamp(0.0, 1.0)
-            } else {
-                1.0
-            };
-            let thrust_per_foot = (weight * thrust_g) * 0.5 * gate;
-            for i in 0..2 {
-                let foot_pos = p.foot_world_pos[i];
-                // Mostly the body axis (so a flailing leg can't steer the rocket), a bit of leg pose.
-                let boot_push_dir = (p.foot_up_dir[i] * 0.25 + (t.rotation * Vec3::Y) * 0.75)
-                    .normalize_or(t.rotation * Vec3::Y);
-                let boot_force = boot_push_dir * thrust_per_foot;
-                // Small lever arm (`0.10`) so rocket boots give physical feel without violent pitch-oscillation at high G!
-                let app_point = t.translation.lerp(foot_pos, 0.04);
-                forces.apply_force_at_point(boot_force, app_point);
+            // The boots throttle back while the body is still swinging round (never blast the
+            // wrong way), but keep a floor: the thrust is also what turns us.
+            let gate = (((t.rotation * Vec3::Y).dot(axis) - 0.3) / 0.5).clamp(0.25, 1.0);
+            let thrust_n = mass * thrust_acc * gate;
+            // A loose spring says how the body would like to turn; the legs swing the feet so the
+            // thrust line passes beside the centre of mass and makes that torque (r x F).
+            let want = flyer::rocket_want_torque(t.rotation, target_rot, ang_v);
+            let steer = flyer::boot_steer(t.rotation, thrust_n, want);
+            let leg = p.leg_steer;
+            p.leg_steer = leg + (steer.leg_offset - leg) * (1.0 - (-15.0 * dt).exp());
+            for (pt, f) in flyer::boot_forces(t.rotation, t.translation, thrust_n, p.leg_steer, steer.roll_push) {
+                forces.apply_force_at_point(f, pt);
             }
-
-            // Build orthonormal 3D target rotation for the rocket posture:
-            let ref_right = if desired_body_up.dot(cam_right_3d).abs() < 0.92 {
-                (cam_right_3d - desired_body_up * cam_right_3d.dot(desired_body_up)).normalize_or(right_world)
-            } else {
-                desired_body_up.cross(cam_up_3d).normalize_or(right_world)
-            };
-            let ref_back = ref_right.cross(desired_body_up).normalize_or(cam_up_3d);
-            let base_3d_rot = Quat::from_mat3(&Mat3::from_cols(ref_right, desired_body_up, ref_back));
-            let bank_roll = -p.strafe * 0.40 - (dyaw * 0.25).clamp(-0.4, 0.4);
-            target_rot = base_3d_rot * Quat::from_rotation_y(bank_roll);
-
-            // Critically damped rotational PD gains so the robot never teeters or spins out under boost:
+            muscle = 0.0;
         } else {
             // =====================================================================
             // 4. NON-ROCKET ORIENTATION (WALK, FALL, SKYDIVE, PARACHUTE)
@@ -904,13 +878,28 @@ fn drive_player(
             }
         }
 
+        if wingsuit {
+            // Only while the suit is still collapsed does the flyer hold a posture by muscle.
+            muscle = (1.0 - wing_open) * (1.0 - wing_open);
+        }
+        if freefall {
+            // Spins and the box position come from limbs in the airflow (flyer::freefall_torque),
+            // not from a posture spring. Belly down, head toward the view.
+            let belly_down = yaw_frame * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+            let cmd = flyer::FallCmd { flip: p.fwd_in.max(0.0), roll: p.strafe, spread: p.fall_spread };
+            forces.apply_torque(flyer::freefall_torque(t.rotation, ang_v, speed_total, belly_down, cmd));
+            muscle = 0.0;
+        }
+        if !p.thrust_held {
+            p.leg_steer *= (1.0 - 6.0 * dt).max(0.0);
+        }
         let rot_err = rotation_error_vec(t.rotation, target_rot);
         p.rot_err = p.rot_err.lerp(rot_err, 1.0 - (-18.0 * dt).exp());
         // Critically damped PD sized to the body's inertia (I ~ 8.5): natural frequency w,
-        // kp = I*w^2, kd = 2*I*w. Stiffer when the rockets are the only thing keeping us up.
-        let w = if p.thrust_held { 14.0 } else if grounded { 7.0 } else { 6.0 };
+        // kp = I*w^2, kd = 2*I*w.
+        let w = if grounded { 7.0 } else { 6.0 };
         let (kp_rot, kd_rot) = (8.5 * w * w, 2.0 * 8.5 * w);
-        let mut torque = rot_err * kp_rot - ang_v * kd_rot;
+        let mut torque = (rot_err * kp_rot - ang_v * kd_rot) * muscle;
         // Hard guard against runaway spin from a bad contact: extra damping above 9 rad/s.
         let spin_excess = (ang_v.length() - 14.0).max(0.0);
         torque -= ang_v.normalize_or_zero() * spin_excess * 8.5 * 30.0;
@@ -970,7 +959,8 @@ fn camera_follow(
         return;
     }
 
-    let target_anchor = pt.translation + up * 0.55 + body_up * 0.20 + vel.0 * 0.03;
+    // Locked to the body: no velocity lead (it put the pivot metres ahead of a fast flyer).
+    let target_anchor = pt.translation + up * 0.55 + body_up * 0.20;
     // Lag is bounded by speed, so only a genuine teleport (spawn, re-anchor) snaps the rig.
     let snap_dist = 25.0 + vel.0.length() * dt * 2.0;
     if !rig.init || (target_anchor - rig.focus_pos).length() > snap_dist {
@@ -990,10 +980,12 @@ fn camera_follow(
             let tmp = (u + x * w) * dt;
             ((x + tmp) * e, (u - tmp * w) * e)
         };
-        let (xf, uf) = solve(x - x_up, u - u_up, 16.0);
-        let (xv, uv) = solve(x_up, u_up, 11.0);
-        rig.focus_pos = target_anchor + xf + xv;
-        rig.focus_vel = vel.0 + uf + uv;
+        // Only the vertical offset is eased, and only on the ground (steps, landings). Sideways,
+        // and everything in the air, is rigid: the character never slides out of frame.
+        let grounded = matches!(p.mode, MoveMode::Walk);
+        let (xv, uv) = if grounded { solve(x_up, u_up, 11.0) } else { (Vec3::ZERO, Vec3::ZERO) };
+        rig.focus_pos = target_anchor + xv;
+        rig.focus_vel = vel.0 + uv;
     }
 
     let pivot = rig.focus_pos;

@@ -36,6 +36,10 @@ pub enum Mat {
 #[derive(Debug, Default)]
 pub struct Out {
     pub meshes: HashMap<Mat, MeshData>,
+    /// Mid-distance detail (~70-230 m): keep silhouettes, openings, sills
+    /// and slabs; drop parts under a pixel at that range (mullions, louvres,
+    /// balusters, door panels, flower heads). See `buildings::build_detail_lite`.
+    pub lite: bool,
 }
 
 impl Out {
@@ -60,6 +64,8 @@ fn v(x: f32, y: f32, z: f32) -> Vec3 {
 }
 
 fn blk(o: &mut Out, k: Mat, b: &Basis, min: Vec3, max: Vec3, bevel: f32, c: [f32; 4]) {
+    // Bevels are 44 vs 12 triangles and sub-pixel at mid range.
+    let bevel = if o.lite { 0.0 } else { bevel };
     mk::block(o.m(k), b, min, max, bevel, c);
 }
 
@@ -90,13 +96,14 @@ pub fn window(o: &mut Out, b: &Basis, op: &Opening, d: &WindowDesign, trim: [f32
     // Mullions and transoms.
     let (x0, y0, w, h) = (op.x0, op.y0, op.w, op.h);
     let mz = -r + 0.02;
-    for i in 1..d.cols {
-        let x = x0 + w * i as f32 / d.cols as f32;
+    let (cols, rows) = if o.lite { (1, 1) } else { (d.cols, d.rows) };
+    for i in 1..cols {
+        let x = x0 + w * i as f32 / cols as f32;
         bar(o, Mat::Trim, b.p(x, y0, mz), b.p(x, y0 + h * 0.98, mz), 0.04, b.z, frame_c);
     }
     let glazed_h = if matches!(op.arch, mk::Arch::Flat) { h } else { h * 0.72 };
-    for j in 1..d.rows {
-        let y = y0 + glazed_h * j as f32 / d.rows as f32;
+    for j in 1..rows {
+        let y = y0 + glazed_h * j as f32 / rows as f32;
         bar(o, Mat::Trim, b.p(x0 + 0.02, y, mz), b.p(x0 + w - 0.02, y, mz), 0.035, b.y, frame_c);
     }
     // Sill: a sloped stone/painted ledge with drip.
@@ -109,12 +116,16 @@ pub fn window(o: &mut Out, b: &Basis, op: &Opening, d: &WindowDesign, trim: [f32
         Lintel::Flat => blk(o, Mat::Trim, b, v(x0 - 0.1, top, -0.02), v(x0 + w + 0.1, top + 0.2, 0.03), 0.01, sill_c),
         Lintel::Keystone => {
             blk(o, Mat::Trim, b, v(x0 - 0.12, top, -0.02), v(x0 + w + 0.12, top + 0.18, 0.025), 0.01, sill_c);
-            blk(o, Mat::Trim, b, v(x0 + w * 0.5 - 0.1, top - 0.04, -0.02), v(x0 + w * 0.5 + 0.1, top + 0.3, 0.06), 0.015, sill_c);
+            if !o.lite {
+                blk(o, Mat::Trim, b, v(x0 + w * 0.5 - 0.1, top - 0.04, -0.02), v(x0 + w * 0.5 + 0.1, top + 0.3, 0.06), 0.015, sill_c);
+            }
         }
         Lintel::Hood => {
             // Projecting cornice hood with a small cornice profile.
             let path = [b.p(x0 - 0.18, top + 0.12, 0.0), b.p(x0 + w + 0.18, top + 0.12, 0.0)];
-            mk::sweep(o.m(Mat::Trim), &profiles::cornice(0.16, 0.2), &path, false, b.y, trim);
+            if !o.lite {
+                mk::sweep(o.m(Mat::Trim), &profiles::cornice(0.16, 0.2), &path, false, b.y, trim);
+            }
             blk(o, Mat::Trim, b, v(x0 - 0.12, top, -0.02), v(x0 + w + 0.12, top + 0.13, 0.03), 0.01, trim);
         }
     }
@@ -123,7 +134,7 @@ pub fn window(o: &mut Out, b: &Basis, op: &Opening, d: &WindowDesign, trim: [f32
         mk::frame_along(o.m(Mat::Trim), b, &outline, 0.0, 0.16, 0.035, trim);
     }
     // Iron grille in front of the glass.
-    if d.grille {
+    if d.grille && !o.lite {
         let gz = -0.03;
         let n = ((w / 0.13) as usize).max(2);
         for i in 1..n {
@@ -140,7 +151,7 @@ pub fn window(o: &mut Out, b: &Basis, op: &Opening, d: &WindowDesign, trim: [f32
         for (sx0, sx1) in [(x0 - sw - 0.02, x0 - 0.02), (x0 + w + 0.02, x0 + w + sw + 0.02)] {
             blk(o, Mat::Trim, b, v(sx0, y0, 0.01), v(sx1, y0 + glazed_h, 0.05), 0.008, scale_color(sc, 0.9));
             // Louvers: angled slats across the panel.
-            let n = ((glazed_h - 0.16) / 0.1) as usize;
+            let n = if o.lite { 0 } else { ((glazed_h - 0.16) / 0.1) as usize };
             for k in 0..n {
                 let y = y0 + 0.08 + k as f32 * 0.1;
                 let p = [b.p(sx0 + 0.05, y, 0.05), b.p(sx1 - 0.05, y, 0.05), b.p(sx1 - 0.05, y + 0.05, 0.075), b.p(sx0 + 0.05, y + 0.05, 0.075)];
@@ -154,6 +165,12 @@ pub fn window(o: &mut Out, b: &Basis, op: &Opening, d: &WindowDesign, trim: [f32
 pub fn flower_box(o: &mut Out, b: &Basis, x0: f32, w: f32, y: f32, seed: u64) {
     blk(o, Mat::Trim, b, v(x0 - 0.05, y - 0.22, 0.05), v(x0 + w + 0.05, y - 0.02, 0.3), 0.02, rgb(0x6b4a2f));
     let colors = [0xd62828, 0xf77f00, 0xe5383b, 0xff70a6, 0xfcbf49, 0xc77dff];
+    if o.lite {
+        // One coloured mound block instead of a row of flower heads.
+        let c = rgb(colors[(crate::hash01(seed, 0) * colors.len() as f32) as usize % colors.len()]);
+        blk(o, Mat::Plant, b, v(x0, y - 0.02, 0.06), v(x0 + w, y + 0.14, 0.28), 0.0, c);
+        return;
+    }
     let n = ((w / 0.4) as usize).max(2);
     for i in 0..n {
         let x = x0 + (i as f32 + 0.5) * w / n as f32;
@@ -164,8 +181,8 @@ pub fn flower_box(o: &mut Out, b: &Basis, x0: f32, w: f32, y: f32, seed: u64) {
 
 /// A lumpy foliage mass (noise-displaced, multi-lobed), for planters and flowers.
 pub fn bush(o: &mut Out, center: Vec3, r: f32, h: f32, c: [f32; 4], seed: u64) {
+    let (rings, seg) = if o.lite { (2usize, 4usize) } else { (4usize, 7usize) };
     let m = o.m(Mat::Plant);
-    let (rings, seg) = (4usize, 7usize);
     let base = m.positions.len() as u32;
     for j in 0..=rings {
         let phi = j as f32 / rings as f32 * std::f32::consts::PI;
@@ -208,6 +225,9 @@ pub fn door(o: &mut Out, b: &Basis, op: &Opening, color: [f32; 4], trim: [f32; 4
     for l in 0..leaves {
         let lx = x0 + l as f32 * lw;
         blk(o, Mat::Trim, b, v(lx + 0.01, y0, -r - 0.04), v(lx + lw - 0.01, y0 + leaf_h, -r), 0.01, color);
+        if o.lite {
+            continue;
+        }
         for (py0, py1) in [(0.12, 0.42), (0.52, 0.94)] {
             for (px0, px1) in [(0.12, 0.46), (0.54, 0.88)] {
                 blk(o, Mat::Trim, b, v(lx + lw * px0, y0 + leaf_h * py0, -r), v(lx + lw * px1, y0 + leaf_h * py1, -r + 0.025), 0.012, scale_color(color, 1.12));
@@ -332,7 +352,7 @@ pub fn garage_door(o: &mut Out, b: &Basis, op: &Opening, color: [f32; 4], trim: 
         let yb = y0 + h * (k + 1) as f32 / n as f32 - 0.01;
         blk(o, Mat::Trim, b, v(x0 + 0.02, ya, -0.14), v(x0 + w - 0.02, yb, -0.1), 0.015, color);
         // Raised panels in each section.
-        let cols = (w / 0.9) as usize;
+        let cols = if o.lite { 0 } else { (w / 0.9) as usize };
         for c in 0..cols {
             let xa = x0 + 0.12 + c as f32 * (w - 0.24) / cols as f32;
             let xb = xa + (w - 0.24) / cols as f32 - 0.1;
@@ -380,8 +400,16 @@ pub fn balcony(o: &mut Out, b: &Basis, kind: Balcony, x0: f32, w: f32, floor_y: 
             for w2 in path.windows(2) {
                 bar(o, Mat::Trim, w2[0], w2[1], 0.08, b.y, rail);
             }
-            // Vertical boards with cut-out silhouettes (spaced planks).
-            for w2 in corners.windows(2) {
+            // Vertical boards with cut-out silhouettes (spaced planks);
+            // mid-distance: one solid board panel per side.
+            if o.lite {
+                let pc = scale_color(rail, 0.9);
+                blk(o, Mat::Trim, b, v(xa, floor_y, depth - 0.05), v(xb, floor_y + rail_h, depth), 0.0, pc);
+                blk(o, Mat::Trim, b, v(xa, floor_y, 0.0), v(xa + 0.05, floor_y + rail_h, depth), 0.0, pc);
+                blk(o, Mat::Trim, b, v(xb - 0.05, floor_y, 0.0), v(xb, floor_y + rail_h, depth), 0.0, pc);
+            }
+            let lite = o.lite;
+            for w2 in corners.windows(2).filter(|_| !lite) {
                 let len = w2[0].distance(w2[1]);
                 let n = (len / 0.14) as usize;
                 for i in 0..=n {
@@ -401,7 +429,8 @@ pub fn balcony(o: &mut Out, b: &Basis, kind: Balcony, x0: f32, w: f32, floor_y: 
                 bar(o, Mat::Metal, lower[0], lower[1], 0.03, b.y, rgb(IRON));
                 let len = w2[0].distance(w2[1]);
                 let n = (len / 0.14) as usize;
-                for i in 0..=n {
+                let count = if o.lite { 0 } else { n + 1 };
+                for i in 0..count {
                     let p = w2[0].lerp(w2[1], i as f32 / n.max(1) as f32);
                     bar(o, Mat::Metal, p + b.y * 0.08, p + b.y * rail_h, 0.016, b.z, rgb(IRON));
                 }

@@ -39,6 +39,10 @@ pub struct Car {
     pub throttle: f32,
     pub brake: f32,
     pub compression: [f32; 4],
+    /// Per-wheel tyre slip, 0 = rolling, 1 = friction circle saturated (sound).
+    pub slip: [f32; 4],
+    /// Per-wheel suspension velocity, m/s (positive = compressing; sound).
+    pub comp_vel: [f32; 4],
 }
 
 #[derive(Component)]
@@ -47,6 +51,10 @@ pub struct Plane {
     pub pitch: f32,
     pub roll: f32,
     pub yaw: f32,
+    /// Angle of attack, radians (sound: stall horn).
+    pub aoa: f32,
+    /// Airspeed m/s (sound).
+    pub airspeed: f32,
 }
 
 const WHEELS: [Vec3; 4] = [
@@ -81,7 +89,7 @@ fn spawn_vehicles(
         let dark = mats.add(StandardMaterial { base_color: Color::srgb(0.1, 0.1, 0.12), perceptual_roughness: 0.5, ..default() });
         commands
             .spawn((
-                Car { rpm: 900.0, gear: 0, steer: 0.0, throttle: 0.0, brake: 0.0, compression: [0.0; 4] },
+                Car { rpm: 900.0, gear: 0, steer: 0.0, throttle: 0.0, brake: 0.0, compression: [0.0; 4], slip: [0.0; 4], comp_vel: [0.0; 4] },
                 RigidBody::Dynamic,
                 Collider::cuboid(1.8, 0.9, 4.2),
                 Mass(1_400.0),
@@ -108,7 +116,7 @@ fn spawn_vehicles(
         let accent = mats.add(StandardMaterial { base_color: Color::srgb(0.98, 0.45, 0.1), perceptual_roughness: 0.5, ..default() });
         commands
             .spawn((
-                Plane { throttle: 0.0, pitch: 0.0, roll: 0.0, yaw: 0.0 },
+                Plane { throttle: 0.0, pitch: 0.0, roll: 0.0, yaw: 0.0, aoa: 0.0, airspeed: 0.0 },
                 RigidBody::Dynamic,
                 Collider::cuboid(1.2, 1.2, 8.0),
                 Mass(1_100.0),
@@ -211,12 +219,15 @@ fn car_physics(
             let Ok(dir) = Dir3::new(-up) else { continue };
             let Some(hit) = spatial.cast_ray(mount, dir, REST + WHEEL_R, true, &filter) else {
                 car.compression[i] = 0.0;
+                car.slip[i] = 0.0;
+                car.comp_vel[i] = 0.0;
                 continue;
             };
             let comp = REST + WHEEL_R - hit.distance;
             let prev = car.compression[i];
             car.compression[i] = comp;
             let comp_vel = (comp - prev) / dt.max(1e-4);
+            car.comp_vel[i] = comp_vel;
             let spring = (comp * 45_000.0 + comp_vel * 4_000.0).max(0.0);
             let contact = mount - up * (hit.distance - 0.0);
             forces.apply_force_at_point(up * spring, contact);
@@ -234,6 +245,12 @@ fn car_physics(
             f_long -= v_long * 8.0; // rolling resistance
             // Friction circle.
             let total = (f_lat * f_lat + f_long * f_long).sqrt();
+            // Slip for tyre squeal: how far past the grip limit, plus sliding speed.
+            car.slip[i] = if total > grip && grip > 1.0 {
+                ((total / grip - 1.0) * 0.5).min(1.0) * (v_lat.abs() + (v_long.abs() * brk)).min(12.0) / 12.0
+            } else {
+                0.0
+            };
             if total > grip {
                 let k = grip / total;
                 f_lat *= k;
@@ -279,6 +296,8 @@ fn plane_physics(
         let v_body_fwd = v.dot(fwd);
         let v_body_up = v.dot(up);
         let aoa = (-v_body_up).atan2(v_body_fwd.max(0.1));
+        p.aoa = aoa;
+        p.airspeed = speed;
         let cl = if aoa.abs() < 0.26 { 0.25 + 5.0 * aoa } else { (0.25 + 5.0 * 0.26 * aoa.signum()) * 0.5 };
         let wing_area = 16.0;
         let lift_dir = v.cross(right).normalize_or_zero();

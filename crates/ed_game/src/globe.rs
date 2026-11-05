@@ -631,6 +631,10 @@ fn control(
     buttons: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
+    pad: Res<crate::gamepad::Pad>,
+    mode: Res<crate::gamepad::InputMode>,
+    mut spawns: MessageWriter<crate::spawn::SpawnRequest>,
+    menu_focus: Res<crate::menu::MenuFocus>,
     canvases: Query<(&RelativeCursorPosition, &ComputedNode, &InheritedVisibility), With<MapCanvas>>,
     popups: Query<(&RelativeCursorPosition, &InheritedVisibility), (With<Popup>, Without<MapCanvas>)>,
     mut map: ResMut<MapState>,
@@ -642,6 +646,9 @@ fn control(
         g.last_px = None;
         return;
     };
+    // With a controller the canvas counts as hovered and the pick is the centre crosshair.
+    let pad_mode = *mode == crate::gamepad::InputMode::Controller || pad.a_just || pad.b_just;
+    let over = over || pad_mode;
     // Cursor movement in logical pixels since last frame. Prefer the cursor
     // position (works for trackpads, tablets and synthetic events, and is in
     // the same units as the canvas); fall back to raw motion if the cursor is
@@ -657,7 +664,8 @@ fn control(
     // `cursor_over = true` forever. Only a visible popup may block the globe.
     let over_popup = popups.iter().any(|(p, vis)| vis.get() && p.cursor_over());
     let hover = over && !over_popup;
-    g.cursor_pick = norm.filter(|_| hover).and_then(|n| gl::ray_sphere(g.cam_pos, g.ray(n)));
+    let aim = if pad_mode { Some(Vec2::splat(0.5)) } else { norm };
+    g.cursor_pick = aim.filter(|_| hover).and_then(|n| gl::ray_sphere(g.cam_pos, g.ray(n)));
 
     // Drag to spin.
     if buttons.just_pressed(MouseButton::Left) && hover {
@@ -704,6 +712,47 @@ fn control(
             }
     }
 
+    // Controller: left stick pans like a drag, right stick zooms, A picks the crosshair.
+    let mut pad_zoom_in = false;
+    if pad_mode && hover && !dragging {
+        if pad.left != Vec2::ZERO {
+            // Pan by a fraction of the visible width, so it feels the same at any height.
+            let span = 2.0 * (d - 1.0).max(1e-3) * g.tan_half();
+            let step = crate::gamepad::PAD_PAN_SCREENS_PER_S * dt * span;
+            let (east, north) = (gl::east_at(g.focus), gl::north_at(g.focus));
+            g.focus = (g.focus + (east * pad.left.x + north * pad.left.y) * step).normalize();
+            g.vel = Vec2::ZERO;
+            g.fly = None;
+        }
+        if pad.right.y != 0.0 {
+            g.goal_zoom = (g.goal_zoom + pad.right.y * crate::gamepad::PAD_ZOOM_LEVELS_PER_S * dt).clamp(MIN_ZOOM, MAX_ZOOM);
+            g.fly = None;
+            pad_zoom_in = pad.right.y > 0.0;
+        }
+    }
+    // Drop popup open (a spot is selected): A drops from the sky, B cancels. The popup's
+    // buttons are otherwise clicked, so this is the controller path to them.
+    // Handled here, in order, so one A press can never both select and drop.
+    let popup_open = map.selected.is_some();
+    if popup_open && pad_mode {
+        if let Some(sel) = map.selected {
+            if pad.a_just {
+                spawns.write(crate::spawn::SpawnRequest::At { pos: sel, name: String::new(), height: crate::spawn::SpawnHeight::Sky });
+                map.selected = None;
+            } else if pad.b_just {
+                map.selected = None;
+            }
+        }
+    }
+    // Otherwise A picks the spot under the crosshair.
+    // A presses a focused menu button instead, when the D-pad is on one.
+    if pad_mode && pad.a_just && hover && !popup_open && menu_focus.0.is_none() {
+        if let Some(p) = g.cursor_pick {
+            let (lat, lon) = gl::latlon_from_unit(p);
+            map.selected = Some(Geodetic::new(lat, lon, 0.0));
+        }
+    }
+
     // Wheel zoom, towards the cursor.
     let notches = if hover { scroll_notches(&scroll) } else { 0.0 };
     if notches != 0.0 {
@@ -714,7 +763,7 @@ fn control(
     let k = 1.0 - (-dt * 7.0).exp();
     g.zoom += (g.goal_zoom - g.zoom) * k;
     let dz = g.zoom - before;
-    if dz > 0.0 && notches > 0.0 {
+    if dz > 0.0 && (notches > 0.0 || pad_zoom_in) {
         if let Some(p) = g.cursor_pick {
             let w = (dz * 0.55).clamp(0.0, 0.5);
             g.focus = g.focus.lerp(p, w).normalize();

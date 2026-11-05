@@ -6,6 +6,8 @@ import bevy_pbr::{
     render::{mesh_functions, view_transformations::position_world_to_clip},
 };
 
+import bevy_pbr::render::mesh_view_bindings::view;
+
 // ---- shared wind (identical in foliage.wesl and foliage_prepass.wesl so
 // depth prepass, shadows and the main pass agree to the bit) ----
 
@@ -50,6 +52,29 @@ fn wind_offset(world: vec3<f32>, origin: vec3<f32>, local: vec3<f32>, packed: ve
     return off;
 }
 
+
+// Leaf cards hand over to impostors at ~590 m. Per-vertex hashed band so the
+// edge dissolves instead of drawing a line; impostors fade in over the same
+// band (impostor.wesl, near = CARD_RANGE_M - 210). Skipped in orthographic
+// (shadow) views, where `view` is the light, not the camera.
+const CARD_HANDOFF_M: f32 = 590.0;
+const CARD_CELL_M: f32 = 4.0;
+// Decide per CARD_CELL_M cell (not per vertex) so a leaf quad is kept or
+// dropped whole; `cell_c` is the cell centre in local space. Returns false in
+// orthographic views.
+fn card_culled(world_from_local: mat4x4<f32>, local: vec3<f32>) -> bool {
+    if view.clip_from_view[3][3] > 0.5 { return false; }
+    let cell = floor(local / CARD_CELL_M);
+    let cell_c = (cell + 0.5) * CARD_CELL_M;
+    let wc = (world_from_local * vec4<f32>(cell_c, 1.0)).xyz;
+    let d = distance(wc, view.world_position);
+    return d > CARD_HANDOFF_M - 20.0 + 40.0 * hash13(cell);
+}
+fn card_cell_center(world_from_local: mat4x4<f32>, local: vec3<f32>) -> vec4<f32> {
+    let c = (floor(local / CARD_CELL_M) + 0.5) * CARD_CELL_M;
+    return vec4<f32>((world_from_local * vec4<f32>(c, 1.0)).xyz, 1.0);
+}
+
 @vertex
 fn vertex(vertex_in: Vertex) -> VertexOutput {
     var out: VertexOutput;
@@ -59,6 +84,7 @@ fn vertex(vertex_in: Vertex) -> VertexOutput {
 @if(VERTEX_UVS_B) {
     let scale = length(world_from_local[0].xyz);
     wp = vec4<f32>(wp.xyz + wind_offset(wp.xyz, world_from_local[3].xyz, vertex.position, vertex.uv_b, scale, foliage.wind.w), 1.0);
+    if card_culled(world_from_local, vertex.position) { wp = card_cell_center(world_from_local, vertex.position); }
 }
     out.world_position = wp;
     out.position = position_world_to_clip(wp.xyz);

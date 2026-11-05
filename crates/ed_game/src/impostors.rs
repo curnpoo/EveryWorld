@@ -32,11 +32,13 @@ const SHADER: &str = "embedded://earthdrop/shaders/impostor.wesl";
 pub const FULL_M: f32 = 1000.0;
 /// Cap on how much a kept tree grows to stand in for its thinned neighbours.
 pub const GROW_MAX: f32 = 6.0;
-/// Trees smaller than this on screen (px) fade out.
-pub const MIN_PX: f32 = 1.5;
+/// Trees smaller than this on screen (px) fade out (ramp 0.8x..1.3x; sub-2 px quads flicker).
+pub const MIN_PX: f32 = 2.5;
 
 pub const ATTRIBUTE_IMP_PARAMS: MeshVertexAttribute = MeshVertexAttribute::new("ImpostorParams", 0x1A7E_0001, VertexFormat::Float32x4);
 pub const ATTRIBUTE_IMP_AXIS: MeshVertexAttribute = MeshVertexAttribute::new("ImpostorAxis", 0x1A7E_0002, VertexFormat::Float32x4);
+/// Tile (u, v) of the tree's base: far-shadow lookups.
+pub const ATTRIBUTE_IMP_TILE_UV: MeshVertexAttribute = MeshVertexAttribute::new("ImpostorTileUv", 0x1A7E_0003, VertexFormat::Float32x2);
 
 pub struct ImpostorPlugin;
 
@@ -44,13 +46,50 @@ impl Plugin for ImpostorPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "shaders/impostor.wesl");
         app.add_plugins(MaterialPlugin::<ImpostorMaterial>::default()).add_systems(Update, install_atlas);
+        app.add_systems(Update, imp_dbg_fingerprint); // TEMP debug
+        app.add_systems(Update, imp_dbg_hide); // TEMP debug
     }
+}
+
+// TEMP debug: EW_HIDE_IMP=1 hides every impostor entity.
+fn imp_dbg_hide(mut q: Query<&mut Visibility, With<MeshMaterial3d<ImpostorMaterial>>>) {
+    if std::env::var("EW_HIDE_IMP").is_err() {
+        return;
+    }
+    for mut v in &mut q {
+        *v = Visibility::Hidden;
+    }
+}
+
+// TEMP debug: one line per frame with impostor count and a fingerprint of the set.
+fn imp_dbg_fingerprint(q: Query<(Entity, &Aabb, &GlobalTransform), With<MeshMaterial3d<ImpostorMaterial>>>, cams: Query<&GlobalTransform, With<Camera3d>>, mut frame: Local<u64>) {
+    use std::hash::{Hash, Hasher};
+    *frame += 1;
+    for c in cams.iter() {
+        eprintln!("IMPDBG cam frame {} pos {:?}", *frame, c.translation());
+    }
+    let mut rows: Vec<(u64, [i64; 6])> = q
+        .iter()
+        .map(|(e, a, g)| {
+            let c = a.center;
+            let t = g.translation();
+            (e.to_bits(), [(c.x * 100.0) as i64, (c.y * 100.0) as i64, (c.z * 100.0) as i64, (t.x * 100.0) as i64, (t.y * 100.0) as i64, (t.z * 100.0) as i64])
+        })
+        .collect();
+    rows.sort_by_key(|r| r.0);
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    rows.hash(&mut h);
+    eprintln!("IMPDBG frame {} count {} hash {:016x}", *frame, rows.len(), h.finish());
 }
 
 #[derive(Clone, Copy, ShaderType, Debug)]
 pub struct ImpostorParams {
     /// x: FULL_M, y: GROW_MAX, z: MIN_PX.
     pub tune: Vec4,
+    /// Far shadows (`far_shadows.rs`): Earth centre in render space (w = on)
+    /// and pole (w = debug tint). Same values as the terrain material.
+    pub far_c: Vec4,
+    pub far_p: Vec4,
 }
 
 #[derive(Asset, AsBindGroup, TypePath, Debug, Clone)]
@@ -62,6 +101,11 @@ pub struct ImpostorExt {
     pub albedo: Handle<Image>,
     #[texture(103, dimension = "2d_array")]
     pub normal: Handle<Image>,
+    /// The far-shadow horizon pool (`FarPool::horizon`); the tree's tile
+    /// layer rides on the impostor entity's `MeshTag`, as on terrain.
+    #[texture(110, dimension = "2d_array")]
+    #[sampler(111)]
+    pub far_horizon: Handle<Image>,
 }
 
 impl MaterialExtension for ImpostorExt {
@@ -92,6 +136,7 @@ impl MaterialExtension for ImpostorExt {
             Mesh::ATTRIBUTE_COLOR.at_shader_location(5),
             ATTRIBUTE_IMP_PARAMS.at_shader_location(8),
             ATTRIBUTE_IMP_AXIS.at_shader_location(9),
+            ATTRIBUTE_IMP_TILE_UV.at_shader_location(10),
         ])?;
         descriptor.vertex.buffers = vec![l];
         Ok(())
@@ -150,9 +195,10 @@ pub fn setup(
             ..default()
         },
         extension: ImpostorExt {
-            params: ImpostorParams { tune: Vec4::new(FULL_M, GROW_MAX, MIN_PX, 0.0) },
+            params: ImpostorParams { tune: Vec4::new(FULL_M, GROW_MAX, MIN_PX, 0.0), far_c: Vec4::ZERO, far_p: Vec4::ZERO },
             albedo: empty(TextureFormat::Rgba8UnormSrgb),
             normal: empty(TextureFormat::Rgba8Unorm),
+            far_horizon: empty(TextureFormat::Rgba8Unorm),
         },
     });
     let slot = Arc::new(Mutex::new(None));
@@ -201,11 +247,13 @@ pub fn to_mesh(m: ImpostorMesh) -> (Mesh, Aabb) {
         .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, m.colors)
         .with_inserted_attribute(ATTRIBUTE_IMP_PARAMS, m.params)
         .with_inserted_attribute(ATTRIBUTE_IMP_AXIS, m.axes)
+        .with_inserted_attribute(ATTRIBUTE_IMP_TILE_UV, m.tile_uv)
         .with_inserted_indices(Indices::U32(m.indices));
     (mesh, aabb)
 }
 
-/// Spawn a tile's impostor entity under `parent`.
-pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, imp: &Impostors, parent: Entity, mesh: Mesh, aabb: Aabb) {
-    commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(imp.material.clone()), Transform::default(), aabb, NotShadowCaster, ChildOf(parent)));
+/// Spawn a tile's impostor entity under `parent`. `far_tag` = the tile's
+/// far-shadow layer bits (`FarPool::alloc`), 0 for none.
+pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, imp: &Impostors, parent: Entity, mesh: Mesh, aabb: Aabb, far_tag: u32) {
+    commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(imp.material.clone()), bevy::mesh::MeshTag::new(far_tag), Transform::default(), aabb, NotShadowCaster, ChildOf(parent)));
 }

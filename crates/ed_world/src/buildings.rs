@@ -112,6 +112,14 @@ pub struct BuildingSpec {
     pub center: Vec3,
 }
 
+impl BuildingSpec {
+    /// Footprint (tile-local, at the base) and eave height above street
+    /// level, for the far-shadow surface map (`farshadow.rs`).
+    pub fn shadow_outline(&self) -> (Vec<Vec3>, f32) {
+        (self.ring.clone(), (self.wall_top - self.gy).max(3.0))
+    }
+}
+
 /// What the detail builder needs (owned, so chunks can build on any thread).
 #[derive(Debug, Clone)]
 pub struct DetailCtx {
@@ -203,7 +211,17 @@ pub fn prepare(vt: &mvt::Tile, ctx: &BuildingContext, region: Region) -> Vec<Bui
 
 /// Full-detail geometry for a set of buildings.
 pub fn build_detail<'a>(specs: impl IntoIterator<Item = &'a BuildingSpec>, dctx: &DetailCtx) -> BuildingMeshes {
+    build_detail_at(specs, dctx, false)
+}
+
+/// Mid-distance detail: the same model minus sub-pixel parts (`Out::lite`).
+pub fn build_detail_lite<'a>(specs: impl IntoIterator<Item = &'a BuildingSpec>, dctx: &DetailCtx) -> BuildingMeshes {
+    build_detail_at(specs, dctx, true)
+}
+
+fn build_detail_at<'a>(specs: impl IntoIterator<Item = &'a BuildingSpec>, dctx: &DetailCtx, lite: bool) -> BuildingMeshes {
     let mut out = BuildingMeshes::default();
+    out.out.lite = lite;
     let up = dctx.proj.up();
     for s in specs {
         detail_one(&mut out, s, dctx, up);

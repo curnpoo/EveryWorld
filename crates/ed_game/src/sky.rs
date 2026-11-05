@@ -8,7 +8,7 @@
 use crate::config::Config;
 use crate::origin::{Focus, GeoAnchored, WorldOrigin};
 use bevy::light::atmosphere::ScatteringMedium;
-use bevy::light::{Atmosphere, CascadeShadowConfigBuilder, SunDisk, light_consts::lux};
+use bevy::light::{Atmosphere, SunDisk, light_consts::lux};
 use bevy::prelude::*;
 use ed_space::{BODIES, BodyId, Snapshot};
 use glam::{DAffine3, DVec3};
@@ -68,12 +68,10 @@ fn setup_sky(
         Sun,
         DirectionalLight { illuminance: lux::RAW_SUNLIGHT, shadow_maps_enabled: !std::env::args().any(|a| a == "--no-shadows"), ..default() },
         SunDisk::EARTH,
-        // Two cascades (M0): every cascade re-draws the shadow casters, and the
-        // frame is vertex bound, so a cascade is mostly pure cost. The near one
-        // covers 40 m (the player, cars, street furniture: where contact matters),
-        // the far one runs to 700 m. Beyond that the terrain is NotShadowCaster
-        // anyway; far shading comes from the probes + AO + contact shadows.
-        CascadeShadowConfigBuilder { first_cascade_far_bound: 40.0, maximum_distance: 700.0, num_cascades: 2, overlap_proportion: 0.15, ..default() }.build(),
+        // Four cascades re-planned from height above ground (`shadows.rs`,
+        // docs/plans/shadows.md): ~5.5x texel steps, 2.5 km reach on foot,
+        // fade to lit instead of a hard cut. `EW_SHADOWS=legacy` = old 2 x 700 m.
+        crate::shadows::cascade_config(cfg.start_agl as f32),
         Transform::default(),
     ));
     if cfg.atmosphere {
@@ -339,7 +337,7 @@ fn refresh_env_map(
         // the render schedule), plus one spare frame for the new image upload.
         st.frames_left = st.frames_left.max(3);
     }
-    let run = st.frames_left > 0;
+    let run = st.frames_left > 0 || std::env::var_os("EW_ENV_ALWAYS").is_some(); // TMP-DBG
     st.frames_left = st.frames_left.saturating_sub(1);
     if refresh.0 != run {
         refresh.0 = run;

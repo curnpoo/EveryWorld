@@ -442,7 +442,7 @@ fn urban_extras(
         ],
     };
     let region = Region::NorthAmericaSuburb;
-    let r = roads::generate(&vt, tp, grid, surface, region);
+    let r = roads::generate(&roads::plan(&vt, tp, grid, surface), tp, grid, surface, region);
     let add = |commands: &mut Commands, meshes: &mut Assets<Mesh>, m: &MeshData, mat: &Handle<StandardMaterial>| {
         if !m.is_empty() {
             commands.spawn((Mesh3d(meshes.add(to_mesh(m))), MeshMaterial3d(mat.clone()), Transform::default(), ChildOf(root)));

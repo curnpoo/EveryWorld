@@ -7,6 +7,8 @@
 //! makes breaking the sound barrier a few seconds after lift-off feel right:
 //! the world reacts physically to something impossible.
 
+pub mod flyer;
+
 use glam::DVec3;
 
 pub const G0: f64 = 9.806_65;

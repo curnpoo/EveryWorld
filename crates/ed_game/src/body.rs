@@ -442,6 +442,7 @@ fn animate_body(
     mut parts: Query<(&BodyPart, Option<&Accessory>, &mut Transform, &mut Visibility)>,
     mut wings: Query<(&WingMesh, &Mesh3d, &mut Visibility), Without<BodyPart>>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut nozzles: Option<ResMut<crate::boot_plume::BootNozzles>>,
 ) {
     let Ok((pe, pt, vel, mut p)) = players.single_mut() else { return };
     let dt = time.delta_secs().clamp(1e-4, 0.05);
@@ -526,19 +527,23 @@ fn animate_body(
                     } else {
                         HIP_W + 0.03
                     };
-                    // While the torso swings around, the legs kick opposite the turn (reaction swing),
-                    // scissor apart and knees tuck, so the whole body visibly works to re-aim.
-                    let kick = (-local_err.cross(Vec3::NEG_Y * leg) * 0.30).clamp_length_max(0.55);
+                    // The legs ARE the steering: `drive_player` pushes the boot thrust through the
+                    // soles at this swing (`leg_steer`), so the feet you see are where the thrust
+                    // line runs. Knees tuck a little while the body works to re-aim.
                     let tuck = rot_effort * 0.07;
-                    // Hips and knees also bend toward the intended direction: feet trail behind it.
-                    let trail = Vec3::new(-il.x, 0.0, -il.z).clamp_length_max(1.0) * 0.16;
                     let knee = Vec3::new(il.x, 0.0, il.z).length().min(1.0) * 0.08;
-                    Vec3::new(side * (stance_w + rot_effort * 0.04), -(leg * 0.96) + tuck + knee, 0.02) + kick + trail
+                    Vec3::new(side * (stance_w + rot_effort * 0.04), -(leg * 0.96) + tuck + knee, 0.02) + p.leg_steer
                 }
                 MoveMode::Skydive => {
-                    let spread = 0.09 - 0.04 * p.fwd_in.max(0.0);
-                    let knee_bend = if p.fwd_in < 0.0 { 0.15 * (-p.fwd_in) } else { 0.03 };
-                    Vec3::new(side * (HIP_W + spread), -(leg * (0.94 - knee_bend)), 0.12 + knee_bend * 0.4)
+                    // Straightened out (dive) closes the legs; arched (flare) bends the knees up.
+                    let spread = 0.09 - 0.04 * (-p.wing_arch).max(0.0);
+                    let knee_bend = 0.03 + 0.12 * p.wing_arch.max(0.0);
+                    let suit = Vec3::new(side * (HIP_W + spread), -(leg * (0.94 - knee_bend)), 0.12 + knee_bend * 0.4);
+                    // Suit off: spread eagle splays the legs wide with heels up a little;
+                    // a somersault balls them up, knees to the chest (belly is -Z).
+                    let eagle = Vec3::new(side * (HIP_W + 0.30), -(leg * 0.82), 0.16);
+                    let ball = Vec3::new(side * (HIP_W + 0.02), -(leg * 0.42), -leg * 0.38);
+                    suit.lerp(eagle, p.fall_spread).lerp(ball, p.fall_tuck)
                 }
                 MoveMode::Parachute => Vec3::new(side * (HIP_W + 0.03), -(leg * 0.90), 0.06),
                 MoveMode::Fall => Vec3::new(side * (HIP_W + 0.05), -(leg * 0.84), 0.08),
@@ -689,9 +694,12 @@ fn animate_body(
             Vec3::new((il.x * 0.45).clamp(-0.34, 0.34), 0.0, (il.z * 0.45).clamp(-0.42, 0.38))
         }
         MoveMode::Skydive => {
-            // Flared (S) arches the chest up; diving (W) tucks it; turns bend the spine into the bank.
-            let arch = -p.fwd_in * 0.24 + 0.14;
-            Vec3::new(p.strafe * 0.22, 0.0, arch)
+            // The suit pose itself: arched chest for a flare, flat for a dive, the spine bent
+            // into the twist that rolls the wing.
+            let arch = p.wing_arch * 0.24 + 0.14;
+            let suit = Vec3::new(-p.wing_turn * 0.22, 0.0, arch);
+            // Suit off: spread eagle arches hard (the box), a tuck curls the back forward.
+            suit.lerp(Vec3::new(0.0, 0.0, 0.30), p.fall_spread).lerp(Vec3::new(0.0, 0.0, -0.35), p.fall_tuck)
         }
         _ => Vec3::new(p.strafe * 0.10, 0.0, 0.06),
     };
@@ -723,7 +731,7 @@ fn animate_body(
     // --- Head Physical Spring-Damper + Gaze ---
     let t_sec = time.elapsed_secs();
     let head_target = match p.mode {
-        MoveMode::Skydive => Vec3::new(0.60 - p.fwd_in * 0.15, -p.strafe * 0.28, -p.strafe * 0.15),
+        MoveMode::Skydive => Vec3::new(0.60 + p.wing_arch * 0.15, p.wing_turn * 0.28, p.wing_turn * 0.15),
         MoveMode::RocketShoes => {
             let pitch_look = if p.fwd_in > 0.1 {
                 0.55
@@ -858,16 +866,22 @@ fn animate_body(
                 }
             }
             MoveMode::Skydive => {
-                let sweep_back = p.fwd_in.max(0.0) * 0.24;
-                let tuck_in = p.fwd_in.max(0.0) * 0.14;
-                let flare_z = p.fwd_in.min(0.0) * 0.20;
+                // Dive: arms sweep back and tuck in. Flare: arms pull up into the wind.
+                let dive = (-p.wing_arch).max(0.0);
+                let sweep_back = dive * 0.24;
+                let tuck_in = dive * 0.14;
+                let flare_z = -p.wing_arch.max(0.0) * 0.20;
                 // Turn-side arm lifts into the wind (more drag/lift on that wing), the other drops.
                 let bank_asym = (-side) * p.wing_turn * 0.16;
-                sh + Vec3::new(
+                let suit = Vec3::new(
                     side * (0.50 - tuck_in),
                     -0.06 - sweep_back + bank_asym,
                     0.06 + sweep_back * 0.5 + flare_z,
-                )
+                );
+                // Suit off: spread eagle reaches wide and a little forward; a tuck hugs the knees.
+                let eagle = Vec3::new(side * 0.58, 0.18, 0.08);
+                let ball = Vec3::new(side * 0.16, -0.42, -0.30);
+                sh + suit.lerp(eagle, p.fall_spread).lerp(ball, p.fall_tuck)
             }
             MoveMode::Fall => sh + Vec3::new(side * 0.44, -0.10 + (-side) * p.wing_turn * 0.16, -0.05),
             MoveMode::Parachute => sh + Vec3::new(side * 0.08, 0.46, -0.08),
@@ -992,10 +1006,21 @@ fn animate_body(
                 }
             }
             Spec::JetFlame { foot_idx, inner } => {
-                if p.throttle <= 0.01 {
+                // The outer cone is replaced by the particle plume (`boot_plume`) when it runs;
+                // the core cone stays as the white-hot nozzle glow.
+                let f_frame = if foot_idx == 0 { F::FootL } else { F::FootR };
+                if inner {
+                    if let Some(n) = nozzles.as_deref_mut() {
+                        let (p0, q) = frame(f_frame);
+                        n.pos[foot_idx] = p0 + q * Vec3::new(0.0, -0.10, -0.03);
+                        n.dir[foot_idx] = q * Vec3::NEG_Y;
+                        n.fwd[foot_idx] = q * Vec3::NEG_Z;
+                        n.throttle = p.throttle;
+                    }
+                }
+                if p.throttle <= 0.01 || (!inner && nozzles.is_some()) {
                     *vis = Visibility::Hidden;
                 } else {
-                    let f_frame = if foot_idx == 0 { F::FootL } else { F::FootR };
                     let (p0, q) = frame(f_frame);
                     // High-frequency turbulent flicker for the rocket exhaust plume:
                     let phase = t_sec * 62.0 + (foot_idx as f32) * 1.9;

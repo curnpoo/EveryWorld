@@ -23,6 +23,8 @@ opt-level = 3
 # The engine sound runs on the audio thread with a 2.7 ms deadline per block.
 [profile.dev.package.ed_engine_audio]
 opt-level = 3
+[profile.dev.package.ed_audio]
+opt-level = 3
 
 # Local fix: Bevy 0.20.1 meshlet prepass reads `flags` without defining it (breaks NormalPrepass/SSAO).
 [patch.crates-io]

@@ -7,6 +7,7 @@
 //! - [`residency`]: least-recently-seen bookkeeping with a cap.
 //! - [`view`]: conservative sphere-vs-view-cone test.
 //! - [`scheduler`]: which tiles to build, in what order, and which to retire.
+//! - [`shadows`]: sun cascade plan (splits, reach, fade) from height above ground.
 //!
 //! Nothing here knows about Bevy. `ed_game::streaming` is the thin glue.
 
@@ -14,4 +15,5 @@ pub mod budget;
 pub mod jobs;
 pub mod residency;
 pub mod scheduler;
+pub mod shadows;
 pub mod view;

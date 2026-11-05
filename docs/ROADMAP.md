@@ -1,11 +1,12 @@
 # Roadmap
 
-What's done, what's next. Recent changes and open checks: `CHANGES.md`. Plans: `plans/` (engine, assets and agents, buildings, world sim, space visuals). How it works: `ARCHITECTURE.md`.
+What's done, what's next. Recent changes and open checks: `CHANGES.md`. Plans: `plans/` (engine, assets and agents, buildings, world sim, space visuals, shadows). How it works: `ARCHITECTURE.md`.
 
 Phases are ordered so there's always something playable. Each item is sized to be a good standalone task for a Claude Code session (one Mac, one day). Two tracks run side by side: **features** (Phases 0-5) and **engine and performance** (M0-M10, from `plans/engine.md`).
 
 ## Now
 
+0. **Open bugs from the 2026-11-04 play session**: `BUGS.md` (B1-B12: LOD flash, impostor flicker, shadow cascades, road/guardrail/path geometry, atmosphere/satellite/cloud altitude transitions, camera lag).
 1. **Mac test pass for M0 + M1** (`CHANGES.md`, about 20 minutes): fps, hitches, forests/impostors, building explode, colliders. Everything since `c42ed5e` is unmeasured on Metal.
 2. **M0 leftovers**: pipeline pre-warm (confirm the AO/TAA cause with the test pass first). Clouds ½ res done (`cloud_half.rs`, -2.3 ms).
 3. **M2 start**: `ed_gpu` RHI (wgpu backend) + `ed_render` v1 (terrain clipmap, GPU-culled instancing, visibility buffer, cached shadows, own TAAU).

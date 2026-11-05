@@ -9,7 +9,11 @@ mod cloud_half;
 mod clouds;
 mod config;
 mod engine_audio;
+mod soundscape;
+mod settings;
+mod boot_plume;
 mod foliage;
+mod gamepad;
 mod ground_material;
 mod ground_scatter;
 mod hud;
@@ -28,6 +32,8 @@ mod perf;
 mod render_scale;
 mod player;
 mod probe_gi;
+mod shadows;
+mod far_shadows;
 mod sky;
 mod sonic_boom;
 mod spawn;
@@ -78,7 +84,7 @@ fn main() {
     .add_plugins(PhysicsPlugins::default())
     .insert_resource(Gravity(Vec3::NEG_Y * 9.81))
     .insert_resource(cfg.clone())
-    .add_plugins((origin::OriginPlugin, assets::AssetsPlugin, building_materials::BuildingMaterialsPlugin, sky::SkyPlugin, camera::CameraPlugin, foliage::FoliagePlugin))
+    .add_plugins((origin::OriginPlugin, assets::AssetsPlugin, building_materials::BuildingMaterialsPlugin, sky::SkyPlugin, shadows::ShadowsPlugin, far_shadows::FarShadowsPlugin, camera::CameraPlugin, foliage::FoliagePlugin))
     .add_plugins((clouds::CloudsPlugin, cloud_half::CloudHalfPlugin, perf::PerfPlugin, render_scale::RenderScalePlugin, library::LibraryPlugin))
     .add_systems(Update, headless::quit_after);
     if cfg.headless {
@@ -89,9 +95,12 @@ fn main() {
         app.insert_resource(lookdev::Lookdev { out_dir: dir.clone(), only: cfg.lookdev_only.clone() })
             .add_plugins((lookdev::LookdevPlugin, body::BodyPlugin));
     } else {
-        app.add_plugins((streaming::StreamingPlugin, capture::CapturePlugin, hud::HudPlugin, minimap::MinimapPlugin, probe_gi::ProbeGiPlugin, spawn::SpawnPlugin, mapview::MapViewPlugin, globe::GlobePlugin, menu::MenuPlugin));
+        app.add_plugins((streaming::StreamingPlugin, capture::CapturePlugin, hud::HudPlugin, minimap::MinimapPlugin, probe_gi::ProbeGiPlugin, spawn::SpawnPlugin, mapview::MapViewPlugin, globe::GlobePlugin, settings::SettingsPlugin, menu::MenuPlugin, gamepad::GamepadPlugin));
+        if !cfg.headless {
+            app.add_plugins(soundscape::SoundscapePlugin);
+        }
         if !cfg.fly {
-            app.add_plugins((player::PlayerPlugin, body::BodyPlugin, vehicles::VehiclesPlugin, engine_audio::EngineAudioPlugin, sonic_boom::SonicBoomPlugin));
+            app.add_plugins((player::PlayerPlugin, body::BodyPlugin, boot_plume::BootPlumePlugin, vehicles::VehiclesPlugin, engine_audio::EngineAudioPlugin, sonic_boom::SonicBoomPlugin));
         }
     }
     app.run();

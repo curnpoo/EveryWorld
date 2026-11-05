@@ -5,14 +5,16 @@
 //! ground to start the 3D world.
 //!
 //! Pause (Esc while playing): fullscreen menu with tabs: Map (teleport
-//! anywhere), Settings, Character, Controls. Physics freezes while paused.
+//! anywhere), Settings, Audio, Character, Controls. Physics freezes while paused.
 
 use crate::body::Cosmetics;
 use crate::clouds::CloudOverride;
 use crate::config::Config;
 use crate::sky::{Clock, CurrentWeather};
+use crate::gamepad::{spawn_crosshair, InputMode, Pad};
 use crate::mapview::{MapCanvas, MapState};
 use crate::player::{ControlSettings, Player};
+use crate::settings::AudioSettings;
 use crate::spawn::{Arrived, Spawner};
 use avian3d::prelude::{Physics, PhysicsTime};
 use bevy::ecs::hierarchy::ChildSpawnerCommands;
@@ -33,6 +35,7 @@ impl Plugin for MenuPlugin {
     fn build(&self, app: &mut App) {
         app.init_state::<GameState>()
             .init_resource::<MenuView>()
+            .init_resource::<MenuFocus>()
             .init_resource::<GraphicsSettings>()
             .init_resource::<WeatherPick>()
             .init_resource::<CurrentWeather>()
@@ -44,11 +47,16 @@ impl Plugin for MenuPlugin {
                 Update,
                 (
                     open_pause,
+                    pad_home,
+                    pad_tabs,
+                    pad_focus,
                     menu_buttons,
                     refresh_menu,
                     time_slider,
+                    audio_sliders,
                     enter_play_on_arrival,
                     apply_graphics,
+                    highlight_tabs,
                 )
                     .chain(),
             )
@@ -73,6 +81,7 @@ pub enum MenuView {
     Home,
     Map,
     Settings,
+    Audio,
     Character,
     Controls,
 }
@@ -138,7 +147,48 @@ pub enum MenuAction {
     SensPlus,
     InvertY,
     ToggleBackpack,
+    ToggleMute,
+    ToggleCalm,
 }
+
+/// One audio mix slider; the track carries it, the knob and readout are children of the row.
+#[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
+enum Knob {
+    Master,
+    World,
+    Body,
+    Air,
+    Vehicles,
+    Alerts,
+}
+
+impl Knob {
+    fn value(self, a: &AudioSettings) -> f32 {
+        match self {
+            Knob::Master => a.master,
+            Knob::World => a.world,
+            Knob::Body => a.body,
+            Knob::Air => a.air,
+            Knob::Vehicles => a.vehicles,
+            Knob::Alerts => a.alerts,
+        }
+    }
+    fn slot(self, a: &mut AudioSettings) -> &mut f32 {
+        match self {
+            Knob::Master => &mut a.master,
+            Knob::World => &mut a.world,
+            Knob::Body => &mut a.body,
+            Knob::Air => &mut a.air,
+            Knob::Vehicles => &mut a.vehicles,
+            Knob::Alerts => &mut a.alerts,
+        }
+    }
+}
+
+#[derive(Component)]
+struct KnobDot(Knob);
+#[derive(Component)]
+struct KnobReadout(Knob);
 
 /// The weather picker's state: which preset is forced, and the live report to
 /// restore when the player goes back to "Live".
@@ -223,7 +273,8 @@ fn map_canvas(p: &mut ChildSpawnerCommands) {
         RelativeCursorPosition::default(),
         Node { flex_grow: 1.0, flex_basis: Val::Px(0.0), min_height: Val::Px(240.0), width: Val::Percent(100.0), overflow: Overflow::clip(), border_radius: BorderRadius::all(Val::Px(14.0)), ..default() },
         BackgroundColor(Color::srgb(0.01, 0.012, 0.02)),
-    ));
+    ))
+    .with_children(spawn_crosshair);
 }
 
 fn build_menus(mut commands: Commands) {
@@ -275,7 +326,7 @@ fn build_menus(mut commands: Commands) {
             p.spawn(Node { column_gap: Val::Px(8.0), align_items: AlignItems::Center, ..default() }).with_children(|r| {
                 r.spawn((PauseTitle, Text::new("Paused"), TextFont { font_size: FontSize::Px(26.0), ..default() }, TextColor(INK)));
                 r.spawn(Node { width: Val::Px(16.0), ..default() });
-                for (label, v) in [("Map", MenuView::Map), ("Settings", MenuView::Settings), ("Character", MenuView::Character), ("Controls", MenuView::Controls)] {
+                for (label, v) in [("Map", MenuView::Map), ("Settings", MenuView::Settings), ("Audio", MenuView::Audio), ("Character", MenuView::Character), ("Controls", MenuView::Controls)] {
                     button(r, label, MenuAction::Tab(v), false);
                 }
                 r.spawn(Node { flex_grow: 1.0, ..default() });
@@ -346,6 +397,22 @@ fn build_menus(mut commands: Commands) {
                 setting_row(t, "Mouse sensitivity", &[("-", MenuAction::SensMinus), ("+", MenuAction::SensPlus)], MenuAction::SensPlus);
                 setting_row(t, "Invert mouse Y", &[("Toggle", MenuAction::InvertY)], MenuAction::InvertY);
             });
+            // Audio tab.
+            p.spawn((TabBody(MenuView::Audio), Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(14.0), ..default() }, Visibility::Hidden)).with_children(|t| {
+                for (label, k) in [
+                    ("Master volume", Knob::Master),
+                    ("World ambience", Knob::World),
+                    ("Footsteps and robot", Knob::Body),
+                    ("Wind and rockets", Knob::Air),
+                    ("Vehicle engines", Knob::Vehicles),
+                    ("Alerts and beeps", Knob::Alerts),
+                ] {
+                    slider_row(t, label, k);
+                }
+                setting_row(t, "Mute", &[("Toggle", MenuAction::ToggleMute)], MenuAction::ToggleMute);
+                setting_row(t, "Calm ambience", &[("Toggle", MenuAction::ToggleCalm)], MenuAction::ToggleCalm);
+                text(t, "Calm plays only the strongest few world sounds at a time. Settings save automatically.", 14.0, DIM);
+            });
             // Character tab.
             p.spawn((TabBody(MenuView::Character), Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(12.0), ..default() }, Visibility::Hidden)).with_children(|t| {
                 text(t, "Courier robot", 22.0, INK);
@@ -368,6 +435,12 @@ fn build_menus(mut commands: Commands) {
                     "Scroll: camera distance",
                     "[ and ]: scrub time of day",
                     "Esc: pause menu",
+                    "Controller (switches on when you use one):",
+                    "Left stick: move · Right stick: look",
+                    "RT: jump (hold to charge) · LT: sprint / afterburner",
+                    "A: wingsuit · B: parachute · Start: pause menu",
+                    "LB / RB: switch tabs",
+                    "Map: left stick pans · right stick zooms · A picks at the crosshair · A again drops in · B cancels",
                 ] {
                     text(t, line, 17.0, INK);
                 }
@@ -385,8 +458,37 @@ fn setting_row(p: &mut ChildSpawnerCommands, label: &str, buttons: &[(&str, Menu
     });
 }
 
+fn slider_row(p: &mut ChildSpawnerCommands, label: &str, k: Knob) {
+    p.spawn(Node { column_gap: Val::Px(12.0), align_items: AlignItems::Center, ..default() }).with_children(|r| {
+        r.spawn(Node { width: Val::Px(220.0), ..default() }).with_children(|c| text(c, label, 17.0, INK));
+        r.spawn((KnobReadout(k), Text::new(""), TextFont { font_size: FontSize::Px(16.0), ..default() }, TextColor(ORANGE), Node { width: Val::Px(90.0), ..default() }));
+        r.spawn((
+            k,
+            RelativeCursorPosition::default(),
+            Node { width: Val::Px(320.0), height: Val::Px(14.0), border_radius: BorderRadius::all(Val::Px(7.0)), ..default() },
+            BackgroundColor(BTN),
+        ))
+        .with_children(|tr| {
+            tr.spawn((
+                KnobDot(k),
+                Node {
+                    position_type: PositionType::Absolute,
+                    top: Val::Px(-4.0),
+                    left: Val::Percent(50.0),
+                    width: Val::Px(22.0),
+                    height: Val::Px(22.0),
+                    margin: UiRect::left(Val::Px(-11.0)),
+                    border_radius: BorderRadius::all(Val::Px(11.0)),
+                    ..default()
+                },
+                BackgroundColor(ORANGE),
+            ));
+        });
+    });
+}
+
 /// Launching with --place / --lat / --fly skips the menu (handy for testing).
-/// `--menu-view map|pause-map|settings|controls|character` opens a screen
+/// `--menu-view map|pause-map|settings|audio|controls|character` opens a screen
 /// directly (for screenshots).
 fn skip_menu_from_cli(cfg: Res<Config>, mut next: ResMut<NextState<GameState>>, mut view: ResMut<MenuView>, mut map: ResMut<MapState>) {
     let args: Vec<String> = std::env::args().collect();
@@ -395,9 +497,10 @@ fn skip_menu_from_cli(cfg: Res<Config>, mut next: ResMut<NextState<GameState>>, 
     map.focus(cfg.start, zoom);
     match menu_view.as_deref() {
         Some("map") => *view = MenuView::Map,
-        Some(v @ ("pause-map" | "settings" | "controls" | "character")) => {
+        Some(v @ ("pause-map" | "settings" | "audio" | "controls" | "character")) => {
             *view = match v {
                 "settings" => MenuView::Settings,
+                "audio" => MenuView::Audio,
                 "controls" => MenuView::Controls,
                 "character" => MenuView::Character,
                 _ => MenuView::Map,
@@ -414,6 +517,7 @@ fn skip_menu_from_cli(cfg: Res<Config>, mut next: ResMut<NextState<GameState>>, 
 
 fn open_pause(
     keys: Res<ButtonInput<KeyCode>>,
+    pad: Res<Pad>,
     state: Res<State<GameState>>,
     mut next: ResMut<NextState<GameState>>,
     mut view: ResMut<MenuView>,
@@ -421,7 +525,8 @@ fn open_pause(
     players: Query<&Transform, With<Player>>,
     origin: Res<crate::origin::WorldOrigin>,
 ) {
-    if !keys.just_pressed(KeyCode::Escape) {
+    // Start on a controller does what Esc does.
+    if !keys.just_pressed(KeyCode::Escape) && !pad.start_just {
         return;
     }
     match state.get() {
@@ -434,6 +539,157 @@ fn open_pause(
         }
         GameState::Paused => next.set(GameState::Playing),
         GameState::Menu => *view = MenuView::Home,
+    }
+}
+
+/// On the main menu, A presses Play (the same as clicking it).
+fn pad_home(pad: Res<Pad>, state: Res<State<GameState>>, mut view: ResMut<MenuView>) {
+    if pad.a_just && *state.get() == GameState::Menu && *view == MenuView::Home {
+        *view = MenuView::Map;
+    }
+}
+
+/// The button the D-pad is on. A presses it. Empty with a mouse or keyboard.
+#[derive(Resource, Default)]
+pub struct MenuFocus(pub Option<Entity>);
+
+/// Background of a focused button: brighter than hover, so it reads as the cursor.
+const FOCUS_BG: Color = Color::srgba(1.0, 1.0, 1.0, 0.3);
+
+/// Whether a menu screen with buttons is on screen (the same rule `pad_tabs` uses).
+fn menu_showing(state: &GameState, view: MenuView) -> bool {
+    match state {
+        GameState::Paused => true,
+        GameState::Menu => view != MenuView::Home,
+        GameState::Playing => false,
+    }
+}
+
+/// A button's colour when it is neither focused nor hovered.
+fn rest_bg(action: &MenuAction, view: MenuView) -> Color {
+    match action {
+        MenuAction::Play | MenuAction::Resume => ORANGE,
+        MenuAction::Tab(t) if *t == view => TAB_ON,
+        _ => BTN,
+    }
+}
+
+/// D-pad moves the focus through the visible buttons in spawn order (wrapping).
+/// A presses the focused button by setting its `Interaction`, so `menu_buttons`
+/// handles it exactly like a click. B resumes from the pause menu.
+#[allow(deprecated, clippy::too_many_arguments)]
+fn pad_focus(
+    pad: Res<Pad>,
+    mode: Res<InputMode>,
+    state: Res<State<GameState>>,
+    view: Res<MenuView>,
+    map: Res<MapState>,
+    mut focus: ResMut<MenuFocus>,
+    mut next: ResMut<NextState<GameState>>,
+    mut buttons: Query<(Entity, &MenuAction, &InheritedVisibility, &mut Interaction, &mut BackgroundColor)>,
+) {
+    // The drop popup takes A and B; the map has its own A/B handling in `globe::control`.
+    let active = menu_showing(state.get(), *view) && map.selected.is_none() && *mode == InputMode::Controller;
+    if pad.b_just && *state.get() == GameState::Paused && map.selected.is_none() {
+        next.set(GameState::Playing);
+    }
+
+    // Visible buttons in spawn order (an entity's index follows spawn order).
+    let mut vis: Vec<Entity> = buttons.iter().filter(|(_, _, v, _, _)| v.get()).map(|(e, _, _, _, _)| e).collect();
+    vis.sort();
+
+    let cur = focus.0.filter(|e| vis.contains(e));
+    let want = if !active {
+        None
+    } else if (pad.dpad_next_just || pad.dpad_prev_just) && !vis.is_empty() {
+        let n = vis.len();
+        match cur.and_then(|e| vis.iter().position(|x| *x == e)) {
+            None => Some(if pad.dpad_next_just { vis[0] } else { vis[n - 1] }),
+            Some(i) => Some(if pad.dpad_next_just { vis[(i + 1) % n] } else { vis[(i + n - 1) % n] }),
+        }
+    } else {
+        cur
+    };
+    if focus.0 != want {
+        focus.0 = want;
+    }
+
+    if active && pad.a_just {
+        if let Some(e) = focus.0 {
+            if let Ok((_, _, _, mut interaction, _)) = buttons.get_mut(e) {
+                *interaction = Interaction::Pressed;
+            }
+        }
+    }
+
+    // Repaint every button when the focus or the tab changes. In between, hover still works.
+    if focus.is_changed() || view.is_changed() {
+        for (e, action, _, _, mut bg) in &mut buttons {
+            let want_bg = if focus.0 == Some(e) { FOCUS_BG } else { rest_bg(action, *view) };
+            if bg.0 != want_bg {
+                bg.0 = want_bg;
+            }
+        }
+    }
+}
+
+/// Tab order for LB / RB. Home has no tabs, so bumpers do nothing there.
+const TAB_ORDER: [MenuView; 5] = [MenuView::Map, MenuView::Settings, MenuView::Audio, MenuView::Character, MenuView::Controls];
+/// The active tab's button. Orange like the Play and Resume accents, but translucent.
+const TAB_ON: Color = Color::srgba(0.98, 0.45, 0.12, 0.55);
+
+/// LB / RB move to the previous or next tab while a tabbed screen is showing.
+fn pad_tabs(
+    pad: Res<Pad>,
+    state: Res<State<GameState>>,
+    mut view: ResMut<MenuView>,
+    mut map: ResMut<MapState>,
+    origin: Res<crate::origin::WorldOrigin>,
+    players: Query<&Transform, With<Player>>,
+) {
+    let showing = match state.get() {
+        GameState::Paused => true,
+        GameState::Menu => *view != MenuView::Home,
+        GameState::Playing => false,
+    };
+    if !showing {
+        return;
+    }
+    let step: i32 = if pad.rb_just {
+        1
+    } else if pad.lb_just {
+        -1
+    } else {
+        return;
+    };
+    let Some(i) = TAB_ORDER.iter().position(|t| *t == *view) else { return };
+    let n = TAB_ORDER.len() as i32;
+    let next = TAB_ORDER[(i as i32 + step).rem_euclid(n) as usize];
+    *view = next;
+    if next == MenuView::Map {
+        if let Ok(pt) = players.single() {
+            map.focus(origin.to_geodetic(pt.translation), crate::globe::PAUSE_ZOOM);
+        }
+    }
+}
+
+/// Keep the active tab lit. Other tabs go back to plain only when the tab
+/// changes, so their hover highlight still works between changes.
+fn highlight_tabs(view: Res<MenuView>, focus: Res<MenuFocus>, mut tabs: Query<(Entity, &MenuAction, &mut BackgroundColor)>) {
+    let changed = view.is_changed();
+    for (e, action, mut bg) in &mut tabs {
+        let MenuAction::Tab(t) = action else { continue };
+        // The D-pad highlight on a tab wins; `pad_focus` repaints it when focus moves.
+        if focus.0 == Some(e) {
+            continue;
+        }
+        if *t == *view {
+            if bg.0 != TAB_ON {
+                bg.0 = TAB_ON;
+            }
+        } else if changed && bg.0 != BTN {
+            bg.0 = BTN;
+        }
     }
 }
 
@@ -453,6 +709,7 @@ fn menu_buttons(
     mut weather: ResMut<CurrentWeather>,
     mut pick: ResMut<WeatherPick>,
     mut over: ResMut<CloudOverride>,
+    mut audio: ResMut<AudioSettings>,
 ) {
     for (i, a, mut bg) in &mut q {
         let accent = matches!(a, MenuAction::Play | MenuAction::Resume);
@@ -536,6 +793,8 @@ fn menu_buttons(
             MenuAction::SensPlus => controls.mouse_sensitivity = (controls.mouse_sensitivity + 0.1).min(3.0),
             MenuAction::InvertY => controls.invert_y = !controls.invert_y,
             MenuAction::ToggleBackpack => cosmetics.backpack = !cosmetics.backpack,
+            MenuAction::ToggleMute => audio.muted = !audio.muted,
+            MenuAction::ToggleCalm => audio.calm = !audio.calm,
         }
     }
 }
@@ -549,6 +808,7 @@ fn refresh_menu(
     pick: Res<WeatherPick>,
     controls: Res<ControlSettings>,
     cosmetics: Res<Cosmetics>,
+    audio: Res<AudioSettings>,
     mut screens: Query<(&Screen, &mut Visibility), Without<TabBody>>,
     mut tabs: Query<(&TabBody, &mut Visibility, &mut Node), (Without<Screen>, Without<ResumeButton>)>,
     mut status: Query<&mut Text, (With<StatusLine>, Without<PauseTitle>, Without<SettingValue>)>,
@@ -605,6 +865,8 @@ fn refresh_menu(
             MenuAction::SensPlus => format!("{:.1}", controls.mouse_sensitivity),
             MenuAction::InvertY => on(controls.invert_y),
             MenuAction::ToggleBackpack => on(cosmetics.backpack),
+            MenuAction::ToggleMute => on(audio.muted),
+            MenuAction::ToggleCalm => on(audio.calm),
             _ => String::new(),
         };
     }
@@ -654,6 +916,54 @@ fn time_slider(
     if let Ok(mut t) = readout.single_mut() {
         let total = (h * 60.0).round() as i64 % 1440;
         let s = format!("{:02}:{:02}", total / 60, total % 60);
+        if t.0 != s {
+            t.0 = s;
+        }
+    }
+}
+
+/// Drag (or click) any audio slider; knobs and readouts follow the settings.
+#[allow(clippy::type_complexity)]
+fn audio_sliders(
+    state: Res<State<GameState>>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    mut audio: ResMut<AudioSettings>,
+    tracks: Query<(&Knob, &RelativeCursorPosition, &InheritedVisibility)>,
+    mut dots: Query<(&KnobDot, &mut Node)>,
+    mut readouts: Query<(&KnobReadout, &mut Text)>,
+    mut dragging: Local<Option<Knob>>,
+) {
+    if *state.get() == GameState::Playing {
+        *dragging = None;
+        return;
+    }
+    if !buttons.pressed(MouseButton::Left) {
+        *dragging = None;
+    }
+    for (k, rcp, vis) in &tracks {
+        // Hidden nodes keep a stale RelativeCursorPosition; only the visible tab counts.
+        if buttons.just_pressed(MouseButton::Left) && vis.get() && rcp.cursor_over {
+            *dragging = Some(*k);
+        }
+        if *dragging == Some(*k) && let Some(n) = rcp.normalized {
+            let v = ((n.x + 0.5).clamp(0.0, 1.0) * 100.0).round() / 100.0;
+            if k.value(&audio) != v {
+                *k.slot(&mut audio) = v;
+            }
+        }
+    }
+    // First run counts as changed too, so the readouts fill in on launch.
+    if !audio.is_changed() {
+        return;
+    }
+    for (d, mut n) in &mut dots {
+        let want = Val::Percent(d.0.value(&audio) * 100.0);
+        if n.left != want {
+            n.left = want;
+        }
+    }
+    for (r, mut t) in &mut readouts {
+        let s = format!("{:.0}%", r.0.value(&audio) * 100.0);
         if t.0 != s {
             t.0 = s;
         }

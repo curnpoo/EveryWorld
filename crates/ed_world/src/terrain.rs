@@ -37,10 +37,23 @@ impl TerrainGrid {
             for i in 0..n {
                 let u = u0 + s * i as f64 / segments as f64;
                 let v = v0 + s * j as f64 / segments as f64;
-                heights.push(src.sample(u, v));
+                heights.push(src.sample_cubic(u, v));
             }
         }
         Self { tile, segments, heights }
+    }
+
+    /// Same surface at `f`x the resolution (exact on the old triangles), so roads
+    /// can cut and fill at a scale finer than the source cell.
+    pub fn upsampled(&self, f: usize) -> Self {
+        let segments = self.segments * f;
+        let mut heights = Vec::with_capacity((segments + 1) * (segments + 1));
+        for j in 0..=segments {
+            for i in 0..=segments {
+                heights.push(self.sample(i as f64 / segments as f64, j as f64 / segments as f64));
+            }
+        }
+        Self { tile: self.tile, segments, heights }
     }
 
     pub fn flat(tile: TileId, segments: usize, h: f32) -> Self {

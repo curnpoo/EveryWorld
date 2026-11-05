@@ -234,7 +234,12 @@ pub fn drive_engine_sounds(
     mut audio: ResMut<EngineAudio>,
     cams: Query<&GlobalTransform, (With<Camera3d>, Without<crate::globe::GlobeCamera>)>,
     mut vehicles: Query<(Entity, &GlobalTransform, &LinearVelocity, &mut EngineSound, Option<&Car>, Option<&Plane>)>,
+    mix: Option<Res<crate::settings::AudioSettings>>,
 ) {
+    if let Some(m) = mix {
+        // 0.8 is the kit's tuned master at the default slider position.
+        audio.volume = (0.8 * m.level() * m.vehicles.clamp(0.0, 1.0)).min(1.0);
+    }
     let dt = time.delta_secs_f64();
     if dt <= 0.0 {
         return;
