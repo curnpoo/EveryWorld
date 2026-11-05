@@ -127,7 +127,7 @@ pub fn wind_mesh(m: &WindMesh) -> Mesh {
 
 fn to_image(img: Rgba8Image, repeat: bool) -> Image {
     let size = Extent3d { width: img.width, height: img.height, depth_or_array_layers: 1 };
-    let mut out = Image::new_uninit(size, TextureDimension::D2, TextureFormat::Rgba8UnormSrgb, RenderAssetUsages::RENDER_WORLD);
+    let mut out = Image::new_uninit(size, TextureDimension::D2, TextureFormat::Rgba8UnormSrgb, crate::native::mesh_usage());
     out.texture_descriptor.mip_level_count = img.mip_levels;
     out.data = Some(img.data);
     let mode = if repeat { ImageAddressMode::Repeat } else { ImageAddressMode::ClampToEdge };

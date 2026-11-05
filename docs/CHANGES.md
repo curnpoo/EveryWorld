@@ -1,6 +1,84 @@
 # Changes
 
+## 2026-11-05: native Metal is now the default renderer; AA; research; what is left
+- `native::enabled()` is on by default on macOS. `EW_NATIVE=0` falls back to the Bevy renderer. Headless NYC check (Central Park, 1600x900): looks right, 27 fps under load (world 19 ms; machine was busy, re-measure idle).
+- `resolve_fs` now has an FXAA-lite pass on compressed HDR luma (blend along the edge tangent only where contrast is high). The resolve timer read 14 ms in that run: check on an idle Mac whether the AA or timer attribution is to blame.
+- Native renderer ported so far: cascaded + far shadows, GGX PBR, sky/haze, GTAO, SSR, bounce, bloom, filmic grade, splat-layer terrain with normal mapping, alpha blend pass, boots/plume (`boot_plume.rs`).
+- NOT ported yet (in priority order): (1) far tree impostors (`impostors.rs`, `shaders/impostor.wesl`: needs a params+axis vertex stream, the hemi-octahedral 2D-array atlas, `impostor_vs/fs`, and removing the `Without<ImpostorMaterial>` filter in `native.rs`); (2) probe GI (`probe_gi.rs`: small ground probes, large air probes, ~5 km, coarser farther); (3) 20 km buildings (`ed_world/src/lod.rs` floor is 16 km) and far Manhattan shadows (building shadow range 700 m); (4) more contrast in the grade; (5) menu option wiring on the native path (render scale / FSR options only affect the Bevy path, `render_scale.rs` returns early when native owns the world).
+- Upscaling plan: `ed_game::render_scale` FSR1 EASU stays Bevy-only. For native use **MetalFX** (Apple, macOS 13+, iOS 16+): the spatial scaler needs only a colour texture; the temporal scaler (DLSS2/FSR2 class) needs colour + depth + motion vectors + jitter, so add a jittered projection and a velocity target to `WorldRenderer` first. Also an option: AMD FSR 4 community Metal port (macOS 26+, unofficial).
+- Prior art searched: no open-source Nanite-style renderer exists for Metal (examples are D3D12/Vulkan: Nyx, Vulcanite, jglrxavpok "Recreating Nanite", Bevy virtual geometry write-up by jms55). Metal 3 has mesh shaders, so the cluster-LOD + visibility-buffer plan in `docs/plans/engine.md` is ours to build; borrow the algorithms (METIS clustering, 64 vert/124 tri clusters, normal cones).
+
+
+## 2026-11-05 Native Metal: splat-layer terrain (normal mapping)
+- `terrain_vs`/`terrain_fs` in `ed_metal/shaders/world.metal` port Bevy's `terrain.wesl`: 12 splatted layers (albedo+height, normal+rough+AO arrays), hex stochastic tiling, triplanar on steep faces, height-based blend, per-layer size and bump (grass small normals, rock large), per-pixel snow/rock rules, strata, macro variation, satellite steering, water. Skipped beyond 5 km (satellite only there).
+- `WorldRenderer::upload_ground` / `upload_splat`; `ed_game::ground_material::GROUND_CPU` hands the layer data over once; `native.rs` reads `ATTRIBUTE_SPLAT0/1/2`. Off switch: `EW_NATIVE_NOGROUND=1` (old noise-bump terrain).
+- Matterhorn 1600x900 headless: world pass ~5-9 ms with layers (about equal to the old path once far pixels skip the loop). Needs a look at close ground level (grass vs rock scale) on the Mac.
+
+## 2026-11-05: native SSR + screen-space bounce, AO cost cut
+- `ed_metal/src/post.rs`: AO defaults to 2 slices x 5 steps (was 3x8): NYC 450 m 37 -> 46 fps. Added `post_ssr_trace` (half res) + `post_ssr_composite` (full res, HDR target now has `ShaderWrite`), plus a 3-level unthresholded downsample chain (1/8 res scene blur) used by `resolve_fs` as bounce light: `h += blur * (1 - ao) * 0.5` before the AO multiply.
+- Off switches: `EW_NATIVE_NOSSR`, `EW_NATIVE_NOBOUNCE` (with `NOAO`, `NOBLOOM`).
+- Cost: SSR ~0.4 ms, bounce ~0.1 ms at 1600x900 (NYC resolve 6.9 -> 7.3 ms). Later runs on a loaded Mac showed Matterhorn 53 and Mexico City 46 fps, but Matterhorn with all post off was 54 fps, so that is machine load, not the new passes. Re-measure on an idle machine.
+- Look: bounce subtly warms street canyons; SSR adds faint reflections on water/glass. Both are subtle. Water raw roughness vs the 0.55 SSR threshold is unverified.
+
+## 2026-11-05: native GTAO + bloom (post chain)
+- `ed_metal/src/post.rs` `PostChain`: linear depth, half-res GTAO (bilateral blur + upsample), dual-filter bloom, from `shaders/post.metal`. Runs between the main pass and the resolve; resolve multiplies AO (0.85) and adds bloom (0.06). Radius grows with distance (3 m up to 30 m) so it reads from the air.
+- Switches: `EW_NATIVE_NOAO`, `EW_NATIVE_NOBLOOM`, `EW_NATIVE_AOVIS` (show AO). NYC 450 m: 43 -> 37 fps (about 3 ms). Also fixed: a bright vertical streak under the sun in native views toward the sun (terrain fog sampled `sky_rad` inside the sun disc; fog now passes `disc_k = 0`). Matterhorn raking view 75 fps; Mexico City 3500 m 63 fps with AO+bloom. Terrain shader now lifts green in magenta-cast Sentinel texels (pink scrub patches) and rock is slightly less red. Open: halve cost (AO at quarter res or fewer steps), bloom is barely visible, SSR/bounce not yet integrated.
+
+## 2026-11-05: far buildings, sharper satellite, roof/sun tuning (native)
+- Satellite: `ed_data::satellite::MAX_ZOOM` 12 -> 14 (EOX s2cloudless has real ~10 m detail at z14; z14 terrain tiles were sampling a z12 tile = 16 px per tile). Sat texture 128 -> 256 px for z>=10 tiles; pool class 256 now 320 layers.
+- Far buildings: z13 tiles now emit OSM building massing (`build_lod` only, no roads/props/detail); `lod::select` forces z>=13 within 16 km ground distance so buildings reach ~16 km. Mexico City hard cut-off line gone; 58 fps, 4.5 M tris.
+- Native shader: cascade-4 normal bias 2.0 -> 0.8, sun 6.4, warmer low sun, `day` ramps 6x with sun height, distance albedo mottling on terrain, orange-roof desaturation, 16x anisotropy.
+- Open: bounce light / SSAO / bloom (post agent output not integrated), Matterhorn raking-shadow crispness (needs heightfield ray-march or finer far cascade), headless weather shows rain/100% cloud (force clear), cloud shadows map-wide, z14 sat disk/net cost on first load.
+
+## 2026-11-05: native look pass + shadow cache fix
+- Resolve cost: swapping Filmic for ACES gave the same 2.4 ms headless reading, so the LUT is free; the number is a headless-timer artifact.
+- Shadow cache: cascade depth range (`zn`/`zf` in `fit_cascades`) followed the camera continuously, so every key changed each frame ("+0 cached"). Now quantised. NYC (350 m): 26 -> 55-60 fps, Mexico City 1.8 km: 60 fps, headless 1280x720.
+- Look: deeper zenith and narrower, bluer horizon band; fog colour taken from an elevated sky direction (blue, not grey), density 1/200 km; sun 5.2, bluer sky fill; dielectric environment Fresnel x0.3 (road glint). Matterhorn now close to Bevy's tone; Bevy still has crisper cast shadows and stronger relief.
+- Open: far terrain LOD seam in Mexico City (blurry far tiles), orange roof saturation, bounce light, SSAO/bloom, GPU times for shadow4 at city scale.
+
+## 2026-11-05: native resolve uses Blender Filmic + warm grade
+- `ed_metal` resolve pass replaced ACES with Bevy's own Blender Filmic 64^3 LUT (`crates/ed_metal/assets/filmic_lut_rgba16f.bin`, extracted from `bevy_core_pipeline` `Blender_-11_12.ktx2`; same log2 -11..12 EV encode). Added a warm white balance (1.10/1.0/0.86) and a highlight tint; native exposure 1.0 -> 1.7.
+- Headless Matterhorn: 61 fps, resolve reads 2.4 ms in the headless timer (was ~0.7 ms with ACES; recheck whether that is the LUT or timer wait). Needs a Mac check on the real window.
+
+## 2026-11-05: native terrain shading port (first pass)
+- Native terrain draws now get the baked DEM detail texture (`DrawItem::tex2`, texture slot 2, fed from `SatPool::cpu_detail`) and a `terrain_surf` branch in `world.metal`: detail-normal correction with wall fade, per-pixel rock/snow from slope + curvature + satellite brightness, strata bands, gully darkening, two-scale procedural micro relief.
+- Terrain satellite/detail sampling uses a clamped sampler with the half-texel inset (previously `repeat`, which wrapped bilinear taps across tile edges).
+- Fog density 1/130 km, weaker warm Mie lobe. Not yet ported: ragged layer edges, far-field colour steering, hex-tiled layer textures, far shadows from horizon maps.
+- Needs a check: resolve/world GPU times looked higher (3-5 ms) in headless runs with this shader; re-measure.
+
+## 2026-11-05: native far-terrain shadow cascade
+- `ed_metal` now has a 5th shadow cascade (terrain casters only, 1.5 m proxies) reaching `terrain_shadow_far` = 20 km; `shadow_vis` falls through to it past the 4th cascade. Cost ~0.45 ms. Matterhorn at 2600 m, 1280x720: 78 fps, 1.2 M tris.
+- `NotShadowCaster` is honoured by the native path (`DrawItem::cast_shadow`); the sky/ocean shells no longer darken roofs.
+- New debug envs: `EW_NATIVE_NOPROXY`, `EW_NATIVE_DBG` (1 normals, 2 shadow vis, 3 ambient, 4 cascade, 5 ndl, 6-9 force cascade, 10 depth diff).
+- Still open: cloud shadows over the whole map (native has no clouds; sky is clear), shadow cache never hits, compare with real photos.
+
 Recent work, newest first, and what still needs checking. When an entry is verified on the Mac, fold the result into `ROADMAP.md` and trim it here. Plans live in `docs/plans/`; the roadmap says what's done and what's next.
+
+---
+
+## 2026-11-05: Game runs on the native Metal renderer (`EW_NATIVE=1`, macOS)
+
+- `ed_metal::world::WorldRenderer` + `shaders/world.metal` draw the world into a `CAMetalLayer` view placed *below* Bevy's transparent window; Bevy keeps sim/input/audio/physics/UI. Bridge: `crates/ed_game/src/native.rs` (mirrors visible opaque `Mesh3d`s, CPU sphere cull, reverse-Z, sun from the `Sun` light).
+- Native mode: Bevy 3D camera off, UI camera clears to transparent, `render_scale` skipped, meshes keep `MAIN_WORLD` data (`native::mesh_usage()`), window `transparent` + `PostMultiplied`.
+- Zermatt, same spawn: Bevy path ~16 fps (GPU-bound) vs native ~110 fps (world pass ~7 ms, ~280 draws, 7.2 M tris). Look is basic (hemisphere light, fog, no shadows/atmosphere/clouds/textures yet); alpha-blended/tested materials, foliage, impostors and clouds are skipped for now.
+- Next: heights into the clipmap, cluster ICB for buildings/trees, shadows, atmosphere/post/MetalFX (see `docs/plans/m2.md`).
+
+## 2026-11-05: GPU-driven ICB probe (N0/N2 groundwork)
+
+- `ed_metal` `icb_probe` (`cargo run --release -p ed_metal --bin icb_probe -- [instances] [seconds]`): a compute kernel frustum-culls instances and encodes `draw_indexed_primitives` into an indirect command buffer; the CPU issues one `executeCommandsInBuffer`. Per-pass GPU timers now cover render, compute and blit passes (`GpuTimers::attach/attach_compute/attach_blit`).
+- Measured on M3 Pro (windowed 1280x720, unit cubes, 12 tris each): 1k -> 0.22 ms GPU; 10k -> 0.82 ms; 100k -> 4.8 ms (~125 fps, display-capped); 300k -> 14.1 ms (65-70 fps). Cull+encode is 0.1 ms at 100k and 0.35 ms at 300k, so the cull is not the limit. The main pass is ~45 ns per ICB draw, linear in draws: **many tiny draws are the cost, so real content needs clusters/merged draws, not one draw per object.**
+- **Incident:** an earlier 1M-instance run was followed by the whole Mac crashing. Cause unconfirmed (no crash log tied to it). 1M was not rerun; stepped 1k -> 300k was clean. Do not run above 300k without being at the keyboard.
+- `ed_metal` `terrain_probe` (`cargo run --release -p ed_metal --bin terrain_probe -- [levels] [seconds]`): `ed_gpu::clipmap` drawn with ONE instanced draw (heights from 6-octave noise in the vertex shader, no textures, no morph yet). M3 Pro windowed 1280x720: 4 levels (426k tris, 768 m) 1.9-2.0 ms GPU; 8 levels (819k tris, 12.3 km) 1.4-3.8 ms GPU, ~125 fps (display-capped). One pass, ~100 blocks, no per-tile objects. Next: real height source (tile heights in a GPU texture array), geomorphing at level seams, cluster cull for buildings/trees.
+- `ed_gpu::clipmap` added (Haiku agent): 12 tests; 8 levels x 64-quad blocks = 819,200 tris covering 12.3 km radius. Blocks snap to their footprint, not 2x spacing; the shader must morph flagged edges. `cargo test -p ed_gpu`: 47 pass.
+- Needs a Mac check: none beyond the above; MSL is compiled at runtime (offline `xcrun metal` still lacks the Metal Toolchain).
+
+## 2026-11-05: GPU pass tooling, M2 plan
+- `tools/gpu_passes.sh OUT_DIR [args]`: Metal System Trace of a headless run (with `EW_PERF` for real fps), `tools/gpu_sum.py` prints GPU occupancy and per-encoder shares. Needs Xcode's `xctrace`. Zermatt still: GPU 92% busy, ~61 ms/frame at 16 fps, so GPU-bound. No single hot pass: main opaque ~33%, shadow cascades ~21%, early prepass ~9% (excluding the headless-only surface copy). Absolute per-pass ms are not reported (intervals overlap); use shares.
+- `crates/ed_gpu` (S1, core): pass graph with declared reads/writes, culling, transient lifetimes and alias plan; `Caps`; `PassTimes` (EMA per pass). No wgpu/Bevy dependency, 10 unit tests. wgpu backend (Bevy device, `timestamp_writes`) and the `ed_render` debug pass are next.
+- **Priorities changed: native Metal first (N0..N7 in `docs/plans/m2.md` §4), no wgpu spike.** `crates/ed_metal` (objc2-metal): device/queue, `CAMetalLayer` on a winit window, runtime MSL compile, `GpuTimers` (ring of counter sample buffers at stage boundaries, resolved without stalls). `ed_metal_probe` renders at display rate and prints per-pass GPU ms (triangle ~0.15 ms). `ed_gpu` also gained `pool` (suballocator with deferred free), `cull` (instance/indirect structs, CPU reference, `shaders/cull.metal`), `clipmap` (terrain block generator). Offline `xcrun metal` needs `xcodebuild -downloadComponent MetalToolchain` (not run; runtime compile works).
+- `docs/plans/m2.md`: M2 design rules and slices; native Metal spike starts after slice S1.
+- The first 6-scene baseline (19-22 fps) was taken while a windowed game was open and is discarded. Do not run perf scenes while a game window is open. Clean baseline (quiet machine): still 16.0, cruise 14.5, spin 16.7, forest 15.2, lapaz 13.6, origin 15.2 fps (`target/perf_2026-11-05_clean/summary.txt`). The `EW_BISECT` base run that showed 72 fps had 0 tiles loaded; discard it.
+- Not run: `EW_BISECT=hide:all` and `noshadow:all` hang the headless loop (frame counter runs away); `EW_GPU_WAIT` variant produced no rows. Use per-category hides instead. Windowed Mac pass still open.
 
 ---
 

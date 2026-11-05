@@ -67,7 +67,7 @@ struct Particle {
 }
 
 #[derive(Component)]
-struct PlumeMesh;
+pub(crate) struct PlumeMesh;
 
 #[derive(Component)]
 struct PlumeLight;
@@ -116,7 +116,7 @@ fn particle_texture() -> Image {
         TextureDimension::D2,
         data,
         TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::RENDER_WORLD,
+        crate::native::mesh_usage(),
     );
     img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor::linear());
     img

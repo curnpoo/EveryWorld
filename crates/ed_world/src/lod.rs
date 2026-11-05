@@ -49,7 +49,7 @@ pub fn select(cam: Geodetic, ground_m: f64, p: &LodParams) -> Vec<TileId> {
             continue;
         }
         let d = (d_ground * d_ground + agl * agl).sqrt();
-        if t.z < p.max_zoom && d < p.split * w {
+        if t.z < p.max_zoom && (d < p.split * w || (t.z < 13 && d_ground < 16_000.0 + w)) {
             stack.extend(t.children());
         } else {
             out.push(t);

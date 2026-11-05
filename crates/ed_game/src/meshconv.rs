@@ -1,14 +1,13 @@
 //! `ed_world::MeshData` -> `bevy::Mesh`.
 
 use crate::ground_material::{ATTRIBUTE_PIVOT, ATTRIBUTE_SPLAT0, ATTRIBUTE_SPLAT1, ATTRIBUTE_SPLAT2, ATTRIBUTE_SPLAT_PAD};
-use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
 use ed_world::ground_scatter::ScatterChunk;
 use ed_world::mesh::MeshData;
 
 pub fn to_mesh(m: &MeshData) -> Mesh {
-    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, crate::native::mesh_usage())
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, m.positions.clone())
         .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, m.normals.clone())
         .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, m.uvs.clone())

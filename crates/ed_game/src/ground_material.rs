@@ -237,7 +237,7 @@ fn array_image(layers: &[&[u8]], size: u32, format: TextureFormat, srgb: bool) -
 /// the ~90 resident tiles plus the coarse tiles kept during hole-free swaps;
 /// if a class runs out, the tile simply renders without satellite colour.
 /// Memory is fixed: ~100 MB + 24 MB + 12 MB.
-pub const SAT_CLASSES: [(u32, u32); 3] = [(512, 72), (256, 96), (128, 192)];
+pub const SAT_CLASSES: [(u32, u32); 3] = [(512, 72), (256, 320), (128, 192)];
 
 /// Tag bit: the satellite layer also has baked DEM detail.
 pub const DETAIL_BIT: u32 = 1 << 23;
@@ -259,6 +259,11 @@ pub struct SatPool {
     pub detail: [Handle<Image>; 3],
     free: [Vec<u32>; 3],
     uploads: Vec<LayerUpload>,
+    /// CPU copies of the satellite layers for the native renderer: layer key -> (generation, size, RGBA8).
+    pub cpu: std::collections::HashMap<u32, (u64, u32, std::sync::Arc<Vec<u8>>)>,
+    /// Native renderer only: CPU copy of each layer's baked detail, same key as `cpu`.
+    pub cpu_detail: std::collections::HashMap<u32, std::sync::Arc<Vec<u8>>>,
+    gen_counter: u64,
 }
 
 /// One texture-array layer waiting for `queue.write_texture`.
@@ -276,7 +281,7 @@ impl SatPool {
         let detail = SAT_CLASSES.map(|(n, layers)| images.add(sat_array_image(n, layers)));
         let images = SAT_CLASSES.map(|(n, layers)| images.add(sat_array_image(n, layers)));
         let free = SAT_CLASSES.map(|(_, layers)| (0..layers).rev().collect());
-        Self { images, detail, free, uploads: Vec::new() }
+        Self { images, detail, free, uploads: Vec::new(), cpu: Default::default(), cpu_detail: Default::default(), gen_counter: 0 }
     }
 
     /// Reserve a layer for `data` (`size`^2 RGBA8) and queue its upload.
@@ -294,9 +299,16 @@ impl SatPool {
             warn!("satellite pool full for {size}px tiles; tile drawn without satellite colour");
             return SAT_NONE;
         };
+        if crate::native::enabled() {
+            self.gen_counter += 1;
+            self.cpu.insert(((class as u32 + 1) << 12) | layer, (self.gen_counter, size, std::sync::Arc::new(data.clone())));
+        }
         self.uploads.push(LayerUpload { image: self.images[class].id(), layer, width: size, height: size, bytes_per_px: 4, data });
         let mut tag = ((class as u32 + 1) << 24) | layer;
         if let Some(d) = detail.filter(|d| d.len() == (size * size * 4) as usize) {
+            if crate::native::enabled() {
+                self.cpu_detail.insert(((class as u32 + 1) << 12) | layer, std::sync::Arc::new(d.clone()));
+            }
             self.uploads.push(LayerUpload { image: self.detail[class].id(), layer, width: size, height: size, bytes_per_px: 4, data: d });
             tag |= DETAIL_BIT;
         }
@@ -310,6 +322,8 @@ impl SatPool {
             return;
         }
         let layer = tag & 0xFFF;
+        self.cpu.remove(&(((class as u32) << 12) | layer));
+        self.cpu_detail.remove(&(((class as u32) << 12) | layer));
         // Drop a still-queued upload for this slot: the slot is free again.
         let (img, det) = (self.images[class - 1].id(), self.detail[class - 1].id());
         self.uploads.retain(|u| !((u.image == img || u.image == det) && u.layer == layer));
@@ -390,6 +404,18 @@ fn sat_sampler() -> ImageSampler {
     })
 }
 
+/// CPU copy of the ground layer data for the native Metal renderer (uploaded once).
+pub struct GroundCpu {
+    pub size: usize,
+    pub albedo: Vec<Vec<u8>>,
+    pub normal: Vec<Vec<u8>>,
+    pub macro_tex: Vec<u8>,
+    pub macro_size: usize,
+    pub sizes: [f32; 12],
+    pub bump: [f32; 12],
+}
+pub static GROUND_CPU: std::sync::OnceLock<GroundCpu> = std::sync::OnceLock::new();
+
 /// Build the terrain + scatter materials (synthesizes the ground textures).
 pub fn create(
     images: &mut Assets<Image>,
@@ -418,6 +444,21 @@ pub fn create(
     info!("ground textures: {} layers at {TEX_SIZE}px in {:?}", LAYERS, t0.elapsed());
 
     let (size, bump) = ground_tex::layer_params();
+    if crate::native::enabled() {
+        let mut sz = [0f32; 12];
+        let mut bp = [0f32; 12];
+        sz.copy_from_slice(&size[..12]);
+        bp.copy_from_slice(&bump[..12]);
+        let _ = GROUND_CPU.set(GroundCpu {
+            size: TEX_SIZE as usize,
+            albedo: ah.iter().map(|l| l.to_vec()).collect(),
+            normal: nr.iter().map(|l| l.to_vec()).collect(),
+            macro_tex: ground_tex::macro_texture(MACRO_SIZE),
+            macro_size: MACRO_SIZE as usize,
+            sizes: sz,
+            bump: bp,
+        });
+    }
     let v4 = |a: &[f32; LAYERS], i: usize| Vec4::new(a[i * 4], a[i * 4 + 1], a[i * 4 + 2], a[i * 4 + 3]);
     let params = GroundParams {
         size: [v4(&size, 0), v4(&size, 1), v4(&size, 2)],

@@ -30,6 +30,9 @@ fn capture(
     mut exit: MessageWriter<AppExit>,
     headless: Option<Res<crate::headless::HeadlessTarget>>,
 ) {
+    if crate::native::enabled() && cfg.headless {
+        return; // native renderer saves its own offscreen frame
+    }
     let Some(path) = &cfg.screenshot else { return };
     st.frames += 1;
     if mgr.idle() { st.idle_frames += 1 } else { st.idle_frames = 0 }

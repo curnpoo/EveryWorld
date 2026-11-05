@@ -1,0 +1,19 @@
+[package]
+name = "ed_metal"
+version.workspace = true
+edition.workspace = true
+
+# Native Metal backend (docs/plans/m2.md, N0). macOS only; other targets compile to an empty crate.
+
+[target.'cfg(target_os = "macos")'.dependencies]
+ed_gpu = { path = "../ed_gpu" }
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-core-foundation = "0.3"
+objc2-metal = "0.3"
+objc2-quartz-core = "0.3"
+objc2-app-kit = "0.3"
+winit = "0.30"
+raw-window-handle = "0.6"
+log = { workspace = true }
+glam = { workspace = true }

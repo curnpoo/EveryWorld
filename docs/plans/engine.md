@@ -412,3 +412,17 @@ Original direction: Nanite-like virtual geometry as the core, no impostors, no d
 **Measured wins before the engine plan** (Zermatt, 1280x720, M3 Pro): baseline 12 fps (30M visible tris: rocks 15M, trees 12.6M, terrain 2.6M). Rocks chunked + range-limited: 31 fps. Far trees in thinned density bands: 60 fps (vsync cap). The bands were replaced by impostors on Nov 4.
 
 **Still-valid design points:** terrain should be CDLOD/clipmaps, not meshlets; texture detail should follow screen footprint (virtual texturing / mip streaming); far objects can get cheap fake shadows instead of none; ground cover should be one mesh per kind with per-chunk instance buffers and density fades.
+
+## Baseline 2026-11-05 (headless 2144x1206, M3 Pro, quiet machine, `tools/perf_headless.sh`)
+
+| Scene | fps avg | p99 worst ms | tiles | tris M | entities |
+|---|---|---|---|---|---|
+| still (Zermatt 120 m) | 16.0 | 78.6 | 86 | 32.6 | 1.8k |
+| cruise | 14.5 | 336.5 | 92 | 38.5 | 1.9-5.0k |
+| spin | 16.7 | 74.6 | 192 | 41.5 | 2.2k |
+| forest | 15.2 | 77.1 | 86 | 23.3 | 1.3k |
+| lapaz | 13.6 | 89.0 | 94 | 40.5 | 1.7-2.4k |
+| origin | 15.2 | 264.5 | 127 | 44.7 | 1.4-1.7k |
+
+GPU occupancy 92% (`tools/gpu_passes.sh`): GPU-bound. Headless is not windowed (render scale, swapchain); close each
+slice with a windowed pass. Plan: `docs/plans/m2.md`.

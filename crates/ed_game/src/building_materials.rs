@@ -79,7 +79,7 @@ fn image(size: u32, f: impl Fn(f32, f32) -> [f32; 3]) -> Image {
         TextureDimension::D2,
         data,
         TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::RENDER_WORLD,
+        crate::native::mesh_usage(),
     );
     img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
         address_mode_u: ImageAddressMode::Repeat,

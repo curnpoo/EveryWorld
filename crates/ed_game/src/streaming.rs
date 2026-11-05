@@ -184,7 +184,7 @@ fn ready_tile(mut b: TileBuild) -> ReadyTile {
     // The collider is the terrain grid without the render subdivision, so it
     // doubles as the terrain's shadow caster (the sun never needs the splat vertices).
     let terrain_shadow = b.collider.as_ref().filter(|(v, _)| v.len() * 4 < b.terrain.positions.len()).map(|(verts, tris)| {
-        let mut m = Mesh::new(bevy::mesh::PrimitiveTopology::TriangleList, bevy::asset::RenderAssetUsages::RENDER_WORLD);
+        let mut m = Mesh::new(bevy::mesh::PrimitiveTopology::TriangleList, crate::native::mesh_usage());
         m.insert_attribute(Mesh::ATTRIBUTE_POSITION, verts.clone());
         m.insert_indices(bevy::mesh::Indices::U32(tris.iter().flatten().copied().collect()));
         m

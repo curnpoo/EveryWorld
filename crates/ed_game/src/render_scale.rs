@@ -51,7 +51,7 @@ struct ScaleState {
 }
 
 #[derive(Component)]
-struct UiCamera;
+pub struct UiCamera;
 
 /// The window camera for UI. It is always present so the 3D camera can be
 /// switched off entirely (main menu) without taking the UI with it.
@@ -69,6 +69,9 @@ fn sync_cameras(
     mut ui: Query<(Entity, &mut Camera, Has<IsDefaultUiCamera>), (With<UiCamera>, Without<Camera3d>)>,
     mut commands: Commands,
 ) {
+    if crate::native::enabled() {
+        return;
+    }
     // Paused counts as menu: the pause screen covers the world with a 90%
     // panel, and rendering the full 3D scene under it next to the map globe
     // drops the map to ~10 fps (too slow to drag).
@@ -109,6 +112,9 @@ fn apply_render_scale(
     mut fsr: ResMut<Assets<FsrMaterial>>,
     mut commands: Commands,
 ) {
+    if crate::native::enabled() {
+        return; // the native renderer owns the world; no Bevy 3D target to upscale
+    }
     let Ok(win) = windows.single() else { return };
     let phys = UVec2::new(win.physical_width().max(1), win.physical_height().max(1));
     if gfx.render_pct >= 100 {

@@ -23,6 +23,7 @@ mod lookdev;
 mod globe;
 mod headless;
 mod mapview;
+mod native;
 mod near_chunks;
 mod menu;
 mod menu_music;
@@ -62,6 +63,8 @@ fn main() {
                     // which at low fps (~25) is >80 ms and makes the camera feel heavy/steppy.
                     present_mode: bevy::window::PresentMode::AutoNoVsync,
                     desired_maximum_frame_latency: std::num::NonZeroU32::new(1),
+                    transparent: native::enabled(),
+                    composite_alpha_mode: if native::enabled() { bevy::window::CompositeAlphaMode::PostMultiplied } else { default() },
                     ..default()
                 }),
                 ..default()
@@ -86,7 +89,7 @@ fn main() {
     .insert_resource(Gravity(Vec3::NEG_Y * 9.81))
     .insert_resource(cfg.clone())
     .add_plugins((origin::OriginPlugin, assets::AssetsPlugin, building_materials::BuildingMaterialsPlugin, sky::SkyPlugin, shadows::ShadowsPlugin, far_shadows::FarShadowsPlugin, camera::CameraPlugin, foliage::FoliagePlugin))
-    .add_plugins((clouds::CloudsPlugin, cloud_half::CloudHalfPlugin, perf::PerfPlugin, render_scale::RenderScalePlugin, library::LibraryPlugin))
+    .add_plugins((clouds::CloudsPlugin, cloud_half::CloudHalfPlugin, perf::PerfPlugin, render_scale::RenderScalePlugin, library::LibraryPlugin, native::NativePlugin))
     .add_systems(Update, headless::quit_after);
     if cfg.headless {
         app.add_plugins(headless::HeadlessPlugin);

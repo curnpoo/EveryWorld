@@ -33,3 +33,7 @@ avian3d = "0.8"
 glam = { workspace = true }
 crossbeam-channel = "0.5"
 log = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+ed_metal = { path = "../ed_metal" }
+raw-window-handle = "0.6"

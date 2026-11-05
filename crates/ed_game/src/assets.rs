@@ -76,7 +76,7 @@ fn palette_image() -> Image {
     for i in 0..side * side {
         data.extend_from_slice(&ed_world::mesh::palette_texel(i));
     }
-    let mut img = Image::new(Extent3d { width: side, height: side, depth_or_array_layers: 1 }, TextureDimension::D2, data, TextureFormat::Rgba8UnormSrgb, bevy::asset::RenderAssetUsages::RENDER_WORLD);
+    let mut img = Image::new(Extent3d { width: side, height: side, depth_or_array_layers: 1 }, TextureDimension::D2, data, TextureFormat::Rgba8UnormSrgb, crate::native::mesh_usage());
     img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
         address_mode_u: ImageAddressMode::ClampToEdge,
         address_mode_v: ImageAddressMode::ClampToEdge,

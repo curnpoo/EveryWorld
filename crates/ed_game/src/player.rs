@@ -452,8 +452,10 @@ fn player_input(
     p.wish = (fwd * p.fwd_in + right * p.strafe).normalize_or_zero();
     // Left trigger is Shift; right trigger is Space. Each pad button acts like its key.
     p.shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) || pad.lt_held;
-    p.space_held = keys.pressed(KeyCode::Space) || pad.rt_held;
-    p.rocket_amt = if keys.pressed(KeyCode::Space) { 1.0 } else { pad.rt };
+    // `EW_HOLD_SPACE=1`: behave as if Space is held (headless flame/boot checks).
+    let space = keys.pressed(KeyCode::Space) || std::env::var_os("EW_HOLD_SPACE").is_some();
+    p.space_held = space || pad.rt_held;
+    p.rocket_amt = if space { 1.0 } else { pad.rt };
     p.boost_amt = if keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) { 1.0 } else { pad.lt };
     if keys.just_pressed(KeyCode::Space) || pad.rt_just {
         p.space_just_pressed = true;

@@ -5,9 +5,50 @@ Drop anywhere on real Earth; walk, drive, fly, rocket to the Moon. Real data
 rules decide **how it looks**.
 
 This file is the map of the repository. `CLAUDE.md` is the short working memory;
-`docs/ROADMAP.md` says what's done and next (features + engine track);
+`docs/ROADMAP.md` says what's done and next (Stages A-H);
 `docs/CHANGES.md` lists recent changes and open checks; `docs/ARCHITECTURE.md`
 is the design document; `docs/plans/` holds the plans.
+
+---
+
+## Direction and goals (read before planning any work)
+
+Goal: a fast, beautiful, shared real-Earth world. The roadmap is Stages A-H in
+`docs/ROADMAP.md` (A stabilize and measure, B fast, C multiplayer, D native
+Metal + Nanite-like, E lighting, F play/vehicles, G space, H platforms).
+**Current stage: A. Next stop: GPU measurement** (baseline table on the 6
+reference scenes, per-pass GPU timers, a verdict on each performance
+hypothesis; ROADMAP Stage A item 3), then M2 in Stage B.
+
+Rules for every agent and session:
+
+1. **Performance and looks before new gameplay.** Vehicles, missions and space
+   are planned (Stages F, G) but wait. The game misses 30 fps on an M3 Pro and
+   has visual glitches (`docs/BUGS.md`); that comes first.
+2. **Renderer end state:** native Metal plus a Nanite-like geometry system we
+   build ourselves (cluster LOD, GPU culling, visibility buffer, software
+   raster) on `ed_gpu` / `ed_render`. Windows uses D3D12 with DLSS/FSR3 and RTX
+   ray tracing. Bevy meshlets are not the path (measured ~60% slower). Short-term
+   fixes on the Bevy renderer are fine; do not build large features that only
+   work on Bevy's pipeline. New renderer code targets `ed_gpu` only, never wgpu
+   or Metal directly.
+3. **Use the GPU fully, and measure first.** Tools: `tools/perf_headless.sh`,
+   `EW_BISECT`, `EW_GPU_WAIT`, `EW_POST`, `EW_TILE_STATS`, `--perf`. Add a dated
+   `docs/CHANGES.md` entry with before/after numbers. Every feature declares its
+   cost per quality tier and has an off switch.
+4. **Multiplayer-safe from now on.** Every player sees the same world:
+   generation is a pure function of (world seed, pinned data version, UTC time).
+   Avoid `HashMap` iteration order, thread-order float reductions, unseeded RNG,
+   wall-clock reads and platform-dependent hashing in generators and weather.
+   Terrain, buildings, trees and weather are never sent over the network; only
+   world deltas and entity state are. Keep simulation state separate from render
+   state. Avian physics is not deterministic across machines.
+5. **Materials and shaders** are data-driven and hot-reloadable, shaped for a
+   visibility-buffer resolve (shade each pixel once).
+6. **Keep the docs current.** When work lands, add a `docs/CHANGES.md` entry
+   (what changed, what needs a Mac check) and update `docs/ROADMAP.md`.
+   `docs/plans/engine.md` still uses the old M0-M10 names; the mapping is at the
+   bottom of the roadmap.
 
 ---
 
@@ -47,7 +88,7 @@ crates/
   ed_engine_audio/   Rust port of vendor/engine-sound-kit (JS is source of truth)
   ed_runtime/        M1 runtime services: job pools, frame budget, LRU, view cone, scheduler
   ed_game/           Bevy 0.20 + Avian 0.8 app (binary: earthdrop)
-tools/               screenshot scenes, lookdev boards
+tools/               perf_headless.sh (repeatable perf scenes), shoot_places.sh, lookdev boards, climate bake
 vendor/              engine-sound-kit JS reference, patched bevy_pbr
 docs/                ROADMAP, CHANGES, ARCHITECTURE, plans/, lookdev notes
 ```
@@ -301,5 +342,9 @@ artifacts as source.
   `TerrainGrid`? Foundations currently have a 0.5 m margin.
 - Active uncommitted work often includes perf logger, render scale, streaming,
   camera and menu tweaks; always check `git status` first.
-- Roadmap next: instancing, CDLOD, landmarks, interiors, night lighting;
-  minimap from vector tiles is now implemented.
+- Roadmap next: Stage A (bugs, Mac test pass, GPU measurement, perf gate,
+  determinism CI), then Stage B (finish M1, M2 `ed_gpu` + `ed_render`). Instancing,
+  CDLOD and the other Phase 2 items arrive with M2. See `docs/ROADMAP.md`.
+
+## Native Metal renderer (default on macOS)
+`ed_game::native` mirrors Bevy `Mesh3d` entities into `ed_metal::world::WorldRenderer` (own CAMetalLayer under a transparent Bevy window). `EW_NATIVE=0` returns to the Bevy renderer. Headless check: `./target/release/earthdrop --headless --fly --lat .. --lon .. --alt .. --heading .. --pitch .. --hour 15 --width 1600 --height 900 --frames N --no-wait --screenshot out.png`, filter log with `grep "native: [0-9]* fps"`. Switches: `EW_NATIVE_NOSSR/NOBOUNCE/NOAO/NOBLOOM/NOGROUND`, `EW_HOLD_SPACE=1`, `EW_NATIVE_DBG`. Open work and the MetalFX upscaling plan: top entry of `docs/CHANGES.md`.

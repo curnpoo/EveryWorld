@@ -2,9 +2,18 @@
 
 Drop anywhere on real Earth; walk, drive, fly, rocket to the Moon. Real data (OSM vector tiles, elevation, weather) decides *what* is there; procedural rules decide *how it looks*. Rust 2024 + Bevy 0.20 + Avian 0.8, Metal on macOS.
 Docs (start with the first two):
-- `docs/ROADMAP.md`: what's done and what's next, features (Phases 0-5) and the engine/perf track (M0-M10).
+- `docs/ROADMAP.md`: what's done and what's next, as Stages A-H (A stabilize and measure, B fast, C multiplayer, D native Metal + Nanite-like, E lighting, F play/vehicles, G space, H platforms). Old M0-M10 names are mapped at the bottom.
 - `docs/CHANGES.md`: recent changes, newest first, with what still needs checking on the Mac. Add an entry when you land work; fold verified items into the roadmap.
 - `docs/ARCHITECTURE.md`: how it works. `docs/plans/`: `procedural-flora.md` (species as data, per-tree genomes, niche selection: read before touching trees/ground cover), `engine.md` (target engine, milestones, meshlet findings), `assets-and-agents.md`, `buildings.md`, `world-sim.md`, `space-visuals.md`, `shadows.md` (layered shadows: cascades, horizon maps, cached far map). `docs/lookdev/round2/*`: art review notes.
+
+## Direction (read before planning any work)
+Goal: a fast, beautiful, shared real-Earth world. Roadmap = Stages A-H in `docs/ROADMAP.md`. **Current stage: A (stabilize and measure). Next stop: GPU measurement** (baseline table, per-pass GPU timers, hypothesis verdicts; ROADMAP Stage A item 3), then M2 in Stage B.
+1. **Performance and looks come before new gameplay.** Vehicles/missions/space are planned (Stages F, G) but wait. The game currently misses 30 fps on an M3 Pro and has visual glitches (`docs/BUGS.md`); fixing that is the priority.
+2. **Renderer end state:** native Metal + a Nanite-like geometry system we build ourselves (cluster LOD, GPU culling, visibility buffer, software raster) on `ed_gpu`/`ed_render`; Windows via D3D12 with DLSS/FSR3 and RTX ray tracing. Bevy meshlets are not the path (measured ~60% slower). Short-term fixes on the Bevy renderer are fine; don't build big new features that only work on Bevy's pipeline. Write new renderer code against `ed_gpu` only.
+3. **Use the GPU fully, and measure first.** Use `tools/perf_headless.sh`, `EW_BISECT`, `EW_GPU_WAIT`; add a dated `CHANGES.md` entry with before/after numbers. Every feature declares its cost per quality tier and has an off switch.
+4. **Multiplayer-safe from now on.** The world must be identical for every player: generation is a pure function of (world seed, pinned data version, UTC time). No `HashMap` iteration order, thread-order float reductions, unseeded RNG, wall-clock reads or platform-dependent hashing in generators or weather. Terrain/buildings/trees/weather are never sent over the network; only world deltas and entity state are. Keep simulation state separate from render state.
+5. **Materials and shaders** are data-driven and hot-reloadable, shaped for a visibility-buffer resolve (shade each pixel once).
+6. **Keep the docs current.** When work lands, add a `docs/CHANGES.md` entry (what changed, what needs a Mac check) and tick/update `docs/ROADMAP.md`. `docs/plans/engine.md` still uses the old M0-M10 names; the mapping is at the bottom of the roadmap.
 
 ## Read this first (saves tokens)
 - Do NOT read whole big files. Use `grep -n '^\(pub \)\?fn\|^struct\|^enum'` on a file, then read ranges. Biggest: `ed_world/src/trees/mod.rs` (1.8k), `voice.rs` (1.4k), `buildings.rs` (1.4k), `archkit.rs` (1.3k), `ground_scatter.rs` (1k).
@@ -79,9 +88,12 @@ Cache dir `.earthdrop-cache/` (tiles cached forever; gitignored). Dev profile: d
 ## Known issues / active work
 - Buildings: roof/foundation overhaul landed (see `docs/plans/buildings.md` for what and what's left). `buildings.rs`: `roof_plan` (Flat | Mansard | Pitched(rects)) is shared by `detail_one` and `lod_one`; `foundation()` skins walls above low terrain. Needs visual check in-game; thresholds (350/500 m2, 4 floors, 14 m span) are constants in `roof_plan`.
 - Open: does terrain render at a coarser LOD than the building's `TerrainGrid`? Foundations have a 0.5 m margin only.
-- M0/M1 (env map, cascades, shared terrain material, budgeted apply, `ed_runtime`, tree impostors, tiles as data) is on `main` but unmeasured on the Mac: test pass in `docs/CHANGES.md`. Clouds ½ res + shadow proxies done (headless numbers in `docs/CHANGES.md`). Open: pipeline pre-warm, explode hitches. Next: M2 (`docs/ROADMAP.md`).
+- M0/M1 (env map, cascades, shared terrain material, budgeted apply, `ed_runtime`, tree impostors, tiles as data) is on `main` but unmeasured on the Mac: test pass in `docs/CHANGES.md`. Clouds ½ res + shadow proxies done (headless numbers in `docs/CHANGES.md`). Open: pipeline pre-warm, explode hitches. Next: Stage A (bugs, Mac test pass, GPU measurement, determinism CI), then M2 in Stage B (`docs/ROADMAP.md`).
 
 ## Flora and collision (read before adding species or plant variety)
 - Species are rows in `trees/species.rs` `SPECIES` (same order as `TreeKind`, tested). Per-tree variety goes through `Genome` (`Genome::sample` -> `build_genome`), never new hard-coded variants. Roadmap of the remaining steps (niche selection, per-instance genomes, lazy banks, ground cover/rocks on the same system): `docs/plans/procedural-flora.md`.
 - Climate/biome/land cover/geology are static real data (`ed_data`), separate from the future procedural weather sim (`ed_climate`); weather modulates, never decides what grows.
 - Collision: trunk cylinders (one static compound per tree chunk, only the full-detail tier) and rock trimeshes (within 90 m, `near_chunks.rs`). Cards and impostors never collide.
+
+## Native Metal renderer (default on macOS)
+`ed_game::native` mirrors Bevy `Mesh3d` entities into `ed_metal::world::WorldRenderer` (own CAMetalLayer under a transparent Bevy window). `EW_NATIVE=0` returns to the Bevy renderer. Headless check: `./target/release/earthdrop --headless --fly --lat .. --lon .. --alt .. --heading .. --pitch .. --hour 15 --width 1600 --height 900 --frames N --no-wait --screenshot out.png`, filter log with `grep "native: [0-9]* fps"`. Switches: `EW_NATIVE_NOSSR/NOBOUNCE/NOAO/NOBLOOM/NOGROUND`, `EW_HOLD_SPACE=1`, `EW_NATIVE_DBG`. Open work and the MetalFX upscaling plan: top entry of `docs/CHANGES.md`.

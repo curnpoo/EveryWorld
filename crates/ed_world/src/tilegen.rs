@@ -242,7 +242,7 @@ pub fn build(job: &TileJob) -> TileBuild {
     };
     let skirt = (tile.width_m() as f32 * 0.02).clamp(5.0, 3_000.0);
     let terrain_mesh = terrain::build_mesh(&grid, &proj, &surface, skirt);
-    let sat_n = if tile.z <= 9 { 512 } else if tile.z <= 12 { 256 } else { 128 };
+    let sat_n = if tile.z <= 9 { 512 } else { 256 };
     let sat_tex = surface.sat_texture(sat_n, |u, v| grid.sample(u, v)).map(|d| (sat_n as u32, d));
     // Detail rides on the satellite layer slot, so only tiles with one get it.
     let detail_tex = match (&sat_tex, &amp) {
@@ -322,6 +322,19 @@ pub fn build(job: &TileJob) -> TileBuild {
                 chunks,
             }));
             out.roads = r.mesh;
+        } else if tile.z == 13 && *vid == tile {
+            // Far tiles: real OSM footprints as cheap massing only (no roads, props, detail, colliders).
+            let region = Region::locate(center.lat_deg, center.lon_deg, ((hmin + hmax) * 0.5) as f64, buildings::tile_is_dense(vt));
+            let ctx = BuildingContext { proj: &proj, grid: &grid, surface: &surface, biome, roads: &[] };
+            let specs = buildings::prepare(vt, &ctx, region);
+            out.stats.buildings = specs.len();
+            let mut chunks: HashMap<(u8, u8), Vec<buildings::BuildingSpec>> = HashMap::new();
+            for s in specs {
+                chunks.entry(s.chunk).or_default().push(s);
+            }
+            let mut lod: Vec<((u8, u8), BuildingMeshes)> = chunks.iter().map(|(c, v)| (*c, buildings::build_lod(v.iter(), up))).collect();
+            lod.sort_by_key(|(c, _)| *c);
+            out.building_lod = lod;
         }
         if tile.z >= 10 {
             let occ = foliage::Occupancy::from_vector(vt, 512);

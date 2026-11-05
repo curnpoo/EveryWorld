@@ -97,7 +97,7 @@ struct BodyPart(Spec);
 
 /// Deformable wingsuit membrane: 0 = left arm wing, 1 = right arm wing, 2 = leg wing (between the legs).
 #[derive(Component)]
-struct WingMesh(usize);
+pub(crate) struct WingMesh(usize);
 
 /// 7 outline points + 1 centroid, fan-triangulated; vertices are rewritten every frame in world space.
 fn wing_mesh_blank() -> Mesh {

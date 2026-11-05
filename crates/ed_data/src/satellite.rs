@@ -7,7 +7,7 @@ use crate::DiskCache;
 use ed_geo::tile::TileId;
 
 /// Native detail runs out around here; deeper tiles are just upsampled.
-pub const MAX_ZOOM: u8 = 12;
+pub const MAX_ZOOM: u8 = 14;
 const URL: &str = "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2020_3857/default/g";
 
 /// A decoded 8-bit sRGB tile.
