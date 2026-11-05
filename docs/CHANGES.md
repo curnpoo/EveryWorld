@@ -1,5 +1,10 @@
 # Changes
 
+## 2026-11-05: water/ground z-fight and inland foam
+
+- `water_fs`: fragments whose water depth is under `thr = 0.02 + 0.0005*dist` m are discarded (water coplanar with the beach z-fought and its noisy depth made foam speckle inland); `edge` and all foam fade in from `thr` via `shore`. Verified top-down at the Palm Jumeirah (25.118,55.135, alt 120, pitch -75).
+- Remaining: the waterline outline is still slightly angular in small ponds (cover mask resolution); see the coast follow-ups in the previous entry.
+
 ## 2026-11-05: smooth coastlines (terrain carve)
 
 - Cause of the stepped shoreline: `water::carve_terrain` lowered the ground by 2.5 m per coarse DEM vertex using a binary `cover_at == Water` test, so the waterline followed the cover-grid staircase.

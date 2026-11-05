@@ -881,6 +881,12 @@ fragment WOut water_fs(VOut in [[stage_in]], constant FrameU& F [[buffer(1)]], c
     bool has_bg = dbg > 1e-7;
     float thick = has_bg ? clamp((near / dbg - zw) / cosf, 0.0, 400.0) : 400.0;
     float hdep = thick * abs(V.y);
+    // Water within a few cm of the ground is coplanar with it: depth precision makes the two z-fight, and foam
+    // keyed on that noisy depth speckles inland. Drop those fragments (the beach shows through) and fade
+    // everything shore-related from a distance-scaled threshold instead of from zero.
+    float thr = 0.02 + dist * 0.0005;
+    if (has_bg && hdep < thr) discard_fragment();
+    float shore = smoothstep(thr, thr + 0.25, hdep);
     // Refraction: shift the lookup by the wave normal, scaled by column thickness, and only accept it when the shifted
     // texel is really behind the surface (otherwise a foreground object would smear into the water).
     float3 bg;
@@ -924,7 +930,7 @@ fragment WOut water_fs(VOut in [[stage_in]], constant FrameU& F [[buffer(1)]], c
     float sss = pow(saturate(dot(-V, L) * 0.5 + 0.5), 4.0) * pow(1.0 - ndv, 2.0) * lightk;
     float3 glow = float3(0.04, 0.22, 0.16) * sss * 0.6 * saturate(1.0 - exp(-thick));
     // Soft shoreline: the surface dissolves into the bed instead of cutting a hard line; lace foam on the wet edge.
-    float edge = smoothstep(0.0, 0.30, hdep);
+    float edge = smoothstep(thr, thr + 0.35, hdep);
     float foam = 0.0;
     // Breaker bands: shoreward-travelling bands keyed on the real depth below the surface; they steepen and break as
     // the water shoals (hdep is the carved terrain depth, standing in for the Ultra-Water shore map).
@@ -940,6 +946,7 @@ fragment WOut water_fs(VOut in [[stage_in]], constant FrameU& F [[buffer(1)]], c
         foam = max(foam, (1.0 - smoothstep(0.0, 1.1, hdep)) * smoothstep(0.30, 0.65, lace + (1.0 - smoothstep(0.0, 0.5, hdep)) * 0.45));
     }
     foam = max(foam, smoothstep(0.35, 0.05, jac) * (1.0 - smoothstep(60.0, 400.0, dist)) * 0.8);
+    foam *= shore;
     float3 col = under * (1.0 - fr * edge) + (refl * fr + spec) * edge + glow;
     col = mix(col, float3(0.9, 0.93, 0.95) * lightk * 0.9 + sunc * 0.05 * vis, saturate(foam) * 0.85);
     float3 fd = -V; fd.y = max(fd.y, 0.10);

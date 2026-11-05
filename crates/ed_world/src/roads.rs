@@ -113,6 +113,8 @@ pub struct StreetProp {
 #[derive(Debug, Default)]
 pub struct RoadOutput {
     pub mesh: MeshData,
+    /// Collision-only copy of decks, rails and piers (no markings or kerbs detail).
+    pub collider: MeshData,
     pub props: Vec<StreetProp>,
     /// Road polylines in local space (for the occupancy mask / AI traffic).
     pub centerlines: Vec<(RoadClass, Vec<Vec3>)>,
@@ -263,6 +265,8 @@ struct Item {
     oneway: bool,
     paved: bool,
     urban: bool,
+    /// Bridge deck that spans water (gets piers and clearance).
+    over_water: bool,
 }
 
 /// Road layout for one tile: bed heights decided once, used both to carve the
@@ -319,29 +323,93 @@ pub fn plan(vt: &mvt::Tile, proj: &TileProjector, grid: &TerrainGrid, surface: &
             if uv.len() < 2 {
                 continue;
             }
-            let kind = if bridge {
-                Bed::Bridge
-            } else if class.rank() >= 1 && paved {
-                Bed::Graded
-            } else {
-                Bed::Conform
-            };
-            let bed = match kind {
-                Bed::Graded => smooth(&ground, 10, 3),
-                Bed::Bridge => {
-                    let (a, b) = (ground[0], ground[ground.len() - 1]);
-                    let n = ground.len() - 1;
-                    (0..=n).map(|i| a + (b - a) * i as f32 / n as f32).collect()
-                }
-                Bed::Conform => smooth(&ground, 5, 2),
-            };
-            let pts = uv.iter().zip(&bed).map(|(&(u, v), &h)| proj.local(u, v, h as f64)).collect();
             let urban = surface.cover_at(line[0][0] as f64 / ext, line[0][1] as f64 / ext).is_urban();
-            plan.items.push(Item { class, kind, uv, bed, pts, oneway, paved, urban });
+            // Water under each sample: a road that crosses water without a mapped bridge gets
+            // one anyway, anchored on the dry samples either side.
+            let wf: Vec<f32> = uv.iter().map(|&(u, v)| surface.water_fraction(u, v)).collect();
+            let mut spans: Vec<(usize, usize, bool)> = Vec::new();
+            if bridge || class == RoadClass::Rail || !wf.iter().any(|&f| f >= 0.4) {
+                spans.push((0, uv.len() - 1, bridge));
+            } else {
+                let n = uv.len();
+                let mut i = 0;
+                let mut start = 0;
+                while i < n {
+                    if wf[i] >= 0.4 {
+                        let mut a = i;
+                        while a > 0 && wf[a] >= 0.2 {
+                            a -= 1;
+                        }
+                        a = a.saturating_sub(1);
+                        let mut b = i;
+                        while b + 1 < n && wf[b] >= 0.2 {
+                            b += 1;
+                        }
+                        b = (b + 1).min(n - 1);
+                        if a > start {
+                            spans.push((start, a, false));
+                        }
+                        // Deck must start and end on land; if the road leaves the tile over water, still bridge it.
+                        spans.push((a.max(start), b, true));
+                        start = b;
+                        i = b;
+                        if b == n - 1 {
+                            start = n;
+                        }
+                    }
+                    i += 1;
+                }
+                if start + 1 < n {
+                    spans.push((start, n - 1, false));
+                }
+            }
+            for (s0, s1, is_bridge) in spans {
+                if s1 <= s0 {
+                    continue;
+                }
+                let (uv, ground, wf) = (uv[s0..=s1].to_vec(), ground[s0..=s1].to_vec(), &wf[s0..=s1]);
+                let kind = if is_bridge {
+                    Bed::Bridge
+                } else if class.rank() >= 1 && paved {
+                    Bed::Graded
+                } else {
+                    Bed::Conform
+                };
+                let wet = wf.iter().any(|&f| f >= 0.3);
+                let bed = match kind {
+                    Bed::Graded => smooth(&ground, 10, 3),
+                    Bed::Bridge => bridge_bed(&ground, wet),
+                    Bed::Conform => smooth(&ground, 5, 2),
+                };
+                let pts = uv.iter().zip(&bed).map(|(&(u, v), &h)| proj.local(u, v, h as f64)).collect();
+                plan.items.push(Item { class, kind, uv, bed, pts, oneway, paved, urban, over_water: wet && kind == Bed::Bridge });
+            }
         }
     }
     plan.junctions = junctions.into_iter().collect();
     plan
+}
+
+/// Bridge deck heights: a straight line between the (firmest) end heights; over water it
+/// ramps up to clear the surface and arches slightly, so the deck never dips under waves.
+fn bridge_bed(ground: &[f32], wet: bool) -> Vec<f32> {
+    let n = ground.len() - 1;
+    let k = 2.min(n);
+    let a = if wet { ground[..=k].iter().cloned().fold(f32::MIN, f32::max) } else { ground[0] };
+    let b = if wet { ground[n - k..].iter().cloned().fold(f32::MIN, f32::max) } else { ground[n] };
+    let span = n as f32 * STEP_M;
+    (0..=n)
+        .map(|i| {
+            let t = i as f32 / n as f32;
+            let mut h = a + (b - a) * t;
+            if wet {
+                let edge = (t.min(1.0 - t) * span / 12.0).clamp(0.0, 1.0);
+                let edge = edge * edge * (3.0 - 2.0 * edge);
+                h += 1.8 * edge + (std::f32::consts::PI * t).sin() * (span * 0.02).min(2.0);
+            }
+            h
+        })
+        .collect()
 }
 
 /// Polyline in tile px -> (tile uv, ground height) every ~STEP_M meters.
@@ -470,14 +538,20 @@ pub fn generate(plan: &RoadPlan, proj: &TileProjector, grid: &TerrainGrid, surfa
                 let prof = conform_profile(class, it.paved, false, &kit);
                 let way = simplify_deck(pts, WAY_TOL_M, WAY_MAX_SPAN_M);
                 sweep(&mut out.mesh, &way, up, &prof, None, false, 1.2, 0.0, 0.06);
+                sweep(&mut out.collider, &way, up, &prof, None, false, 1.2, 0.0, 0.06);
             }
             Bed::Graded | Bed::Bridge => {
                 let deck = simplify_deck(pts, DECK_TOL_M, DECK_MAX_SPAN_M);
                 let prof = paved_profile(hw, it.urban && it.kind == Bed::Graded, &kit);
                 let skirt = if it.kind == Bed::Bridge { 1.2 } else { 0.6 };
                 sweep(&mut out.mesh, &deck, up, &prof, Some(&ground as &dyn Fn(Vec3) -> f32), true, skirt, 0.04, 0.05);
+                sweep(&mut out.collider, &deck, up, &prof, Some(&ground as &dyn Fn(Vec3) -> f32), true, skirt, 0.04, 0.05);
                 if it.paved && class.rank() >= 1 {
                     markings(&mut out.mesh, &deck, up, if it.kind == Bed::Bridge { None } else { Some(&ground as &dyn Fn(Vec3) -> f32) }, true, class, &kit, it.oneway);
+                }
+                if it.over_water {
+                    piers(&mut out.mesh, pts, &it.bed, up, hw, &ground);
+                    piers(&mut out.collider, pts, &it.bed, up, hw, &ground);
                 }
                 let rail_on_deck = it.kind == Bed::Bridge;
                 if rail_on_deck || (matches!(class, RoadClass::Motorway | RoadClass::Trunk) && !it.urban) {
@@ -485,6 +559,7 @@ pub fn generate(plan: &RoadPlan, proj: &TileProjector, grid: &TerrainGrid, surfa
                     for s in [1.0f32, -1.0] {
                         let g = offset_line(pts, up, s * off, |i, p| if rail_on_deck { 0.0 } else { ground(p) - it.bed[i] });
                         guardrail(&mut out.mesh, &g, up, s);
+                        guardrail(&mut out.collider, &g, up, s);
                     }
                 }
             }
@@ -492,6 +567,7 @@ pub fn generate(plan: &RoadPlan, proj: &TileProjector, grid: &TerrainGrid, surfa
                 let prof = conform_profile(class, it.paved, it.urban, &kit);
                 let way = simplify_deck(pts, WAY_TOL_M, WAY_MAX_SPAN_M);
                 sweep(&mut out.mesh, &way, up, &prof, Some(&ground as &dyn Fn(Vec3) -> f32), true, 0.5, 0.09, if it.paved { 0.07 } else { 0.2 });
+                sweep(&mut out.collider, &way, up, &prof, Some(&ground as &dyn Fn(Vec3) -> f32), true, 0.5, 0.09, if it.paved { 0.07 } else { 0.2 });
             }
         }
         street_props(&mut out.props, pts, up, class, &kit, it.urban, it.kind != Bed::Conform);
@@ -897,10 +973,38 @@ fn guardrail(m: &mut MeshData, g: &[Vec3], up: Vec3, s: f32) {
     }
 }
 
+/// Concrete piers under a water-spanning deck every ~16 m, down to the (carved) bed.
+fn piers(m: &mut MeshData, pts: &[Vec3], bed: &[f32], up: Vec3, hw: f32, ground: &dyn Fn(Vec3) -> f32) {
+    let concrete = rgb(0x9a9893);
+    let side = side_dirs(pts, up);
+    let mut dist = 0.0f32;
+    let mut next = 8.0f32;
+    for i in 0..pts.len() - 1 {
+        let seg = pts[i + 1] - pts[i];
+        let len = seg.length();
+        while next <= dist + len {
+            let t = ((next - dist) / len.max(1e-4)).clamp(0.0, 1.0);
+            let c = pts[i].lerp(pts[i + 1], t);
+            let sd = side[i].lerp(side[i + 1], t).normalize_or(side[i]);
+            let fw = seg.normalize_or_zero();
+            let deck_h = bed[i] + (bed[i + 1] - bed[i]) * t;
+            let depth = ground(c) - 3.0 - deck_h;
+            box_post(m, c, up, sd, fw, concrete, (hw * 0.8).max(1.0), 0.6, depth.min(-1.5), -0.35);
+            next += 16.0;
+        }
+        dist += len;
+    }
+}
+
 /// Square post 0.1 m on a side, from 0.25 m underground to 0.7 m.
 fn post_box(m: &mut MeshData, base: Vec3, up: Vec3, sd: Vec3, fw: Vec3, color: [f32; 4]) {
-    let (a, b) = (sd * 0.05, fw * 0.05);
-    let (lo, hi) = (-0.25, 0.7);
+    box_post(m, base, up, sd, fw, color, 0.05, 0.05, -0.25, 0.7);
+}
+
+/// Axis box with half-sizes `ha` (across) and `hb` (along), from `lo` to `hi` above `base`.
+#[allow(clippy::too_many_arguments)]
+fn box_post(m: &mut MeshData, base: Vec3, up: Vec3, sd: Vec3, fw: Vec3, color: [f32; 4], ha: f32, hb: f32, lo: f32, hi: f32) {
+    let (a, b) = (sd * ha, fw * hb);
     let c = |sa: f32, sb: f32, h: f32| base + a * sa + b * sb + up * h;
     let top = [c(-1.0, -1.0, hi), c(1.0, -1.0, hi), c(1.0, 1.0, hi), c(-1.0, 1.0, hi)];
     let bot = [c(-1.0, -1.0, lo), c(1.0, -1.0, lo), c(1.0, 1.0, lo), c(-1.0, 1.0, lo)];

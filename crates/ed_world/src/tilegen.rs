@@ -50,6 +50,8 @@ pub struct TileBuild {
     pub collider: Option<(Vec<Vec3>, Vec<[u32; 3]>)>,
     pub water: MeshData,
     pub roads: MeshData,
+    /// Collision shell for road decks, bridges, guardrails (trimesh).
+    pub road_collider: MeshData,
     /// Distant building versions, one per detail chunk (always shown unless
     /// the chunk's full-detail version is loaded).
     pub building_lod: Vec<((u8, u8), BuildingMeshes)>,
@@ -272,6 +274,7 @@ pub fn build(job: &TileJob) -> TileBuild {
         collider,
         water: MeshData::default(),
         roads: MeshData::default(),
+        road_collider: MeshData::default(),
         building_lod: Vec::new(),
         building_detail: None,
         trees: trees::TileTrees::default(),
@@ -330,6 +333,7 @@ pub fn build(job: &TileJob) -> TileBuild {
                 ctx: buildings::DetailCtx { proj, grid: grid.clone(), roads: r.centerlines.clone() },
                 chunks,
             }));
+            out.road_collider = r.collider;
             out.roads = r.mesh;
         } else if tile.z == 13 && *vid == tile {
             // Far tiles: real OSM footprints as cheap massing only (no roads, props, detail, colliders).
