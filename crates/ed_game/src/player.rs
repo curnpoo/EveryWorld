@@ -814,7 +814,9 @@ fn drive_player(
                 let app_point = t.translation;
                 forces.apply_force_at_point(foot_force, app_point);
             }
-        } else if !p.thrust_held {
+        }
+        // Rockets off (including the frame we touch down) means no flame, whatever branch ran above.
+        if !p.thrust_held {
             p.throttle = 0.0;
         }
 
