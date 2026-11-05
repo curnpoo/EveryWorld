@@ -4,6 +4,19 @@ Recent work, newest first, and what still needs checking. When an entry is verif
 
 ---
 
+## 2026-11-05: brighter midday
+- Camera exposure `ev100` 14.2 -> 13.2 (`camera.rs`; `EW_EV100=<n>` overrides for A/B). Measured mean ground luminance at Zermatt 13:00 July: 102 (14.2), 120 (13.6), 137 (13.0). Sun illuminance already full `RAW_SUNLIGHT`, so this was exposure, not light. Check: snow/roofs not clipping, dusk and night still look right (exposure is global, so sunset gets brighter too), cloud shading.
+
+---
+
+## 2026-11-05: main menu look, lo-fi music, on-button pad prompts
+- Main menu: blurred Matterhorn-at-sunset background (baked offline, `menu_assets/menu_bg.png`, shot with `--fly ... --hour 18.75 --date 2026-07-01 --no-hud`), Chewy title/buttons (`menu_assets/Chewy-Regular.ttf`, embedded). New flags: `--no-hud` (clean screenshots), `--menu-view home`.
+- Music: `ed_audio::lofi` (72 BPM procedural lo-fi: Rhodes-ish chords, swung drums, bells, vinyl) plays only in `GameState::Menu` (`menu_music.rs`, fades with the master volume); the world soundscape sink is paused while the menu is up (`soundscape.rs` `gate_soundscape`).
+- Controller: Home is now focusable (removed `pad_home`). The bottom hint bar is gone on button screens; prompts sit on the buttons (`menu.rs` `update_badges`): A on the focused one, B on Resume, LB/RB on the neighbouring tabs. The bar stays for the Map view, drop popup and in-game.
+- Verified headless with `EW_PAD_SCRIPT` shots (Home, Settings). Check on the Mac: how the lo-fi mix sounds at default volume, whether the background wants to be brighter.
+
+---
+
 ## 2026-11-05: controller menus, button prompts, analog triggers
 - Controller menus: D-pad or left stick moves focus to the nearest button in that direction (`menu.rs` `pad_focus`), A selects, B goes back (resume when paused, main menu from a tab), LB/RB switch tabs. Focus auto-starts on the top button; the Map tab has none (crosshair is its cursor).
 - Button prompts: a bottom strip of Xbox-style glyphs (A green, B red, pills for LB/RB/RT/LT/D-pad/Start) that changes per screen, in controller mode only (`gamepad.rs` `update_hints`).

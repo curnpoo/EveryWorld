@@ -17,6 +17,7 @@ use crate::player::{ControlSettings, Player};
 use crate::settings::AudioSettings;
 use crate::spawn::{Arrived, Spawner};
 use avian3d::prelude::{Physics, PhysicsTime};
+use bevy::asset::embedded_asset;
 use bevy::ecs::hierarchy::ChildSpawnerCommands;
 use bevy::light::DirectionalLight;
 use bevy::pbr::ScreenSpaceAmbientOcclusion;
@@ -33,6 +34,8 @@ pub struct MenuPlugin;
 
 impl Plugin for MenuPlugin {
     fn build(&self, app: &mut App) {
+        embedded_asset!(app, "menu_assets/Chewy-Regular.ttf");
+        embedded_asset!(app, "menu_assets/menu_bg.png");
         app.init_state::<GameState>()
             .init_resource::<MenuView>()
             .init_resource::<MenuFocus>()
@@ -47,9 +50,9 @@ impl Plugin for MenuPlugin {
                 Update,
                 (
                     open_pause,
-                    pad_home,
                     pad_tabs,
                     pad_focus,
+                    update_badges,
                     menu_buttons,
                     refresh_menu,
                     time_slider,
@@ -260,7 +263,112 @@ pub fn button<A: Component>(p: &mut ChildSpawnerCommands, label: &str, action: A
     ))
     .with_children(|b| {
         b.spawn((Text::new(label), TextFont { font_size: FontSize::Px(17.0), ..default() }, TextColor(INK)));
+        badge(b);
     });
+}
+
+/// The controller prompt that sits on a button's corner: "A" on the focused one,
+/// "B" on Resume, "LB"/"RB" on the neighbouring tabs. `update_badges` fills it in.
+#[derive(Component)]
+struct PadBadge;
+
+fn badge(b: &mut ChildSpawnerCommands) {
+    b.spawn((
+        PadBadge,
+        Text::new(""),
+        TextFont { font_size: FontSize::Px(15.0), ..default() },
+        TextColor(Color::WHITE),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(-10.0),
+            right: Val::Px(-8.0),
+            min_width: Val::Px(26.0),
+            padding: UiRect::axes(Val::Px(7.0), Val::Px(2.0)),
+            justify_content: JustifyContent::Center,
+            border_radius: BorderRadius::all(Val::Px(13.0)),
+            ..default()
+        },
+        BackgroundColor(Color::NONE),
+        Visibility::Hidden,
+        ZIndex(5),
+        Pickable::IGNORE,
+    ));
+}
+
+/// Big, rounded main-menu button in the title font.
+#[allow(deprecated)]
+fn home_button(p: &mut ChildSpawnerCommands, font: &Handle<Font>, label: &str, action: MenuAction, accent: bool) {
+    p.spawn((
+        Interaction::None,
+        action,
+        Node {
+            padding: UiRect::axes(Val::Px(24.0), Val::Px(12.0)),
+            justify_content: JustifyContent::Center,
+            border_radius: BorderRadius::all(Val::Px(34.0)),
+            ..default()
+        },
+        BackgroundColor(if accent { ORANGE } else { BTN }),
+    ))
+    .with_children(|b| {
+        b.spawn((Text::new(label), TextFont { font: FontSource::Handle(font.clone()), font_size: FontSize::Px(34.0), ..default() }, TextColor(INK)));
+        badge(b);
+    });
+}
+
+/// A/B/LB/RB prompts on the buttons, only while a controller is in use.
+#[allow(clippy::type_complexity)]
+fn update_badges(
+    mode: Res<InputMode>,
+    state: Res<State<GameState>>,
+    view: Res<MenuView>,
+    focus: Res<MenuFocus>,
+    actions: Query<&MenuAction>,
+    mut badges: Query<(&ChildOf, &mut Visibility, &mut Text, &mut BackgroundColor), With<PadBadge>>,
+) {
+    let pad = *mode == InputMode::Controller && menu_showing(state.get(), *view);
+    let cur = TAB_ORDER.iter().position(|t| *t == *view);
+    let n = TAB_ORDER.len();
+    for (parent, mut vis, mut text, mut bg) in &mut badges {
+        let owner = parent.parent();
+        let label: Option<&str> = if !pad {
+            None
+        } else if focus.0 == Some(owner) {
+            Some("A")
+        } else {
+            match actions.get(owner) {
+                Ok(MenuAction::Resume) if *state.get() == GameState::Paused => Some("B"),
+                Ok(MenuAction::Tab(t)) => cur.and_then(|c| {
+                    if *t == TAB_ORDER[(c + n - 1) % n] {
+                        Some("LB")
+                    } else if *t == TAB_ORDER[(c + 1) % n] {
+                        Some("RB")
+                    } else {
+                        None
+                    }
+                }),
+                _ => None,
+            }
+        };
+        match label {
+            None => {
+                vis.set_if_neq(Visibility::Hidden);
+            }
+            Some(l) => {
+                let col = match l {
+                    "A" => Color::srgb(0.30, 0.68, 0.31),
+                    "B" => Color::srgb(0.85, 0.27, 0.25),
+                    _ => Color::srgb(0.35, 0.37, 0.42),
+                };
+                if text.0 != l {
+                    text.0 = l.to_string();
+                }
+                if bg.0 != col {
+                    bg.0 = col;
+                }
+                vis.set_if_neq(Visibility::Inherited);
+            }
+        }
+    }
 }
 
 fn text(p: &mut ChildSpawnerCommands, s: &str, size: f32, color: Color) {
@@ -277,8 +385,11 @@ fn map_canvas(p: &mut ChildSpawnerCommands) {
     .with_children(spawn_crosshair);
 }
 
-fn build_menus(mut commands: Commands) {
-    // ---- Home ----
+fn build_menus(mut commands: Commands, assets: Res<AssetServer>) {
+    let font: Handle<Font> = assets.load("embedded://earthdrop/menu_assets/Chewy-Regular.ttf");
+    let bg: Handle<Image> = assets.load("embedded://earthdrop/menu_assets/menu_bg.png");
+    let fill = Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() };
+    // ---- Home: blurred Matterhorn sunset, big bubbly title ----
     commands
         .spawn((
             Screen::Home,
@@ -286,22 +397,33 @@ fn build_menus(mut commands: Commands) {
                 position_type: PositionType::Absolute,
                 width: Val::Percent(100.0),
                 height: Val::Percent(100.0),
-                padding: UiRect::all(Val::Px(56.0)),
                 flex_direction: FlexDirection::Column,
                 justify_content: JustifyContent::Center,
-                row_gap: Val::Px(16.0),
+                align_items: AlignItems::Center,
+                row_gap: Val::Px(10.0),
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.03, 0.04, 0.06, 0.55)),
+            BackgroundColor(Color::srgb(0.05, 0.05, 0.09)),
             ZIndex(10),
         ))
         .with_children(|p| {
-            text(p, "EveryWorld", 64.0, INK);
-            text(p, "The whole real Earth. Drop in anywhere.", 18.0, DIM);
-            p.spawn(Node { height: Val::Px(18.0), ..default() });
-            p.spawn(Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(12.0), width: Val::Px(380.0), ..default() }).with_children(|c| {
-                button(c, "Play", MenuAction::Play, true);
-                button(c, "Quit", MenuAction::Quit, false);
+            p.spawn((ImageNode::new(bg), fill.clone()));
+            p.spawn((fill, BackgroundColor(Color::srgba(0.05, 0.03, 0.10, 0.30))));
+            p.spawn((
+                Text::new("EveryWorld"),
+                TextFont { font: FontSource::Handle(font.clone()), font_size: FontSize::Px(150.0), ..default() },
+                TextColor(Color::srgb(1.0, 0.97, 0.90)),
+                TextShadow { offset: Vec2::new(0.0, 9.0), color: Color::srgba(0.80, 0.25, 0.05, 0.9) },
+            ));
+            p.spawn((
+                Text::new("The whole real Earth. Drop in anywhere."),
+                TextFont { font: FontSource::Handle(font.clone()), font_size: FontSize::Px(28.0), ..default() },
+                TextColor(Color::srgb(1.0, 0.93, 0.82)),
+            ));
+            p.spawn(Node { height: Val::Px(30.0), ..default() });
+            p.spawn(Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(16.0), width: Val::Px(340.0), ..default() }).with_children(|c| {
+                home_button(c, &font, "Play", MenuAction::Play, true);
+                home_button(c, &font, "Quit", MenuAction::Quit, false);
             });
         });
 
@@ -488,7 +610,7 @@ fn slider_row(p: &mut ChildSpawnerCommands, label: &str, k: Knob) {
 }
 
 /// Launching with --place / --lat / --fly skips the menu (handy for testing).
-/// `--menu-view map|pause-map|settings|audio|controls|character` opens a screen
+/// `--menu-view home|map|pause-map|settings|audio|controls|character` opens a screen
 /// directly (for screenshots).
 fn skip_menu_from_cli(cfg: Res<Config>, mut next: ResMut<NextState<GameState>>, mut view: ResMut<MenuView>, mut map: ResMut<MapState>) {
     let args: Vec<String> = std::env::args().collect();
@@ -497,6 +619,7 @@ fn skip_menu_from_cli(cfg: Res<Config>, mut next: ResMut<NextState<GameState>>, 
     map.focus(cfg.start, zoom);
     match menu_view.as_deref() {
         Some("map") => *view = MenuView::Map,
+        Some("home") => {} // stay on the main menu (screenshots)
         Some(v @ ("pause-map" | "settings" | "audio" | "controls" | "character")) => {
             *view = match v {
                 "settings" => MenuView::Settings,
@@ -542,13 +665,6 @@ fn open_pause(
     }
 }
 
-/// On the main menu, A presses Play (the same as clicking it).
-fn pad_home(pad: Res<Pad>, state: Res<State<GameState>>, mut view: ResMut<MenuView>) {
-    if pad.a_just && *state.get() == GameState::Menu && *view == MenuView::Home {
-        *view = MenuView::Map;
-    }
-}
-
 /// The button the D-pad is on. A presses it. Empty with a mouse or keyboard.
 #[derive(Resource, Default)]
 pub struct MenuFocus(pub Option<Entity>);
@@ -557,10 +673,10 @@ pub struct MenuFocus(pub Option<Entity>);
 const FOCUS_BG: Color = Color::srgba(1.0, 1.0, 1.0, 0.3);
 
 /// Whether a menu screen with buttons is on screen (the same rule `pad_tabs` uses).
-fn menu_showing(state: &GameState, view: MenuView) -> bool {
+fn menu_showing(state: &GameState, _view: MenuView) -> bool {
     match state {
         GameState::Paused => true,
-        GameState::Menu => view != MenuView::Home,
+        GameState::Menu => true,
         GameState::Playing => false,
     }
 }

@@ -338,11 +338,11 @@ fn hints_for(state: GameState, view: MenuView, popup: bool) -> &'static [(&'stat
     match (state, view) {
         (_, _) if popup => &[("A", "Drop in"), ("B", "Cancel")],
         (GameState::Playing, _) => &[("L", "Move"), ("R", "Look"), ("RT", "Rocket"), ("LT", "Boost"), ("A", "Wingsuit"), ("B", "Parachute"), ("Start", "Pause")],
-        (GameState::Menu, MenuView::Home) => &[("A", "Select")],
+        (GameState::Menu, MenuView::Home) => &[],
         (GameState::Paused, MenuView::Map) => &[("L", "Pan"), ("R", "Zoom"), ("A", "Choose spot"), ("LB", "Tab"), ("RB", "Tab"), ("B", "Resume")],
         (GameState::Menu, MenuView::Map) => &[("L", "Pan"), ("R", "Zoom"), ("A", "Choose spot"), ("LB", "Tab"), ("RB", "Tab"), ("B", "Back")],
-        (GameState::Paused, _) => &[("D-pad", "Move"), ("A", "Select"), ("LB", "Tab"), ("RB", "Tab"), ("B", "Resume")],
-        (GameState::Menu, _) => &[("D-pad", "Move"), ("A", "Select"), ("LB", "Tab"), ("RB", "Tab"), ("B", "Back")],
+        // Button screens: the prompts sit on the buttons themselves (`menu::update_badges`).
+        (GameState::Paused | GameState::Menu, _) => &[],
     }
 }
 
@@ -367,6 +367,9 @@ fn update_hints(
         return;
     }
     let items = hints_for(key.1, key.2, key.3);
+    if items.is_empty() {
+        return;
+    }
     // In game the prompts stack in a top-right panel so the bottom HUD stays clear;
     // menus keep them along the bottom.
     let in_game = key.1 == GameState::Playing && !key.3;

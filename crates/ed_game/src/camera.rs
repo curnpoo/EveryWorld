@@ -60,7 +60,7 @@ fn spawn_camera(mut commands: Commands, cfg: Res<Config>, origin: Res<WorldOrigi
         Hdr,
         Projection::Perspective(PerspectiveProjection { fov: 60f32.to_radians(), near: 0.1, far: 1.0e13, ..default() }),
         Tonemapping::BlenderFilmic,
-        Exposure { ev100: 14.2 },
+        Exposure { ev100: std::env::var("EW_EV100").ok().and_then(|v| v.parse().ok()).unwrap_or(13.2) },
         Msaa::Off,
         Transform::from_translation(pos).with_rotation(Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0)),
         FlyCam { yaw, pitch, speed: 60.0 },

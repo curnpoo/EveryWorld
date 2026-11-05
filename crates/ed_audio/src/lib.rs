@@ -6,6 +6,7 @@
 //! same way `ed_engine_audio` does engines.
 
 pub mod dsp;
+pub mod lofi;
 pub mod params;
 pub mod parts;
 pub mod recipes;

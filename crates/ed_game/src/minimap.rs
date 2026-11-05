@@ -397,8 +397,8 @@ fn layout_tiles(
     }
 }
 
-fn minimap_visibility(state: Res<State<GameState>>, mut roots: Query<&mut Visibility, With<MinimapRoot>>) {
-    let want = if *state.get() == GameState::Playing { Visibility::Inherited } else { Visibility::Hidden };
+fn minimap_visibility(cfg: Res<crate::config::Config>, state: Res<State<GameState>>, mut roots: Query<&mut Visibility, With<MinimapRoot>>) {
+    let want = if *state.get() == GameState::Playing && !cfg.no_hud { Visibility::Inherited } else { Visibility::Hidden };
     for mut v in &mut roots {
         v.set_if_neq(want);
     }

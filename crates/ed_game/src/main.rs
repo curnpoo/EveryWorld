@@ -25,6 +25,7 @@ mod headless;
 mod mapview;
 mod near_chunks;
 mod menu;
+mod menu_music;
 mod meshconv;
 mod minimap;
 mod origin;
@@ -97,7 +98,7 @@ fn main() {
     } else {
         app.add_plugins((streaming::StreamingPlugin, capture::CapturePlugin, hud::HudPlugin, minimap::MinimapPlugin, probe_gi::ProbeGiPlugin, spawn::SpawnPlugin, mapview::MapViewPlugin, globe::GlobePlugin, settings::SettingsPlugin, menu::MenuPlugin, gamepad::GamepadPlugin));
         if !cfg.headless {
-            app.add_plugins(soundscape::SoundscapePlugin);
+            app.add_plugins((soundscape::SoundscapePlugin, menu_music::MenuMusicPlugin));
         }
         if !cfg.fly {
             app.add_plugins((player::PlayerPlugin, body::BodyPlugin, boot_plume::BootPlumePlugin, vehicles::VehiclesPlugin, engine_audio::EngineAudioPlugin, sonic_boom::SonicBoomPlugin));

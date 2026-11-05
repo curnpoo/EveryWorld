@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use avian3d::prelude::{AngularVelocity, LinearVelocity};
-use bevy::audio::{AddAudioSource, ChannelCount, Decodable, SampleRate, Source};
+use bevy::audio::{AddAudioSource, AudioSink, AudioSinkPlayback, ChannelCount, Decodable, SampleRate, Source};
 use bevy::prelude::*;
 use ed_audio::params::{self as ap, blast, fauna, rain_on, tyre, veg};
 use ed_audio::{Event as Ev, FaunaCtx, Params, Scape, ScapeHandle, Surface};
@@ -40,6 +40,7 @@ impl Plugin for SoundscapePlugin {
             .insert_resource(Soundscape { handle })
             .insert_resource(PendingScape(Mutex::new(Some(scape))))
             .add_systems(Startup, start_output)
+            .add_systems(Update, gate_soundscape)
             .add_systems(PostUpdate, drive_soundscape);
     }
 }
@@ -96,7 +97,20 @@ impl Decodable for ScapeAudio {
 fn start_output(mut commands: Commands, pending: Res<PendingScape>, mut assets: ResMut<Assets<ScapeAudio>>) {
     let Some(scape) = pending.0.lock().ok().and_then(|mut s| s.take()) else { return };
     let h = assets.add(ScapeAudio { scape: Mutex::new(Some(scape)) });
-    commands.spawn((AudioPlayer(h), PlaybackSettings::ONCE, Name::new("soundscape")));
+    commands.spawn((AudioPlayer(h), PlaybackSettings::ONCE.paused(), WorldSound, Name::new("soundscape")));
+}
+
+#[derive(Component)]
+struct WorldSound;
+
+/// Nothing from the world plays on the main menu (the menu music has the speakers).
+fn gate_soundscape(state: Res<State<crate::menu::GameState>>, mut sinks: Query<&mut AudioSink, With<WorldSound>>) {
+    let quiet = crate::menu_music::music_playing(state.get());
+    for mut s in &mut sinks {
+        if quiet != s.is_paused() {
+            if quiet { s.pause() } else { s.play() }
+        }
+    }
 }
 
 /// What changed since last frame (events are edges).

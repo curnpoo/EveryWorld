@@ -59,8 +59,8 @@ fn pill(bg: Color) -> (Node, BackgroundColor) {
 #[derive(Component)]
 struct HudRoot;
 
-fn hud_visibility(state: Res<State<crate::menu::GameState>>, mut roots: Query<&mut Visibility, With<HudRoot>>) {
-    let want = if *state.get() == crate::menu::GameState::Playing { Visibility::Inherited } else { Visibility::Hidden };
+fn hud_visibility(cfg: Res<crate::config::Config>, state: Res<State<crate::menu::GameState>>, mut roots: Query<&mut Visibility, With<HudRoot>>) {
+    let want = if *state.get() == crate::menu::GameState::Playing && !cfg.no_hud { Visibility::Inherited } else { Visibility::Hidden };
     for mut v in &mut roots {
         v.set_if_neq(want);
     }

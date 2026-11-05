@@ -34,6 +34,8 @@ pub struct Config {
     pub fly: bool,
     /// `--no-post`: drop bloom, TAA and SSAO.
     pub no_post: bool,
+    /// `--no-hud`: hide the compass, readout and minimap (clean screenshots).
+    pub no_hud: bool,
     /// `--scale <f>`: OS scale factor override (1.0 = half the pixels of a 2x Retina display).
     pub scale: Option<f64>,
     /// `--headless` (or `EW_HEADLESS=1`): no window, no Dock icon, no focus
@@ -121,6 +123,7 @@ impl Config {
             lookdev_only: get("--only"),
             fly: args.iter().any(|a| a == "--fly"),
             no_post: args.iter().any(|a| a == "--no-post"),
+            no_hud: args.iter().any(|a| a == "--no-hud"),
             scale: num("--scale"),
             headless: args.iter().any(|a| a == "--headless") || std::env::var_os("EW_HEADLESS").is_some_and(|v| v != "0"),
             cruise: num("--cruise").map(|v| v as f32),
