@@ -228,6 +228,10 @@ pub struct WorldRenderer {
     filmic: Tex,
     targets: Option<Targets>,
     post: Option<crate::post::PostChain>,
+    upscaler: Option<crate::upscale::Upscaler>,
+    /// Internal render scale (1 = native, <1 = MetalFX temporal upscale). `EW_NATIVE_SCALE` sets the default.
+    pub render_scale: f32,
+    prev_cam: Option<[f32; 3]>,
     meshes: HashMap<u64, GpuMesh>,
     textures: HashMap<u64, Tex>,
     timers: GpuTimers,
@@ -307,6 +311,7 @@ impl WorldRenderer {
         let blend_pso = mk("world_vs", Some("world_fs_blend"), true, &[HDR, NRM], true, true)?;
         let terrain_pso = mk("terrain_vs", Some("terrain_fs"), true, &[HDR, NRM], false, false)?;
         let post = crate::post::PostChain::new(&ctx);
+        let upscaler = crate::upscale::Upscaler::new(&ctx);
         let resolve_pso = mk("fs_vs", Some("resolve_fs"), false, &[MTLPixelFormat::BGRA8Unorm], false, false)?;
         let ds_shadow = depth_state(&ctx, MTLCompareFunction::Less, true)?;
         let ds_opaque = depth_state(&ctx, MTLCompareFunction::Greater, true)?; // reverse-Z
@@ -398,6 +403,9 @@ impl WorldRenderer {
             neutral,
             filmic,
             post,
+            upscaler,
+            render_scale: std::env::var("EW_NATIVE_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(0.67),
+            prev_cam: None,
             targets: None,
             meshes: HashMap::new(),
             textures: HashMap::new(),
@@ -735,15 +743,29 @@ impl WorldRenderer {
 
     fn encode(&mut self, p: &FrameParams, draws: &[DrawItem], dtex: &Tex) -> Retained<ProtocolObject<dyn MTLCommandBuffer>> {
         self.frames += 1;
-        let (hdr, nrm, depth) = self.targets(dtex.width(), dtex.height());
+        let (ow, oh) = (dtex.width(), dtex.height());
+        let up_on = self.render_scale < 0.99 && self.upscaler.is_some();
+        let (iw, ih) = if up_on { (((ow as f32 * self.render_scale) as usize).max(64) & !1, ((oh as f32 * self.render_scale) as usize).max(64) & !1) } else { (ow, oh) };
+        let (hdr, nrm, depth) = self.targets(iw, ih);
+        let vp_unjit = Mat4::from_cols_array_2d(&p.view_proj);
+        let jit = if up_on { crate::upscale::jitter(self.frames as u32) } else { (0.0, 0.0) };
+        let mut vp_arr = p.view_proj;
+        if up_on {
+            for col in vp_arr.iter_mut() {
+                col[0] += (2.0 * jit.0 / iw as f32) * col[3];
+                col[1] += (-2.0 * jit.1 / ih as f32) * col[3];
+            }
+        }
+        let cam_jump = self.prev_cam.is_some_and(|c| (Vec3::from(c) - Vec3::from(p.cam_pos)).length() > 300.0);
+        self.prev_cam = Some(p.cam_pos);
 
         let casc = fit_cascades(p);
         let mut fu = FrameU {
-            vp: p.view_proj,
+            vp: vp_arr,
             sun: p.sun,
             cam: [p.cam_pos[0], p.cam_pos[1], p.cam_pos[2], 0.0],
             sky: [p.sky[0], p.sky[1], p.sky[2], 1.0],
-            fog: [p.fog_density, 0.0, 0.0, 0.0],
+            fog: [p.fog_density, if up_on || std::env::var_os("EW_NATIVE_NOAA").is_some() { 1.0 } else { 0.0 }, 0.0, 0.0],
             csm: [[[0.0; 4]; 4]; NCASC],
             csm_info: casc.info,
             csm_split: [casc.splits[0], casc.splits[1], casc.splits[2], casc.splits[3]],
@@ -1034,6 +1056,16 @@ impl WorldRenderer {
             (t, pc.ao_on, pc.bloom_on, pc.bounce_on)
         });
 
+        // ---- MetalFX temporal upscale (internal -> output resolution) ----
+        let hdr_final: Tex = if up_on {
+            match self.upscaler.as_mut().and_then(|u| u.encode(&cb, &hdr, &depth, ow, oh, vp_unjit, jit, cam_jump)) {
+                Some(t) => t,
+                None => hdr.clone(),
+            }
+        } else {
+            hdr.clone()
+        };
+
         // ---- resolve to the drawable ----
         let pass = MTLRenderPassDescriptor::new();
         let ca = unsafe { pass.colorAttachments().objectAtIndexedSubscript(0) };
@@ -1045,7 +1077,7 @@ impl WorldRenderer {
         re.setRenderPipelineState(&self.resolve_pso);
         unsafe {
             re.setFragmentBytes_length_atIndex(fbytes, std::mem::size_of::<FrameU>(), 1);
-            re.setFragmentTexture_atIndex(Some(&hdr), 0);
+            re.setFragmentTexture_atIndex(Some(&hdr_final), 0);
             re.setFragmentTexture_atIndex(Some(&self.filmic), 1);
             let flags: [f32; 4] = match &post_tex {
                 Some(((ao, bl, bo), a, b, c)) => {

@@ -593,13 +593,13 @@ fragment float4 resolve_fs(FsOut in [[stage_in]], constant FrameU& F [[buffer(1)
     constexpr sampler s(filter::linear, address::clamp_to_edge);
     float2 uv = float2(in.ndc.x * 0.5 + 0.5, 0.5 - in.ndc.y * 0.5);
     float3 h = hdr.sample(s, uv).rgb;
-    {
+    if (F.fog.y < 0.5) {
         // FXAA-lite on compressed HDR luma: blend along the edge tangent only where contrast is high.
         float2 px = 1.0 / float2(hdr.get_width(), hdr.get_height());
-        float3 cN = min(hdr.sample(s, uv + float2(0, -px.y)).rgb, float3(8.0));
-        float3 cS = min(hdr.sample(s, uv + float2(0, px.y)).rgb, float3(8.0));
-        float3 cW = min(hdr.sample(s, uv + float2(-px.x, 0)).rgb, float3(8.0));
-        float3 cE = min(hdr.sample(s, uv + float2(px.x, 0)).rgb, float3(8.0));
+        float3 cN = min(hdr.sample(s, uv + float2(0, -px.y), level(0)).rgb, float3(8.0));
+        float3 cS = min(hdr.sample(s, uv + float2(0, px.y), level(0)).rgb, float3(8.0));
+        float3 cW = min(hdr.sample(s, uv + float2(-px.x, 0), level(0)).rgb, float3(8.0));
+        float3 cE = min(hdr.sample(s, uv + float2(px.x, 0), level(0)).rgb, float3(8.0));
         float3 cM = min(h, float3(8.0));
         const float3 lw = float3(0.299, 0.587, 0.114);
         float lM = dot(cM, lw), lN = dot(cN, lw), lS = dot(cS, lw), lW = dot(cW, lw), lE = dot(cE, lw);
@@ -609,10 +609,10 @@ fragment float4 resolve_fs(FsOut in [[stage_in]], constant FrameU& F [[buffer(1)
         if (rng > max(0.03, lmax * 0.1)) {
             float2 g = float2(lE - lW, lS - lN);                 // gradient (across the edge)
             float2 t = normalize(float2(-g.y, g.x) + 1e-5);      // tangent (along the edge)
-            float3 a = hdr.sample(s, uv + t * px * 0.5).rgb;
-            float3 b = hdr.sample(s, uv - t * px * 0.5).rgb;
-            float3 a2 = hdr.sample(s, uv + t * px * 1.5).rgb;
-            float3 b2 = hdr.sample(s, uv - t * px * 1.5).rgb;
+            float3 a = hdr.sample(s, uv + t * px * 0.5, level(0)).rgb;
+            float3 b = hdr.sample(s, uv - t * px * 0.5, level(0)).rgb;
+            float3 a2 = hdr.sample(s, uv + t * px * 1.5, level(0)).rgb;
+            float3 b2 = hdr.sample(s, uv - t * px * 1.5, level(0)).rgb;
             float3 blur = (min(a, float3(8.0)) + min(b, float3(8.0))) * 0.3 + (min(a2, float3(8.0)) + min(b2, float3(8.0))) * 0.1;
             h = mix(h, blur, saturate(rng * 6.0));
         }

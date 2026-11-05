@@ -4,6 +4,7 @@
 pub mod context;
 pub mod post;
 pub mod timers;
+pub mod upscale;
 pub mod world;
 
 pub use context::MetalContext;

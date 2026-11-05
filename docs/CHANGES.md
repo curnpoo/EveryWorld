@@ -1,5 +1,14 @@
 # Changes
 
+## 2026-11-05: MetalFX temporal upscaler (native renderer)
+- New `ed_metal::upscale::Upscaler` (`crates/ed_metal/src/upscale.rs`, `shaders/upscale.metal`). The world now renders at `EW_NATIVE_SCALE` (default 0.67) of the output size with a Halton(2,3) jittered projection, then `MTLFXTemporalScaler` brings it to full res before `resolve_fs`. `EW_NATIVE_SCALE>=0.99` disables it (native res + FXAA-lite).
+- Inputs: HDR colour, Depth32F (reversed-Z), RG16F motion computed in a compute pass from depth + previous view-projection (camera motion only; moving objects/boots may ghost slightly, per-object velocity is future work), auto-exposure, reset flag on camera jumps > 300 m.
+- `EW_NATIVE_NOAA=1` skips the FXAA-lite pass. With MetalFX on, FXAA is skipped automatically.
+- Headless NYC check: scale 0.67 is visually equal to native with clean edges. Resolve time looked inflated at scale 1.0 (machine busy); re-measure on an idle Mac.
+- Not yet tested: moving camera (jitter/motion sign), boots under MetalFX.
+- Second option planned: AMD FSR 4 via the community Metal port (macOS 26+, unofficial); FSR3 source is DX12/UE5 only.
+- Nanite-like options (Windows/Mac) research is still to be written up in `docs/plans/engine.md`.
+
 ## 2026-11-05: native Metal is now the default renderer; AA; research; what is left
 - `native::enabled()` is on by default on macOS. `EW_NATIVE=0` falls back to the Bevy renderer. Headless NYC check (Central Park, 1600x900): looks right, 27 fps under load (world 19 ms; machine was busy, re-measure idle).
 - `resolve_fs` now has an FXAA-lite pass on compressed HDR luma (blend along the edge tangent only where contrast is high). The resolve timer read 14 ms in that run: check on an idle Mac whether the AA or timer attribution is to blame.
