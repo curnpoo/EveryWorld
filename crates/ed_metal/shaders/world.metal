@@ -17,6 +17,8 @@ struct FrameU {
     float4 csm_far;     // x = view-depth far of the terrain-only cascade 4
     float4 cr; float4 cu; float4 cf;  // camera basis; cr/cu pre-scaled by tan(fov/2)
     float4 params;      // x exposure, y shadows on, z 1/shadow size
+    float4 pb0;         // probe volume: xyz world min corner, w bounce intensity (0 = no volume)
+    float4 pb1;         // xyz 1/size
 };
 struct DrawU { float4x4 model; float4 tint; float4 emissive; float4 mat; }; // mat: rough, metal, cutoff, unlit
 
@@ -111,7 +113,35 @@ float shadow_vis(float3 wpos, float3 N, float vd, constant FrameU& F, depth2d_ar
     return mix(1.0, vis, fade);
 }
 
-float3 shade_ex(VOut in, float4 base, bool front, constant FrameU& F, constant DrawU& D, depth2d_array<float> sm, thread float3& Nout, float rough_in, float ao_in) {
+
+constexpr sampler pbs(coord::normalized, filter::linear, address::clamp_to_edge);
+// Probe GI (port of irradiance_volume.wesl): returns (sky visibility, bounce rgb) weights via out params.
+float probe_gi(float3 wp, float3 N, constant FrameU& F, texture3d<float> pv, thread float& vis, thread float3& bounce) {
+    vis = 1.0; bounce = float3(0.0);
+    if (F.pb0.w <= 0.0) return 0.0;
+    float3 u = (wp - F.pb0.xyz) * F.pb1.xyz - 0.5;
+    float3 e = (0.5 - abs(u)) / float3(0.06, 0.02, 0.06);
+    float w = saturate(min(e.x, min(e.y, e.z)));
+    if (w <= 0.0) return 0.0;
+    float3 dims = float3(pv.get_width(), pv.get_height(), pv.get_depth());
+    float3 res = dims / float3(1.0, 2.0, 4.0);
+    float s = clamp((u.x + 0.5) * res.x, 0.5, res.x - 0.5);
+    float p = clamp((u.z + 0.5) * res.z, 0.5, res.z - 0.5);
+    float4 g = pv.sample(pbs, float3(s / dims.x, 0.5 / dims.y, (p + 3.0 * res.z) / dims.z), level(0));
+    float t = clamp((u.y - g.r) / max(g.g, 1e-6), 0.0, 1.0);
+    float layer = sqrt(t) * (res.y - 1.0) + 0.5;
+    float uu = s / dims.x, vv = layer / dims.y;
+    float3 neg = select(float3(0.0), float3(0.5), N < float3(0.0));
+    float4 fx = pv.sample(pbs, float3(uu, vv + neg.x, p / dims.z), level(0));
+    float4 fy = pv.sample(pbs, float3(uu, vv + neg.y, (p + res.z) / dims.z), level(0));
+    float4 fz = pv.sample(pbs, float3(uu, vv + neg.z, (p + 2.0 * res.z) / dims.z), level(0));
+    float3 NN = N * N;
+    float4 f = fx * NN.x + fy * NN.y + fz * NN.z;
+    vis = f.a; bounce = f.rgb * F.pb0.w;
+    return w;
+}
+
+float3 shade_ex(VOut in, float4 base, bool front, constant FrameU& F, constant DrawU& D, depth2d_array<float> sm, texture3d<float> pv, thread float3& Nout, float rough_in, float ao_in) {
     float3 N = normalize(in.nrm);
     if (!front) N = -N;
     Nout = N;
@@ -150,6 +180,7 @@ float3 shade_ex(VOut in, float4 base, bool front, constant FrameU& F, constant D
         float3 up = mix(float3(ul), upr, 0.45) * 1.0;
         float3 ground = float3(0.34, 0.31, 0.27) * day * (0.5 + 0.5 * L.y);
         float3 amb = mix(ground, up, N.y * 0.5 + 0.5);
+        { float pvis; float3 pbn; float pw = probe_gi(in.wpos, N, F, pv, pvis, pbn); amb = mix(amb, amb * pvis + up * pbn, pw); }
         float3 R = reflect(-V, N);
         float gloss = (1.0 - rough) * (1.0 - rough) * mix(0.35, 1.0, metal);
         float3 env = mix(amb, sky_rad(R, L, day), gloss);
@@ -168,8 +199,8 @@ float3 shade_ex(VOut in, float4 base, bool front, constant FrameU& F, constant D
 }
 
 
-float3 shade(VOut in, float4 base, bool front, constant FrameU& F, constant DrawU& D, depth2d_array<float> sm, thread float3& Nout) {
-    return shade_ex(in, base, front, F, D, sm, Nout, D.mat.x, 1.0);
+float3 shade(VOut in, float4 base, bool front, constant FrameU& F, constant DrawU& D, depth2d_array<float> sm, texture3d<float> pv, thread float3& Nout) {
+    return shade_ex(in, base, front, F, D, sm, pv, Nout, D.mat.x, 1.0);
 }
 
 // ---- Terrain surface: baked DEM detail, per-pixel rock/snow, strata, micro relief ----
@@ -237,7 +268,7 @@ struct GOut { float4 c [[color(0)]]; float4 n [[color(1)]]; };
 fragment GOut world_fs(VOut in [[stage_in]], bool front [[front_facing]],
                        constant FrameU& F [[buffer(1)]], constant DrawU& D [[buffer(2)]],
                        texture2d<float> tex [[texture(0)]], depth2d_array<float> sm [[texture(1)]],
-                       texture2d<float> tex2 [[texture(2)]]) {
+                       texture2d<float> tex2 [[texture(2)]], texture3d<float> pv [[texture(8)]]) {
     float4 base;
     VOut iv = in;
     if (D.emissive.w > 0.5) {
@@ -260,17 +291,17 @@ fragment GOut world_fs(VOut in [[stage_in]], bool front [[front_facing]],
     }
     if (D.mat.z > 0.0 && base.a < D.mat.z) discard_fragment();
     float3 N;
-    float3 col = shade(iv, base, front, F, D, sm, N);
+    float3 col = shade(iv, base, front, F, D, sm, pv, N);
     GOut o; o.c = float4(col, 1.0); o.n = float4(N * 0.5 + 0.5, D.mat.x);
     return o;
 }
 struct BOut { float4 c [[color(0)]]; float4 n [[color(1)]]; };
 fragment BOut world_fs_blend(VOut in [[stage_in]], bool front [[front_facing]],
                              constant FrameU& F [[buffer(1)]], constant DrawU& D [[buffer(2)]],
-                             texture2d<float> tex [[texture(0)]], depth2d_array<float> sm [[texture(1)]]) {
+                             texture2d<float> tex [[texture(0)]], depth2d_array<float> sm [[texture(1)]], texture3d<float> pv [[texture(8)]]) {
     float4 base = tex.sample(ts, in.uv) * in.col;
     float3 N;
-    float3 col = shade(in, base, front, F, D, sm, N);
+    float3 col = shade(in, base, front, F, D, sm, pv, N);
     BOut o; o.c = float4(col, base.a); o.n = float4(0.0);
     return o;
 }
@@ -383,7 +414,7 @@ bool is_living(int i) { return i == 0 || i == 1 || i == 2 || i == 5; }
 fragment GOut terrain_fs(TOut in [[stage_in]], bool front [[front_facing]],
                          constant FrameU& F [[buffer(1)]], constant DrawU& D [[buffer(2)]], constant GroundU& G [[buffer(3)]],
                          texture2d<float> tex [[texture(0)]], depth2d_array<float> sm [[texture(1)]], texture2d<float> tex2 [[texture(2)]],
-                         texture2d_array<float> gal [[texture(3)]], texture2d_array<float> gnr [[texture(4)]], texture2d<float> mtex [[texture(5)]]) {
+                         texture2d_array<float> gal [[texture(3)]], texture2d_array<float> gnr [[texture(4)]], texture2d<float> mtex [[texture(5)]], texture3d<float> pv [[texture(8)]]) {
     float nt = float(tex.get_width());
     float2 stc = in.uv * ((nt - 1.0) / nt) + 0.5 / nt;
     float4 sat_s = tex.sample(tsc, stc);
@@ -397,7 +428,7 @@ fragment GOut terrain_fs(TOut in [[stage_in]], bool front [[front_facing]],
         float4 base = sat_s * in.col;
         terrain_surf(n, base, wp, dist, det);
         iv.nrm = n;
-        col = shade(iv, base, front, F, D, sm, N);
+        col = shade(iv, base, front, F, D, sm, pv, N);
         GOut o; o.c = float4(col, 1.0); o.n = float4(N * 0.5 + 0.5, D.mat.x); return o;
     }
     {
@@ -572,7 +603,7 @@ fragment GOut terrain_fs(TOut in [[stage_in]], bool front [[front_facing]],
     rough = mix(rough, max(rough, 0.97), land_f * smoothstep(25.0, 500.0, dist));
     rough = mix(rough, max(rough, 0.8), land_f * (1.0 - wet));
     iv.nrm = nd;
-    col = shade_ex(iv, float4(albedo, 1.0), front, F, D, sm, N, clamp(rough, 0.04, 1.0), ao);
+    col = shade_ex(iv, float4(albedo, 1.0), front, F, D, sm, pv, N, clamp(rough, 0.04, 1.0), ao);
     GOut o; o.c = float4(col, 1.0); o.n = float4(N * 0.5 + 0.5, rough); return o;
 }
 
@@ -719,7 +750,7 @@ vertex IOut impostor_vs(uint vid [[vertex_id]], device const Vtx* verts [[buffer
 fragment GOut impostor_fs(IOut in [[stage_in]], bool front [[front_facing]],
                           constant FrameU& F [[buffer(1)]], constant DrawU& D [[buffer(2)]],
                           depth2d_array<float> sm [[texture(1)]],
-                          texture2d_array<float> albedo_t [[texture(6)]], texture2d_array<float> normal_t [[texture(7)]]) {
+                          texture2d_array<float> albedo_t [[texture(6)]], texture2d_array<float> normal_t [[texture(7)]], texture3d<float> pv [[texture(8)]]) {
     float2 c = float2(in.uv.x * 2.0 - 1.0, 1.0 - in.uv.y * 2.0);
     float3 p = in.br * c.x + in.bu * c.y;
     float2 g = imp_oct_encode(in.vl) * IMP_FRAMES - 0.5;
@@ -757,7 +788,7 @@ fragment GOut impostor_fs(IOut in [[stage_in]], bool front [[front_facing]],
     nrm = normalize(mix(nrm, in.up, smoothstep(500.0, 2500.0, dist) * 0.85));
     VOut iv; iv.pos = in.pos; iv.nrm = nrm; iv.uv = in.uv; iv.col = float4(1.0); iv.wpos = in.wpos;
     float3 N;
-    float3 col = shade_ex(iv, float4(alb, 1.0), true, F, D, sm, N, 0.95, 1.0);
+    float3 col = shade_ex(iv, float4(alb, 1.0), true, F, D, sm, pv, N, 0.95, 1.0);
     GOut out; out.c = float4(col, 1.0); out.n = float4(N * 0.5 + 0.5, 0.95);
     return out;
 }

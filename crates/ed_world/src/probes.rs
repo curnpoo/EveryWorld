@@ -94,11 +94,13 @@ pub struct ProbeParams {
     pub rays: usize,
     /// Max ray length (m).
     pub max_dist: f32,
+    /// Unit vector toward the sun (volume frame, y up); ZERO = ignore the sun (every hit counts as lit).
+    pub sun: Vec3,
 }
 
 impl Default for ProbeParams {
     fn default() -> Self {
-        Self { nx: 64, ny: 6, nz: 64, spacing: 4.0, h0: 0.4, span: 48.0, rays: 48, max_dist: 80.0 }
+        Self { nx: 64, ny: 6, nz: 64, spacing: 4.0, h0: 0.4, span: 48.0, rays: 48, max_dist: 80.0, sun: Vec3::ZERO }
     }
 }
 
@@ -157,7 +159,7 @@ pub fn sphere_dirs(n: usize) -> Vec<Vec3> {
 
 enum Hit {
     Sky,
-    Surface([f32; 3]),
+    Surface([f32; 3], Vec3),
 }
 
 fn trace(f: &SceneField, o: Vec3, d: Vec3, max_dist: f32, max_top: f32, mean: [f32; 3]) -> Hit {
@@ -169,15 +171,15 @@ fn trace(f: &SceneField, o: Vec3, d: Vec3, max_dist: f32, max_top: f32, mean: [f
             return Hit::Sky;
         }
         let Some(c) = f.cell_of(p.x, p.z) else {
-            return if d.y > 0.0 { Hit::Sky } else { Hit::Surface(mean) };
+            return if d.y > 0.0 { Hit::Sky } else { Hit::Surface(mean, p) };
         };
         if p.y < f.top[c] {
-            return Hit::Surface(f.albedo[c]);
+            return Hit::Surface(f.albedo[c], p);
         }
         // Coarser steps further out: far occluders matter less.
         t += base + t * 0.04;
     }
-    if d.y > 0.0 { Hit::Sky } else { Hit::Surface(mean) }
+    if d.y > 0.0 { Hit::Sky } else { Hit::Surface(mean, o + d * max_dist) }
 }
 
 /// Fraction of a cosine lobe around `n` that is above the horizon of flat ground.
@@ -199,9 +201,21 @@ fn bake_probe(f: &SceneField, p: &ProbeParams, pos: Vec3, dirs: &[Vec3], max_top
             wsum[fi] += w;
             match hit {
                 Hit::Sky => sky[fi] += w,
-                Hit::Surface(a) => {
+                Hit::Surface(a, hp) => {
+                    // Sun-aware bounce: a hit that the sun cannot reach only gets sky fill.
+                    let lit = if p.sun == Vec3::ZERO {
+                        1.0
+                    } else if p.sun.y <= 0.02 {
+                        0.0
+                    } else {
+                        match trace(f, hp + Vec3::Y * 0.4 + p.sun * 0.3, p.sun, 150.0, max_top, mean) {
+                            Hit::Sky => 1.0,
+                            Hit::Surface(..) => 0.0,
+                        }
+                    };
+                    let g = 0.25 + 0.75 * lit;
                     for c in 0..3 {
-                        bounce[fi][c] += w * a[c];
+                        bounce[fi][c] += w * a[c] * g;
                     }
                 }
             }

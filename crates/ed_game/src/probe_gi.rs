@@ -63,12 +63,12 @@ struct Gather {
 }
 
 #[derive(Resource, Default)]
-struct ProbeGi {
+pub(crate) struct ProbeGi {
     gather: Option<Gather>,
     task: Option<Task<(Vec3, u64, ProbeVolume)>>,
     /// Centre + origin generation of the live volume.
-    live: Option<(Vec3, u64)>,
-    volume: Option<Arc<ProbeVolume>>,
+    pub(crate) live: Option<(Vec3, u64)>,
+    pub(crate) volume: Option<Arc<ProbeVolume>>,
     entity: Option<Entity>,
     image: Option<Handle<Image>>,
     since_bake: f32,
@@ -76,11 +76,13 @@ struct ProbeGi {
     debug: u8,
     debug_dirty: bool,
     debug_entity: Option<Entity>,
-    bounce_k: f32,
+    pub(crate) bounce_k: f32,
+    /// Sun direction the live/pending volume was baked for.
+    baked_sun: Vec3,
 }
 
-fn params() -> ProbeParams {
-    ProbeParams::default()
+fn params(sun: Vec3) -> ProbeParams {
+    ProbeParams { sun, ..ProbeParams::default() }
 }
 
 fn snap(p: Vec3) -> Vec3 {
@@ -89,7 +91,8 @@ fn snap(p: Vec3) -> Vec3 {
 }
 
 fn camera_pos(cams: &Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<crate::globe::GlobeCamera>)>) -> Option<Vec3> {
-    cams.iter().find(|(_, c)| c.is_active).map(|(t, _)| t.translation())
+    // The native renderer deactivates the Bevy 3D camera, so fall back to any 3D camera.
+    cams.iter().find(|(_, c)| c.is_active).or_else(|| cams.iter().next()).map(|(t, _)| t.translation())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -99,6 +102,7 @@ fn drive_probes(
     origin: Res<WorldOrigin>,
     cams: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<crate::globe::GlobeCamera>)>,
     tiles: Query<(&GlobalTransform, &GroundCover)>,
+    sunq: Query<&GlobalTransform, With<Sun>>,
     spatial: SpatialQuery,
     mut images: ResMut<Assets<Image>>,
     mut commands: Commands,
@@ -106,6 +110,7 @@ fn drive_probes(
     st.since_bake += time.delta_secs();
     let Some(cam) = camera_pos(&cams) else { return };
     let generation = origin.generation;
+    let sun = sunq.iter().next().map(|t| t.back().as_vec3()).unwrap_or(Vec3::ZERO);
 
     // Origin rebase: world coordinates jumped; old data is in the wrong place.
     if st.live.is_some_and(|(_, g)| g != generation) {
@@ -136,9 +141,10 @@ fn drive_probes(
         gather_cells(gather, &tiles, &spatial);
         if gather.next >= gather.field.nx * gather.field.nz {
             let gather = st.gather.take().unwrap();
+            let baked_for = st.baked_sun;
             let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).saturating_sub(2).max(1);
             st.task = Some(AsyncComputeTaskPool::get().spawn(async move {
-                let vol = probes::bake(&gather.field, &params(), threads);
+                let vol = probes::bake(&gather.field, &params(baked_for), threads);
                 (gather.center, gather.generation, vol)
             }));
         }
@@ -154,13 +160,15 @@ fn drive_probes(
         None => true,
         Some((c, _)) => {
             let d = Vec2::new(cam.x - c.x, cam.z - c.z).length();
-            d > RECENTER || st.since_bake > REFRESH_S
+            // Re-bake as the sun moves (~4 degrees) so bounce light follows the shadows.
+            d > RECENTER || st.since_bake > REFRESH_S || st.baked_sun.dot(sun) < 0.9976
         }
     };
     if !need {
         return;
     }
-    let p = params();
+    st.baked_sun = sun;
+    let p = params(sun);
     let half = Vec2::new(p.nx as f32, p.nz as f32) * p.spacing * 0.5 + MARGIN;
     let nx = (2.0 * half.x / CELL).ceil() as usize;
     let nz = (2.0 * half.y / CELL).ceil() as usize;
@@ -378,7 +386,7 @@ fn debug_spheres(
 }
 
 /// f32 -> IEEE half (round-to-nearest, subnormals flushed; values here are small).
-fn f32_to_f16(v: f32) -> u16 {
+pub(crate) fn f32_to_f16(v: f32) -> u16 {
     let b = v.to_bits();
     let sign = ((b >> 16) & 0x8000) as u16;
     let exp = ((b >> 23) & 0xff) as i32 - 127 + 15;

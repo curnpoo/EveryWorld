@@ -34,7 +34,7 @@ impl Plugin for NativePlugin {
             return;
         }
         app.insert_non_send(imp::NativeState::default())
-            .add_systems(Update, (imp::manage_cameras, imp::send_atlas))
+            .add_systems(Update, (imp::manage_cameras, imp::send_atlas, imp::send_probes))
             .add_systems(Last, imp::native_frame);
     }
 }
@@ -66,6 +66,25 @@ mod imp {
         }
         r.upload_impostor_atlas(sz.width as usize, sz.depth_or_array_layers as usize, a.texture_descriptor.mip_level_count as usize, ad, nd);
         info!("native: impostor atlas uploaded ({} layers)", sz.depth_or_array_layers);
+    }
+
+    /// Mirrors the Bevy-side probe GI volume into the native renderer (re-uploaded when it re-bakes).
+    pub fn send_probes(mut st: NonSendMut<NativeState>, gi: Option<Res<crate::probe_gi::ProbeGi>>, mut last: Local<Option<(Vec3, u64)>>) {
+        let (Some(r), Some(gi)) = (st.renderer.as_mut(), gi) else { return };
+        if std::env::var("EW_PROBE_GI").map(|v| v == "0").unwrap_or(false) {
+            r.set_probe_intensity(0.0);
+            return;
+        }
+        r.set_probe_intensity(gi.bounce_k.max(1.0));
+        let (Some(live), Some(vol)) = (gi.live, gi.volume.as_ref()) else { return };
+        if *last == Some(live) {
+            return;
+        }
+        *last = Some(live);
+        let texels: Vec<u16> = vol.texels.iter().flat_map(|t| t.iter().map(|c| crate::probe_gi::f32_to_f16(*c))).collect();
+        let c = live.0;
+        info!("native: probe GI volume uploaded {:?} k={:.2}", vol.dims(), gi.bounce_k);
+        r.upload_probe_volume(vol.dims(), &texels, (c + vol.box_min).to_array(), (c + vol.box_max).to_array());
     }
 
     #[derive(Default)]

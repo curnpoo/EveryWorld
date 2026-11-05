@@ -44,6 +44,8 @@ struct FrameU {
     cu: [f32; 4],
     cf: [f32; 4],
     params: [f32; 4],
+    pb0: [f32; 4],
+    pb1: [f32; 4],
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -227,6 +229,10 @@ pub struct WorldRenderer {
     terrain_pso: Pso,
     ground: Option<Ground>,
     imp: Option<ImpAtlas>,
+    probe: Option<Tex>,
+    probe_dummy: Tex,
+    probe_box: [f32; 6],
+    probe_k: f32,
     impostor_pso: Pso,
     resolve_pso: Pso,
     ds_shadow: Retained<ProtocolObject<dyn MTLDepthStencilState>>,
@@ -276,6 +282,7 @@ impl WorldRenderer {
 
     fn new_inner(ns_view: Option<*mut c_void>) -> Option<Self> {
         let ctx = MetalContext::new().ok()?;
+        let probe_dummy = mk_probe_tex(&ctx.device, (1, 1, 1), &[0u16; 4])?;
         let lib = match ctx.library(include_str!("../shaders/world.metal")) {
             Ok(l) => l,
             Err(e) => {
@@ -408,6 +415,10 @@ impl WorldRenderer {
             terrain_pso,
             ground: None,
             imp: None,
+            probe: None,
+            probe_dummy,
+            probe_box: [0.0; 6],
+            probe_k: 0.0,
             impostor_pso,
             resolve_pso,
             ds_shadow,
@@ -610,6 +621,18 @@ impl WorldRenderer {
             c.r += pad;
         }
         m.extra = unsafe { self.ctx.device.newBufferWithBytes_length_options(NonNull::new(d.as_ptr() as *mut c_void).unwrap(), d.len() * 4, MTLResourceOptions::StorageModeShared) };
+    }
+
+    /// Probe GI volume (RGBA16F 3D texture, `texels` are f16 bit patterns, x fastest). `box_min`/`box_max`
+    /// are the world-space corners. `k` is the bounce intensity (0 hides the volume).
+    pub fn upload_probe_volume(&mut self, dims: (usize, usize, usize), texels: &[u16], box_min: [f32; 3], box_max: [f32; 3]) {
+        let Some(t) = mk_probe_tex(&self.ctx.device, dims, texels) else { return };
+        self.probe = Some(t);
+        self.probe_box = [box_min[0], box_min[1], box_min[2], box_max[0], box_max[1], box_max[2]];
+    }
+
+    pub fn set_probe_intensity(&mut self, k: f32) {
+        self.probe_k = k;
     }
 
     pub fn has_atlas(&self) -> bool {
@@ -865,6 +888,8 @@ impl WorldRenderer {
             cr: [0.0; 4],
             cu: [0.0; 4],
             cf: [p.cam_fwd[0], p.cam_fwd[1], p.cam_fwd[2], 0.0],
+            pb0: if self.probe.is_some() { [self.probe_box[0], self.probe_box[1], self.probe_box[2], self.probe_k] } else { [0.0; 4] },
+            pb1: { let b = self.probe_box; [1.0 / (b[3] - b[0]).max(1e-3), 1.0 / (b[4] - b[1]).max(1e-3), 1.0 / (b[5] - b[2]).max(1e-3), 0.0] },
             params: [p.exposure, if p.shadows { 1.0 } else { 0.0 }, 1.0 / SHADOW_RES as f32, std::env::var("EW_NATIVE_DBG").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0)],
         };
         for i in 0..NCASC {
@@ -1020,6 +1045,7 @@ impl WorldRenderer {
             re.setVertexBytes_length_atIndex(fbytes, std::mem::size_of::<FrameU>(), 1);
             re.setFragmentBytes_length_atIndex(fbytes, std::mem::size_of::<FrameU>(), 1);
             re.setFragmentTexture_atIndex(Some(&self.shadow_map), 1);
+            re.setFragmentTexture_atIndex(Some(self.probe.as_ref().unwrap_or(&self.probe_dummy)), 8);
         }
         // sky
         re.setRenderPipelineState(&self.sky_pso);
@@ -1238,4 +1264,28 @@ fn simplify(idx: &[u32], pos: &[[f32; 3]], cell: f32) -> Vec<u32> {
 
 fn l_dist(mm: &Mat4, cl: &Cluster, cam: [f32; 3]) -> f32 {
     (mm.transform_point3(Vec3::from(cl.c)) - Vec3::from(cam)).length()
+}
+
+fn mk_probe_tex(device: &ProtocolObject<dyn MTLDevice>, dims: (usize, usize, usize), texels: &[u16]) -> Option<Tex> {
+    let d = unsafe { MTLTextureDescriptor::new() };
+    d.setTextureType(MTLTextureType::Type3D);
+    d.setPixelFormat(MTLPixelFormat::RGBA16Float);
+    unsafe {
+        d.setWidth(dims.0);
+        d.setHeight(dims.1);
+        d.setDepth(dims.2);
+    }
+    d.setUsage(MTLTextureUsage::ShaderRead);
+    let t = device.newTextureWithDescriptor(&d)?;
+    unsafe {
+        t.replaceRegion_mipmapLevel_slice_withBytes_bytesPerRow_bytesPerImage(
+            MTLRegion { origin: MTLOrigin { x: 0, y: 0, z: 0 }, size: MTLSize { width: dims.0, height: dims.1, depth: dims.2 } },
+            0,
+            0,
+            NonNull::new(texels.as_ptr() as *mut c_void)?,
+            dims.0 * 8,
+            dims.0 * dims.1 * 8,
+        );
+    }
+    Some(t)
 }

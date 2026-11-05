@@ -1,5 +1,11 @@
 # Changes
 
+## 2026-11-05: probe GI in the native renderer, sun-aware; AA mode selector
+- Menu "Upscaler / AA" is now one mutually exclusive choice (MetalFX upscaler / Anti-aliasing / Off, `menu::AaMode`); the upscaler does its own AA so FXAA is skipped under it. FSR 4 (community Metal port, macOS 26+) is planned as a fourth entry.
+- Probe GI: the Bevy bake (`ed_game/src/probe_gi.rs`, `ed_world::probes`) is reused; `native::send_probes` uploads the volume to a 3D RGBA16F texture (`WorldRenderer::upload_probe_volume`, texture slot 8) whenever it re-bakes. `probe_gi()` in `world.metal` ports `irradiance_volume.wesl` (terrain-following layers, ambient-cube faces) and `shade_ex` blends `amb*skyVis + up*bounce`. `EW_PROBE_GI=0` turns it off.
+- Sun-aware: `ProbeParams.sun`; each bounce ray's hit is tested toward the sun, so shaded ground only returns sky fill (0.25 of albedo) and sunlit ground full albedo; bounce is scaled by `1+4*sun elevation`. The volume re-bakes when the sun moves ~4 degrees.
+- Bug found: `manage_cameras` deactivates the Bevy 3D camera in native mode and probe baking required an active camera, so probes never ran natively; `camera_pos` now falls back to any 3D camera.
+
 ## 2026-11-05: native far-tree impostors
 - Impostor tiles now draw in the Metal renderer. `impostor_vs/fs` in `world.metal` port `impostor.wesl` (hemi-octahedral 8x8 atlas, 4-view blend, thinning by distance, growth to cover thinned neighbours, satellite-tint blend + smoothed normals far away), lit through `shade_ex` (rough 0.95) so they get the same sun, cascaded shadows, haze, AO/bloom/MetalFX as everything else.
 - Plumbing: `WorldRenderer::upload_extra` (params+axis+tile-uv stream, 10 floats/vertex), `upload_impostor_atlas` (2D-array albedo sRGB + normal, all mips per layer), `DrawItem::impostor`; `native::send_atlas` hands over the baked atlas (impostor mesh/atlas images now use `native::mesh_usage()` so the CPU data survives). Impostor meshes skip cluster simplification and their cluster bounds are padded by the grown radius. Viewport height/tan(fov/2) rides in `FrameU.fog.z`.
