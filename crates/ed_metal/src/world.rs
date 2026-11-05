@@ -910,7 +910,10 @@ impl WorldRenderer {
         let mut fu = FrameU {
             vp: vp_arr,
             sun: p.sun,
-            cam: [p.cam_pos[0], p.cam_pos[1], p.cam_pos[2], 0.0],
+            cam: [p.cam_pos[0], p.cam_pos[1], p.cam_pos[2], {
+                static T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+                T0.get_or_init(std::time::Instant::now).elapsed().as_secs_f32() % 3600.0
+            }],
             sky: [p.sky[0], p.sky[1], p.sky[2], 1.0],
             fog: [p.fog_density, if up_on || !self.fxaa || std::env::var_os("EW_NATIVE_NOAA").is_some() { 1.0 } else { 0.0 }, ih as f32 / p.tan_half_fov.max(1e-4), 0.0],
             csm: [[[0.0; 4]; 4]; NCASC],

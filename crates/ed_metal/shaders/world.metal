@@ -598,12 +598,32 @@ fragment GOut terrain_fs(TOut in [[stage_in]], bool front [[front_facing]],
     albedo = mix(albedo, sat_lin, water_f);
     rough = mix(rough, mix(0.07, 0.35, smoothstep(2000.0, 60000.0, dist)), water_f);
     ao = mix(ao, 1.0, water_f);
-    nd = normalize(mix(nd, n, water_f));
+    float3 wnrm = n;
+    if (water_f > 0.01) {
+        float tt = F.cam.w;
+        float fadew = 1.0 - smoothstep(3000.0, 30000.0, dist);
+        float2 w1 = mtex.sample(ts, p2 / 23.0 + tt * float2(0.031, 0.017)).rg - 0.5;
+        float2 w2 = mtex.sample(ts, p2 / 7.3 - tt * float2(0.047, -0.029)).rg - 0.5;
+        float2 w3 = mtex.sample(ts, p2 / 2.1 + tt * float2(-0.06, 0.05)).rg - 0.5;
+        float2 g = (w1 * 0.9 + w2 * 0.6 + w3 * 0.35) * 0.8 * fadew;
+        wnrm = normalize(n + float3(g.x, 0.0, g.y));
+        nd = normalize(mix(nd, wnrm, water_f));
+    }
     float land_f = 1.0 - water_f;
     rough = mix(rough, max(rough, 0.97), land_f * smoothstep(25.0, 500.0, dist));
     rough = mix(rough, max(rough, 0.8), land_f * (1.0 - wet));
     iv.nrm = nd;
     col = shade_ex(iv, float4(albedo, 1.0), front, F, D, sm, pv, N, clamp(rough, 0.04, 1.0), ao);
+    if (water_f > 0.01) {
+        float3 Vw = normalize(F.cam.xyz - in.wpos);
+        float3 Rw = reflect(-Vw, wnrm);
+        Rw.y = abs(Rw.y);
+        float nv = saturate(dot(wnrm, Vw));
+        float fr = 0.02 + 0.98 * pow(1.0 - nv, 5.0);
+        float3 sk = sky_rad(Rw, F.sun.xyz, F.sun.w);
+        col += sk * fr * water_f * 0.85;
+        N = normalize(mix(N, wnrm, water_f));
+    }
     GOut o; o.c = float4(col, 1.0); o.n = float4(N * 0.5 + 0.5, rough); return o;
 }
 
