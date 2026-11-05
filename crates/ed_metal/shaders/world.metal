@@ -881,7 +881,25 @@ fragment WOut water_fs(VOut in [[stage_in]], constant FrameU& F [[buffer(1)]], c
     bool has_bg = dbg > 1e-7;
     float thick = has_bg ? clamp((near / dbg - zw) / cosf, 0.0, 400.0) : 400.0;
     float hdep = thick * abs(V.y);
-    float3 bg = has_bg ? hcopy.read(px).rgb : sky_rad(refract(-V, N, 0.75), L, day, 0.0) * 0.3;
+    // Refraction: shift the lookup by the wave normal, scaled by column thickness, and only accept it when the shifted
+    // texel is really behind the surface (otherwise a foreground object would smear into the water).
+    float3 bg;
+    if (has_bg) {
+        float2 off = N.xz * clamp(thick * 0.6, 0.0, 14.0) * 1.0 / max(1.0, dist * 0.02);
+        uint2 px2 = uint2(clamp(float2(px) + off, float2(0.0), float2(dcopy.get_width() - 1, dcopy.get_height() - 1)));
+        bool ok = dcopy.read(px2) < in.pos.z * 0.999 && dcopy.read(px2) > 1e-7;
+        bg = hcopy.read(ok ? px2 : px).rgb;
+    } else {
+        bg = sky_rad(refract(-V, N, 0.75), L, day, 0.0) * 0.3;
+    }
+    // Caustics on the bed: two crossed ridged-noise layers, lit by the sun after it has crossed the water column.
+    if (has_bg && hdep < 10.0 && day > 0.01) {
+        float2 cp = (in.wpos.xz - V.xz / max(V.y, 0.1) * thick * abs(V.y)) * 0.8;
+        float c1 = 1.0 - abs(vnoise(cp + t * 0.35) * 2.0 - 1.0);
+        float c2 = 1.0 - abs(vnoise(cp * 1.7 - t * 0.28 + 9.0) * 2.0 - 1.0);
+        float cau = pow(c1 * c2, 6.0) * 5.0 * (1.0 - smoothstep(2.0, 10.0, hdep)) * smoothstep(0.0, 0.5, hdep);
+        bg *= 1.0 + cau * saturate(L.y * 2.0) * day;
+    }
     // Beer-Lambert: red goes first, shallow sand reads turquoise, deep water goes blue-green.
     float3 absorb = float3(0.40, 0.062, 0.032);
     float3 T = exp(-absorb * thick);
@@ -908,9 +926,18 @@ fragment WOut water_fs(VOut in [[stage_in]], constant FrameU& F [[buffer(1)]], c
     // Soft shoreline: the surface dissolves into the bed instead of cutting a hard line; lace foam on the wet edge.
     float edge = smoothstep(0.0, 0.30, hdep);
     float foam = 0.0;
+    // Breaker bands: shoreward-travelling bands keyed on the real depth below the surface; they steepen and break as
+    // the water shoals (hdep is the carved terrain depth, standing in for the Ultra-Water shore map).
+    if (has_bg && hdep < 3.5) {
+        float shoal = 1.0 - smoothstep(0.4, 3.5, hdep);
+        float bph = hdep * 2.4 + t * 0.9 + vnoise(in.wpos.xz * 0.35) * 2.5;
+        float band = smoothstep(0.55, 0.95, 0.5 + 0.5 * sin(bph * 2.0));
+        float swash = smoothstep(0.0, 0.5, hdep) * (1.0 - smoothstep(0.5, 1.6, hdep));
+        foam = max(foam, band * shoal * (0.35 + swash * 0.65) * smoothstep(0.05, 0.4, hdep));
+    }
     if (hdep < 1.2 && has_bg) {
         float lace = fbm3(in.wpos.xz * 1.7 + float2(t * 0.15, -t * 0.1)) * 0.6 + fbm3(in.wpos.xz * 5.0 - t * 0.2) * 0.4;
-        foam = (1.0 - smoothstep(0.0, 1.1, hdep)) * smoothstep(0.30, 0.65, lace + (1.0 - smoothstep(0.0, 0.5, hdep)) * 0.45);
+        foam = max(foam, (1.0 - smoothstep(0.0, 1.1, hdep)) * smoothstep(0.30, 0.65, lace + (1.0 - smoothstep(0.0, 0.5, hdep)) * 0.45));
     }
     foam = max(foam, smoothstep(0.35, 0.05, jac) * (1.0 - smoothstep(60.0, 400.0, dist)) * 0.8);
     float3 col = under * (1.0 - fr * edge) + (refl * fr + spec) * edge + glow;
