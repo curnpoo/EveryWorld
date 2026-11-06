@@ -171,6 +171,7 @@ pub fn prepare(vt: &mvt::Tile, ctx: &BuildingContext, region: Region) -> Vec<Bui
                 })
                 .collect();
             let fp = Footprint {
+                roof_hint: f.str("roof:shape").and_then(roof_hint),
                 ring: outer.iter().map(|p| (p[0] as f64 / ext, p[1] as f64 / ext)).collect(),
                 party,
                 holes: !holes.is_empty(),
@@ -248,6 +249,8 @@ pub fn build_lod<'a>(specs: impl IntoIterator<Item = &'a BuildingSpec>, up: Vec3
 
 #[derive(Debug, Clone)]
 struct Footprint {
+    /// Roof form the data asks for (Overture `roof:shape`); `None` leaves it to the regional table.
+    roof_hint: Option<RoofForm>,
     ring: Vec<(f64, f64)>,
     party: Vec<bool>,
     holes: bool,
@@ -256,6 +259,18 @@ struct Footprint {
     colour: Option<[f32; 4]>,
     seed: u64,
     center: (f64, f64),
+}
+
+/// Overture / OSM `roof:shape` -> the form this generator can build. Shapes without a counterpart (dome, onion,
+/// skillion, cone ...) return `None` and keep the regional default.
+fn roof_hint(shape: &str) -> Option<RoofForm> {
+    match shape {
+        "flat" => Some(RoofForm::Flat),
+        "gabled" | "gable" | "saltbox" | "gambrel" => Some(RoofForm::Gable),
+        "hipped" | "hip" | "pyramidal" | "half_hipped" | "half-hipped" => Some(RoofForm::Hip),
+        "mansard" => Some(RoofForm::Mansard),
+        _ => None,
+    }
 }
 
 fn parse_hex_colour(s: &str) -> Option<[f32; 4]> {
@@ -1187,10 +1202,12 @@ enum RoofPlan {
 
 fn roof_plan(s: &BuildingSpec, up: Vec3) -> RoofPlan {
     let (var, f) = (s.var, &s.f);
-    if f.holes || s.ring.len() > 24 || var.roof_forms.iter().all(|r| *r == RoofForm::Flat) {
+    // A mapped shape beats the regional table, even where the table is all flat roofs.
+    let mapped = f.roof_hint.filter(|h| *h != RoofForm::Flat);
+    if f.holes || s.ring.len() > 24 || f.roof_hint == Some(RoofForm::Flat) || (mapped.is_none() && var.roof_forms.iter().all(|r| *r == RoofForm::Flat)) {
         return RoofPlan::Flat;
     }
-    let form = pick(var.roof_forms, f.seed, 7);
+    let form = f.roof_hint.unwrap_or_else(|| pick(var.roof_forms, f.seed, 7));
     let eave: Vec<Vec3> = s.ring.iter().map(|p| *p + up * s.wall_top).collect();
     let span = 2.0 * s.area / perimeter(&eave);
     match form {
@@ -1201,8 +1218,8 @@ fn roof_plan(s: &BuildingSpec, up: Vec3) -> RoofPlan {
         }
         _ => {
             // Big buildings are offices/warehouses/blocks: flat roof, parapet, gear.
-            let max_area = if var.house { 350.0 } else { 500.0 };
-            if s.floors > 4 || s.area > max_area {
+            let max_area = if var.house { 350.0 } else { 500.0 } * if mapped.is_some() { 2.0 } else { 1.0 };
+            if s.floors > if mapped.is_some() { 6 } else { 4 } || s.area > max_area {
                 return RoofPlan::Flat;
             }
             let rects = roof_rects(&eave, up);
@@ -1625,6 +1642,37 @@ mod tests {
                 assert!(mesh.positions.iter().all(|p| p.iter().all(|c| c.is_finite())), "{r:?}");
             }
         }
+    }
+
+    #[test]
+    fn mapped_roof_shape_beats_the_regional_default() {
+        let (lat, lon) = (40.0, -3.7);
+        let tile = TileId::containing(lat, lon, 14);
+        let proj = TileProjector::new(tile, EnuFrame::new(Geodetic::new(lat, lon, 0.0)));
+        let grid = TerrainGrid::flat(tile, 8, 100.0);
+        let surface = SurfaceMap::uniform(tile, Biome::Mediterranean);
+        let ctx = BuildingContext { proj: &proj, grid: &grid, surface: &surface, biome: Biome::Mediterranean, roads: &[], keepout: None };
+        let plan = |shape: Option<&str>| {
+            let mut vt = tile_with(vec![rect(2000.0, 2040.0, 16.0, 12.0)], Some(7.0));
+            if let Some(sh) = shape {
+                vt.layers[0].features[0].props.insert("roof:shape".into(), mvt::Value::String(sh.into()));
+            }
+            let s = prepare(&vt, &ctx, Region::WesternEurope);
+            assert_eq!(s.len(), 1);
+            match roof_plan(&s[0], proj.up()) {
+                RoofPlan::Flat => "flat",
+                RoofPlan::Mansard => "mansard",
+                RoofPlan::Pitched(RoofForm::Gable, _) => "gable",
+                RoofPlan::Pitched(RoofForm::Hip, _) => "hip",
+                RoofPlan::Pitched(..) => "other",
+            }
+        };
+        assert_eq!(plan(Some("flat")), "flat");
+        assert_eq!(plan(Some("gabled")), "gable");
+        assert_eq!(plan(Some("hipped")), "hip");
+        assert_eq!(plan(Some("pyramidal")), "hip");
+        assert_eq!(roof_hint("dome"), None, "no counterpart keeps the regional default");
+        let _ = plan(None);
     }
 
     #[test]
