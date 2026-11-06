@@ -95,6 +95,7 @@ float shadow_vis(float3 wpos, float3 N, float vd, constant FrameU& F, depth2d_ar
     int ci = vd < F.csm_far.y ? 4 : 5;
     for (int i = 0; i < 4; i++) { if (vd < F.csm_split[i]) { ci = i; break; } }
     if (F.params.w > 5.5 && F.params.w < 9.5) { ci = int(F.params.w + 0.5) - 6; }
+    if (F.params.w > 15.5 && F.params.w < 17.5) { ci = F.params.w < 16.5 ? 4 : 5; }
     if (F.params.w >= 9.5 && F.params.w < 16.0) { int k = int(F.params.w + 0.5) - 10; if (k >= 0 && k <= 5) { ci = k; } }
     float4 inf = F.csm_info[ci];
     // Cascades >=1 render decimated proxies (grid 1.5-4 m), so receivers need a bias that covers that error.
@@ -103,7 +104,7 @@ float shadow_vis(float3 wpos, float3 N, float vd, constant FrameU& F, depth2d_ar
     float4 c = F.csm[ci] * float4(p, 1.0);
     float2 uv = float2(c.x * 0.5 + 0.5, 0.5 - c.y * 0.5);
     float z = c.z - inf.y * inf.x * nb * 1.5;
-    if (F.params.w > 9.5) { float st = sm.read(uint2(uv * 2048.0), ci); return saturate(0.5 + (z - st) / inf.y / 20.0); }
+    if (F.params.w > 9.5 && F.params.w < 15.5) { float st = sm.read(uint2(uv * 2048.0), ci); return saturate(0.5 + (z - st) / inf.y / 20.0); }
     float vis = 0.0;
     float2 o = float2(F.params.z);
     for (int y = -1; y <= 1; y++)
@@ -126,8 +127,11 @@ float probe_gi(float3 wp, float3 N, constant FrameU& F, texture3d<float> pv, thr
     if (w <= 0.0) return 0.0;
     float3 dims = float3(pv.get_width(), pv.get_height(), pv.get_depth());
     float3 res = dims / float3(1.0, 2.0, 4.0);
-    float s = clamp((u.x + 0.5) * res.x, 0.5, res.x - 0.5);
-    float p = clamp((u.z + 0.5) * res.z, 0.5, res.z - 0.5);
+    // Inverse of ed_world::probes::warp_axis: dense near the camera, sparse out to 1 km.
+    float2 v = u.xz * 2.0;
+    float2 g = sign(v) * pow(abs(v), float2(2.0 / 3.0));
+    float s = clamp((g.x * 0.5 + 0.5) * res.x, 0.5, res.x - 0.5);
+    float p = clamp((g.y * 0.5 + 0.5) * res.z, 0.5, res.z - 0.5);
     float4 g = pv.sample(pbs, float3(s / dims.x, 0.5 / dims.y, (p + 3.0 * res.z) / dims.z), level(0));
     float t = clamp((u.y - g.r) / max(g.g, 1e-6), 0.0, 1.0);
     float layer = sqrt(t) * (res.y - 1.0) + 0.5;

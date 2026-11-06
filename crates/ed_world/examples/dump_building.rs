@@ -21,7 +21,7 @@ fn main() {
     let cache = DiskCache::default_location();
     let template = ed_data::vector::tile_template(&cache).expect("vector tile template (cache offline?)");
     let tile = TileId::containing(lat, lon, 14);
-    let job = TileJob { tile, frame: EnuFrame::new(Geodetic::new(lat, lon, 0.0)), cache, vector_template: Some(template) };
+    let job = TileJob { tile, frame: EnuFrame::new(Geodetic::new(lat, lon, 0.0)), cache, vector_template: Some(template), far: false };
     let built = tilegen::build(&job);
     let Some(ds) = built.building_detail.clone() else {
         panic!("no building detail for tile {:?}: errors {:?}", tile, built.errors);

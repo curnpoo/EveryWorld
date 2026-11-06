@@ -15,11 +15,13 @@ pub struct LodParams {
     pub split: f64,
     /// Root tiles around the camera in each direction.
     pub root_radius: i64,
+    /// Split to the finest zoom within this ground distance (the z14 building floor, metres).
+    pub fine_range_m: f64,
 }
 
 impl Default for LodParams {
     fn default() -> Self {
-        Self { root_zoom: 6, max_zoom: 14, split: 1.0, root_radius: 2 }
+        Self { root_zoom: 6, max_zoom: 14, split: 1.0, root_radius: 2, fine_range_m: 16_000.0 }
     }
 }
 
@@ -49,7 +51,7 @@ pub fn select(cam: Geodetic, ground_m: f64, p: &LodParams) -> Vec<TileId> {
             continue;
         }
         let d = (d_ground * d_ground + agl * agl).sqrt();
-        if t.z < p.max_zoom && (d < p.split * w || (t.z < 13 && d_ground < 16_000.0 + w)) {
+        if t.z < p.max_zoom && (d < p.split * w || (t.z < 13 && d_ground < p.fine_range_m + w)) {
             stack.extend(t.children());
         } else {
             out.push(t);

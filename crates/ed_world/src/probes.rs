@@ -84,7 +84,8 @@ pub struct ProbeParams {
     pub nx: usize,
     pub ny: usize,
     pub nz: usize,
-    /// Horizontal probe spacing (m).
+    /// Nominal outer cell width (m). The grid is radially warped: dense near
+    /// the centre and sparse toward the edge.
     pub spacing: f32,
     /// Lowest layer height above ground (m).
     pub h0: f32,
@@ -100,7 +101,7 @@ pub struct ProbeParams {
 
 impl Default for ProbeParams {
     fn default() -> Self {
-        Self { nx: 64, ny: 6, nz: 64, spacing: 4.0, h0: 0.4, span: 48.0, rays: 48, max_dist: 80.0, sun: Vec3::ZERO }
+        Self { nx: 64, ny: 6, nz: 64, spacing: 32.0, h0: 0.4, span: 128.0, rays: 48, max_dist: 2_000.0, sun: Vec3::ZERO }
     }
 }
 
@@ -142,6 +143,12 @@ impl ProbeVolume {
 pub fn layer_height(p: &ProbeParams, j: usize) -> f32 {
     let t = j as f32 / (p.ny.max(2) - 1) as f32;
     p.span * t * t
+}
+
+/// Radial grid warp: 1.5 power keeps the centre at roughly 4 m spacing while
+/// the outer edge reaches about 48 m for the default 2 km-wide volume.
+pub fn warp_axis(u: f32) -> f32 {
+    u.signum() * u.abs().powf(1.5)
 }
 
 /// Deterministic, roughly uniform sphere directions (Fibonacci lattice).
@@ -240,7 +247,11 @@ pub fn bake(field: &SceneField, params: &ProbeParams, threads: usize) -> ProbeVo
     let max_top = field.top.iter().copied().fold(f32::MIN, f32::max) + 0.5;
     let half_x = p.nx as f32 * p.spacing * 0.5;
     let half_z = p.nz as f32 * p.spacing * 0.5;
-    let col = |i: usize, k: usize| Vec2::new((i as f32 + 0.5) * p.spacing - half_x, (k as f32 + 0.5) * p.spacing - half_z);
+    let col = |i: usize, k: usize| {
+        let u = (i as f32 + 0.5) / p.nx as f32 * 2.0 - 1.0;
+        let v = (k as f32 + 0.5) / p.nz as f32 * 2.0 - 1.0;
+        Vec2::new(warp_axis(u) * half_x, warp_axis(v) * half_z)
+    };
 
     // Probe positions + whether they start inside solid.
     let mut probes = vec![Probe::default(); p.nx * p.ny * p.nz];
@@ -364,8 +375,10 @@ fn pack(probes: &[Probe], p: &ProbeParams, field: &SceneField, box_min: Vec3, bo
                     tex[at(i, j + p.ny, k + axis * p.nz)] = pr.faces[axis * 2 + 1];
                 }
             }
-            let x = (i as f32 + 0.5) * p.spacing - half_x;
-            let z = (k as f32 + 0.5) * p.spacing - half_z;
+            let u = (i as f32 + 0.5) / p.nx as f32 * 2.0 - 1.0;
+            let v = (k as f32 + 0.5) / p.nz as f32 * 2.0 - 1.0;
+            let x = warp_axis(u) * half_x;
+            let z = warp_axis(v) * half_z;
             let g = field.ground_at(x, z) + p.h0;
             tex[at(i, 0, k + 3 * p.nz)] = [(g - center_y) / size_y, p.span / size_y, 0.0, 0.0];
         }

@@ -23,6 +23,9 @@ pub struct TileJob {
     pub cache: DiskCache,
     /// OpenFreeMap tile URL template (None = offline / not resolved yet).
     pub vector_template: Option<String>,
+    /// Built for a tile far from the camera: skip trees, props and rocks (the expensive scatter
+    /// passes). Terrain, roads, water and the building massing still build.
+    pub far: bool,
 }
 
 #[derive(Debug, Default)]
@@ -434,7 +437,9 @@ pub fn build(job: &TileJob) -> TileBuild {
             out.water = water::generate(vt, &proj, &uncarved);
             out.sound = Some(Arc::new(crate::soundmap::SoundMap::build(vt, &uncarved, tile.width_m() as f32)));
             let r = roads::generate(road_plan.as_ref().unwrap(), &proj, &grid, &surface, region);
-            out.placements.extend(props::place_street_props(crate::library::get(), &r.props, up));
+            if !job.far {
+                out.placements.extend(props::place_street_props(crate::library::get(), &r.props, up));
+            }
             out.stats.props = r.props.len();
             // Overture's footprints (baked offline) replace OpenFreeMap's where available.
             let mut overture = ed_data::overture::building_tile(&job.cache, tile);
@@ -564,7 +569,7 @@ pub fn build(job: &TileJob) -> TileBuild {
             out.building_lod = lod;
             out.building_far = buildings::build_massing(chunks.values().flatten(), up);
         }
-        if tile.z >= 10 {
+        if tile.z >= 10 && !job.far {
             let occ = foliage::Occupancy::from_vector(vt, 512);
             let max = match tile.z {
                 14.. => 16_000,
@@ -642,6 +647,7 @@ mod tests {
                 frame: EnuFrame::new(Geodetic::new(lat, lon, 0.0)),
                 cache: cache.clone(),
                 vector_template: tpl.clone(),
+                far: false,
             };
             prefetch(&job);
             for v2 in [false, true] {
@@ -696,6 +702,7 @@ mod tests {
                 frame: EnuFrame::new(Geodetic::new(lat, lon, 0.0)),
                 cache: cache.clone(),
                 vector_template: tpl.clone(),
+                far: false,
             };
             let b = build(&job);
             eprintln!(
@@ -757,7 +764,7 @@ mod tests {
             ("Shibuya", 35.6595, 139.7005),
         ] {
             let tile = TileId::containing(lat, lon, 14);
-            let job = TileJob { tile, frame: EnuFrame::new(Geodetic::new(lat, lon, 0.0)), cache: cache.clone(), vector_template: tpl.clone() };
+            let job = TileJob { tile, frame: EnuFrame::new(Geodetic::new(lat, lon, 0.0)), cache: cache.clone(), vector_template: tpl.clone(), far: false };
             let t0 = std::time::Instant::now();
             let b = build(&job);
             eprintln!(

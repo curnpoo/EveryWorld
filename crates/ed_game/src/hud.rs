@@ -91,7 +91,7 @@ fn spawn_hud(mut commands: Commands) {
                 c.spawn((PillText, Text::new(""), TextFont { font_size: FontSize::Px(18.0), ..default() }, TextColor(Color::WHITE)));
             });
         });
-    // Top-left: extended stats, toggled in Settings > Debug stats.
+    // Top-left: extended stats, toggled from the pause menu's Debug tab.
     commands
         .spawn((HudRoot, Node { position_type: PositionType::Absolute, left: Val::Px(14.0), top: Val::Px(14.0), ..default() }))
         .with_children(|c| {

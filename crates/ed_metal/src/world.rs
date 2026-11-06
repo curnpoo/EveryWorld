@@ -242,6 +242,8 @@ pub struct FrameParams {
     pub exposure: f32,
     pub size: (u32, u32),
     pub scale: f64,
+    /// `EW_NATIVE_DBG`-style diagnostic view. 0 is the normal shaded frame.
+    pub debug_view: u32,
     /// Whether the ocean FFT should run this frame. The wave detail is only visible within a
     /// couple of hundred metres of the camera, and the compute steals GPU throughput from the
     /// shadow cascades and the main pass (~4.8 ms of a 21 ms frame in a city), so the game turns
@@ -1202,7 +1204,7 @@ impl WorldRenderer {
             cf: [p.cam_fwd[0], p.cam_fwd[1], p.cam_fwd[2], 0.0],
             pb0: if self.probe.is_some() { [self.probe_box[0], self.probe_box[1], self.probe_box[2], self.probe_k] } else { [0.0; 4] },
             pb1: { let b = self.probe_box; [1.0 / (b[3] - b[0]).max(1e-3), 1.0 / (b[4] - b[1]).max(1e-3), 1.0 / (b[5] - b[2]).max(1e-3), 0.0] },
-            params: [p.exposure, if p.shadows { 1.0 } else { 0.0 }, 1.0 / SHADOW_RES as f32, std::env::var("EW_NATIVE_DBG").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0)],
+            params: [p.exposure, if p.shadows { 1.0 } else { 0.0 }, 1.0 / SHADOW_RES as f32, p.debug_view as f32],
         };
         for i in 0..NCASC {
             fu.csm[i] = casc.vp[i].to_cols_array_2d();

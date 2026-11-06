@@ -5,7 +5,8 @@
 //! ground to start the 3D world.
 //!
 //! Pause (Esc while playing): fullscreen menu with tabs: Map (teleport
-//! anywhere), Settings, Audio, Character, Controls. Physics freezes while paused.
+//! anywhere), Settings, Audio, Character, Controls, Debug. Physics freezes
+//! while paused.
 
 use crate::body::Cosmetics;
 use crate::clouds::CloudOverride;
@@ -40,6 +41,7 @@ impl Plugin for MenuPlugin {
             .init_resource::<MenuView>()
             .init_resource::<MenuFocus>()
             .init_resource::<GraphicsSettings>()
+            .init_resource::<DebugSettings>()
             .init_resource::<WeatherPick>()
             .init_resource::<CurrentWeather>()
             // --fly skips PlayerPlugin/BodyPlugin; the menu still reads these.
@@ -59,6 +61,7 @@ impl Plugin for MenuPlugin {
                     audio_sliders,
                     enter_play_on_arrival,
                     apply_graphics,
+                    update_debug_readout,
                     highlight_tabs,
                 )
                     .chain(),
@@ -87,6 +90,7 @@ pub enum MenuView {
     Audio,
     Character,
     Controls,
+    Debug,
 }
 
 /// How the frame is anti-aliased: the temporal upscaler (renders low, AA included), plain AA at native
@@ -137,6 +141,179 @@ pub struct GraphicsSettings {
     pub solar_hour: f64,
 }
 
+/// Live renderer/debug controls. These deliberately do not persist: a debug
+/// session should not silently change the next normal launch.
+#[derive(Resource, Clone, Debug)]
+pub struct DebugSettings {
+    pub probe_gi: bool,
+    pub probe_view: ProbeView,
+    pub native_view: NativeDebugView,
+    pub ocean_fft: OceanFft,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ProbeView {
+    #[default]
+    Off,
+    Colors,
+    Lit,
+}
+
+impl ProbeView {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Off => Self::Colors,
+            Self::Colors => Self::Lit,
+            Self::Lit => Self::Off,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Colors => "Probe colours",
+            Self::Lit => "Lit spheres",
+        }
+    }
+
+    fn from_debug_value(v: u8) -> Self {
+        match v % 3 {
+            1 => Self::Colors,
+            2 => Self::Lit,
+            _ => Self::Off,
+        }
+    }
+}
+
+/// Native `world.metal` diagnostic views. Values match `EW_NATIVE_DBG` so the
+/// environment switch remains useful in automated runs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum NativeDebugView {
+    #[default]
+    Off,
+    Normals,
+    ShadowVisibility,
+    AmbientGi,
+    CascadeTint,
+    SunNdotL,
+    Shadow0,
+    Shadow1,
+    Shadow2,
+    Shadow3,
+    Shadow4,
+    Shadow5,
+    ShadowDepth,
+}
+
+impl NativeDebugView {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Off => Self::Normals,
+            Self::Normals => Self::ShadowVisibility,
+            Self::ShadowVisibility => Self::AmbientGi,
+            Self::AmbientGi => Self::CascadeTint,
+            Self::CascadeTint => Self::SunNdotL,
+            Self::SunNdotL => Self::Shadow0,
+            Self::Shadow0 => Self::Shadow1,
+            Self::Shadow1 => Self::Shadow2,
+            Self::Shadow2 => Self::Shadow3,
+            Self::Shadow3 => Self::Shadow4,
+            Self::Shadow4 => Self::Shadow5,
+            Self::Shadow5 => Self::ShadowDepth,
+            Self::ShadowDepth => Self::Off,
+        }
+    }
+
+    pub fn value(self) -> u32 {
+        match self {
+            Self::Off => 0,
+            Self::Normals => 1,
+            Self::ShadowVisibility => 2,
+            Self::AmbientGi => 3,
+            Self::CascadeTint => 4,
+            Self::SunNdotL => 5,
+            Self::Shadow0 => 6,
+            Self::Shadow1 => 7,
+            Self::Shadow2 => 8,
+            Self::Shadow3 => 9,
+            Self::Shadow4 => 16,
+            Self::Shadow5 => 17,
+            Self::ShadowDepth => 10,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Normals => "Normals",
+            Self::ShadowVisibility => "Shadow visibility",
+            Self::AmbientGi => "Ambient + GI",
+            Self::CascadeTint => "Cascade tint",
+            Self::SunNdotL => "Sun N dot L",
+            Self::Shadow0 => "Shadow map 0",
+            Self::Shadow1 => "Shadow map 1",
+            Self::Shadow2 => "Shadow map 2",
+            Self::Shadow3 => "Shadow map 3",
+            Self::Shadow4 => "Shadow map 4",
+            Self::Shadow5 => "Shadow map 5",
+            Self::ShadowDepth => "Shadow depth difference",
+        }
+    }
+
+    fn from_debug_value(v: u32) -> Self {
+        match v {
+            1 => Self::Normals,
+            2 => Self::ShadowVisibility,
+            3 => Self::AmbientGi,
+            4 => Self::CascadeTint,
+            5 => Self::SunNdotL,
+            6 => Self::Shadow0,
+            7 => Self::Shadow1,
+            8 => Self::Shadow2,
+            9 => Self::Shadow3,
+            10..=13 => Self::ShadowDepth,
+            16 => Self::Shadow4,
+            17 => Self::Shadow5,
+            _ => Self::Off,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum OceanFft {
+    #[default]
+    Auto,
+    On,
+    Off,
+}
+
+impl OceanFft {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Auto => Self::On,
+            Self::On => Self::Off,
+            Self::Off => Self::Auto,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto",
+            Self::On => "On",
+            Self::Off => "Off",
+        }
+    }
+}
+
+impl Default for DebugSettings {
+    fn default() -> Self {
+        let probe_gi = !std::env::var("EW_PROBE_GI").is_ok_and(|v| v == "0");
+        let probe_view = ProbeView::from_debug_value(std::env::var("EW_PROBE_DEBUG").ok().and_then(|v| v.parse().ok()).unwrap_or(0));
+        let native_view = NativeDebugView::from_debug_value(std::env::var("EW_NATIVE_DBG").ok().and_then(|v| v.parse().ok()).unwrap_or(0));
+        Self { probe_gi, probe_view, native_view, ocean_fft: OceanFft::Auto }
+    }
+}
+
 /// The hour every drop-in starts in, unless the player picks another one.
 pub const DEFAULT_SOLAR_HOUR: f64 = 15.0;
 
@@ -183,6 +360,10 @@ pub enum MenuAction {
     CycleResolution,
     ToggleAa,
     ToggleStats,
+    ToggleProbes,
+    CycleProbeView,
+    CycleNativeView,
+    CycleOceanFft,
     TimeMinus,
     TimePlus,
     TimeNow,
@@ -280,6 +461,9 @@ struct StatusLine;
 
 #[derive(Component)]
 struct SettingValue(MenuAction);
+
+#[derive(Component)]
+struct DebugReadout;
 
 pub(crate) const INK: Color = Color::srgb(0.96, 0.96, 0.95);
 pub(crate) const DIM: Color = Color::srgba(0.96, 0.96, 0.95, 0.6);
@@ -489,7 +673,14 @@ fn build_menus(mut commands: Commands, assets: Res<AssetServer>) {
             p.spawn(Node { column_gap: Val::Px(8.0), align_items: AlignItems::Center, ..default() }).with_children(|r| {
                 r.spawn((PauseTitle, Text::new("Paused"), TextFont { font_size: FontSize::Px(26.0), ..default() }, TextColor(INK)));
                 r.spawn(Node { width: Val::Px(16.0), ..default() });
-                for (label, v) in [("Map", MenuView::Map), ("Settings", MenuView::Settings), ("Audio", MenuView::Audio), ("Character", MenuView::Character), ("Controls", MenuView::Controls)] {
+                for (label, v) in [
+                    ("Map", MenuView::Map),
+                    ("Settings", MenuView::Settings),
+                    ("Audio", MenuView::Audio),
+                    ("Character", MenuView::Character),
+                    ("Controls", MenuView::Controls),
+                    ("Debug", MenuView::Debug),
+                ] {
                     button(r, label, MenuAction::Tab(v), false);
                 }
                 r.spawn(Node { flex_grow: 1.0, ..default() });
@@ -511,7 +702,6 @@ fn build_menus(mut commands: Commands, assets: Res<AssetServer>) {
                     ("Ambient occlusion", MenuAction::ToggleAo),
                     ("Bloom", MenuAction::ToggleBloom),
                     ("Upscaler / AA", MenuAction::ToggleAa),
-                    ("Debug stats", MenuAction::ToggleStats),
                 ] {
                     setting_row(t, label, &[("Toggle", a)], a);
                 }
@@ -597,7 +787,8 @@ fn build_menus(mut commands: Commands, assets: Res<AssetServer>) {
                     "V: first / third person",
                     "Scroll: camera distance",
                     "[ and ]: scrub time of day",
-                    "Esc: pause menu",
+                    "F3: cycle GI probe spheres",
+                    "Esc: pause menu (Debug tab has live renderer controls)",
                     "Controller (switches on when you use one):",
                     "Left stick: move · Right stick: look",
                     "RT: jump (hold to charge) · LT: sprint / afterburner",
@@ -607,6 +798,56 @@ fn build_menus(mut commands: Commands, assets: Res<AssetServer>) {
                 ] {
                     text(t, line, 17.0, INK);
                 }
+            });
+            // Debug tab: live renderer controls and diagnostics.
+            p.spawn((
+                TabBody(MenuView::Debug),
+                Node {
+                    flex_grow: 1.0,
+                    flex_basis: Val::Px(0.0),
+                    min_height: Val::Px(0.0),
+                    flex_direction: FlexDirection::Row,
+                    column_gap: Val::Px(22.0),
+                    ..default()
+                },
+                Visibility::Hidden,
+            ))
+            .with_children(|t| {
+                t.spawn(Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(9.0), width: Val::Px(580.0), ..default() }).with_children(|c| {
+                    text(c, "Live renderer controls", 22.0, INK);
+                    for (label, action_label, a) in [
+                        ("Probe GI", "Toggle", MenuAction::ToggleProbes),
+                        ("Probe spheres", "Next", MenuAction::CycleProbeView),
+                        ("Shadow maps", "Toggle", MenuAction::ToggleShadows),
+                        ("Ambient occlusion", "Toggle", MenuAction::ToggleAo),
+                        ("Bloom", "Toggle", MenuAction::ToggleBloom),
+                        ("Ocean FFT", "Next", MenuAction::CycleOceanFft),
+                        ("Metal debug view", "Next", MenuAction::CycleNativeView),
+                        ("Live diagnostics", "Toggle", MenuAction::ToggleStats),
+                    ] {
+                        setting_row(c, label, &[(action_label, a)], a);
+                    }
+                    text(c, "Changes apply immediately. Live diagnostics stay on screen while playing; this panel updates while paused.", 14.0, DIM);
+                });
+                t.spawn((
+                    Node {
+                        flex_grow: 1.0,
+                        flex_basis: Val::Px(0.0),
+                        min_width: Val::Px(320.0),
+                        padding: UiRect::all(Val::Px(14.0)),
+                        border_radius: BorderRadius::all(Val::Px(12.0)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.02, 0.03, 0.045, 0.94)),
+                ))
+                .with_children(|c| {
+                    c.spawn((
+                        DebugReadout,
+                        Text::new("Collecting diagnostics..."),
+                        TextFont { font_size: FontSize::Px(13.0), ..default() },
+                        TextColor(Color::srgba(0.82, 0.92, 1.0, 0.92)),
+                    ));
+                });
             });
         });
 }
@@ -651,7 +892,7 @@ fn slider_row(p: &mut ChildSpawnerCommands, label: &str, k: Knob) {
 }
 
 /// Launching with --place / --lat / --fly skips the menu (handy for testing).
-/// `--menu-view home|map|pause-map|settings|audio|controls|character` opens a screen
+/// `--menu-view home|map|pause-map|settings|audio|controls|character|debug` opens a screen
 /// directly (for screenshots).
 fn skip_menu_from_cli(cfg: Res<Config>, mut next: ResMut<NextState<GameState>>, mut view: ResMut<MenuView>, mut map: ResMut<MapState>) {
     let args: Vec<String> = std::env::args().collect();
@@ -661,12 +902,13 @@ fn skip_menu_from_cli(cfg: Res<Config>, mut next: ResMut<NextState<GameState>>, 
     match menu_view.as_deref() {
         Some("map") => *view = MenuView::Map,
         Some("home") => {} // stay on the main menu (screenshots)
-        Some(v @ ("pause-map" | "settings" | "audio" | "controls" | "character")) => {
+        Some(v @ ("pause-map" | "settings" | "audio" | "controls" | "character" | "debug")) => {
             *view = match v {
                 "settings" => MenuView::Settings,
                 "audio" => MenuView::Audio,
                 "controls" => MenuView::Controls,
                 "character" => MenuView::Character,
+                "debug" => MenuView::Debug,
                 _ => MenuView::Map,
             };
             next.set(GameState::Paused);
@@ -819,7 +1061,7 @@ fn pad_focus(
 }
 
 /// Tab order for LB / RB. Home has no tabs, so bumpers do nothing there.
-const TAB_ORDER: [MenuView; 5] = [MenuView::Map, MenuView::Settings, MenuView::Audio, MenuView::Character, MenuView::Controls];
+const TAB_ORDER: [MenuView; 6] = [MenuView::Map, MenuView::Settings, MenuView::Audio, MenuView::Character, MenuView::Controls, MenuView::Debug];
 /// The active tab's button. Orange like the Play and Resume accents, but translucent.
 const TAB_ON: Color = Color::srgba(0.98, 0.45, 0.12, 0.55);
 
@@ -885,6 +1127,7 @@ fn menu_buttons(
     mut next: ResMut<NextState<GameState>>,
     mut exit: MessageWriter<AppExit>,
     mut gfx: ResMut<GraphicsSettings>,
+    mut dbg: ResMut<DebugSettings>,
     mut controls: ResMut<ControlSettings>,
     mut cosmetics: ResMut<Cosmetics>,
     mut map: ResMut<MapState>,
@@ -939,6 +1182,10 @@ fn menu_buttons(
                 gfx.aa = gfx.aa_mode != AaMode::Off;
             }
             MenuAction::ToggleStats => gfx.show_stats = !gfx.show_stats,
+            MenuAction::ToggleProbes => dbg.probe_gi = !dbg.probe_gi,
+            MenuAction::CycleProbeView => dbg.probe_view = dbg.probe_view.next(),
+            MenuAction::CycleNativeView => dbg.native_view = dbg.native_view.next(),
+            MenuAction::CycleOceanFft => dbg.ocean_fft = dbg.ocean_fft.next(),
             MenuAction::CycleResolution => gfx.render_pct = match gfx.render_pct { 100 => 90, 90 => 85, 85 => 75, 75 => 67, 67 => 50, _ => 100 },
             MenuAction::TimeMinus => {
                 gfx.time_live = false;
@@ -1006,6 +1253,7 @@ fn refresh_menu(
     view: Res<MenuView>,
     spawner: Res<Spawner>,
     gfx: Res<GraphicsSettings>,
+    dbg: Res<DebugSettings>,
     pick: Res<WeatherPick>,
     controls: Res<ControlSettings>,
     cosmetics: Res<Cosmetics>,
@@ -1061,6 +1309,10 @@ fn refresh_menu(
             MenuAction::ToggleAa => gfx.aa_mode.label().to_string(),
             MenuAction::CycleResolution => if gfx.aa_mode == AaMode::Upscale { format!("{}%", gfx.render_pct) } else { "native".to_string() },
             MenuAction::ToggleStats => on(gfx.show_stats),
+            MenuAction::ToggleProbes => on(dbg.probe_gi),
+            MenuAction::CycleProbeView => dbg.probe_view.label().to_string(),
+            MenuAction::CycleNativeView => dbg.native_view.label().to_string(),
+            MenuAction::CycleOceanFft => dbg.ocean_fft.label().to_string(),
             MenuAction::TimePlus => if gfx.time_live { "Now".into() } else { "Custom".into() },
             MenuAction::SetWeather(_) => pick.name.to_string(),
             MenuAction::SensPlus => format!("{:.1}", controls.mouse_sensitivity),
@@ -1070,6 +1322,97 @@ fn refresh_menu(
             MenuAction::ToggleCalm => on(audio.calm),
             _ => String::new(),
         };
+    }
+}
+
+/// Live diagnostics shown beside the Debug controls. The same data can also be
+/// pinned to the HUD while playing with the "Live diagnostics" toggle.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn update_debug_readout(
+    state: Res<State<GameState>>,
+    view: Res<MenuView>,
+    time: Res<Time>,
+    gfx: Res<GraphicsSettings>,
+    dbg: Res<DebugSettings>,
+    origin: Res<crate::origin::WorldOrigin>,
+    mgr: Option<Res<crate::streaming::TileManager>>,
+    dm: Option<Res<crate::streaming::DetailManager>>,
+    players: Query<&Transform, With<Player>>,
+    cams: Query<&GlobalTransform, With<Camera3d>>,
+    windows: Query<&bevy::window::Window, With<PrimaryWindow>>,
+    mut readout: Query<&mut Text, With<DebugReadout>>,
+) {
+    if *state.get() != GameState::Paused || *view != MenuView::Debug {
+        return;
+    }
+    let Ok(cam) = cams.single() else {
+        if let Ok(mut t) = readout.single_mut() {
+            let s = "LIVE DIAGNOSTICS\n\nNo world is running yet. Start a drop to collect live stats.";
+            if t.0 != s {
+                t.0 = s.to_string();
+            }
+        }
+        return;
+    };
+    let pos = players.single().map(|t| t.translation).unwrap_or(cam.translation());
+    let g = origin.to_geodetic(pos);
+    let tile = ed_geo::tile::TileId::containing(g.lat_deg, g.lon_deg, 14);
+    let (tiles_loaded, tiles_pending, tiles_desired) = mgr.as_ref().map_or((0, 0, 0), |m| (m.loaded.len(), m.pending.len(), m.desired.len()));
+    let (p_io, p_build, p_apply) = mgr.as_ref().map_or((0, 0, 0), |m| m.pipeline());
+    let (buildings, trees, tris) = mgr.as_ref().map_or((0, 0, 0), |m| (m.totals.buildings, m.totals.trees, m.totals.triangles));
+    let (detail_loaded, detail_flight) = dm.as_ref().map_or((0, 0), |d| crate::streaming::detail_stats(d));
+    let (win_w, win_h, win_scale) = windows.single().map_or((0, 0, 1.0), |w| (w.physical_width(), w.physical_height(), w.scale_factor()));
+    let fps = 1.0 / time.delta_secs().max(1e-4);
+    let ms = time.delta_secs_f64() * 1000.0;
+    let sea = mgr.as_ref().map_or(false, |m| m.sea_near());
+    let s = format!(
+        "LIVE DIAGNOSTICS\n\n\
+         {fps:.0} fps  /  {ms:.1} ms\n\
+         render {}%   {}x{} @{win_scale:.1}x\n\
+         lat {:.5}   lon {:.5}   alt {:.0} m\n\
+         tile {}/{}/{}\n\n\
+         tiles {} loaded / {} pending / {} desired\n\
+         pipeline io {} / build {} / apply {}\n\
+         detail {} loaded / {} in flight\n\
+         buildings {}   trees {}   tris {:.1} M\n\n\
+         probe GI {}   view {}\n\
+         shadows {}   AO {}   bloom {}\n\
+         ocean FFT {}   sea near {}\n\
+         Metal view {}\n\n\
+         F3 cycles probe spheres. Renderer switches apply live.",
+        gfx.render_pct,
+        win_w,
+        win_h,
+        g.lat_deg,
+        g.lon_deg,
+        g.alt_m,
+        tile.z,
+        tile.x,
+        tile.y,
+        tiles_loaded,
+        tiles_pending,
+        tiles_desired,
+        p_io,
+        p_build,
+        p_apply,
+        detail_loaded,
+        detail_flight,
+        buildings,
+        trees,
+        tris as f32 / 1e6,
+        if dbg.probe_gi { "On" } else { "Off" },
+        dbg.probe_view.label(),
+        if gfx.shadows { "On" } else { "Off" },
+        if gfx.ambient_occlusion { "On" } else { "Off" },
+        if gfx.bloom { "On" } else { "Off" },
+        dbg.ocean_fft.label(),
+        if sea { "yes" } else { "no" },
+        dbg.native_view.label(),
+    );
+    if let Ok(mut t) = readout.single_mut() {
+        if t.0 != s {
+            t.0 = s;
+        }
     }
 }
 
@@ -1262,4 +1605,37 @@ fn pause_physics(mut t: ResMut<Time<Physics>>) {
 
 fn unpause_physics(mut t: ResMut<Time<Physics>>) {
     t.unpause();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn probe_view_cycles_through_every_mode() {
+        let mut v = ProbeView::Off;
+        for expected in [ProbeView::Colors, ProbeView::Lit, ProbeView::Off] {
+            v = v.next();
+            assert_eq!(v, expected);
+        }
+    }
+
+    #[test]
+    fn native_debug_views_round_trip_to_shader_values() {
+        let mut v = NativeDebugView::Off;
+        for _ in 0..13 {
+            v = v.next();
+            assert_eq!(NativeDebugView::from_debug_value(v.value()), v);
+        }
+        assert_eq!(v, NativeDebugView::Off);
+        assert_eq!(NativeDebugView::Shadow4.value(), 16);
+        assert_eq!(NativeDebugView::Shadow5.value(), 17);
+    }
+
+    #[test]
+    fn ocean_fft_cycles_auto_on_off() {
+        assert_eq!(OceanFft::Auto.next(), OceanFft::On);
+        assert_eq!(OceanFft::On.next(), OceanFft::Off);
+        assert_eq!(OceanFft::Off.next(), OceanFft::Auto);
+    }
 }

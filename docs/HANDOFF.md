@@ -18,6 +18,7 @@ Native is the default; `EW_NATIVE=0` returns to Bevy. `ed_game::native` mirrors 
   2026-11-06). Crash reports: `~/Library/Logs/DiagnosticReports/earthdrop-*.ips`.
 - **Probe GI** (`ed_world::probes::bake`, `ed_game/probe_gi.rs`, `native::send_probes`, `world.metal::probe_gi`): sun-aware bake
   (re-bake on 4 degree sun change), texture slot 8 (3D RGBA16F). `EW_PROBE_GI=0/EW_PROBE_K/EW_PROBE_DEBUG`.
+  The pause menu's **Debug** tab changes probe/shadows/AO/bloom/ocean/FFT/Metal views live and shows live diagnostics.
 - **Shadows:** 6 cascades (0-3 to 700 m, 4 to 4 km, 5 to 20 km; 4 and 5 are camera-centred spheres so they cache). Cascade 5 casts buildings
   and terrain; casters under 1.5 texels are culled. Per-cascade cache (`ShadowCache`: caster idents, projection, sun direction, light-space
   box). A cascade keeps its projection while the sun has moved less than `EW_SHADOW_SUN_EPS` (default 0.1 deg) and the box has not

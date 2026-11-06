@@ -1,3 +1,20 @@
+## 2026-11-06: pause menu Debug tab with live renderer diagnostics
+- Added a sixth pause-menu tab, **Debug**. It has live toggles for probe GI,
+  shadow maps, AO, bloom, ocean FFT, and the native world diagnostic view
+  (normals, shadow visibility/cascades/depth difference, ambient + GI, and sun
+  N dot L). The adjacent panel shows live FPS/frame time, position, tile
+  streaming, detail chunks, mesh counts, and active feature state.
+- Probe GI no longer depends on the Stats toggle. `EW_PROBE_GI`,
+  `EW_PROBE_DEBUG`, and `EW_NATIVE_DBG` still set the startup values; the
+  Debug tab and F3 change them at runtime. `EW_NATIVE_DBG` is now passed through
+  `FrameParams` instead of read from the environment inside the Metal encoder.
+- Fixed probe debug spheres disappearing under native: the mesh was
+  `RENDER_WORLD`-only, so Bevy stripped the CPU vertices the native mirror
+  needs. It now uses `native::world_mesh_usage()`.
+- Needs Mac check: open Esc > Debug in game, toggle probes/shadows/AO/bloom and
+  the shadow-map views while live, confirm the HUD diagnostics stay readable,
+  and verify probe spheres appear under the native renderer.
+
 ## 2026-11-06: Windows build/test groundwork (settings path, example gates, CI)
 - **Settings path:** on non-macOS the code fell through to `$HOME/.config`,
   which plain Windows shells never set, so graphics/audio settings silently

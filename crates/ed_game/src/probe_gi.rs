@@ -9,11 +9,12 @@
 //! downward physics ray), bake on the async pool, upload a 3D texture.
 //!
 //! Knobs: `EW_PROBE_GI=0` off, `EW_PROBE_K` bounce multiplier,
-//! `EW_PROBE_DEBUG=1|2` initial debug mode. Debug stats on shows the
-//! spheres; F3 (or I while stats are on) cycles debug: off ->
-//! per-face probe colours (unlit) -> lit white spheres (shaded by the volume).
+//! `EW_PROBE_DEBUG=1|2` initial debug mode. The pause menu's Debug tab and F3
+//! change the live settings: off -> per-face probe colours (unlit) -> lit
+//! white spheres (shaded by the volume).
 
 use crate::ground_scatter::GroundCover;
+use crate::menu::{DebugSettings, ProbeView};
 use crate::origin::WorldOrigin;
 use crate::sky::Sun;
 use avian3d::prelude::*;
@@ -27,8 +28,9 @@ use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, futures_lite::future};
 use ed_world::probes::{self, FACES, ProbeParams, ProbeVolume, SceneField};
 use std::sync::Arc;
 
-/// Gather cell size (m).
-const CELL: f32 = 2.0;
+/// Gather cell size (m). The probe grid is sparse, so 8 m terrain cells are
+/// enough for the 1 km-radius bounce field and keep the gather affordable.
+const CELL: f32 = 8.0;
 /// Scene margin beyond the probe grid (m), so edge probes see occluders.
 const MARGIN: f32 = 64.0;
 /// Cells gathered per frame.
@@ -46,12 +48,9 @@ pub struct ProbeGiPlugin;
 
 impl Plugin for ProbeGiPlugin {
     fn build(&self, app: &mut App) {
-        if std::env::var("EW_PROBE_GI").is_ok_and(|v| v == "0") {
-            return;
-        }
-        let debug = std::env::var("EW_PROBE_DEBUG").ok().and_then(|v| v.parse().ok()).unwrap_or(0u8) % 3;
-        app.insert_resource(ProbeGi { debug, ..default() })
-            .add_systems(Update, (drive_probes, update_intensity, debug_toggle, debug_spheres).chain());
+        app.init_resource::<DebugSettings>()
+            .init_resource::<ProbeGi>()
+            .add_systems(Update, (debug_toggle, sync_debug, drive_probes, update_intensity, debug_spheres).chain());
     }
 }
 
@@ -72,6 +71,7 @@ pub(crate) struct ProbeGi {
     entity: Option<Entity>,
     image: Option<Handle<Image>>,
     since_bake: f32,
+    enabled: bool,
     /// 0 off, 1 probe colours, 2 lit spheres.
     debug: u8,
     debug_dirty: bool,
@@ -107,6 +107,9 @@ fn drive_probes(
     mut images: ResMut<Assets<Image>>,
     mut commands: Commands,
 ) {
+    if !st.enabled {
+        return;
+    }
     st.since_bake += time.delta_secs();
     let Some(cam) = camera_pos(&cams) else { return };
     let generation = origin.generation;
@@ -278,7 +281,7 @@ fn upload(st: &mut ProbeGi, center: Vec3, generation: u64, vol: ProbeVolume, ima
 fn update_intensity(mut st: ResMut<ProbeGi>, sun: Query<&GlobalTransform, With<Sun>>, mut vols: Query<&mut IrradianceVolume>) {
     let elev = sun.iter().next().map(|t| t.back().y).unwrap_or(0.5);
     let user = std::env::var("EW_PROBE_K").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0);
-    let k = (1.0 + 4.0 * elev.max(0.0)) * user;
+    let k = if st.enabled { (1.0 + 4.0 * elev.max(0.0)) * user } else { 0.0 };
     st.bounce_k = k;
     let Some(e) = st.entity else { return };
     if let Ok(mut v) = vols.get_mut(e) {
@@ -288,24 +291,35 @@ fn update_intensity(mut st: ResMut<ProbeGi>, sun: Query<&GlobalTransform, With<S
     }
 }
 
-/// The probe spheres follow the debug-stats toggle (menu "Stats"): stats on
-/// shows the unlit probe colours, off hides them. F3 / I then cycles modes.
-fn debug_toggle(
-    keys: Res<ButtonInput<KeyCode>>,
-    gfx: Res<crate::menu::GraphicsSettings>,
-    mut was_stats: Local<bool>,
-    mut st: ResMut<ProbeGi>,
-) {
-    if gfx.show_stats != *was_stats {
-        *was_stats = gfx.show_stats;
-        st.debug = if gfx.show_stats { 1 } else { 0 };
-        st.debug_dirty = true;
+/// Copy the menu state into the bake/debug resources. The first run also
+/// applies `EW_PROBE_GI=0` and `EW_PROBE_DEBUG` startup values.
+fn sync_debug(debug: Res<DebugSettings>, mut st: ResMut<ProbeGi>, mut last: Local<Option<(bool, ProbeView)>>) {
+    let now = (debug.probe_gi, debug.probe_view);
+    if *last == Some(now) {
+        return;
     }
+    *last = Some(now);
+    let was_enabled = st.enabled;
+    st.enabled = debug.probe_gi;
+    if st.enabled && !was_enabled {
+        // Re-bake after enabling so a volume from before the toggle is not reused
+        // after the world, sun or camera has moved.
+        st.since_bake = REFRESH_S + 1.0;
+        st.gather = None;
+    }
+    st.debug = match debug.probe_view {
+        ProbeView::Off => 0,
+        ProbeView::Colors => 1,
+        ProbeView::Lit => 2,
+    };
+    st.debug_dirty = true;
+}
+
+/// F3 cycles probe spheres. I does the same while live diagnostics are on.
+fn debug_toggle(keys: Res<ButtonInput<KeyCode>>, gfx: Res<crate::menu::GraphicsSettings>, mut settings: ResMut<DebugSettings>) {
     if keys.just_pressed(KeyCode::F3) || (gfx.show_stats && keys.just_pressed(KeyCode::KeyI)) {
-        st.debug = (st.debug + 1) % 3;
-        st.debug_dirty = true;
-        let name = ["off", "probe colours (unlit)", "lit spheres"][st.debug as usize];
-        info!("probe GI debug: {name}");
+        settings.probe_view = settings.probe_view.next();
+        info!("probe GI debug: {}", settings.probe_view.label());
     }
 }
 
@@ -330,7 +344,7 @@ fn debug_spheres(
         commands.entity(e).despawn();
     }
     let (Some(vol), Some((center, _)), Some(cam)) = (st.volume.clone(), st.live, camera_pos(&cams)) else { return };
-    if st.debug == 0 {
+    if st.debug == 0 || !st.enabled {
         return;
     }
     let unlit = st.debug == 1;
@@ -373,7 +387,7 @@ fn debug_spheres(
     if pos.is_empty() {
         return;
     }
-    let mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
+    let mesh = Mesh::new(PrimitiveTopology::TriangleList, crate::native::world_mesh_usage())
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
         .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, nrm)
         .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, col)

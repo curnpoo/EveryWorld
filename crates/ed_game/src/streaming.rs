@@ -610,6 +610,7 @@ fn select_tiles(
     let params = LodParams {
         root_zoom,
         max_zoom,
+        fine_range_m: env_num("EW_FINE_RANGE_M", 16_000.0),
         ..default()
     };
     let wanted: HashSet<TileId> = lod::select(cam, mgr.ground_estimate, &params).into_iter().collect();
@@ -683,8 +684,11 @@ fn select_tiles(
         if std::env::var_os("EW_KEEP_TILES").is_none() && !visible && d > OFFSCREEN_PREBUILD {
             continue;
         }
-        let job = TileJob { tile: *t, frame: origin.frame, cache: cfg.cache.clone(), vector_template: mgr.template.clone() };
-        mgr.far_hint.insert(*t, cam.distance_to(t.center()) > far_lod_m());
+        let far_lod = cam.distance_to(t.center()) > far_lod_m();
+        // `EW_CHEAP_FAR=1` also skips trees/props/rocks when building far tiles (A/B switch).
+        let cheap_far = far_lod && std::env::var_os("EW_CHEAP_FAR").is_some();
+        let job = TileJob { tile: *t, frame: origin.frame, cache: cfg.cache.clone(), vector_template: mgr.template.clone(), far: cheap_far };
+        mgr.far_hint.insert(*t, far_lod);
         let io_job = job.clone();
         if mgr.io.submit(*t, p, move || tilegen::prefetch(&io_job)) {
             mgr.jobs.insert(*t, job);

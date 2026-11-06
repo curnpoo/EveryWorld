@@ -54,6 +54,7 @@ impl Plugin for NativePlugin {
 mod imp {
     use super::*;
     use crate::impostors::ImpostorMaterial;
+    use crate::menu::{DebugSettings, OceanFft};
     use bevy::camera::visibility::{InheritedVisibility, RenderLayers};
     use bevy::window::{PrimaryWindow, RawHandleWrapper};
     use ed_metal::world::{Blend, DrawItem, FrameParams, MeshPrep, WorldRenderer, prep};
@@ -81,9 +82,9 @@ mod imp {
     }
 
     /// Mirrors the Bevy-side probe GI volume into the native renderer (re-uploaded when it re-bakes).
-    pub fn send_probes(mut st: NonSendMut<NativeState>, gi: Option<Res<crate::probe_gi::ProbeGi>>, mut last: Local<Option<(Vec3, u64)>>) {
+    pub fn send_probes(mut st: NonSendMut<NativeState>, gi: Option<Res<crate::probe_gi::ProbeGi>>, debug: Res<DebugSettings>, mut last: Local<Option<(Vec3, u64)>>) {
         let (Some(r), Some(gi)) = (st.renderer.as_mut(), gi) else { return };
-        if std::env::var("EW_PROBE_GI").map(|v| v == "0").unwrap_or(false) {
+        if !debug.probe_gi {
             r.set_probe_intensity(0.0);
             return;
         }
@@ -118,6 +119,12 @@ mod imp {
     /// Meshes the renderer has not received yet are prepared off-thread ([`ed_metal::world::prep`]:
     /// cluster grid + shadow-proxy simplification used to run on the main thread and hitch the
     /// reveal frame); `native_frame` polls the receiver and turns results into buffers.
+
+    #[derive(bevy::ecs::system::SystemParam)]
+    pub struct NativeMenuSettings<'w> {
+        gfx: Res<'w, crate::menu::GraphicsSettings>,
+        dbg: Res<'w, DebugSettings>,
+    }
 
     pub struct NativeState {
         renderer: Option<WorldRenderer>,
@@ -248,7 +255,7 @@ mod imp {
         scat_mats: Res<Assets<crate::ground_material::ScatterMaterial>>,
         images: Res<Assets<Image>>,
         sat: Option<Res<crate::ground_material::SatPool>>,
-        gfx: Res<crate::menu::GraphicsSettings>,
+        settings: NativeMenuSettings,
         items: Query<(&Mesh3d, &GlobalTransform, &InheritedVisibility, Option<&MeshMaterial3d<StandardMaterial>>, Option<&bevy::mesh::MeshTag>, Has<MeshMaterial3d<crate::ground_material::TerrainMaterial>>, Has<bevy::light::NotShadowCaster>, Has<crate::boot_plume::PlumeMesh>, Has<crate::body::WingMesh>, Option<&MeshMaterial3d<crate::foliage::FoliageMaterial>>, Option<&MeshMaterial3d<crate::ground_material::ScatterMaterial>>, Has<MeshMaterial3d<ImpostorMaterial>>, Option<&RenderLayers>, Has<crate::streaming::TerrainShadowProxy>), (Without<MeshMaterial3d<crate::clouds::CloudMaterial>>)>,
     ) {
         let frame_t0 = Instant::now();
@@ -277,6 +284,8 @@ mod imp {
         }
         let Some(r) = st.renderer.as_mut() else { return };
         let r = &mut *r;
+        let gfx = &settings.gfx;
+        let dbg = &settings.dbg;
         // Off-thread mesh prep results land here. Only a byte-bounded slice becomes
         // buffers per frame: a burst of finished city meshes used to upload in one
         // frame and stall it for hundreds of milliseconds. `EW_UPLOAD_MB` overrides.
@@ -610,14 +619,20 @@ mod imp {
                 exposure: 1.7,
                 size: (w, h),
                 scale: window.map(|(w, _)| w.scale_factor() as f64).unwrap_or(1.0),
+                debug_view: dbg.native_view.value(),
                 // The ocean FFT only earns its ~4.8 ms when the sea is close enough to see waves
                 // on. The sea is a global disc, so "close" means the tiles around the camera have
                 // ground at or below sea level; in a city a few km inland that is false and the
                 // compute is skipped.
-                // `EW_OCEAN_FFT=1/0` overrides the automatic choice, for A/B runs.
-                ocean_fft: match std::env::var("EW_OCEAN_FFT") {
-                    Ok(v) => v != "0",
-                    Err(_) => mgr.sea_near(),
+                // Auto keeps the sea-near heuristic and honors `EW_OCEAN_FFT=1/0` for A/B runs;
+                // the Debug tab can force it either way live.
+                ocean_fft: match dbg.ocean_fft {
+                    OceanFft::On => true,
+                    OceanFft::Off => false,
+                    OceanFft::Auto => match std::env::var("EW_OCEAN_FFT") {
+                        Ok(v) => v != "0",
+                        Err(_) => mgr.sea_near(),
+                    },
                 },
         };
         st.ocean_fft = fp.ocean_fft;
