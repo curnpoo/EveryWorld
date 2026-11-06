@@ -11,3 +11,4 @@ edition.workspace = true
 default = []
 
 [dependencies]
+meshopt = "0.6"

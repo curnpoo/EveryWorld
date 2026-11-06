@@ -16,6 +16,7 @@
 //! `(b - a) x (c - a)` is the front-face normal.
 
 use crate::cull::sphere_visible;
+use meshopt::{simplify, simplify_scale, SimplifyOptions, VertexDataAdapter};
 use std::collections::BTreeMap;
 
 /// Maximum triangles per cluster.
@@ -44,9 +45,16 @@ pub struct Cluster {
     pub tri_count: u32,
     pub base_vertex: i32,
     pub pad: u32,
+    /// Geometric error (metres) of this cluster's geometry vs the finest level.
+    /// 0 for the finest level.
+    pub error: f32,
+    /// Geometric error (metres) of the next coarser level that contains this
+    /// cluster. `f32::INFINITY` for the coarsest level. Used by the LOD
+    /// selection rule.
+    pub parent_error: f32,
 }
 
-const _: () = assert!(std::mem::size_of::<Cluster>() == 48);
+const _: () = assert!(std::mem::size_of::<Cluster>() == 56);
 
 /// Output of [`build`].
 #[derive(Clone, Debug, PartialEq)]
@@ -57,6 +65,8 @@ pub struct ClusteredMesh {
     pub indices: Vec<u16>,
     /// Vertex positions, cluster-contiguous. Vertices shared by two clusters are duplicated.
     pub vertices: Vec<[f32; 3]>,
+    /// Input vertex index of each entry in `vertices`, so per-vertex attributes can be gathered.
+    pub src: Vec<u32>,
 }
 
 /// Splits a triangle mesh into clusters.
@@ -72,7 +82,7 @@ pub struct ClusteredMesh {
 /// If `indices.len()` is not a multiple of 3, or an index is out of range for `positions`.
 pub fn build(positions: &[[f32; 3]], indices: &[u32]) -> ClusteredMesh {
     assert!(indices.len().is_multiple_of(3),"index count must be a multiple of 3, got {}", indices.len());
-    let mut out = ClusteredMesh { clusters: Vec::new(), indices: Vec::new(), vertices: Vec::new() };
+    let mut out = ClusteredMesh { clusters: Vec::new(), indices: Vec::new(), vertices: Vec::new(), src: Vec::new() };
     if indices.is_empty() {
         return out;
     }
@@ -193,6 +203,7 @@ impl Packer {
         let first_index = out.indices.len() as u32;
         let base_vertex = i32::try_from(out.vertices.len()).expect("vertex count exceeds i32");
         out.vertices.extend_from_slice(&pts);
+        out.src.extend_from_slice(&self.verts);
         for l in &self.local {
             out.indices.extend_from_slice(l);
         }
@@ -205,6 +216,8 @@ impl Packer {
             tri_count: self.tris.len() as u32,
             base_vertex,
             pad: 0,
+            error: 0.0,
+            parent_error: f32::INFINITY,
         });
         *self = Packer::default();
     }
@@ -328,6 +341,306 @@ fn morton(q: [u32; 3]) -> u64 {
     spread_bits(q[0]) | (spread_bits(q[1]) << 1) | (spread_bits(q[2]) << 2)
 }
 
+
+/// A cluster LOD hierarchy: level 0 is the finest (original) mesh, the last level
+/// is the coarsest. Each cluster carries its own `error` and its parent level's
+/// `error` (in `parent_error`), so the LOD selection rule is local to the cluster.
+#[derive(Clone, Debug)]
+pub struct ClusterHierarchy {
+    pub levels: Vec<ClusteredMesh>,
+}
+
+impl ClusterHierarchy {
+    /// Number of levels.
+    pub fn len(&self) -> usize {
+        self.levels.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.levels.is_empty()
+    }
+}
+
+/// Simplified copies of a mesh at the given error budgets (metres of surface deviation).
+///
+/// The vertex-clustering decimation that the renderer used before this snapped every vertex to
+/// an arbitrary neighbour in a grid cell, which twists flat walls: at a distance the towers came
+/// out as sails of stretched triangles. `meshopt` collapses the edges that cost the least shape
+/// error, so the silhouette survives.
+///
+/// Indices stay in the input vertex space, so every level can be drawn with the same vertex
+/// buffer. A level that cannot simplify falls back to the input.
+pub fn simplify_levels(positions: &[[f32; 3]], indices: &[u32], errors: &[f32]) -> Vec<Vec<u32>> {
+    if positions.is_empty() || indices.is_empty() {
+        return errors.iter().map(|_| indices.to_vec()).collect();
+    }
+    // The LOD geometry is a soup of separate quads with duplicated corner vertices, so no two
+    // triangles share an edge and a simplifier cannot collapse anything. Weld first (on a 1 mm
+    // grid, since the corners of neighbouring quads differ by float rounding): vertices that sit
+    // on the same spot become one, which gives the simplifier the topology it needs. The result's
+    // indices are mapped back into the original vertex space, so every level can be drawn with the
+    // mesh's own vertex buffer.
+    const WELD_MM: f32 = 1.0;
+    let mut cells: std::collections::HashMap<(i32, i32, i32), u32> = std::collections::HashMap::new();
+    let mut remap: Vec<u32> = Vec::with_capacity(positions.len());
+    let mut welded_pos: Vec<[f32; 3]> = Vec::new();
+    let mut orig_of: Vec<u32> = Vec::new();
+    for (v, p) in positions.iter().enumerate() {
+        let key = (
+            (p[0] / WELD_MM).round() as i32,
+            (p[1] / WELD_MM).round() as i32,
+            (p[2] / WELD_MM).round() as i32,
+        );
+        let w = match cells.get(&key) {
+            Some(&w) => w,
+            None => {
+                let w = welded_pos.len() as u32;
+                cells.insert(key, w);
+                welded_pos.push(*p);
+                orig_of.push(v as u32);
+                w
+            }
+        };
+        remap.push(w);
+    }
+    let welded_idx: Vec<u32> = indices.iter().map(|&i| remap[i as usize]).collect();
+    // meshopt wants a vertex buffer view: 3 f32 per vertex, stride 12, offset 0.
+    let bytes: &[u8] = unsafe { std::slice::from_raw_parts(welded_pos.as_ptr() as *const u8, welded_pos.len() * 12) };
+    let Ok(vda) = VertexDataAdapter::new(bytes, 12, 0) else {
+        return errors.iter().map(|_| indices.to_vec()).collect();
+    };
+    // meshopt normalises the positions to the mesh's extent and compares squared errors in that
+    // space, so an absolute error of `e` metres has to be scaled by the extent twice.
+    let extent = simplify_scale(&vda).max(1e-6);
+    errors
+        .iter()
+        .map(|&e| {
+            let out = simplify(&welded_idx, &vda, 0, e / (extent * extent), SimplifyOptions::ErrorAbsolute | SimplifyOptions::Permissive | SimplifyOptions::Prune, None);
+            if out.is_empty() || out.len() >= welded_idx.len() {
+                return indices.to_vec();
+            }
+            out.into_iter().map(|w| orig_of[w as usize]).collect()
+        })
+        .collect()
+}
+
+/// Builds a cluster LOD hierarchy by repeatedly simplifying the whole mesh and
+/// re-clustering. `GROUP_SIZE` is not used: each building is simplified as one
+/// mesh (no internal borders), so there are no cracks within a building.
+///
+/// Simplification uses `meshopt` with `LockBorder` disabled (the building outline
+/// is the only border and is preserved by the error metric) and `ErrorAbsolute`,
+/// so `error` is in metres. Stops when simplification no longer reduces the
+/// triangle count by at least 10% or the mesh is below 64 triangles.
+pub fn build_hierarchy(positions: &[[f32; 3]], indices: &[u32]) -> ClusterHierarchy {
+    const MIN_TRIS: usize = 64;
+    let mut levels = vec![build(positions, indices)];
+    // error on level 0 is already 0.
+
+    let mut cur_indices: Vec<u32> = indices.to_vec();
+    // cur_src maps a vertex index in cur mesh space to the original vertex index.
+    // cur_positions stays = positions (meshopt keeps original vertices).
+    let mut level_errors: Vec<f32> = vec![0.0];
+
+    loop {
+        let tri_count = cur_indices.len() / 3;
+        if tri_count < MIN_TRIS {
+            break;
+        }
+        // Build a VertexDataAdapter over positions (3 f32 per vertex, stride 12, offset 0).
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(positions.as_ptr() as *const u8, positions.len() * 12)
+        };
+        let vda = match VertexDataAdapter::new(bytes, 12, 0) {
+            Ok(v) => v,
+            Err(_) => break,
+        };
+        let level = levels.len();
+        let budget = 2.0f32 * (1u32 << (level-1).min(8)) as f32;
+        let mut err = 0.0f32;
+        let simplified = simplify(
+            &cur_indices,
+            &vda,
+            0,
+            budget,
+            SimplifyOptions::ErrorAbsolute | SimplifyOptions::Permissive,
+            Some(&mut err),
+        );
+        if simplified.is_empty() || simplified.len() >= cur_indices.len() * 9 / 10 {
+            break;
+        }
+        // Re-cluster the simplified mesh. src maps to positions indices; remap to original.
+        let mut mesh = build(positions, &simplified);
+        // build() set src = simplified indices (into positions). positions == original, so src is already original. Good.
+        // Tag error.
+        for c in &mut mesh.clusters {
+            c.error = err;
+            c.parent_error = f32::INFINITY;
+        }
+        levels.push(mesh);
+        level_errors.push(err);
+        cur_indices = simplified;
+    }
+
+    // Final level: a single cube approximating the building's bounding box. This is the
+    // coarsest representation, used when the building is very far away.
+    {
+        let mut lo = [f32::INFINITY; 3];
+        let mut hi = [f32::NEG_INFINITY; 3];
+        for p in positions {
+            for k in 0..3 {
+                lo[k] = lo[k].min(p[k]);
+                hi[k] = hi[k].max(p[k]);
+            }
+        }
+        let cx = (lo[0] + hi[0]) * 0.5;
+        let cy = (lo[1] + hi[1]) * 0.5;
+        let cz = (lo[2] + hi[2]) * 0.5;
+        let hx = (hi[0] - lo[0]) * 0.5;
+        let hy = (hi[1] - lo[1]) * 0.5;
+        let hz = (hi[2] - lo[2]) * 0.5;
+        // 8 corners
+        let corners: [[f32;3];8] = [
+            [cx-hx, cy-hy, cz-hz], [cx+hx, cy-hy, cz-hz],
+            [cx+hx, cy+hy, cz-hz], [cx-hx, cy+hy, cz-hz],
+            [cx-hx, cy-hy, cz+hz], [cx+hx, cy-hy, cz+hz],
+            [cx+hx, cy+hy, cz+hz], [cx-hx, cy+hy, cz+hz],
+        ];
+        // 12 triangles (2 per face), ccw from outside
+        let tris: [[u32;3];12] = [
+            [0,2,1],[0,3,2], // -z? we'll just use a consistent winding
+            [4,5,6],[4,6,7],
+            [0,1,5],[0,5,4],
+            [2,3,7],[2,7,6],
+            [0,4,7],[0,7,3],
+            [1,2,6],[1,6,5],
+        ];
+        // compute error = max distance from any original vertex to nearest cube vertex (conservative: to center-ish)
+        // Use bounding sphere radius as conservative error.
+        let mut maxd2 = 0.0f32;
+        for p in positions {
+            let dx = p[0]-cx; let dy=p[1]-cy; let dz=p[2]-cz;
+            maxd2 = maxd2.max(dx*dx+dy*dy+dz*dz);
+        }
+        let err = maxd2.sqrt();
+        // Build a ClusteredMesh manually for the cube
+        // Use build() on cube to get proper cluster, but build needs positions+indices as flat.
+        let mut cube_pos = Vec::new();
+        let mut cube_idx = Vec::new();
+        for c in &corners { cube_pos.push(*c); }
+        for t in &tris { for &v in t { cube_idx.push(v); } }
+        // src: map each cube vertex to 0 (original) for attribute gather
+        let built = build(&cube_pos, &cube_idx);
+        // remap src to 0
+        let mut built = built;
+        for s in &mut built.src { *s = 0; }
+        for c in &mut built.clusters {
+            c.error = err;
+            c.parent_error = f32::INFINITY;
+        }
+        // only add if there is at least one prior level (always) and cube is coarser
+        levels.push(built);
+        level_errors.push(err);
+        let _ = (hx,hy,hz);
+    }
+
+    // Set parent_error: level L's parent_error = level L+1's error (or INF for last).
+    let n = levels.len();
+    for (li, mesh) in levels.iter_mut().enumerate() {
+        let parent_err = if li + 1 < n {
+            level_errors[li + 1]
+        } else {
+            f32::INFINITY
+        };
+        for c in &mut mesh.clusters {
+            c.parent_error = parent_err;
+            if li == 0 {
+                c.error = 0.0;
+            }
+        }
+    }
+    if let Some(m0) = levels.first_mut() {
+        for c in &mut m0.clusters {
+            c.error = 0.0;
+        }
+    }
+
+    ClusterHierarchy { levels }
+}
+
+/// Flattens a hierarchy into a single [`ClusteredMesh`] by concatenating every level's
+/// clusters, vertices and indices, adjusting `base_vertex` and `first_index` so each
+/// cluster still points at its own vertices. Used by GPU paths that store all levels in
+/// one buffer. `error`/`parent_error` are preserved per cluster.
+pub fn flatten(hier: &ClusterHierarchy) -> ClusteredMesh {
+    let mut out = ClusteredMesh { clusters: Vec::new(), indices: Vec::new(), vertices: Vec::new(), src: Vec::new() };
+    for mesh in &hier.levels {
+        let voff = out.vertices.len() as i32;
+        let ioff = out.indices.len() as u32; // in u16 units (1 index = 1 u16)
+        // copy vertices + src
+        out.vertices.extend_from_slice(&mesh.vertices);
+        out.src.extend_from_slice(&mesh.src);
+        // copy indices with offset? indices are local u16; they stay local to each cluster's
+        // base_vertex, so no remapping needed. But first_index must point into combined indices.
+        let idx_base_u16 = out.indices.len() as u32;
+        out.indices.extend_from_slice(&mesh.indices);
+        for c in &mesh.clusters {
+            let mut cc = *c;
+            cc.base_vertex += voff;
+            cc.first_index += idx_base_u16;
+            out.clusters.push(cc);
+        }
+        let _ = (ioff,);
+    }
+    out
+}
+
+/// Projected screen-space error of a cluster, in pixels.
+pub fn projected_error_px(error: f32, distance: f32, screen_height_px: f32, fov_y_rad: f32) -> f32 {
+    if distance <= 0.0 || fov_y_rad <= 0.0 {
+        return f32::INFINITY;
+    }
+    error * screen_height_px / (2.0 * distance * (fov_y_rad * 0.5).tan())
+}
+
+/// LOD selection rule: draw this cluster iff its own projected error is within
+/// the threshold AND its parent's projected error exceeds the threshold.
+pub fn cluster_lod_selected(c: &Cluster, distance: f32, threshold_px: f32, screen_height_px: f32, fov_y_rad: f32) -> bool {
+    let self_px = projected_error_px(c.error, distance, screen_height_px, fov_y_rad);
+    let parent_px = projected_error_px(c.parent_error, distance, screen_height_px, fov_y_rad);
+    self_px <= threshold_px && parent_px > threshold_px
+}
+
+/// Counts visible triangles of a hierarchy for a camera, applying frustum cull,
+/// backface cone, and LOD selection. `threshold_px` is the screen-space error
+/// budget in pixels.
+pub fn hierarchy_visible_tris(
+    hier: &ClusterHierarchy,
+    planes: &[[f32; 4]; 6],
+    cam: [f32; 3],
+    threshold_px: f32,
+    screen_height_px: f32,
+    fov_y_rad: f32,
+) -> u32 {
+    let mut total = 0u32;
+    for mesh in &hier.levels {
+        for c in &mesh.clusters {
+            let center = c.center;
+            let dx = center[0] - cam[0];
+            let dy = center[1] - cam[1];
+            let dz = center[2] - cam[2];
+            let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+            if !cluster_visible(c, planes, cam) {
+                continue;
+            }
+            if !cluster_lod_selected(c, dist, threshold_px, screen_height_px, fov_y_rad) {
+                continue;
+            }
+            total += c.tri_count;
+        }
+    }
+    total
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -414,7 +727,7 @@ mod tests {
 
     #[test]
     fn cluster_layout() {
-        assert_eq!(std::mem::size_of::<Cluster>(), 48);
+        assert_eq!(std::mem::size_of::<Cluster>(), 56);
         assert_eq!(std::mem::align_of::<Cluster>(), 4);
     }
 
@@ -522,6 +835,56 @@ mod tests {
     }
 
     #[test]
+    fn hierarchy_has_finest_first() {
+        let (pos, idx) = grid(20);
+        let h = build_hierarchy(&pos, &idx);
+        assert!(!h.levels.is_empty());
+        // level 0 error 0
+        for c in &h.levels[0].clusters {
+            assert_eq!(c.error, 0.0);
+        }
+        if h.levels.len() > 1 {
+            for c in &h.levels[1].clusters {
+                assert!(c.error > 0.0);
+            }
+        }
+        // last level has infinite parent_error
+        let last = h.levels.len() - 1;
+        for c in &h.levels[last].clusters {
+            assert!(c.parent_error.is_infinite());
+        }
+    }
+
+    #[test]
+    fn hierarchy_reduces_or_keeps() {
+        let (pos, idx) = grid(40);
+        let h = build_hierarchy(&pos, &idx);
+        let t0: u32 = h.levels[0].clusters.iter().map(|c| c.tri_count).sum();
+        if h.levels.len() > 1 {
+            let t1: u32 = h.levels[1].clusters.iter().map(|c| c.tri_count).sum();
+            assert!(t1 <= t0, "level1 {} > level0 {}", t1, t0);
+        }
+    }
+
+    #[test]
+    fn projected_error_zero_for_zero_error() {
+        assert_eq!(projected_error_px(0.0, 100.0, 720.0, 1.0), 0.0);
+    }
+
+    #[test]
+    fn lod_selection_picks_finest_when_parent_too_inaccurate() {
+        // level0 cluster: error 0, parent_error 1m. At a distance where parent projects to 2px (>1px threshold),
+        // level0 should be selected.
+        let c = Cluster {
+            center: [0.0;3], radius: 1.0, cone_axis: [0.0;3], cone_cutoff: 1.0,
+            first_index: 0, tri_count: 1, base_vertex: 0, pad: 0,
+            error: 0.0, parent_error: 1.0,
+        };
+        // distance such that 1m projects to ~2px
+        assert!(cluster_lod_selected(&c, 100.0, 1.0, 720.0, 1.0));
+    }
+
+    #[test]
     fn grid_cluster_count() {
         let (pos, idx) = grid(100);
         let tris = idx.len() / 3;
@@ -530,5 +893,105 @@ mod tests {
         println!("grid 100x100: {} tris, {} clusters, avg {:.1} tris/cluster", tris, m.clusters.len(), avg);
         let ideal = tris as f64 / MAX_TRIS as f64;
         assert!((m.clusters.len() as f64) < 1.5 * ideal, "{} clusters vs ideal {ideal:.1}", m.clusters.len());
+    }
+}
+
+#[cfg(test)]
+mod simplify_levels_tests {
+    use super::simplify_levels;
+
+    /// A subdivided plane: the LOD levels must shrink it and stay valid indices.
+    #[test]
+    fn levels_shrink_and_stay_valid() {
+        let n = 40usize;
+        let mut pos = Vec::new();
+        let mut idx = Vec::new();
+        for j in 0..=n {
+            for i in 0..=n {
+                pos.push([i as f32, 0.0, j as f32]);
+            }
+        }
+        for j in 0..n {
+            for i in 0..n {
+                let a = (j * (n + 1) + i) as u32;
+                let b = a + 1;
+                let c = a + (n + 1) as u32;
+                let d = c + 1;
+                idx.extend_from_slice(&[a, b, d, a, d, c]);
+            }
+        }
+        let levels = simplify_levels(&pos, &idx, &[0.5, 4.0]);
+        assert_eq!(levels.len(), 2);
+        for (k, l) in levels.iter().enumerate() {
+            eprintln!("level {k}: {} indices (of {})", l.len(), idx.len());
+            assert!(l.len() < idx.len(), "level {k} did not shrink the mesh");
+            for &i in l.iter() {
+                assert!((i as usize) < pos.len(), "level {k} points outside the vertex buffer");
+            }
+        }
+        // A coarser budget must not give back triangles.
+        assert!(levels[1].len() <= levels[0].len());
+    }
+
+    /// The LOD geometry is a soup of quads with duplicated corners: the levels still have to
+    /// shrink it, which only works if the simplifier gets a welded topology.
+    #[test]
+    fn levels_shrink_a_soup_of_quads() {
+        // A grid of quads where every quad carries its own corner vertices: the corners land on
+        // the same spots, but no two triangles share an edge.
+        let mut pos = Vec::new();
+        let mut idx = Vec::new();
+        let side = 20usize;
+        for j in 0..side {
+            for i in 0..side {
+                let x = i as f32 * 3.0;
+                let z = j as f32 * 3.0;
+                let b = pos.len() as u32;
+                for (dx, dz) in [(0.0f32, 0.0f32), (3.0, 0.0), (3.0, 3.0), (0.0, 3.0)] {
+                    pos.push([x + dx, 0.0, z + dz]);
+                }
+                idx.extend_from_slice(&[b, b + 1, b + 2, b, b + 2, b + 3]);
+            }
+        }
+        let levels = simplify_levels(&pos, &idx, &[1.0]);
+        eprintln!("soup: {} -> {} indices", idx.len(), levels[0].len());
+        assert!(levels[0].len() < idx.len(), "the simplifier could not collapse a welded quad soup");
+    }
+}
+
+#[cfg(test)]
+mod tile_probe {
+    /// How much a real city tile shrinks at each error budget (EPL_LOD_DUMP=path).
+    #[test]
+    fn tile_error_budgets() {
+        let Ok(path) = std::env::var("EPL_LOD_DUMP") else { return };
+        let raw = std::fs::read(path).unwrap();
+        let mut o = 4usize;
+        let rd = |o: &mut usize| -> u32 {
+            let v = u32::from_le_bytes(raw[*o..*o + 4].try_into().unwrap());
+            *o += 4;
+            v
+        };
+        let nv = rd(&mut o) as usize;
+        let ni = rd(&mut o) as usize;
+        o = 12;
+        let mut pos = Vec::with_capacity(nv);
+        for _ in 0..nv {
+            let mut p = [0f32; 3];
+            for k in 0..3 {
+                p[k] = f32::from_le_bytes(raw[o..o + 4].try_into().unwrap());
+                o += 4;
+            }
+            pos.push(p);
+        }
+        o += nv * 3 * 4 + nv * 4 * 4;
+        let mut idx = Vec::with_capacity(ni);
+        for _ in 0..ni {
+            idx.push(rd(&mut o));
+        }
+        for e in [1.0f32, 4.0, 16.0, 64.0, 256.0, 1024.0] {
+            let l = super::simplify_levels(&pos, &idx, &[e]);
+            eprintln!("error {e} m: {} tris ({:.1}%)", l[0].len() / 3, 100.0 * l[0].len() as f32 / idx.len() as f32);
+        }
     }
 }

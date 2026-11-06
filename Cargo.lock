@@ -2853,6 +2853,9 @@ dependencies = [
 [[package]]
 name = "ed_gpu"
 version = "0.1.0"
+dependencies = [
+ "meshopt",
+]
 
 [[package]]
 name = "ed_metal"

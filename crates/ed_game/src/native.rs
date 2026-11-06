@@ -43,9 +43,10 @@ impl Plugin for NativePlugin {
 mod imp {
     use super::*;
     use crate::impostors::ImpostorMaterial;
-    use bevy::camera::visibility::InheritedVisibility;
+    use bevy::camera::visibility::{InheritedVisibility, RenderLayers};
+    use bevy::tasks::AsyncComputeTaskPool;
     use bevy::window::{PrimaryWindow, RawHandleWrapper};
-    use ed_metal::world::{Blend, DrawItem, FrameParams, WorldRenderer};
+    use ed_metal::world::{Blend, DrawItem, FrameParams, MeshPrep, WorldRenderer, prep};
     use raw_window_handle::RawWindowHandle;
     use std::collections::HashMap;
     use std::time::Instant;
@@ -87,7 +88,26 @@ mod imp {
         r.upload_probe_volume(vol.dims(), &texels, (c + vol.box_min).to_array(), (c + vol.box_max).to_array());
     }
 
-    #[derive(Default)]
+    /// Render layers the native world camera does not own: globe (layer 1) is drawn by its own
+    /// camera, camera-only meshes (layer 6) must never cast, sun-only meshes (layer 7) must only
+    /// cast. Returns (on globe layer, sun-only, camera-only). Respected by the Metal mirror below;
+    /// Bevy's own pipeline handles it natively.
+    fn layer_flags(layers: Option<&RenderLayers>) -> (bool, bool, bool) {
+        if let Some(l) = layers {
+            (
+                l.intersects(&RenderLayers::layer(crate::globe::GLOBE_LAYER)),
+                l.intersects(&RenderLayers::layer(crate::clouds::CLOUD_SHADOW_LAYER)),
+                l.intersects(&RenderLayers::layer(crate::camera::CAMERA_ONLY_LAYER)),
+            )
+        } else {
+            (false, false, false)
+        }
+    }
+
+    /// Meshes the renderer has not received yet are prepared off-thread ([`ed_metal::world::prep`]:
+    /// cluster grid + shadow-proxy simplification used to run on the main thread and hitch the
+    /// reveal frame); `native_frame` polls the receiver and turns results into buffers.
+
     pub struct NativeState {
         renderer: Option<WorldRenderer>,
         tried: bool,
@@ -104,6 +124,84 @@ mod imp {
         shot_done: Option<u64>,
         ground_sent: bool,
         clouds_failed: bool,
+        prep_tx: crossbeam_channel::Sender<(u64, MeshPrep)>,
+        prep_rx: crossbeam_channel::Receiver<(u64, MeshPrep)>,
+        /// Mesh ids whose off-thread prep is in flight.
+        prepping: std::collections::HashSet<u64>,
+        /// Mesh ids whose prep produced nothing (missing attributes); never re-requested.
+        prep_failed: std::collections::HashSet<u64>,
+        /// Whether the ocean FFT ran last frame (for the log line).
+        ocean_fft: bool,
+    }
+
+    impl Default for NativeState {
+        fn default() -> Self {
+            let (prep_tx, prep_rx) = crossbeam_channel::unbounded();
+            Self {
+                renderer: None,
+                tried: false,
+                ids: HashMap::new(),
+                next_id: 0,
+                frame: 0,
+                frames_since_report: 0,
+                last_report: None,
+                draw_scratch: Vec::new(),
+                skipped_no_cpu: 0,
+                skipped_tex: 0,
+                tex_ids: std::collections::HashMap::new(),
+                idle_frames: 0,
+                shot_done: None,
+                ground_sent: false,
+                clouds_failed: false,
+                prepping: std::collections::HashSet::new(),
+                prep_failed: std::collections::HashSet::new(),
+                ocean_fft: false,
+                prep_tx,
+                prep_rx,
+            }
+        }
+    }
+
+    /// New meshes are requested (attributes extracted, clone + spawn) at most this often per frame
+    /// while visible; hidden tiles (staged by `apply_tiles`) get a slice of the leftovers so their
+    /// buffers exist before reveal. Tunable via EW_UPLOAD_BUDGET / EW_HIDDEN_UPLOAD_BUDGET.
+    const UPLOAD_BUDGET: usize = 48;
+    const HIDDEN_UPLOAD_BUDGET: usize = 16;
+
+    /// How many mesh preps may run at the same time. Each prep builds a cluster grid and three
+    /// decimation levels for one mesh, which is seconds of CPU for a big city tile. Unbounded
+    /// concurrency filled every core and starved the main thread: the framerate fell to single
+    /// digits while a city streamed in, which is what "worse and worse framerate" looked like.
+    /// `EW_PREP_JOBS` overrides the default.
+    fn prep_permits() -> usize {
+        std::env::var("EW_PREP_JOBS").ok().and_then(|v| v.parse().ok()).unwrap_or(2).clamp(1, 8)
+    }
+
+    fn prep_gate() -> &'static (std::sync::Mutex<usize>, std::sync::Condvar) {
+        static GATE: std::sync::OnceLock<(std::sync::Mutex<usize>, std::sync::Condvar)> = std::sync::OnceLock::new();
+        GATE.get_or_init(|| (std::sync::Mutex::new(prep_permits()), std::sync::Condvar::new()))
+    }
+
+    /// Block until a prep slot is free, run `f`, release the slot.
+    fn with_prep_slot<T>(f: impl FnOnce() -> T) -> T {
+        let (lock, cv) = prep_gate();
+        let mut left = {
+            let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
+            while *g == 0 {
+                g = cv.wait(g).unwrap_or_else(|e| e.into_inner());
+            }
+            *g -= 1;
+            *g
+        };
+        let out = f();
+        {
+            let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
+            *g += 1;
+            left = *g;
+        }
+        cv.notify_one();
+        let _ = left;
+        out
     }
 
     /// Replaces `render_scale::sync_cameras` while native: 3D camera off, UI camera owns the window.
@@ -164,7 +262,7 @@ mod imp {
         images: Res<Assets<Image>>,
         sat: Option<Res<crate::ground_material::SatPool>>,
         gfx: Res<crate::menu::GraphicsSettings>,
-        items: Query<(&Mesh3d, &GlobalTransform, &InheritedVisibility, Option<&MeshMaterial3d<StandardMaterial>>, Option<&bevy::mesh::MeshTag>, Has<MeshMaterial3d<crate::ground_material::TerrainMaterial>>, Has<bevy::light::NotShadowCaster>, Has<crate::boot_plume::PlumeMesh>, Has<crate::body::WingMesh>, Option<&MeshMaterial3d<crate::foliage::FoliageMaterial>>, Option<&MeshMaterial3d<crate::ground_material::ScatterMaterial>>, Has<MeshMaterial3d<ImpostorMaterial>>), (Without<MeshMaterial3d<crate::clouds::CloudMaterial>>)>,
+        items: Query<(&Mesh3d, &GlobalTransform, &InheritedVisibility, Option<&MeshMaterial3d<StandardMaterial>>, Option<&bevy::mesh::MeshTag>, Has<MeshMaterial3d<crate::ground_material::TerrainMaterial>>, Has<bevy::light::NotShadowCaster>, Has<crate::boot_plume::PlumeMesh>, Has<crate::body::WingMesh>, Option<&MeshMaterial3d<crate::foliage::FoliageMaterial>>, Option<&MeshMaterial3d<crate::ground_material::ScatterMaterial>>, Has<MeshMaterial3d<ImpostorMaterial>>, Option<&RenderLayers>, Has<crate::streaming::TerrainShadowProxy>), (Without<MeshMaterial3d<crate::clouds::CloudMaterial>>)>,
     ) {
         let st = &mut *st;
         let headless = cfg.headless;
@@ -190,6 +288,15 @@ mod imp {
             }
         }
         let Some(r) = st.renderer.as_mut() else { return };
+        let r = &mut *r;
+        // Off-thread mesh prep results land here: buffers now, so earlier frames' requests are ready.
+        while let Ok((gid, p)) = st.prep_rx.try_recv() {
+            if p.data.is_empty() || p.idx.is_empty() {
+                st.prep_failed.insert(gid);
+            }
+            r.upload_prepped(gid, p);
+            st.prepping.remove(&gid);
+        }
         if !st.ground_sent && std::env::var_os("EW_NATIVE_NOGROUND").is_none() {
             if let Some(g) = crate::ground_material::GROUND_CPU.get() {
                 let al: Vec<&[u8]> = g.albedo.iter().map(|v| v.as_slice()).collect();
@@ -220,15 +327,19 @@ mod imp {
         st.draw_scratch.clear();
         let mut uploads = 0;
         let mut tex_uploads = 0;
-        for (m3, gt, vis, mat, mtag, is_terrain, no_cast, plume, wing, fol, scat, is_imp) in &items {
+        for (m3, gt, vis, mat, mtag, is_terrain, no_cast, plume, wing, fol, scat, is_imp, layers, is_tproxy) in &items {
             let dynamic = plume || wing;
-            if !vis.get() {
+            // The globe mirrors itself through its own camera on its own layer.
+            let (on_globe_layer, is_sun_only, is_cam_only) = layer_flags(layers);
+            if on_globe_layer {
                 continue;
             }
+            let vis_ok = vis.get();
             let (mut tint, mut emissive, mut rough, mut metal, mut cutoff, mut unlit, mut blend, mut double_sided) = ([1.0f32; 4], [0.0f32; 3], 0.8f32, 0.0f32, 0.5f32, false, Blend::Opaque, false);
             let mut tex = 0u64;
             let mut tex2 = 0u64;
             let mut water = false;
+            let mut ocean = false;
             let base_mat = mat
                 .and_then(|m| std_mats.get(&m.0))
                 .or_else(|| fol.and_then(|m| fol_mats.get(&m.0)).map(|e| &e.base))
@@ -242,7 +353,10 @@ mod imp {
                 metal = sm.metallic;
                 unlit = sm.unlit;
                 double_sided = sm.double_sided;
-                water = sm.attenuation_distance == crate::assets::WATER_MARK && matches!(sm.alpha_mode, AlphaMode::Opaque);
+                let is_water = sm.attenuation_distance == crate::assets::WATER_MARK
+                    || sm.attenuation_distance == crate::assets::OCEAN_MARK;
+                water = is_water && matches!(sm.alpha_mode, AlphaMode::Opaque);
+                ocean = sm.attenuation_distance == crate::assets::OCEAN_MARK && matches!(sm.alpha_mode, AlphaMode::Opaque);
                 match sm.alpha_mode {
                     AlphaMode::Opaque => {}
                     AlphaMode::Mask(c) => {
@@ -324,7 +438,11 @@ mod imp {
                 continue;
             }
             if !r.has_mesh(id) || dynamic {
-                if uploads >= 48 {
+                // Static meshes stream in on a worker (see `drain_preps`); request at most the
+                // budget per frame. Tiles stage hidden first, so most requests happen before
+                // reveal and cost nothing at the reveal frame.
+                let queued = !dynamic && (st.prepping.contains(&id) || st.prep_failed.contains(&id));
+                if queued || uploads >= if vis_ok { std::env::var("EW_UPLOAD_BUDGET").ok().and_then(|v| v.parse().ok()).unwrap_or(UPLOAD_BUDGET) } else { std::env::var("EW_HIDDEN_UPLOAD_BUDGET").ok().and_then(|v| v.parse().ok()).unwrap_or(HIDDEN_UPLOAD_BUDGET) } {
                     continue;
                 }
                 let Some(mesh) = meshes.get(&m3.0) else { continue };
@@ -342,31 +460,51 @@ mod imp {
                     _ => Vec::new(),
                 };
                 let idx: Vec<u32> = idx.iter().map(|i| i as u32).collect();
-                r.upload(id, pos, &nor, &uv, &col, &idx);
-                if is_terrain {
-                    use bevy::mesh::VertexAttributeValues as V;
-                    if let (Some(V::Unorm8x4(a)), Some(V::Unorm8x4(b)), Some(V::Unorm8x4(c))) = (
-                        mesh.attribute(crate::ground_material::ATTRIBUTE_SPLAT0),
-                        mesh.attribute(crate::ground_material::ATTRIBUTE_SPLAT1),
-                        mesh.attribute(crate::ground_material::ATTRIBUTE_SPLAT2),
-                    ) {
-                        let w: Vec<[u8; 12]> = (0..a.len().min(b.len()).min(c.len()))
-                            .map(|i| [a[i][0], a[i][1], a[i][2], a[i][3], b[i][0], b[i][1], b[i][2], b[i][3], c[i][0], c[i][1], c[i][2], c[i][3]])
-                            .collect();
-                        r.upload_splat(id, &w);
-                    }
-                }
-                if is_imp {
-                    use bevy::mesh::VertexAttributeValues as V;
-                    if let (Some(V::Float32x4(pa)), Some(V::Float32x4(ax)), Some(V::Float32x2(tu))) = (
-                        mesh.attribute(crate::impostors::ATTRIBUTE_IMP_PARAMS),
-                        mesh.attribute(crate::impostors::ATTRIBUTE_IMP_AXIS),
-                        mesh.attribute(crate::impostors::ATTRIBUTE_IMP_TILE_UV),
-                    ) {
-                        r.upload_extra(id, pa, ax, tu);
-                    }
+                if dynamic {
+                    r.upload(id, pos, &nor, &uv, &col, &idx);
+                } else {
+                    st.prepping.insert(id);
+                    let tx = st.prep_tx.clone();
+                    let pos = pos.to_vec();
+                    AsyncComputeTaskPool::get().spawn(async move {
+                        let p = with_prep_slot(|| prep(&pos, &nor, &uv, &col, &idx));
+                        let _ = tx.send((id, p));
+                    })
+                    .detach();
                 }
                 uploads += 1;
+            }
+            // Terrain splat weights and impostor vertex streams attach as soon as the mesh
+            // landed (the prep task returns a frame or two after the request).
+            if r.has_mesh(id) && ((is_terrain && r.needs_splat(id)) || (is_imp && r.needs_extra(id))) {
+                if let Some(mesh) = meshes.get(&m3.0) {
+                    if is_terrain && r.needs_splat(id) {
+                        use bevy::mesh::VertexAttributeValues as V;
+                        if let (Some(V::Unorm8x4(a)), Some(V::Unorm8x4(b)), Some(V::Unorm8x4(c))) = (
+                            mesh.attribute(crate::ground_material::ATTRIBUTE_SPLAT0),
+                            mesh.attribute(crate::ground_material::ATTRIBUTE_SPLAT1),
+                            mesh.attribute(crate::ground_material::ATTRIBUTE_SPLAT2),
+                        ) {
+                            let w: Vec<[u8; 12]> = (0..a.len().min(b.len()).min(c.len()))
+                                .map(|i| [a[i][0], a[i][1], a[i][2], a[i][3], b[i][0], b[i][1], b[i][2], b[i][3], c[i][0], c[i][1], c[i][2], c[i][3]])
+                                .collect();
+                            r.upload_splat(id, &w);
+                        }
+                    }
+                    if is_imp && r.needs_extra(id) {
+                        use bevy::mesh::VertexAttributeValues as V;
+                        if let (Some(V::Float32x4(pa)), Some(V::Float32x4(ax)), Some(V::Float32x2(tu))) = (
+                            mesh.attribute(crate::impostors::ATTRIBUTE_IMP_PARAMS),
+                            mesh.attribute(crate::impostors::ATTRIBUTE_IMP_AXIS),
+                            mesh.attribute(crate::impostors::ATTRIBUTE_IMP_TILE_UV),
+                        ) {
+                            r.upload_extra(id, pa, ax, tu);
+                        }
+                    }
+                }
+            }
+            if !vis_ok {
+                continue;
             }
             let Some(gm) = r.mesh(id) else { continue };
             let model = gt.to_matrix();
@@ -387,11 +525,14 @@ mod imp {
                 tex2,
                 blend,
                 double_sided,
-                visible,
-                cast_shadow: !no_cast,
-                terrain: is_terrain,
+                // Sun-only meshes (layer 7: shadow stand-ins) never draw for the camera;
+                // camera-only meshes (layer 6: full-detail stand-ins) never cast.
+                visible: visible && !is_sun_only,
+                cast_shadow: !no_cast && !is_cam_only,
+                terrain: is_terrain || is_tproxy,
                 impostor: is_imp,
                 water,
+                ocean,
             });
         }
 
@@ -436,7 +577,17 @@ mod imp {
                 exposure: 1.7,
                 size: (w, h),
                 scale: window.map(|(w, _)| w.scale_factor() as f64).unwrap_or(1.0),
+                // The ocean FFT only earns its ~4.8 ms when the sea is close enough to see waves
+                // on. The sea is a global disc, so "close" means the tiles around the camera have
+                // ground at or below sea level; in a city a few km inland that is false and the
+                // compute is skipped.
+                // `EW_OCEAN_FFT=1/0` overrides the automatic choice, for A/B runs.
+                ocean_fft: match std::env::var("EW_OCEAN_FFT") {
+                    Ok(v) => v != "0",
+                    Err(_) => mgr.sea_near(),
+                },
         };
+        st.ocean_fft = fp.ocean_fft;
         if headless {
             let pixels = r.render_offscreen(&fp, &st.draw_scratch);
             if mgr.idle() { st.idle_frames += 1 } else { st.idle_frames = 0 }
@@ -475,7 +626,7 @@ mod imp {
         if now.duration_since(last).as_secs_f32() >= 3.0 {
             let fps = st.frames_since_report as f32 / now.duration_since(last).as_secs_f32();
             let times = r.times.sorted().iter().map(|(n, ms)| format!("{n} {ms:.2} ms")).collect::<Vec<_>>().join(", ");
-            info!("native: {fps:.0} fps | {} draws {:.2} M tris | {} meshes resident | gpu {times} | no-cpu-data {} no-cpu-tex {} | shadow draws {} (+{} cached)", r.draws, r.tris as f32 / 1e6, r.mesh_count(), st.skipped_no_cpu, st.skipped_tex, r.shadow_draws, r.shadow_skipped);
+            info!("native: {fps:.0} fps | {} draws {:.2} M tris | {} meshes resident | gpu {times} | no-cpu-data {} no-cpu-tex {} | shadow draws {} (+{} cached, {} deferred) | ocean fft {} sea {:.0}%", r.draws, r.tris as f32 / 1e6, r.mesh_count(), st.skipped_no_cpu, st.skipped_tex, r.shadow_draws, r.shadow_skipped, r.shadow_deferred, if st.ocean_fft { "on" } else { "off" }, 100.0 * mgr.focus_sea_fraction());
             st.frames_since_report = 0;
             st.last_report = Some(now);
             r.recalibrate();

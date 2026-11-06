@@ -20,7 +20,7 @@ struct FrameU {
     float4 pb0;         // probe volume: xyz world min corner, w bounce intensity (0 = no volume)
     float4 pb1;         // xyz 1/size
 };
-struct DrawU { float4x4 model; float4 tint; float4 emissive; float4 mat; }; // mat: rough, metal, cutoff, unlit
+struct DrawU { float4x4 model; float4 tint; float4 emissive; float4 mat; float4 flags; }; // mat: rough, metal, cutoff, unlit; flags.x: global ocean
 
 struct VOut { float4 pos [[position]]; float3 nrm; float2 uv; float4 col; float3 wpos; };
 
@@ -95,6 +95,7 @@ float shadow_vis(float3 wpos, float3 N, float vd, constant FrameU& F, depth2d_ar
     int ci = vd < F.csm_far.y ? 4 : 5;
     for (int i = 0; i < 4; i++) { if (vd < F.csm_split[i]) { ci = i; break; } }
     if (F.params.w > 5.5 && F.params.w < 9.5) { ci = int(F.params.w + 0.5) - 6; }
+    if (F.params.w >= 9.5 && F.params.w < 16.0) { int k = int(F.params.w + 0.5) - 10; if (k >= 0 && k <= 5) { ci = k; } }
     float4 inf = F.csm_info[ci];
     // Cascades >=1 render decimated proxies (grid 1.5-4 m), so receivers need a bias that covers that error.
     float nb = ci == 0 ? 2.0 : (ci == 1 ? 4.0 : (ci == 4 ? 2.0 : (ci == 5 ? 0.8 : 6.0)));
@@ -841,6 +842,12 @@ float3 wave_normal(float2 p, float t, float pix, thread float& svar) {
 // OV = per-cascade slope variance (xyz) + FFT-on flag (w). Mip-filtered slopes lose energy as the footprint
 // outgrows a cascade, so that energy is re-added as roughness variance.
 constant float OLEN[3] = { 600.0, 85.0, 12.0 };
+// The wave detail is only worth reading close to the camera; past that the sea is a smooth sheet.
+// The slopes are faded out over a wide band, so the water drifts to a mirror instead of ending
+// on a visible line where the waves stop.
+constant float WAVE_NEAR_M = 100.0;
+constant float WAVE_FAR_M = 400.0;
+
 float3 fft_normal(texture2d_array<float> oc, float2 p, float pix, float4 OV, thread float& svar, thread float& jac) {
     constexpr sampler os(filter::linear, mip_filter::linear, address::repeat, max_anisotropy(4));
     float2 g = float2(0.0);
@@ -869,7 +876,11 @@ fragment WOut water_fs(VOut in [[stage_in]], constant FrameU& F [[buffer(1)]], c
     float pix = 2.0 * dist / max(F.fog.z, 1.0);   // metres per pixel (fog.z = viewport height / tan(fov/2))
     float svar;
     float jac = 1.0;
+    // Waves only matter within a couple of hundred metres; past that the sea is a smooth sheet.
+    // The band is wide, so the water drifts to a mirror rather than ending on a visible line.
+    float nf = 1.0 - smoothstep(WAVE_NEAR_M, WAVE_FAR_M, dist);
     float3 N = OV.w > 0.5 ? fft_normal(oc, in.wpos.xz, pix, OV, svar, jac) : wave_normal(in.wpos.xz, t, pix, svar);
+    N = normalize(mix(N, float3(0, 1, 0), nf));
     N = normalize(mix(N, float3(0, 1, 0), smoothstep(8000.0, 40000.0, dist)));
     float ndv = max(dot(N, V), 0.02);
     // Water column behind this fragment.
@@ -908,9 +919,13 @@ fragment WOut water_fs(VOut in [[stage_in]], constant FrameU& F [[buffer(1)]], c
     }
     // Beer-Lambert: red goes first, shallow sand reads turquoise, deep water goes blue-green.
     float3 absorb = float3(0.40, 0.062, 0.032);
-    float3 T = exp(-absorb * thick);
+    // The open sea is deep even where the elevation data has no bathymetry: the sea floor there
+    // is a flat plane a metre or two down and is shaded like a lake bed, so without this the
+    // floor shows through the water as pale patches. The shore logic still uses the real depth.
+    float dcol = D.flags.x > 0.5 ? max(thick, 35.0) : thick;
+    float3 T = exp(-absorb * dcol);
     float lightk = day * (0.30 + 0.70 * saturate(L.y));
-    float3 body = float3(0.030, 0.150, 0.210) * lightk * (1.0 - exp(-thick * 0.30));
+    float3 body = float3(0.030, 0.150, 0.210) * lightk * (1.0 - exp(-dcol * 0.30));
     float3 under = bg * T + body;
     // Reflection (analytic sky + sun); Lagarde roughness-aware Fresnel with F0 = 0.02.
     float a = clamp(sqrt(svar), 0.02, 0.7);
@@ -924,7 +939,11 @@ fragment WOut water_fs(VOut in [[stage_in]], constant FrameU& F [[buffer(1)]], c
     float a2 = a * a, dd = ndh * ndh * (a2 - 1.0) + 1.0;
     float Dg = a2 / (M_PI_F * dd * dd);
     float3 sunc = mix(float3(1.0, 0.62, 0.34), float3(1.0, 0.96, 0.88), saturate(L.y * 2.5)) * 6.4 * day;
-    float glit = mix(1.0, 0.75 + 0.5 * vnoise(in.wpos.xz * 3.1 + t * 0.7), (1.0 - smoothstep(10.0, 120.0, dist)) * 0.6);
+    // The sun on a wave field is a sparkle, not a sheet: break the highlight up with a noise
+    // whose features stay a few pixels wide. Close up the sparkle is what keeps the highlight
+    // from turning into flat pale patches; far away the features fall under a pixel, so the
+    // sparkle has to go rather than alias.
+    float glit = mix(1.0, 0.75 + 0.5 * vnoise(in.wpos.xz * 3.1 + t * 0.7), 1.0 - smoothstep(0.12, 0.4, pix));
     float3 spec = sunc * min(Dg * fr / max(4.0 * ndv, 0.05), 45.0) * ndl * vis * glit;
     // Sub-surface glow through thin crests, strongest looking toward the sun.
     float sss = pow(saturate(dot(-V, L) * 0.5 + 0.5), 4.0) * pow(1.0 - ndv, 2.0) * lightk;
@@ -945,7 +964,10 @@ fragment WOut water_fs(VOut in [[stage_in]], constant FrameU& F [[buffer(1)]], c
         float lace = fbm3(in.wpos.xz * 1.7 + float2(t * 0.15, -t * 0.1)) * 0.6 + fbm3(in.wpos.xz * 5.0 - t * 0.2) * 0.4;
         foam = max(foam, (1.0 - smoothstep(0.0, 1.1, hdep)) * smoothstep(0.30, 0.65, lace + (1.0 - smoothstep(0.0, 0.5, hdep)) * 0.45));
     }
-    foam = max(foam, smoothstep(0.35, 0.05, jac) * (1.0 - smoothstep(60.0, 400.0, dist)) * 0.8);
+    // Whitecaps: the Jacobian marks the sharp crests. Only the crests where the surface actually
+    // folds get foam, otherwise whole patches of the sea turn pale. The foam lives inside the
+    // wave range, so it and the waves end together and the sea has one soft transition.
+    foam = max(foam, smoothstep(0.02, -0.25, jac) * nf * 0.5);
     foam *= shore;
     float3 col = under * (1.0 - fr * edge) + (refl * fr + spec) * edge + glow;
     col = mix(col, float3(0.9, 0.93, 0.95) * lightk * 0.9 + sunc * 0.05 * vis, saturate(foam) * 0.85);

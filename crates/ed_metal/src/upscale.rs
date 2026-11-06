@@ -85,7 +85,12 @@ impl Upscaler {
                 d.setOutputTextureFormat(MTLPixelFormat::RGBA16Float);
                 d.setDepthTextureFormat(MTLPixelFormat::Depth32Float);
                 d.setMotionTextureFormat(MTLPixelFormat::RG16Float);
-                d.setAutoExposureEnabled(true);
+                // Auto exposure runs through MPSGraph on the Apple Neural Engine. On this
+                // machine that path aborts the process (`MTLReportFailure` inside
+                // `GPU::ANERegionCallOpHandler`, SIGABRT) a couple of minutes into a session,
+                // which is the "the game crashes in a city" crash. Off by default; the scaler
+                // runs with a fixed exposure instead. `EW_NATIVE_FX_AUTOEX=1` turns it back on.
+                d.setAutoExposureEnabled(std::env::var("EW_NATIVE_FX_AUTOEX").map(|v| v != "0").unwrap_or(false));
             }
             self.scaler = unsafe { d.newTemporalScalerWithDevice(&self.device) };
             self.scaler.as_ref()?;
