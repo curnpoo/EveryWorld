@@ -64,7 +64,12 @@ const EARTH_RADIUS_M: f64 = 6.371e6;
 const SKY_RADIUS: f32 = 2400.0;
 const BODY_DIST: f32 = 900.0;
 const MAX_IN_FLIGHT: usize = 6;
-const MAX_CACHED: usize = 380;
+const MAX_CACHED: usize = 512;
+const TILE_TEXEL_MIN: f32 = 0.85;
+const TILE_TEXEL_MAX: f32 = 4.0;
+const TILE_TEXEL_STEP: f32 = 1.06;
+const TILE_BUDGET: usize = 320;
+const TILE_FLOOR: usize = 64;
 /// Radial offset per quadtree level so overlapping coarse/fine tiles never z-fight.
 const LEVEL_BIAS: f32 = 1.5e-6;
 
@@ -217,6 +222,7 @@ struct GlobeState {
     aspect: f32,
     active: bool,
     cursor_pick: Option<Vec3>,
+    tile_texel: f32,
     // render target
     target: Handle<Image>,
     target_px: UVec2,
@@ -407,6 +413,7 @@ fn setup_globe(
         aspect: 16.0 / 9.0,
         active: false,
         cursor_pick: None,
+        tile_texel: TILE_TEXEL_MIN,
         target,
         target_px: UVec2::new(1280, 720),
         resize_cool: 0.0,
@@ -928,6 +935,25 @@ fn level_mesh_n(z: u8) -> usize {
     }
 }
 
+fn settle_tile_texel(mut texel: f32, mut select: impl FnMut(f32) -> Vec<TileId>) -> (f32, Vec<TileId>) {
+    let mut wanted = select(texel);
+    for _ in 0..16 {
+        let next = if wanted.len() > TILE_BUDGET {
+            (texel * TILE_TEXEL_STEP).min(TILE_TEXEL_MAX)
+        } else if wanted.len() < TILE_FLOOR {
+            (texel / TILE_TEXEL_STEP).max(TILE_TEXEL_MIN)
+        } else {
+            break;
+        };
+        if next == texel {
+            break;
+        }
+        texel = next;
+        wanted = select(texel);
+    }
+    (texel, wanted)
+}
+
 fn stream_tiles(mut g: ResMut<GlobeState>, cfg: Res<crate::config::Config>) {
     if !g.active {
         return;
@@ -937,15 +963,10 @@ fn stream_tiles(mut g: ResMut<GlobeState>, cfg: Res<crate::config::Config>) {
     let cam = g.cam_pos;
     let view = (g.focus - cam).normalize();
     let ppr = g.target_px.y as f32 / (2.0 * g.tan_half());
-    let mut texel = 0.85;
-    let mut wanted = gl::select_tiles(cam, view, FOV * 0.5 * g.aspect.max(1.0), ppr, satellite::MAX_ZOOM, texel);
-    for _ in 0..4 {
-        if wanted.len() <= 240 {
-            break;
-        }
-        texel *= 1.4;
-        wanted = gl::select_tiles(cam, view, FOV * 0.5 * g.aspect.max(1.0), ppr, satellite::MAX_ZOOM, texel);
-    }
+    let (texel, wanted) = settle_tile_texel(g.tile_texel, |texel| {
+        gl::select_tiles(cam, view, FOV * 0.5 * g.aspect.max(1.0), ppr, satellite::MAX_ZOOM, texel)
+    });
+    g.tile_texel = texel;
 
     // For each wanted tile show the finest loaded ancestor; ask for the
     // coarsest missing one first so something always covers the area.
@@ -1072,6 +1093,8 @@ fn receive_tiles(
             base_color_texture: Some(images.add(img)),
             perceptual_roughness: 0.82,
             reflectance: 0.12,
+            // Mixed levels overlap while children stream in; the finer tile must always win.
+            depth_bias: f.id.z as f32,
             ..default()
         });
         let frame = g.frame;
@@ -1110,7 +1133,7 @@ fn apply_tiles(mut commands: Commands, mut g: ResMut<GlobeState>) {
     }
     // Evict the least recently used when the cache is full.
     if g.loaded.len() > MAX_CACHED {
-        let mut order: Vec<(u64, TileId)> = g.loaded.iter().filter(|(id, _)| !g.shown.contains_key(id)).map(|(id, s)| (s.last_used, *id)).collect();
+        let mut order: Vec<(u64, TileId)> = g.loaded.iter().filter(|(id, _)| !g.shown.contains_key(id) && id.z > 3).map(|(id, s)| (s.last_used, *id)).collect();
         order.sort();
         let excess = g.loaded.len() - MAX_CACHED * 3 / 4;
         for (_, id) in order.into_iter().take(excess) {
@@ -1402,6 +1425,23 @@ fn update_labels(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tile_density_settles_once_and_stays() {
+        let select = |texel: f32| vec![TileId::new(0, 0, 0); if texel < 1.15 { 400 } else { 200 }];
+        let (texel, wanted) = settle_tile_texel(TILE_TEXEL_MIN, select);
+        assert!(wanted.len() <= TILE_BUDGET);
+        let (again, wanted) = settle_tile_texel(texel, select);
+        assert_eq!(again, texel);
+        assert_eq!(wanted.len(), 200);
+    }
+
+    #[test]
+    fn tile_density_does_not_immediately_refine_after_dropping() {
+        let (texel, wanted) = settle_tile_texel(2.33, |_| vec![TileId::new(0, 0, 0); 111]);
+        assert_eq!(texel, 2.33);
+        assert_eq!(wanted.len(), 111);
+    }
 
     /// The clock after the map ease has run out: the offset is applied to
     /// the clock in hours, like `menu::apply_graphics` does.

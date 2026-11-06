@@ -1,3 +1,19 @@
+## 2026-11-06: stop the menu globe flashing between fine and coarse tiles
+- Root cause: the globe restarted tile selection at `0.85` texels per pixel every frame, then
+  multiplied density by `1.4` until it had at most 240 tiles. Around zoom 2.2 and while orbiting,
+  tiny camera movement crossed that threshold: one frame selected 239 fine tiles, the next selected
+  111 coarse tiles, then jumped back to 238 fine tiles. `apply_tiles` retired and respawned whole
+  LOD sets with it.
+- The selected texel density is now persistent and adjusts in 6% steps with a wide 64-320 tile
+  deadband. Normal camera motion keeps the same coherent LOD set; the cache is 512 tiles and keeps
+  z0-z3 ancestors as fallback coverage.
+- Mixed parent/child levels get a per-level depth bias, so a loaded fine tile cannot z-fight behind
+  the coarse fallback covering the same area.
+- Verified in a traced orbit at zoom ~3.1: texel density stayed `2.04` through zooming, then moved
+  gradually to `2.16` while orbiting instead of toggling between fine and coarse sets.
+- Needs Mac check: orbit and zoom the map continuously at continental and regional ranges, with
+  satellite tiles arriving from both disk and network.
+
 ## 2026-11-06: restore satellite texture on the menu globe
 - The native-only mesh-usage optimization was applied to the shared `meshconv::to_mesh`, so the
   menu globe's satellite tiles stayed in the main world while its Bevy camera rendered from the
