@@ -253,6 +253,179 @@ pub(super) fn portal(m: &mut MeshData, at: Vec3, dir: Vec3, up: Vec3, hw: f32) {
     }
 }
 
+/// Retaining wall for a cut: vertical panels on sides where the natural ground sits above the road.
+pub fn cut_wall(m: &mut MeshData, pts: &[Vec3], up: Vec3, hw: f32, ground: &dyn Fn(Vec3) -> f32, kit: &super::StreetKit) {
+    let color = rgb(0x9a9893);
+    let n = pts.len();
+    if n < 2 {
+        return;
+    }
+    let side_dirs: Vec<Vec3> = (0..n)
+        .map(|i| {
+            let a = pts[i.saturating_sub(1)];
+            let b = pts[(i + 1).min(n - 1)];
+            (b - a).cross(up).normalize_or_zero()
+        })
+        .collect();
+    for i in 0..n - 1 {
+        let (a, b) = (pts[i], pts[i + 1]);
+        let sd = (side_dirs[i] + side_dirs[i + 1]).normalize_or(side_dirs[i]);
+        let mid = (a + b) * 0.5;
+        for sgn in [-1.0f32, 1.0] {
+            let probe = mid + sd * (sgn * (hw + 1.5));
+            let gnd = ground(probe);
+            let road_y = mid.dot(up);
+            let dh = gnd - road_y;
+            if dh < 2.5 {
+                continue;
+            }
+            // Draw a vertical wall from road level up to ground level along this segment.
+            let seg_len = (b - a).length();
+            let fwd = (b - a).normalize_or_zero();
+            let (p0, p1) = (a, b);
+            let wall = [
+                p0 + sd * (sgn * hw),
+                p1 + sd * (sgn * hw),
+                p1 + sd * (sgn * hw) + up * dh,
+                p0 + sd * (sgn * hw) + up * dh,
+            ];
+            m.quad(wall, [[0.0, 0.0]; 4], color);
+            let _ = (seg_len, fwd, mid, gnd, road_y);
+        }
+    }
+}
+
+/// Supplementary bridge structure geometry (arch ribs, truss members, cables) layered on top of the
+/// beam deck. Beam bridges add nothing.
+pub fn bridge_extras(m: &mut MeshData, pts: &[Vec3], up: Vec3, hw: f32, kind: super::BridgeKind, kit: &super::StreetKit) {
+    use super::BridgeKind;
+    if pts.len() < 2 {
+        return;
+    }
+    let color = rgb(kit.asphalt ^ 0x303030);
+    match kind {
+        BridgeKind::Beam => {}
+        BridgeKind::ThroughArch => {
+            // Two arch ribs rising above the deck, with vertical hangers.
+            let n = pts.len();
+            let mut left = Vec::with_capacity(n);
+            let mut right = Vec::with_capacity(n);
+            for p in pts {
+                let rise = 0.0f32; // placeholder; compute from position along span
+                let _ = rise;
+                left.push(*p + up * 0.0);
+                right.push(*p + up * 0.0);
+            }
+            let _ = (left, right, color, hw);
+            // Draw a simple arch rib as a raised centreline sweep.
+            let mut rib: Vec<Vec3> = pts
+                .iter()
+                .enumerate()
+                .map(|(i, pt)| {
+                    let t = i as f32 / (n as f32 - 1.0).max(1.0);
+                    let arch = (t * (1.0 - t)) * 4.0 * (hw + 4.0);
+                    *pt + up * (arch + 1.0)
+                })
+                .collect();
+            if rib.len() >= 2 {
+                // sweep a thin box along the rib
+                let prof = vec![p(-0.15, 0.0, color, false), p(0.15, 0.0, color, false)];
+                sweep_raw(m, &rib, up, &prof);
+            }
+            // Hangers
+            for (i, pt) in pts.iter().enumerate() {
+                if i == 0 || i == n - 1 {
+                    continue;
+                }
+                let t = i as f32 / (n as f32 - 1.0).max(1.0);
+                let arch = (t * (1.0 - t)) * 4.0 * (hw + 4.0) + 1.0;
+                let top = *pt + up * arch;
+                let bot = *pt + up * 0.15;
+                let seg = [bot, top];
+                let prof = vec![p(-0.08, 0.0, color, false), p(0.08, 0.0, color, false)];
+                sweep_raw(m, &seg, up, &prof);
+            }
+        }
+        BridgeKind::StoneArch => {
+            // A masonry arch under the deck: a raised curve from abutment to abutment.
+            let n = pts.len();
+            let mut rib: Vec<Vec3> = pts
+                .iter()
+                .enumerate()
+                .map(|(i, pt)| {
+                    let t = i as f32 / (n as f32 - 1.0).max(1.0);
+                    let arch = -(t * (1.0 - t)) * 4.0 * (hw + 2.0);
+                    *pt + up * (arch - 0.5)
+                })
+                .collect();
+            if rib.len() >= 2 {
+                let prof = vec![p(-0.25, 0.0, color, false), p(0.25, 0.0, color, false)];
+                sweep_raw(m, &rib, up, &prof);
+            }
+        }
+        BridgeKind::Truss => {
+            // Diagonal + vertical web members between top and bottom chords.
+            let n = pts.len();
+            let top: Vec<Vec3> = pts.iter().map(|pt| *pt + up * (hw * 0.0 + 1.2)).collect();
+            let bot: Vec<Vec3> = pts.iter().map(|pt| *pt + up * (-0.5)).collect();
+            let chord_prof = vec![p(-0.1, 0.0, color, false), p(0.1, 0.0, color, false)];
+            sweep_raw(m, &top, up, &chord_prof);
+            sweep_raw(m, &bot, up, &chord_prof);
+            for i in 0..n - 1 {
+                // vertical
+                let seg = [bot[i], top[i]];
+                sweep_raw(m, &seg, up, &chord_prof);
+                // diagonal
+                if i + 1 < n {
+                    let seg = [bot[i], top[i + 1]];
+                    sweep_raw(m, &seg, up, &chord_prof);
+                }
+            }
+        }
+        BridgeKind::Suspension => {
+            // Two towers at the quarter points + main cable + hangers.
+            let n = pts.len();
+            let tower_h = hw + 8.0;
+            for &ti in &[n / 4, 3 * n / 4] {
+                if ti == 0 || ti >= n {
+                    continue;
+                }
+                let base = pts[ti];
+                let tower = [base, base + up * tower_h];
+                let prof = vec![p(-0.4, 0.0, color, false), p(0.4, 0.0, color, false)];
+                sweep_raw(m, &tower, up, &prof);
+            }
+            // Main cable: a sagging curve between endpoints (and over towers).
+            let cable: Vec<Vec3> = pts
+                .iter()
+                .enumerate()
+                .map(|(i, pt)| {
+                    let t = i as f32 / (n as f32 - 1.0).max(1.0);
+                    let sag = (t * (1.0 - t)) * 2.0 * (hw + 2.0);
+                    *pt + up * (tower_h.min(hw + 6.0) - sag)
+                })
+                .collect();
+            if cable.len() >= 2 {
+                let prof = vec![p(-0.12, 0.0, color, false), p(0.12, 0.0, color, false)];
+                sweep_raw(m, &cable, up, &prof);
+            }
+            // Hangers
+            for (i, pt) in pts.iter().enumerate() {
+                if i % 3 != 0 {
+                    continue;
+                }
+                let t = i as f32 / (n as f32 - 1.0).max(1.0);
+                let sag = (t * (1.0 - t)) * 2.0 * (hw + 2.0);
+                let top = *pt + up * (tower_h.min(hw + 6.0) - sag);
+                let bot = *pt + up * 0.15;
+                let seg = [bot, top];
+                let prof = vec![p(-0.06, 0.0, color, false), p(0.06, 0.0, color, false)];
+                sweep_raw(m, &seg, up, &prof);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

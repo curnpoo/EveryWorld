@@ -112,6 +112,12 @@ pub struct MarkStyle {
     /// Crosswalk bars: width, gap (m); stop line width.
     pub zebra: (f32, f32),
     pub stop_w: f32,
+    /// Parking lane width along the curb (0 = none).
+    pub parking_lane_w: f32,
+    /// Stop line setback behind the crosswalk (m).
+    pub stop_setback: f32,
+    /// Lane-arrow setback before a junction (m).
+    pub arrow_setback: f32,
 }
 
 const NEUTRAL: MarkStyle = MarkStyle {
@@ -133,6 +139,9 @@ const NEUTRAL: MarkStyle = MarkStyle {
     edge_min_rank: 2,
     zebra: (0.5, 0.5),
     stop_w: 0.30,
+    parking_lane_w: 2.0,
+    stop_setback: 1.0,
+    arrow_setback: 8.0,
 };
 
 pub fn style_for(c: Country) -> MarkStyle {

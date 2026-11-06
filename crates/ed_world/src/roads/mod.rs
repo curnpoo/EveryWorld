@@ -161,11 +161,18 @@ pub struct StreetKit {
     pub stop_sign_text: &'static str,
     /// Paint and gap (m) of a broken centre or lane line.
     pub dash: (f32, f32),
+    /// Bridge flavour for this region.
+    pub bridge: BridgeFlavor,
 }
 
 impl StreetKit {
     pub fn for_region(r: Region) -> StreetKit {
         use Region::*;
+        let flavor = match r {
+            Paris | Mediterranean | British | WesternEurope | Alpine => BridgeFlavor::Historic,
+            LatinAmerica | SubSaharan | SouthAsia | SoutheastAsia | NorthAfricaMiddleEast | EasternEurope => BridgeFlavor::Utilitarian,
+            _ => BridgeFlavor::Modern,
+        };
         let base = StreetKit {
             drive_side: Side::Right,
             center_line: CenterLine::DashedWhite,
@@ -177,6 +184,7 @@ impl StreetKit {
             curb_height: 0.15,
             stop_sign_text: "STOP",
             dash: (3.0, 6.0),
+            bridge: flavor,
         };
         match r {
             NorthAmericaCity | NorthAmericaSuburb => StreetKit {
@@ -386,6 +394,24 @@ fn simplify_deck(pts: &[Vec3], tol: f32, max_span: f32) -> Vec<Vec3> {
     pts.iter().zip(keep).filter_map(|(p, k)| k.then_some(*p)).collect()
 }
 
+/// Regional bridge flavour (drives structure selection).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeFlavor {
+    Modern,
+    Historic,
+    Utilitarian,
+}
+
+/// Structure chosen for a bridge deck.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeKind {
+    Beam,
+    ThroughArch,
+    StoneArch,
+    Truss,
+    Suspension,
+}
+
 /// How a road meets the ground.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Bed {
@@ -400,6 +426,8 @@ pub enum Bed {
     /// Road on a high embankment held by retaining walls: a solid section dug into the natural ground (so the
     /// terrain is not graded under it), with its own collider.
     Fill,
+    /// Road cut into a hillside: a retaining wall holds back the ground above the road.
+    Cut,
 }
 
 #[derive(Debug, Clone)]
@@ -429,6 +457,8 @@ struct Item {
     depth: f32,
     /// Sidewalks on the (left, right) when OSM says; `None` = by urban cover.
     sidewalk: Option<(bool, bool)>,
+    /// Bridge structure kind (only meaningful for `Bed::Bridge`).
+    bridge_kind: BridgeKind,
     /// Cycle facility on the (left, right): 0 none, 1 painted lane, 2 track.
     cycle: (u8, u8),
     /// Lanes (forward, backward) when OSM says.
@@ -515,7 +545,7 @@ pub fn plan(vt: &mvt::Tile, proj: &TileProjector, grid: &TerrainGrid, surface: &
                     let n = ground.len() - 1;
                     (0..=n).map(|i| a + (b - a) * i as f32 / n as f32).collect()
                 }
-                Bed::Conform | Bed::Tunnel | Bed::Fill => smooth(&ground, 5, 2),
+                Bed::Conform | Bed::Tunnel | Bed::Fill | Bed::Cut => smooth(&ground, 5, 2),
             };
             let pts = uv
                 .iter()
@@ -544,6 +574,7 @@ pub fn plan(vt: &mvt::Tile, proj: &TileProjector, grid: &TerrainGrid, surface: &
                 sidewalk: None,
                 cycle: (0, 0),
                 lanes: None,
+                bridge_kind: BridgeKind::Beam,
             });
         }
     }
@@ -652,6 +683,33 @@ pub fn grade(grid: &mut TerrainGrid, plan: &RoadPlan) {
     }
 }
 
+/// Choose a bridge structure from regional flavour, road class, span and whether it crosses water.
+pub fn bridge_kind_for(flavor: BridgeFlavor, class: RoadClass, len: f32, over_water: bool) -> BridgeKind {
+    let foot = !class.is_car_road();
+    let (structure, _) = match (flavor, foot) {
+        (_, true) if class == RoadClass::Rail => (if len > 25.0 { BridgeKind::Truss } else { BridgeKind::Beam }, ()),
+        (BridgeFlavor::Modern, true) => (if len > 60.0 { BridgeKind::ThroughArch } else { BridgeKind::Beam }, ()),
+        (BridgeFlavor::Historic, true) => (BridgeKind::StoneArch, ()),
+        (BridgeFlavor::Utilitarian, true) => (BridgeKind::Beam, ()),
+        (BridgeFlavor::Modern, false) if len >= 150.0 && over_water => (BridgeKind::Suspension, ()),
+        (BridgeFlavor::Modern, false) if len >= 70.0 && over_water => (BridgeKind::ThroughArch, ()),
+        (BridgeFlavor::Modern, false) => (BridgeKind::Beam, ()),
+        (BridgeFlavor::Historic, false) if len >= 150.0 && over_water => (BridgeKind::Suspension, ()),
+        (BridgeFlavor::Historic, false) if over_water && len >= 18.0 => (BridgeKind::StoneArch, ()),
+        (BridgeFlavor::Historic, false) => (BridgeKind::Beam, ()),
+        (BridgeFlavor::Utilitarian, false) if len >= 45.0 && over_water => (BridgeKind::Truss, ()),
+        (BridgeFlavor::Utilitarian, false) => (BridgeKind::Beam, ()),
+    };
+    // Short spans / dry decks stay beams.
+    match structure {
+        BridgeKind::ThroughArch if len < 60.0 || !over_water => BridgeKind::Beam,
+        BridgeKind::StoneArch if len < 18.0 => BridgeKind::Beam,
+        BridgeKind::Truss if len < 40.0 => BridgeKind::Beam,
+        BridgeKind::Suspension if len < 150.0 || !over_water => BridgeKind::Beam,
+        s => s,
+    }
+}
+
 pub fn generate(plan: &RoadPlan, proj: &TileProjector, grid: &TerrainGrid, surface: &SurfaceMap, region: Region) -> RoadOutput {
     let mut out = RoadOutput::default();
     let kit = StreetKit::for_region(region);
@@ -705,6 +763,10 @@ pub fn generate(plan: &RoadPlan, proj: &TileProjector, grid: &TerrainGrid, surfa
                         class,
                         &st, it.urban, it.oneway, hw, it.lanes);
                 }
+                // Supplementary structure (arch ribs, truss web, cables) for non-beam bridges.
+                let span = bridge_len(pts);
+                let kind = bridge_kind_for(kit.bridge, class, span, false);
+                structures::bridge_extras(&mut out.mesh, pts, up, hw, kind, &kit);
                 let mut arc = vec![0.0f32; pts.len()];
                 for i in 1..pts.len() {
                     arc[i] = arc[i - 1] + pts[i].distance(pts[i - 1]);
@@ -723,6 +785,34 @@ pub fn generate(plan: &RoadPlan, proj: &TileProjector, grid: &TerrainGrid, surfa
                 if it.paved && class.rank() >= 1 {
                     markings(&mut out.mesh, &deck, up, None, true, class, &st, it.urban, it.oneway, hw, it.lanes);
                 }
+            }
+            Bed::Cut => {
+                // A cut into a hillside: graded road bed plus a retaining wall on the high side.
+                let deck = simplify_deck(pts, DECK_TOL_M, DECK_MAX_SPAN_M);
+                let walks = it.sidewalk.unwrap_or((it.urban, it.urban));
+                let prof = paved_profile(hw, walks, &kit);
+                sweep(
+                    &mut out.mesh,
+                    &deck,
+                    up,
+                    &prof,
+                    Some(&ground as &dyn Fn(Vec3) -> f32),
+                    true,
+                    0.6,
+                    0.04,
+                    0.05,
+                );
+                if it.paved && class.rank() >= 1 {
+                    markings(
+                        &mut out.mesh,
+                        &deck,
+                        up,
+                        Some(&ground as &dyn Fn(Vec3) -> f32),
+                        true,
+                        class,
+                        &st, it.urban, it.oneway, hw, it.lanes);
+                }
+                structures::cut_wall(&mut out.mesh, pts, up, hw, &ground, &kit);
             }
             Bed::Tunnel => {
                 let tube = simplify_deck(pts, DECK_TOL_M, DECK_MAX_SPAN_M);
@@ -784,6 +874,20 @@ pub fn generate(plan: &RoadPlan, proj: &TileProjector, grid: &TerrainGrid, surfa
                         let (a, b) = (side * inner, side * outer);
                         paint(&mut out.mesh, &deck, up, ground_fn, true, hw, a.min(b), a.max(b), bike, None);
                         paint(&mut out.mesh, &deck, up, ground_fn, true, hw, side * inner - 0.05, side * inner + 0.05, rgb(0xf2f2ee), None);
+                    }
+                }
+                // Parking lanes along the curb (urban streets with a mapped or spare-width lane).
+                if it.urban && st.parking_lane_w > 0.0 && hw > 4.0 {
+                    let pw = st.parking_lane_w;
+                    let ground_fn = Some(&ground as &dyn Fn(Vec3) -> f32);
+                    for side in [-1.0f32, 1.0] {
+                        let inner = side * (hw - pw);
+                        let outer = side * hw;
+                        let (a, b) = (inner.min(outer), inner.max(outer));
+                        paint(&mut out.mesh, &deck, up, ground_fn, true, hw, a, b, rgb(0xd8d4cc), None);
+                        // dashed line separating parking from travel lane
+                        let sep = side * (hw - pw);
+                        paint(&mut out.mesh, &deck, up, ground_fn, true, hw, sep - 0.05, sep + 0.05, rgb(0xf2f2ee), None);
                     }
                 }
                 let g0 = out.mesh.indices.len() / 3;
@@ -927,6 +1031,60 @@ pub fn generate(plan: &RoadPlan, proj: &TileProjector, grid: &TerrainGrid, surfa
                     tri_out(&mut out.mesh, vs[0], vs[2], vs[3]);
                 }
             }
+            // Stop lines: a solid bar across the carriageway just behind the crosswalk.
+            for b in j.branches.iter().filter(|b| (1..=4).contains(&b.class.rank())) {
+                let stop_dist = reach + st.stop_setback as f64;
+                let (dx, dy) = (b.dir[0], b.dir[1]);
+                let (lx, ly) = (-b.dir[1], b.dir[0]); // lateral
+                let half = (b.hw + 0.15) as f64;
+                let thick = st.stop_w as f64 / 2.0;
+                let corners = [
+                    (stop_dist - thick, -half),
+                    (stop_dist + thick, -half),
+                    (stop_dist + thick, half),
+                    (stop_dist - thick, half),
+                ];
+                let vs: Vec<u32> = corners
+                    .iter()
+                    .map(|(s, l)| {
+                        let (x, y) = (
+                            j.pos[0] + dx * s + lx * l,
+                            j.pos[1] + dy * s + ly * l,
+                        );
+                        out.mesh.vertex(
+                            at(x, y, 0.06).to_array(),
+                            up.to_array(),
+                            [0.0, 0.0],
+                            white,
+                        )
+                    })
+                    .collect();
+                if vs.len() == 4 {
+                    tri_out(&mut out.mesh, vs[0], vs[1], vs[2]);
+                    tri_out(&mut out.mesh, vs[0], vs[2], vs[3]);
+                }
+            }
+            // Lane arrows: a chevron per branch approach, pointing toward the junction.
+            for b in j.branches.iter().filter(|b| (1..=4).contains(&b.class.rank())) {
+                let ad = st.arrow_setback as f64;
+                if ad <= 0.0 { continue; }
+                let (dx, dy) = (b.dir[0], b.dir[1]);
+                let (lx, ly) = (-b.dir[1], b.dir[0]);
+                // arrow points toward junction (negative travel direction)
+                let tip_dist = ad - 2.0;
+                let base_dist = ad;
+                let halfw = 0.9f64;
+                let tip = (j.pos[0] - dx * tip_dist, j.pos[1] - dy * tip_dist);
+                let bl = (j.pos[0] - dx * base_dist + lx * halfw, j.pos[1] - dy * base_dist + ly * halfw);
+                let br = (j.pos[0] - dx * base_dist - lx * halfw, j.pos[1] - dy * base_dist - ly * halfw);
+                let vs: Vec<u32> = [tip, bl, br]
+                    .iter()
+                    .map(|(x, y)| out.mesh.vertex(at(*x, *y, 0.06).to_array(), up.to_array(), [0.0, 0.0], white))
+                    .collect();
+                if vs.len() == 3 {
+                    tri_out(&mut out.mesh, vs[0], vs[1], vs[2]);
+                }
+            }
         }
     }
 
@@ -946,6 +1104,10 @@ pub fn generate(plan: &RoadPlan, proj: &TileProjector, grid: &TerrainGrid, surfa
         out.props.push(StreetProp { kind, pos: p + off + up * kit.curb_height, facing: -off.normalize_or(Vec3::X) });
     }
     out
+}
+
+fn bridge_len(pts: &[Vec3]) -> f32 {
+    pts.windows(2).map(|w| (w[1] - w[0]).length()).sum()
 }
 
 fn side_dirs(pts: &[Vec3], up: Vec3) -> Vec<Vec3> {

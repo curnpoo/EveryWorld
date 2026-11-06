@@ -26,6 +26,8 @@ struct Pt {
     g: f32,
     /// Embankment high enough, and level enough across, for retaining walls.
     w: bool,
+    /// Cut deep enough, and level enough across, for a retaining wall.
+    cut: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -59,6 +61,7 @@ fn lerp(a: &Pt, b: &Pt, t: f64) -> Pt {
         arc: a.arc + (b.arc - a.arc) * t as f32,
         g: a.g + (b.g - a.g) * t as f32,
         w: a.w,
+        cut: a.cut,
     }
 }
 
@@ -132,6 +135,7 @@ pub fn plan_v2(
                     arc: s.s[k],
                     g: s.ground[k],
                     w: false,
+                    cut: false,
                 })
                 .collect(),
             None => {
@@ -151,6 +155,7 @@ pub fn plan_v2(
                             arc,
                             g: 0.0,
                             w: false,
+                            cut: false,
                         }
                     })
                     .collect()
@@ -162,6 +167,7 @@ pub fn plan_v2(
         let mut pts = pts;
         if sol.is_some() && !e.bridge && !e.tunnel {
             mark_walled(&mut pts, width::edge_width(e, row[ni]) as f64 / 2.0, wm, grid);
+            mark_cut(&mut pts, width::edge_width(e, row[ni]) as f64 / 2.0, wm, grid);
         }
         let pts = split(&pts, [emit_r, grade_r]);
         let seg_k = |i: usize| -> u8 {
@@ -202,12 +208,18 @@ pub fn plan_v2(
             } else if e.bridge {
                 Bed::Bridge
             } else if sol.is_some() {
-                if k == 1 { Bed::Fill } else { Bed::Graded }
+                if pts[i].cut && pts[i + 1].cut {
+                    Bed::Cut
+                } else if k == 1 {
+                    Bed::Fill
+                } else {
+                    Bed::Graded
+                }
             } else {
                 Bed::Conform
             };
             // Halo pieces only matter where they reshape the terrain.
-            if c == 1 && !matches!(kind, Bed::Graded | Bed::Conform | Bed::Fill) {
+            if c == 1 && !matches!(kind, Bed::Graded | Bed::Conform | Bed::Fill | Bed::Cut) {
                 continue;
             }
             if c == 1 && matches!(kind, Bed::Conform | Bed::Fill) {
@@ -273,6 +285,7 @@ pub fn plan_v2(
                 sidewalk: e.tags.sidewalk,
                 cycle: e.tags.cycle,
                 lanes: e.tags.lane_split(e.oneway),
+                bridge_kind: super::BridgeKind::Beam,
                 depth: if kind == Bed::Fill {
                     (run.iter().map(|p| p.z - p.g).fold(0.0f32, f32::max) + 0.8).clamp(1.5, 14.0)
                 } else {
@@ -423,6 +436,38 @@ fn mark_walled(pts: &mut [Pt], hw: f64, wm: f64, grid: &TerrainGrid) {
     }
 }
 
+fn mark_cut(pts: &mut [Pt], hw: f64, wm: f64, grid: &TerrainGrid) {
+    let n = pts.len();
+    let off = hw + 3.5;
+    for k in 0..n {
+        let (a, b) = (pts[k.saturating_sub(1)], pts[(k + 1).min(n - 1)]);
+        let l = ((b.x - a.x).hypot(b.y - a.y)).max(1e-9);
+        let (nx, ny) = (-(b.y - a.y) / l, (b.x - a.x) / l);
+        let side = |s: f64| {
+            let (u, v) = (((pts[k].x + nx * off * s) / wm).clamp(0.0, 1.0), ((pts[k].y + ny * off * s) / wm).clamp(0.0, 1.0));
+            grid.sample(u, v)
+        };
+        pts[k].cut = pts[k].g - pts[k].z >= FILL_MIN_M && side(1.0).min(side(-1.0)) >= pts[k].z - 0.3;
+    }
+    let mut i = 0;
+    while i < n {
+        if !pts[i].cut {
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        while j + 1 < n && pts[j + 1].cut {
+            j += 1;
+        }
+        if pts[j].arc - pts[i].arc < FILL_RUN_M {
+            for p in &mut pts[i..=j] {
+                p.cut = false;
+            }
+        }
+        i = j + 1;
+    }
+}
+
 /// Mark the terrain collider's quads over low-arch tunnel sections as holes, so a car can drive through the
 /// shallow cover (the render mesh is untouched; the tube mesh is what you see and collide with inside).
 pub fn carve_holes(grid: &mut TerrainGrid, plan: &RoadPlan) {
@@ -482,11 +527,12 @@ mod tests {
             arc: x as f32,
             g: 0.0,
             w: false,
+            cut: false,
         }
     }
 
     fn road(len: usize, z: f32, g: f32) -> Vec<Pt> {
-        (0..len).map(|i| Pt { x: 100.0 + i as f64 * 4.0, y: 600.0, z, k: 0, arc: i as f32 * 4.0, g, w: false }).collect()
+        (0..len).map(|i| Pt { x: 100.0 + i as f64 * 4.0, y: 600.0, z, k: 0, arc: i as f32 * 4.0, g, w: false, cut: false }).collect()
     }
 
     #[test]
