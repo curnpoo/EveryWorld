@@ -137,6 +137,7 @@ enum Part {
 struct ReadyTile {
     build: TileBuild,
     collider: Option<Collider>,
+    /// Bridge decks and tunnel tubes (trimesh), spawned with the buildings' physics shell.
     road_collider: Option<Collider>,
     /// Shadow stand-in for a subdivided terrain mesh: the bare grid triangles
     /// (same surface, ~1/9 the triangles; see [`Shadow::CameraOnly`]).
@@ -191,11 +192,7 @@ fn ready_tile(mut b: TileBuild) -> ReadyTile {
         m
     });
     let collider = b.collider.take().map(|(verts, tris)| Collider::trimesh(verts, tris));
-    let road_collider = (!b.road_collider.indices.is_empty()).then(|| {
-        let verts: Vec<Vec3> = b.road_collider.positions.iter().map(|p| Vec3::from(*p)).collect();
-        let tris: Vec<[u32; 3]> = b.road_collider.indices.chunks_exact(3).map(|t| [t[0], t[1], t[2]]).collect();
-        Collider::trimesh(verts, tris)
-    });
+    let road_collider = b.road_collider.take().map(|(verts, tris)| Collider::trimesh(verts, tris));
     let parts = [
         (Part::Terrain, &b.terrain),
         (Part::Water, &b.water),
@@ -220,6 +217,11 @@ fn ready_tile(mut b: TileBuild) -> ReadyTile {
     let trees = crate::foliage::prepare_trees(std::mem::take(&mut b.trees));
     ReadyTile { build: b, collider, road_collider, terrain_shadow, parts, meshlets, rock_chunks, placements, lod, lod_chunks, trees }
 }
+
+/// Road graph of a tile (AI, racing, traffic): nodes, lanes, speeds, in the tile's render space.
+#[derive(Component)]
+#[allow(dead_code)] // consumed by the traffic / AI systems to come
+pub struct TileNav(pub Arc<ed_world::roads::nav::NavTile>);
 
 #[derive(Resource)]
 pub struct TileManager {
@@ -692,6 +694,9 @@ fn apply_tiles(
                     if let Some(collider) = a.ready.collider.take() {
                         parent.insert((RigidBody::Static, collider));
                     }
+                    if let Some(n) = b.nav.take() {
+                        parent.insert(TileNav(n));
+                    }
                     if let Some(g) = b.ground.take() {
                         parent.insert(crate::ground_scatter::GroundCover(g));
                     }
@@ -700,9 +705,6 @@ fn apply_tiles(
                     }
                     let parent_id = parent.id();
                     a.parent = Some(parent_id);
-                    if let Some(rc) = a.ready.road_collider.take() {
-                        commands.spawn((RigidBody::Static, rc, Transform::default(), ChildOf(parent_id)));
-                    }
                     let near = t.z >= 13;
                     let mut sat_tag = match b.sat_tex.take() {
                         Some((n, data)) => {
@@ -782,6 +784,9 @@ fn apply_tiles(
                     }
                     let mut batch = std::mem::replace(&mut a.ready.lod, BuildingBatch { buckets: Vec::new(), collider: None });
                     let parent_id = a.parent.unwrap();
+                    if let Some(col) = a.ready.road_collider.take() {
+                        commands.spawn((RigidBody::Static, col, Transform::default(), ChildOf(parent_id)));
+                    }
                     if let Some(col) = batch.collider.take() {
                         commands.spawn((RigidBody::Static, col, Transform::default(), ChildOf(parent_id)));
                     }

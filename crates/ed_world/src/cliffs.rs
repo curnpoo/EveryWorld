@@ -122,7 +122,7 @@ mod tests {
         let s = 32;
         let w = t.width_m();
         let heights = (0..(s + 1) * (s + 1)).map(|k| f((k % (s + 1)) as f64 / s as f64 * w, (k / (s + 1)) as f64 / s as f64 * w)).collect();
-        (proj, TerrainGrid { tile: t, segments: s, heights }, SurfaceMap::uniform(t, Biome::Alpine))
+        (proj, TerrainGrid { tile: t, segments: s, heights, holes: Vec::new() }, SurfaceMap::uniform(t, Biome::Alpine))
     }
 
     #[test]

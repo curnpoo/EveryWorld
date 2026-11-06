@@ -27,6 +27,16 @@ pub fn get_bytes(url: &str) -> anyhow::Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// [`get_bytes`] with extra request headers (some APIs, NVDB among them, ask clients to name themselves).
+pub fn get_bytes_with(url: &str, headers: &[(&str, &str)]) -> anyhow::Result<Vec<u8>> {
+    let mut req = agent().get(url);
+    for (k, v) in headers {
+        req = req.header(*k, *v);
+    }
+    let mut resp = req.call()?;
+    Ok(resp.body_mut().with_config().limit(64 * 1024 * 1024).read_to_vec()?)
+}
+
 /// Like [`get_bytes`] but a 404/204 (common for empty ocean tiles) is `Ok(None)`.
 pub fn get_bytes_opt(url: &str) -> anyhow::Result<Option<Vec<u8>>> {
     match agent().get(url).call() {

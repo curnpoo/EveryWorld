@@ -1,49 +1,23 @@
 # Changes
 
+## 2026-11-06 (second pass): retaining walls, roof shapes, national markings, OSM tags, inferred bridges, measured heights
+- One commit each; details and numbers in `docs/plans/roads.md`, "Follow-ups". New off switches: `EW_OSMTAGS=0`, `EW_INFER_BRIDGES=0`, `EW_ROADZ=0`.
+- Walled embankments (`Bed::Fill`), Overture `roof:shape` in the building generator, per-country marking tables (`roads/marks.rs`), OSM lanes/width/sidewalks/cycle lanes/speed from baked Postpass tiles (`tools/bake_osm_tags.py`), bridges inferred from ground height at untagged crossings, surveyed deck and tunnel heights for France (IGN) and Norway (NVDB).
+- Needs checking on the Mac: the checklist in `docs/plans/roads.md` plus: walled fills look right and carry a car; roof shapes on baked Overture tiles; lane lines and bike lanes after `python3 tools/bake_osm_tags.py --lat .. --lon ..`; an inferred bridge where a road passes over another in a cutting; a French or Norwegian bridge at its surveyed height. US lidar heights are not done.
 
-## 2026-11-05 Bridge supports + isolated bridge lookdev board
-- Bridges get periodic piers sampled from real ground (`bridge_structure`), spike geometry fixed; structures (girder, through-arch, stone arch, truss, suspension) vary by region/class/length/lanes.
-- `roads::demo_bridge` + lookdev "Bridges" board (8 types over still water): `EW_NATIVE=0 earthdrop --lookdev DIR --only bridge` (shots `bridge_*_side/_deck`, `bridge_overview`).
-- Lookdev no longer panics at startup (inserted `GameState` + `GraphicsSettings` that `render_scale::sync_cameras` needs).
-- Needs Mac check: real-world bridges (Brooklyn/Manhattan); girder hump on short spans looks a bit steep; road dip on a shore in Brooklyn shot unexplained.
+## 2026-11-06: roads v2 (world-space network, solved heights, decks, tunnels, junctions, nav graph), Overture buildings, garages
+- Full write-up and Mac checklist: `docs/plans/roads.md`. `EW_ROADS=legacy` returns to the old planner, `EW_OVERTURE=0` to OpenFreeMap buildings.
+- `ed_world/src/roads.rs` became `roads/mod.rs` plus `net`, `ground`, `solve`, `plan2`, `structures`, `junction`, `width`, `median`, `keepout`, `nav`. The network is assembled from the 3x3 block of vector tiles (each source tile clipped to its own square, pieces joined on borders), levels come from `brunnel` and `layer`, and one solver (`solve.rs`) picks every height: decks clear what runs under them by 6 m plus deck depth, approaches climb onto fill at the class grade, tunnel floors take the lower hull of the ground. Real-tile runs: LA Four Level 957 crossings, 13 audit deficits (worst 5.7 m).
+- Geometry: closed deck sections with parapets and underside, hammerhead piers clear of lower roads, tunnel tubes with portals, jersey barriers on divided highways, rounded country junctions, urban crosswalks, cycleways coloured, markings dash and edge colour by region. Decks, tunnels, barriers and garages get a trimesh collider (`TileBuild::road_collider`); low-arch tunnel sections cut holes in the terrain collider only (`TerrainGrid.holes`).
+- Triangle diet: road triangles per z14 tile 452k -> 281k (Central Park), 137k -> 64k (Zermatt), 485k -> 388k (Shibuya), 659k -> 502k (LA). Footpaths no longer subdivide or hang curtains; guardrails use half the samples. The v2 solve costs 0.25-0.7 s of worker time on dense tiles (more neighbours fetched in the IO stage).
+- Nav graph per tile (`roads::nav::NavTile`, stable node ids, lanes, speeds, signals) is on `TileBuild::nav` and as a `TileNav` component on each tile entity. No driver uses it yet.
+- Overture: `tools/bake_overture.py` (pinned release 2026-10-21.0) writes per-tile JSON, `ed_data::overture` reads it as a `building` layer; buildings on roads or decks are dropped (`keepout.rs`); street width comes from building facades where walled in; `class = parking` footprints become drivable garages (`garage.rs`).
+- Needs checking on the Mac: everything in the checklist at the end of `docs/plans/roads.md`. Not done: retaining walls, inferred bridges, truss/arch/suspension looks, lane/sidewalk tags, traffic drivers.
 
-## 2026-11-05 Road/bridge collision + bridges over water
-- `roads.rs`: roads crossing water (mask fraction >= 0.4) are split into dry spans + a `Bed::Bridge` span anchored on land, even when OSM has no `brunnel=bridge`. Wet decks ramp 1.8 m above shore height with a small arch (no more decks under the surface) and get concrete piers every ~16 m (`piers`, `box_post`).
-- New `RoadOutput::collider` / `TileBuild::road_collider`: decks, bridge rails, guardrails, piers as one static trimesh per tile (`streaming.rs`). Street props already had cylinder colliders; grass/pebble ground scatter still does not collide.
-- Procedural bridge styles (`roads.rs` `bridge_style`, `BridgeFlavor` on `StreetKit`): Modern / Historic (Paris, Mediterranean, British, W. Europe, Alpine: stone parapets, masonry fascia) / Utilitarian (LatAm, Africa, S/SE Asia, MENA, E. Europe: steel truss, timber footbridges). Structure by span: beam, through arch, masonry arch, truss, suspension (towers + cables + hangers). Width from OSM `lanes`, clearance/tower/arch/truss size vary per bridge by a position hash.
-- Every bridge gets a solid parapet and a 1.6 m invisible collision wall, so you can't fall off. Old roads inside a water-spanning deck's corridor are cut (`RoadPlan::cut_under_bridges`) and buildings in the corridor (OSM bridge towers) are dropped in `tilegen.rs`.
-- Later: accurate famous bridges (London first), keyed by OSM id/name.
-- Needs Mac check: walking on bridges/roads, bridge frequency in other cities, tri/collider cost per tile.
-
-## 2026-11-05: water/ground z-fight and inland foam
-
-- `water_fs`: fragments whose water depth is under `thr = 0.02 + 0.0005*dist` m are discarded (water coplanar with the beach z-fought and its noisy depth made foam speckle inland); `edge` and all foam fade in from `thr` via `shore`. Verified top-down at the Palm Jumeirah (25.118,55.135, alt 120, pitch -75).
-- Remaining: the waterline outline is still slightly angular in small ponds (cover mask resolution); see the coast follow-ups in the previous entry.
-
-## 2026-11-05: smooth coastlines (terrain carve)
-
-- Cause of the stepped shoreline: `water::carve_terrain` lowered the ground by 2.5 m per coarse DEM vertex using a binary `cover_at == Water` test, so the waterline followed the cover-grid staircase.
-- Fix: `SurfaceMap::water_fraction` (bilinear-filtered water mask) drives a smoothstep carve ramp, and `tilegen::build` densifies coastal tiles (`SurfaceMap::has_coast`, z >= 12, grid <= 200 segments) 2x before carving. Coastal tiles skip the second road-grade upsample to bound mesh size.
-- Cost: up to ~4x terrain vertices on coastal tiles only. Checked at the Palm Jumeirah; `cargo test -p ed_world` passes (115).
-- Possible follow-up: adaptive refinement only within a few cells of the coast, 3x density, and filtered `is_water` in `sat_vertex`/`splat` (colour is still per cover cell).
-
-## 2026-11-05: water stages 4 + 5 - coast, refraction, caustics
-
-- `water_fs`: breaker bands + swash foam keyed on the real water column depth (shoaling), validated refraction (shifted lookup only accepted when behind the surface), two-layer ridged caustics on the bed. Verified at the Palm Jumeirah (smooth turquoise shallows, complete shoreline) and open ocean (36.96,-122.02).
-- Not done: baked shore map, terrain swash, vertex displacement, planar reflection. Phases 6 (CPU wave model) and 7 (underwater) NOT done, see docs/plans/ultra-water-port.md.
-
-## 2026-11-05: water stage 3 - GPU FFT ocean
-
-- `crates/ed_metal/src/ocean.rs` + `shaders/ocean.metal`: 3 cascades (600/85/12 m, 128^2) of a seeded JONSWAP spectrum (9 m/s wind, 120 km fetch), evolved + inverse-FFT'd each frame in compute (Stockham radix-2, 2 real fields per complex FFT). Output: RGBA16F texture array (slope x, slope z, Jacobian, height), mipmapped, bound to `water_fs` at texture 11; per-cascade slope variance at fragment buffer 3 (w = FFT on).
-- Omega is quantised so the sea loops exactly every 300 s (`LOOP_S`); `h0` comes from a fixed-seed xorshift RNG, so phase 6 (CPU wave model for buoyancy) can rebuild identical `h0` on every client.
-- `water_fs` uses FFT slopes (mip-filtered, lost energy re-added as roughness variance) and Jacobian < 0.35 foam. `EW_NATIVE_NOFFT=1` falls back to the analytic 8-wave normals.
-- Not yet: vertex displacement (the water mesh is still flat; height/disp channels are computed but unused), planar reflection.
-- Phases 6 and 7 are NOT done (see docs/plans/ultra-water-port.md).
-
-## 2026-11-05: water stage 2 - dedicated water pass (Ultra-Water port, see docs/plans/ultra-water-port.md)
-- `world.rs`: `DrawItem.water` (set in `native.rs` from `StandardMaterial::attenuation_distance == assets::WATER_MARK`, which `wm.water`/`wm.ocean` carry). Water draws skip the opaque loop; after it the pass ends, depth + HDR are blit-copied to `Targets.dcopy/hcopy`, and a second pass (Load/Store, depth-tested, `water_pso`) draws water, then the blended list. `FrameU.csm_far.z` now carries the camera near plane (reverse-Z depth = near/z). `EW_NATIVE_NOWATER=1` falls back to the old opaque draw.
-- `world.metal` `water_fs`: 8 analytic waves (62 m .. 0.78 m) whose sub-pixel energy becomes GGX slope variance, Lagarde Fresnel (F0 0.02), sun GGX + glitter, Beer-Lambert through the real water column (scene depth behind the surface), body scatter, SSS, soft shoreline (surface dissolves over 0.3 m depth) plus lace foam under 1.1 m. Shallows over carved terrain go turquoise (checked Palm Jumeirah 25.118,55.135 and SF Bay). ~3.3 ms at 1280x720 when much of the frame is water.
-- Not yet: planar reflection (SSR misses still fall back to analytic sky), FFT displacement, shore field/breakers, refraction offset, caustics. Phases 6 (CPU wave model for buoyancy) and 7 (underwater) are NOT done; see the plan doc.
+## 2026-11-06: docs only, BeamNG.Earth lessons and tile-load hitch investigation
+- New `docs/plans/beamng-earth-lessons.md`: what BeamNG.Earth (MIT, github.com/TecnaGamer/BeamNG.Earth) does for roads, data sources, terrain grading, ground imagery, trees, buildings, streets, nav graph and streaming, compared to us, with an ordered plan (R0-R13 for roads) and where each step fits the roadmap. Read from their docs and module headers; their mod was not run.
+- New `docs/plans/tile-load-hitch.md`: per-tile cost sheet (worker CPU 1.0-3.5 s warm, 1.9-4.9 s cold; 301k terrain, 140k-587k road and up to 565k wall triangles per z14 tile) and ranked hypotheses for the white-tile-then-freeze symptom. Leading cause: `ed_metal::world::WorldRenderer::upload` clusters and simplifies every mesh over 40k triangles on the main thread (~0.45 ms per 1k triangles in a CPU replica, ~250-700 ms per dense tile on a Linux box), invisible to `FrameBudget`. White comes from the `unwrap_or(&self.white)` texture fallback in the terrain draw.
+- No code changed. Needs on the Mac: steps M1-M5 and A0-A6 in the hitch doc to confirm or reject each hypothesis. Licence flag: `ed_data/satellite.rs` says the EOX Sentinel-2 mosaic is CC BY-NC-SA 4.0 (non-commercial).
 
 ## 2026-11-05: native shadows to 20 km (cached), screen-space contact shadows
 - `world.rs`: cascades 4 (to 4 km) and 5 (to 20 km) are now camera-centred spheres, so turning the camera no longer changes their matrices; the existing per-cascade hash (matrix + caster list, texel-snapped positions) then skips the re-render until you move a texel (`shadow_skipped`). Cascade 5 now casts buildings too (casters smaller than 1.5 texels, ~29 m at 20 km, are culled; terrain always casts).

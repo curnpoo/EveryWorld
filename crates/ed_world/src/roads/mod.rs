@@ -10,6 +10,114 @@ use ed_data::mvt::{self, GeomType};
 use glam::Vec3;
 use std::collections::HashMap;
 
+/// `EW_ROADS=legacy` returns to the per-tile planner (`plan`); anything else uses the world-space network.
+pub fn v2_enabled() -> bool {
+    match FORCE.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => false,
+        2 => true,
+        _ => std::env::var("EW_ROADS")
+            .map(|v| v != "legacy")
+            .unwrap_or(true),
+    }
+}
+
+/// Assemble the 3x3 block of vector tiles around `tile`, build the network and solve its heights.
+pub fn build_v2(
+    cache: &ed_data::DiskCache,
+    template: Option<&str>,
+    tile: ed_geo::tile::TileId,
+    centre: &mvt::Tile,
+) -> (net::RoadNet, solve::Solved, ground::GroundFn) {
+    let wm = tile.width_m();
+    let mut neighbours: Vec<(i32, i32, mvt::Tile)> = Vec::new();
+    if let Some(tpl) = template {
+        for dy in -1..=1i32 {
+            for dx in -1..=1i32 {
+                if (dx, dy) == (0, 0) {
+                    continue;
+                }
+                if let Some(n) = tile.offset(dx as i64, dy as i64)
+                    && let Ok(nt) = ed_data::vector::fetch(cache, tpl, n)
+                {
+                    neighbours.push((dx, dy, nt));
+                }
+            }
+        }
+    }
+    let mut block: Vec<(i32, i32, &mvt::Tile)> = vec![(0, 0, centre)];
+    block.extend(neighbours.iter().map(|(a, b, c)| (*a, *b, c)));
+    let t0 = std::time::Instant::now();
+    let mut net = net::RoadNet::from_tiles(tile, wm, &block);
+    // Baked OSM tags (lanes, width, sidewalks, cycle lanes, speed limits) for the same 3x3 block, if there are any.
+    let baked: Vec<(i32, i32, ed_data::osmtags::OsmTile)> = (-1..=1i32)
+        .flat_map(|dy| (-1..=1i32).map(move |dx| (dx, dy)))
+        .filter_map(|(dx, dy)| tile.offset(dx as i64, dy as i64).and_then(|t| ed_data::osmtags::load(cache, t)).map(|t| (dx, dy, t)))
+        .collect();
+    if !baked.is_empty() {
+        let refs: Vec<(i32, i32, &ed_data::osmtags::OsmTile)> = baked.iter().map(|(a, b, c)| (*a, *b, c)).collect();
+        osm::attach(&mut net, &refs);
+    }
+    let t1 = std::time::Instant::now();
+    let gfn = ground::load(cache, tile, wm);
+    let inferred = if infer::enabled() { infer::infer_bridges(&mut net, &*gfn) } else { 0 };
+    let t2 = std::time::Instant::now();
+    // Surveyed heights (France, Norway): fetched for the same 3x3 block, cached per tile.
+    let measured = ed_data::roadz::source_for(tile).and_then(|src| {
+        let blocks: Vec<(i32, i32, ed_geo::tile::TileId, Vec<ed_data::roadz::Seg>)> = (-1..=1i32)
+            .flat_map(|dy| (-1..=1i32).map(move |dx| (dx, dy)))
+            .filter_map(|(dx, dy)| {
+                let t = tile.offset(dx as i64, dy as i64)?;
+                ed_data::roadz::fetch(cache, src, t).ok().map(|segs| (dx, dy, t, segs))
+            })
+            .collect();
+        let m = measured::Measured::build(wm, &blocks, src.flags_levels(), &*gfn);
+        (!m.is_empty()).then_some(m)
+    });
+    if let Some(m) = &measured {
+        measured::fill_tags(&mut net, m);
+    }
+    let solved = solve::solve_with(&net, &*gfn, measured.as_ref());
+    if std::env::var_os("EW_ROAD_TALLY").is_some() {
+        eprintln!(
+            "  ROADTIME net={:?} ground+infer={:?} (inferred bridges {}) solve={:?}",
+            t1 - t0,
+            t2 - t1,
+            inferred,
+            t2.elapsed()
+        );
+    }
+    (net, solved, gfn)
+}
+
+static FORCE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Tests and tools: force a planner regardless of the environment (`None` = follow `EW_ROADS`).
+pub fn force_v2(v: Option<bool>) {
+    FORCE.store(
+        match v {
+            None => 0,
+            Some(false) => 1,
+            Some(true) => 2,
+        },
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+pub mod ground;
+pub mod infer;
+pub mod junction;
+pub mod keepout;
+pub mod marks;
+pub mod measured;
+pub mod median;
+pub mod nav;
+pub mod net;
+pub mod osm;
+pub mod plan2;
+pub mod solve;
+mod structures;
+pub mod width;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Side {
     Right,
@@ -40,20 +148,8 @@ pub enum SignalLayout {
 }
 
 /// Everything about streets that changes when you cross a border.
-/// Bridge character of a region: what gets built, by wealth and history.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BridgeFlavor {
-    /// Concrete girders, parapets, steel arches/cable-stayed for big spans.
-    Modern,
-    /// Stone parapets, masonry arches and piers, stone-towered suspension.
-    Historic,
-    /// Cheap and sturdy: steel trusses, plain rails, timber footbridges.
-    Utilitarian,
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct StreetKit {
-    pub bridge: BridgeFlavor,
     pub drive_side: Side,
     pub center_line: CenterLine,
     pub utility_poles: PoleKind,
@@ -63,6 +159,8 @@ pub struct StreetKit {
     pub sidewalk: u32,
     pub curb_height: f32,
     pub stop_sign_text: &'static str,
+    /// Paint and gap (m) of a broken centre or lane line.
+    pub dash: (f32, f32),
 }
 
 impl StreetKit {
@@ -78,16 +176,11 @@ impl StreetKit {
             sidewalk: 0xc9c6bf,
             curb_height: 0.15,
             stop_sign_text: "STOP",
-            bridge: BridgeFlavor::Modern,
+            dash: (3.0, 6.0),
         };
-        let flavor = match r {
-            Paris | Mediterranean | British | WesternEurope | Alpine => BridgeFlavor::Historic,
-            LatinAmerica | SubSaharan | SouthAsia | SoutheastAsia | NorthAfricaMiddleEast | EasternEurope => BridgeFlavor::Utilitarian,
-            _ => BridgeFlavor::Modern,
-        };
-        let base = StreetKit { bridge: flavor, ..base };
         match r {
             NorthAmericaCity | NorthAmericaSuburb => StreetKit {
+                dash: (3.05, 9.14),
                 center_line: CenterLine::DoubleYellow,
                 utility_poles: if r == NorthAmericaSuburb { PoleKind::Wood } else { PoleKind::None },
                 signal_on_far_side: true,
@@ -100,14 +193,46 @@ impl StreetKit {
                 utility_poles: PoleKind::Concrete,
                 signals: SignalLayout::Horizontal,
                 stop_sign_text: "止まれ",
+                dash: (5.0, 5.0),
                 ..base
             },
-            British | Oceania => StreetKit { drive_side: Side::Left, ..base },
-            SouthAsia => StreetKit { drive_side: Side::Left, utility_poles: PoleKind::Concrete, asphalt: 0x55575a, ..base },
-            SubSaharan => StreetKit { utility_poles: PoleKind::Wood, asphalt: 0x56585b, sidewalk: 0xbfa98a, ..base },
-            SoutheastAsia => StreetKit { utility_poles: PoleKind::Concrete, ..base },
-            EastAsia => StreetKit { center_line: CenterLine::DoubleYellow, signals: SignalLayout::Horizontal, stop_sign_text: "停", ..base },
-            NorthAfricaMiddleEast => StreetKit { asphalt: 0x5a5a58, sidewalk: 0xd6c8a8, stop_sign_text: "قف", ..base },
+            British => StreetKit {
+                drive_side: Side::Left,
+                dash: (2.0, 7.0),
+                ..base
+            },
+            Oceania => StreetKit {
+                drive_side: Side::Left,
+                ..base
+            },
+            SouthAsia => StreetKit {
+                drive_side: Side::Left,
+                utility_poles: PoleKind::Concrete,
+                asphalt: 0x55575a,
+                ..base
+            },
+            SubSaharan => StreetKit {
+                utility_poles: PoleKind::Wood,
+                asphalt: 0x56585b,
+                sidewalk: 0xbfa98a,
+                ..base
+            },
+            SoutheastAsia => StreetKit {
+                utility_poles: PoleKind::Concrete,
+                ..base
+            },
+            EastAsia => StreetKit {
+                center_line: CenterLine::DoubleYellow,
+                signals: SignalLayout::Horizontal,
+                stop_sign_text: "停",
+                ..base
+            },
+            NorthAfricaMiddleEast => StreetKit {
+                asphalt: 0x5a5a58,
+                sidewalk: 0xd6c8a8,
+                stop_sign_text: "قف",
+                ..base
+            },
             _ => base,
         }
     }
@@ -132,7 +257,7 @@ pub struct StreetProp {
 #[derive(Debug, Default)]
 pub struct RoadOutput {
     pub mesh: MeshData,
-    /// Collision-only copy of decks, rails and piers (no markings or kerbs detail).
+    /// Collision surfaces for things the terrain collider does not cover: bridge decks and tunnel tubes.
     pub collider: MeshData,
     pub props: Vec<StreetProp>,
     /// Road polylines in local space (for the occupancy mask / AI traffic).
@@ -270,6 +395,11 @@ pub enum Bed {
     Conform,
     /// Deck on a straight line between its ends; terrain untouched.
     Bridge,
+    /// Covered tunnel section (low arch or full tube): drawn as a tube, terrain render mesh untouched.
+    Tunnel,
+    /// Road on a high embankment held by retaining walls: a solid section dug into the natural ground (so the
+    /// terrain is not graded under it), with its own collider.
+    Fill,
 }
 
 #[derive(Debug, Clone)]
@@ -284,22 +414,25 @@ struct Item {
     oneway: bool,
     paved: bool,
     urban: bool,
-    /// Bridge deck that spans water (gets piers and clearance).
-    over_water: bool,
-    /// OSM lane count (0 = unknown) and a deterministic 0..1 variation seed.
-    lanes: u8,
-    seed: f32,
-}
-
-impl Item {
-    /// Deck half-width: bridges follow lane count (3.4 m lanes + shoulders), not the class default.
-    fn deck_hw(&self) -> f32 {
-        if self.kind != Bed::Bridge || !self.class.is_car_road() {
-            return self.class.width() / 2.0;
-        }
-        let lanes = if self.lanes > 0 { self.lanes as f32 } else { (self.class.width() / 3.4).round().max(2.0) };
-        (lanes * 3.4 + 1.2) / 2.0
-    }
+    /// Carriageway width (m): measured from the buildings that line the street when possible.
+    width: f32,
+    /// Part of this tile's mesh. Halo items exist only so the terrain is graded the same on both sides of a border.
+    emit: bool,
+    cycleway: bool,
+    /// Tunnel section kind (1 low arch, 2 full tube) for `Bed::Tunnel`.
+    section: u8,
+    /// A portal stands at the start / end of this tunnel run.
+    portal: (bool, bool),
+    /// Arc ranges (m from the item start) where another road passes underneath a deck: no piers there.
+    clear_arcs: Vec<(f32, f32)>,
+    /// Depth of the solid section under the driving surface (`Bed::Fill`).
+    depth: f32,
+    /// Sidewalks on the (left, right) when OSM says; `None` = by urban cover.
+    sidewalk: Option<(bool, bool)>,
+    /// Cycle facility on the (left, right): 0 none, 1 painted lane, 2 track.
+    cycle: (u8, u8),
+    /// Lanes (forward, backward) when OSM says.
+    lanes: Option<(u8, u8)>,
 }
 
 /// Road layout for one tile: bed heights decided once, used both to carve the
@@ -309,12 +442,24 @@ pub struct RoadPlan {
     items: Vec<Item>,
     junctions: Vec<((i32, i32), (u8, u8))>,
     extent: f64,
+    /// Solver statistics (v2 only).
+    pub stats: solve::Stats,
+    /// Built by `plan2` (bed heights are exact road surface, not to be re-snapped to the graded grid).
+    pub v2: bool,
+    /// Tile width in metres (v2): the frame `jspecs` are in.
+    pub wm: f64,
+    /// Junctions of three or more car roads inside the tile (v2).
+    pub jspecs: Vec<junction::JunctionSpec>,
+    /// Median barrier centrelines in the tile's metre frame (x, y, z), clipped to the tile (v2).
+    pub medians: Vec<Vec<[f64; 3]>>,
 }
 
 impl RoadPlan {
     /// Any paved car road that grades the terrain.
     pub fn grades_terrain(&self) -> bool {
-        self.items.iter().any(|i| i.kind != Bed::Bridge)
+        self.items
+            .iter()
+            .any(|i| !matches!(i.kind, Bed::Bridge | Bed::Tunnel | Bed::Fill))
     }
 }
 
@@ -341,7 +486,6 @@ pub fn plan(vt: &mvt::Tile, proj: &TileProjector, grid: &TerrainGrid, surface: &
         let oneway = f.num("oneway").unwrap_or(0.0) != 0.0;
         let paved = !matches!(f.str("surface"), Some("unpaved"));
         let bridge = f.str("brunnel") == Some("bridge");
-        let lanes = f.num("lanes").unwrap_or(0.0).clamp(0.0, 12.0) as u8;
         for line in &f.rings {
             if line.len() < 2 {
                 continue;
@@ -357,163 +501,54 @@ pub fn plan(vt: &mvt::Tile, proj: &TileProjector, grid: &TerrainGrid, surface: &
             if uv.len() < 2 {
                 continue;
             }
-            let urban = surface.cover_at(line[0][0] as f64 / ext, line[0][1] as f64 / ext).is_urban();
-            let seed = hash2(line[0][0] as i32, line[0][1] as i32) * 0.5 + 0.5;
-            // Water under each sample: a road that crosses water without a mapped bridge gets
-            // one anyway, anchored on the dry samples either side.
-            let wf: Vec<f32> = uv.iter().map(|&(u, v)| surface.water_fraction(u, v)).collect();
-            let mut spans: Vec<(usize, usize, bool)> = Vec::new();
-            if bridge || class == RoadClass::Rail || !wf.iter().any(|&f| f >= 0.4) {
-                spans.push((0, uv.len() - 1, bridge));
+            let kind = if bridge {
+                Bed::Bridge
+            } else if class.rank() >= 1 && paved {
+                Bed::Graded
             } else {
-                let n = uv.len();
-                let mut i = 0;
-                let mut start = 0;
-                while i < n {
-                    if wf[i] >= 0.4 {
-                        let mut a = i;
-                        while a > 0 && wf[a] >= 0.2 {
-                            a -= 1;
-                        }
-                        a = a.saturating_sub(1);
-                        let mut b = i;
-                        while b + 1 < n && wf[b] >= 0.2 {
-                            b += 1;
-                        }
-                        b = (b + 1).min(n - 1);
-                        if a > start {
-                            spans.push((start, a, false));
-                        }
-                        // Deck must start and end on land; if the road leaves the tile over water, still bridge it.
-                        spans.push((a.max(start), b, true));
-                        start = b;
-                        i = b;
-                        if b == n - 1 {
-                            start = n;
-                        }
-                    }
-                    i += 1;
+                Bed::Conform
+            };
+            let bed = match kind {
+                Bed::Graded => smooth(&ground, 10, 3),
+                Bed::Bridge => {
+                    let (a, b) = (ground[0], ground[ground.len() - 1]);
+                    let n = ground.len() - 1;
+                    (0..=n).map(|i| a + (b - a) * i as f32 / n as f32).collect()
                 }
-                if start + 1 < n {
-                    spans.push((start, n - 1, false));
-                }
-            }
-            for (s0, s1, is_bridge) in spans {
-                if s1 <= s0 {
-                    continue;
-                }
-                let (uv, ground, wf) = (uv[s0..=s1].to_vec(), ground[s0..=s1].to_vec(), &wf[s0..=s1]);
-                let kind = if is_bridge {
-                    Bed::Bridge
-                } else if class.rank() >= 1 && paved {
-                    Bed::Graded
-                } else {
-                    Bed::Conform
-                };
-                let (ea, eb) = (ground[0], ground[ground.len() - 1]);
-                let gap = ground.iter().cloned().fold(f32::MAX, f32::min) < ea.min(eb) - 1.0;
-                let wet = wf.iter().any(|&f| f >= 0.2) || (is_bridge && gap);
-                let bed = match kind {
-                    Bed::Graded => smooth(&ground, 10, 3),
-                    Bed::Bridge => bridge_bed(&ground, wet, seed),
-                    Bed::Conform => smooth(&ground, 5, 2),
-                };
-                let pts = uv.iter().zip(&bed).map(|(&(u, v), &h)| proj.local(u, v, h as f64)).collect();
-                plan.items.push(Item { class, kind, uv, bed, pts, oneway, paved, urban, over_water: wet && kind == Bed::Bridge, lanes, seed });
-            }
+                Bed::Conform | Bed::Tunnel | Bed::Fill => smooth(&ground, 5, 2),
+            };
+            let pts = uv
+                .iter()
+                .zip(&bed)
+                .map(|(&(u, v), &h)| proj.local(u, v, h as f64))
+                .collect();
+            let urban = surface
+                .cover_at(line[0][0] as f64 / ext, line[0][1] as f64 / ext)
+                .is_urban();
+            plan.items.push(Item {
+                class,
+                kind,
+                uv,
+                bed,
+                pts,
+                oneway,
+                paved,
+                urban,
+                width: class.width(),
+                emit: true,
+                cycleway: false,
+                section: 0,
+                portal: (false, false),
+                clear_arcs: Vec::new(),
+                depth: 0.0,
+                sidewalk: None,
+                cycle: (0, 0),
+                lanes: None,
+            });
         }
     }
     plan.junctions = junctions.into_iter().collect();
-    plan.cut_under_bridges();
     plan
-}
-
-impl RoadPlan {
-    /// Corridors (centerline xz, half-width) of every deck that spans water, ends trimmed so
-    /// the approaches still connect.
-    pub fn corridors(&self) -> Vec<(Vec<Vec3>, f32)> {
-        self.items
-            .iter()
-            .filter(|i| i.kind == Bed::Bridge && i.over_water && i.pts.len() >= 4)
-            .map(|i| {
-                let trim = ((i.pts.len() as f32 * STEP_M) * 0.15).clamp(4.0, 12.0);
-                let k = (trim / STEP_M).ceil() as usize;
-                let hi = i.pts.len().saturating_sub(k);
-                (i.pts[k.min(hi)..=hi.max(k.min(hi))].to_vec(), i.deck_hw())
-            })
-            .collect()
-    }
-
-    /// Old roads running through a bridge's corridor (the mapped road the bridge replaces,
-    /// parallel ways, ramps) are cut out, so nothing sits under or inside the deck.
-    fn cut_under_bridges(&mut self) {
-        let cor = self.corridors();
-        if cor.is_empty() {
-            return;
-        }
-        let mut out = Vec::new();
-        for it in std::mem::take(&mut self.items) {
-            if it.kind == Bed::Bridge {
-                out.push(it);
-                continue;
-            }
-            let hw = it.class.width() / 2.0;
-            let inside = |p: Vec3| cor.iter().any(|(line, bhw)| dist_xz(p, line) < bhw + hw + 1.5);
-            let mut start = 0usize;
-            let n = it.pts.len();
-            for i in 0..=n {
-                if i == n || inside(it.pts[i]) {
-                    if i > start + 1 {
-                        out.push(Item { uv: it.uv[start..i].to_vec(), bed: it.bed[start..i].to_vec(), pts: it.pts[start..i].to_vec(), ..it.clone() });
-                    }
-                    start = i + 1;
-                }
-            }
-        }
-        self.items = out;
-    }
-
-}
-
-/// Footprint test for buildings: true if `p` lies in a water-spanning bridge's corridor.
-pub fn in_bridge_corridor(cor: &[(Vec<Vec3>, f32)], p: Vec3) -> bool {
-    cor.iter().any(|(line, hw)| dist_xz(p, line) < hw + 10.0)
-}
-
-fn dist_xz(p: Vec3, line: &[Vec3]) -> f32 {
-    let mut best = f32::MAX;
-    for w in line.windows(2) {
-        let (a, b) = (glam::Vec2::new(w[0].x, w[0].z), glam::Vec2::new(w[1].x, w[1].z));
-        let q = glam::Vec2::new(p.x, p.z);
-        let ab = b - a;
-        let t = ((q - a).dot(ab) / ab.length_squared().max(1e-6)).clamp(0.0, 1.0);
-        best = best.min(q.distance(a + ab * t));
-    }
-    best
-}
-
-/// Bridge deck heights: a straight line between the (firmest) end heights; over water it
-/// ramps up to clear the surface and arches slightly, so the deck never dips under waves.
-fn bridge_bed(ground: &[f32], wet: bool, seed: f32) -> Vec<f32> {
-    let n = ground.len() - 1;
-    let k = 2.min(n);
-    let a = if wet { ground[..=k].iter().cloned().fold(f32::MIN, f32::max) } else { ground[0] };
-    let b = if wet { ground[n - k..].iter().cloned().fold(f32::MIN, f32::max) } else { ground[n] };
-    let span = n as f32 * STEP_M;
-    // Clearance grows with the span (ships pass under long bridges) and varies per bridge.
-    let clear = (1.8 + span * 0.02).min(9.0) * (0.8 + 0.5 * seed);
-    (0..=n)
-        .map(|i| {
-            let t = i as f32 / n as f32;
-            let mut h = a + (b - a) * t;
-            if wet {
-                let edge = (t.min(1.0 - t) * span / (6.0 + clear * 4.0)).clamp(0.0, 1.0);
-                let edge = edge * edge * (3.0 - 2.0 * edge);
-                h += clear * edge + (std::f32::consts::PI * t).sin() * (span * 0.02).min(2.0);
-            }
-            h
-        })
-        .collect()
 }
 
 /// Polyline in tile px -> (tile uv, ground height) every ~STEP_M meters.
@@ -562,9 +597,12 @@ pub fn grade(grid: &mut TerrainGrid, plan: &RoadPlan) {
     let n = seg + 1;
     let wm = grid.tile.width_m();
     let cell = wm / seg as f64;
-    for it in plan.items.iter()
-        .filter(|i| i.kind != Bed::Bridge) {
-        let hw = it.class.width() as f64 / 2.0;
+    for it in plan
+        .items
+        .iter()
+        .filter(|i| !matches!(i.kind, Bed::Bridge | Bed::Tunnel | Bed::Fill))
+    {
+        let hw = it.width as f64 / 2.0;
         // Wide roads: every triangle under the deck lies on the flat bench. Trails
         // only get a narrow one (the level deck + sloped curtain hide the rest).
         let narrow = hw < 2.0;
@@ -617,6 +655,10 @@ pub fn grade(grid: &mut TerrainGrid, plan: &RoadPlan) {
 pub fn generate(plan: &RoadPlan, proj: &TileProjector, grid: &TerrainGrid, surface: &SurfaceMap, region: Region) -> RoadOutput {
     let mut out = RoadOutput::default();
     let kit = StreetKit::for_region(region);
+    let st = {
+        let c = proj.tile.center();
+        marks::style_for(marks::locate(c.lat_deg, c.lon_deg))
+    };
     let up = proj.up();
     let uvm = proj.uv_map();
     let ground = |p: Vec3| {
@@ -624,70 +666,268 @@ pub fn generate(plan: &RoadPlan, proj: &TileProjector, grid: &TerrainGrid, surfa
         grid.sample(u as f64, v as f64)
     };
 
-    for it in &plan.items {
+    let mut tally: std::collections::BTreeMap<String, (usize, f32)> = Default::default();
+    for it in plan.items.iter().filter(|i| i.emit) {
         let class = it.class;
+        let before = out.mesh.indices.len() / 3;
         // Re-snap the centerline to the graded terrain, so every offset below is
-        // relative to the surface that actually renders. Bridge decks keep their line.
+        // relative to the surface that actually renders. Decks and tubes keep their line.
         let snapped: Vec<Vec3>;
-        let pts: &Vec<Vec3> = if it.kind == Bed::Bridge {
+        let pts: &Vec<Vec3> = if matches!(it.kind, Bed::Bridge | Bed::Tunnel | Bed::Fill)
+            || (plan.v2 && it.kind == Bed::Graded)
+        {
             &it.pts
         } else {
             snapped = it.uv.iter().map(|&(u, v)| proj.local(u, v, grid.sample(u, v) as f64)).collect();
             &snapped
         };
-        let hw = it.deck_hw();
+        let hw = it.width / 2.0;
         match it.kind {
             Bed::Bridge if !class.is_car_road() => {
-                let prof = conform_profile(class, it.paved, false, &kit);
+                let prof = conform_profile(class, it.paved, false, it.cycleway, &kit);
                 let way = simplify_deck(pts, WAY_TOL_M, WAY_MAX_SPAN_M);
                 sweep(&mut out.mesh, &way, up, &prof, None, false, 1.2, 0.0, 0.06);
-                sweep(&mut out.collider, &way, up, &prof, None, false, 1.2, 0.0, 0.06);
-                let st = bridge_style(kit.bridge, class, bridge_len(pts), it.over_water, it.seed);
-                for s in [1.0f32, -1.0] {
-                    let g = offset_line(pts, up, s * (hw + 0.1), |_, _| 0.0);
-                    parapet(&mut out.mesh, &mut out.collider, &g, up, &st);
-                }
-                bridge_structure(&mut out.mesh, &mut out.collider, pts, &it.bed, up, hw, &ground, &st);
             }
-            Bed::Graded | Bed::Bridge => {
+            Bed::Bridge => {
+                // A real deck: parapets, curbs, girder underside, piers where there is room, its own collider.
                 let deck = simplify_deck(pts, DECK_TOL_M, DECK_MAX_SPAN_M);
-                let prof = paved_profile(hw, it.urban && it.kind == Bed::Graded, &kit);
-                let skirt = if it.kind == Bed::Bridge { 1.2 } else { 0.6 };
-                sweep(&mut out.mesh, &deck, up, &prof, Some(&ground as &dyn Fn(Vec3) -> f32), true, skirt, 0.04, 0.05);
-                sweep(&mut out.collider, &deck, up, &prof, Some(&ground as &dyn Fn(Vec3) -> f32), true, skirt, 0.04, 0.05);
+                let depth = solve::deck_depth(class);
+                let prof = structures::deck_profile(hw, depth, &kit);
+                structures::sweep_raw(&mut out.mesh, &deck, up, &prof);
+                structures::sweep_raw(&mut out.collider, &deck, up, &prof);
                 if it.paved && class.rank() >= 1 {
-                    markings(&mut out.mesh, &deck, up, if it.kind == Bed::Bridge { None } else { Some(&ground as &dyn Fn(Vec3) -> f32) }, true, class, &kit, it.oneway);
+                    markings(
+                        &mut out.mesh,
+                        &deck,
+                        up,
+                        None,
+                        true,
+                        class,
+                        &st, it.urban, it.oneway, hw, it.lanes);
                 }
-                if it.kind == Bed::Bridge {
-                    let st = bridge_style(kit.bridge, class, bridge_len(pts), it.over_water, it.seed);
-                    bridge_structure(&mut out.mesh, &mut out.collider, pts, &it.bed, up, hw, &ground, &st);
+                let mut arc = vec![0.0f32; pts.len()];
+                for i in 1..pts.len() {
+                    arc[i] = arc[i - 1] + pts[i].distance(pts[i - 1]);
                 }
-                let rail_on_deck = it.kind == Bed::Bridge;
-                if rail_on_deck {
-                    // Solid parapet on every bridge, so nobody walks or drives off the edge.
-                    let st = bridge_style(kit.bridge, class, bridge_len(pts), it.over_water, it.seed);
-                    for s in [1.0f32, -1.0] {
-                        let g = offset_line(pts, up, s * (hw + 0.15), |_, _| 0.0);
-                        parapet(&mut out.mesh, &mut out.collider, &g, up, &st);
+                let room: Vec<f32> = (0..pts.len())
+                    .map(|i| it.bed[i] - depth - grid.sample(it.uv[i].0, it.uv[i].1))
+                    .collect();
+                structures::piers(&mut out.mesh, pts, up, hw, depth, &room, &it.clear_arcs);
+            }
+            Bed::Fill => {
+                // An embankment held by retaining walls: parapet, curb, asphalt, and a solid body down into the ground.
+                let deck = simplify_deck(pts, DECK_TOL_M, DECK_MAX_SPAN_M);
+                let prof = structures::deck_profile(hw, it.depth, &kit);
+                structures::sweep_raw(&mut out.mesh, &deck, up, &prof);
+                structures::sweep_raw(&mut out.collider, &deck, up, &prof);
+                if it.paved && class.rank() >= 1 {
+                    markings(&mut out.mesh, &deck, up, None, true, class, &st, it.urban, it.oneway, hw, it.lanes);
+                }
+            }
+            Bed::Tunnel => {
+                let tube = simplify_deck(pts, DECK_TOL_M, DECK_MAX_SPAN_M);
+                let prof = structures::tube_profile(hw, &kit);
+                structures::sweep_raw(&mut out.mesh, &tube, up, &prof);
+                structures::sweep_raw(&mut out.collider, &tube, up, &prof);
+                if it.paved && class.rank() >= 1 {
+                    markings(
+                        &mut out.mesh,
+                        &tube,
+                        up,
+                        None,
+                        true,
+                        class,
+                        &st, it.urban, it.oneway, hw, it.lanes);
+                }
+                let n = pts.len();
+                if it.portal.0 && n >= 2 {
+                    structures::portal(&mut out.mesh, pts[0], pts[1] - pts[0], up, hw);
+                }
+                if it.portal.1 && n >= 2 {
+                    structures::portal(&mut out.mesh, pts[n - 1], pts[n - 2] - pts[n - 1], up, hw);
+                }
+            }
+            Bed::Graded => {
+                let deck = simplify_deck(pts, DECK_TOL_M, DECK_MAX_SPAN_M);
+                let walks = it.sidewalk.unwrap_or((it.urban, it.urban));
+                let prof = paved_profile(hw, walks, &kit);
+                sweep(
+                    &mut out.mesh,
+                    &deck,
+                    up,
+                    &prof,
+                    Some(&ground as &dyn Fn(Vec3) -> f32),
+                    true,
+                    0.6,
+                    0.04,
+                    0.05,
+                );
+                let m0 = out.mesh.indices.len() / 3;
+                if it.paved && class.rank() >= 1 {
+                    markings(
+                        &mut out.mesh,
+                        &deck,
+                        up,
+                        Some(&ground as &dyn Fn(Vec3) -> f32),
+                        true,
+                        class,
+                        &st, it.urban, it.oneway, hw, it.lanes);
+                }
+                tally.entry("graded markings".into()).or_default().0 +=
+                    out.mesh.indices.len() / 3 - m0;
+                // Cycle lanes: the national bike-lane colour inside the carriageway edge, with a white line.
+                let bike = if marks::locate(proj.tile.center().lat_deg, proj.tile.center().lon_deg) == marks::Country::Us { rgb(0x3f8f5c) } else { rgb(0xb3503f) };
+                let ground_fn = Some(&ground as &dyn Fn(Vec3) -> f32);
+                for (side, kind) in [(-1.0f32, it.cycle.0), (1.0f32, it.cycle.1)] {
+                    if kind > 0 && hw > 2.5 {
+                        let (inner, outer) = (hw - 1.7, hw - 0.15);
+                        let (a, b) = (side * inner, side * outer);
+                        paint(&mut out.mesh, &deck, up, ground_fn, true, hw, a.min(b), a.max(b), bike, None);
+                        paint(&mut out.mesh, &deck, up, ground_fn, true, hw, side * inner - 0.05, side * inner + 0.05, rgb(0xf2f2ee), None);
                     }
-                } else if matches!(class, RoadClass::Motorway | RoadClass::Trunk) && !it.urban {
-                    let off = if rail_on_deck { hw + 0.15 } else { hw + 1.5 };
+                }
+                let g0 = out.mesh.indices.len() / 3;
+                if matches!(class, RoadClass::Motorway | RoadClass::Trunk) && !it.urban {
+                    let off = hw + 1.5;
                     for s in [1.0f32, -1.0] {
-                        let g = offset_line(pts, up, s * off, |i, p| if rail_on_deck { 0.0 } else { ground(p) - it.bed[i] });
+                        let g = offset_line(pts, up, s * off, |i, p| ground(p) - it.bed[i]);
                         guardrail(&mut out.mesh, &g, up, s);
-                        guardrail(&mut out.collider, &g, up, s);
                     }
                 }
+                tally.entry("guardrails".into()).or_default().0 += out.mesh.indices.len() / 3 - g0;
             }
             Bed::Conform => {
-                let prof = conform_profile(class, it.paved, it.urban, &kit);
-                let way = simplify_deck(pts, WAY_TOL_M, WAY_MAX_SPAN_M);
-                sweep(&mut out.mesh, &way, up, &prof, Some(&ground as &dyn Fn(Vec3) -> f32), true, 0.5, 0.09, if it.paved { 0.07 } else { 0.2 });
-                sweep(&mut out.collider, &way, up, &prof, Some(&ground as &dyn Fn(Vec3) -> f32), true, 0.5, 0.09, if it.paved { 0.07 } else { 0.2 });
+                let prof = conform_profile(class, it.paved, it.urban, it.cycleway, &kit);
+                // Footpaths are most of the kilometres of road in a park or a village: keep them cheap.
+                let path = class == RoadClass::Path;
+                let way = if path {
+                    simplify_deck(pts, 0.06, 9.0)
+                } else {
+                    simplify_deck(pts, WAY_TOL_M, WAY_MAX_SPAN_M)
+                };
+                sweep(
+                    &mut out.mesh,
+                    &way,
+                    up,
+                    &prof,
+                    Some(&ground as &dyn Fn(Vec3) -> f32),
+                    true,
+                    if path { 0.0 } else { 0.5 },
+                    0.09,
+                    if it.paved { 0.07 } else { 0.2 },
+                );
             }
         }
-        street_props(&mut out.props, pts, up, class, &kit, it.urban, it.kind != Bed::Conform);
+        let e = tally
+            .entry(format!("{:?} {:?}", it.kind, class))
+            .or_default();
+        e.0 += out.mesh.indices.len() / 3 - before;
+        e.1 += pts.windows(2).map(|w| w[0].distance(w[1])).sum::<f32>();
+        street_props(
+            &mut out.props,
+            pts,
+            up,
+            class,
+            &kit,
+            it.urban,
+            it.kind != Bed::Conform,
+        );
         out.centerlines.push((class, pts.clone()));
+    }
+    if std::env::var_os("EW_ROAD_TALLY").is_some() {
+        let mut v: Vec<_> = tally.iter().collect();
+        v.sort_by_key(|(_, t)| std::cmp::Reverse(t.0));
+        for (k, (tris, len)) in v.into_iter().take(14) {
+            eprintln!(
+                "  ROADTALLY {k:28} tris={tris:7} km={:.1} tris/m={:.1}",
+                len / 1000.0,
+                *tris as f32 / len.max(1.0)
+            );
+        }
+    }
+
+    // Median barriers: a concrete jersey section down the middle of divided highways.
+    for run in &plan.medians {
+        let pts: Vec<Vec3> = run
+            .iter()
+            .map(|p| proj.local(p[0] / plan.wm, p[1] / plan.wm, p[2]))
+            .collect();
+        let prof = structures::jersey_profile();
+        structures::sweep_raw(&mut out.mesh, &pts, up, &prof);
+        structures::sweep_raw(&mut out.collider, &pts, up, &prof);
+    }
+
+    // Rounded country junctions and urban crosswalks.
+    let asphalt = rgb(kit.asphalt);
+    let white = rgb(0xf2f2ee);
+    for j in &plan.jspecs {
+        let at = |x: f64, y: f64, lift: f64| {
+            let (u, v) = (x / plan.wm, y / plan.wm);
+            proj.local(
+                u,
+                v,
+                grid.sample(u.clamp(0.0, 1.0), v.clamp(0.0, 1.0)) as f64 + lift,
+            )
+        };
+        let mut br = j.branches.clone();
+        br.sort_by(|a, b| {
+            a.dir[1]
+                .atan2(a.dir[0])
+                .partial_cmp(&b.dir[1].atan2(b.dir[0]))
+                .unwrap()
+        });
+        if !j.urban {
+            for i in 0..br.len() {
+                let (a, b) = (&br[i], &br[(i + 1) % br.len()]);
+                let r = junction::radius_for(a.class, b.class, false);
+                if let Some(poly) = junction::corner_fill(j.pos, a, b, r) {
+                    let vs: Vec<u32> = poly
+                        .iter()
+                        .map(|q| {
+                            out.mesh.vertex(
+                                at(q[0], q[1], 0.05).to_array(),
+                                up.to_array(),
+                                [q[0] as f32, q[1] as f32],
+                                asphalt,
+                            )
+                        })
+                        .collect();
+                    for k in 1..vs.len() - 1 {
+                        tri_out(&mut out.mesh, vs[0], vs[k], vs[k + 1]);
+                    }
+                }
+            }
+        } else {
+            let reach = j.branches.iter().map(|b| b.hw).fold(0.0f64, f64::max) + 3.0;
+            for b in j
+                .branches
+                .iter()
+                .filter(|b| (1..=4).contains(&b.class.rank()))
+            {
+                for (c, d, lat) in junction::crosswalk_bars(j.pos, b, reach, st.zebra.0 as f64, st.zebra.1 as f64) {
+                    let (hl, hw2) = (1.5, st.zebra.0 as f64 / 2.0);
+                    let corner = |sa: f64, sb: f64| {
+                        at(
+                            c[0] + d[0] * hl * sa + lat[0] * hw2 * sb,
+                            c[1] + d[1] * hl * sa + lat[1] * hw2 * sb,
+                            0.06,
+                        )
+                    };
+                    let vs = [
+                        corner(-1.0, -1.0),
+                        corner(1.0, -1.0),
+                        corner(1.0, 1.0),
+                        corner(-1.0, 1.0),
+                    ]
+                    .map(|p| {
+                        out.mesh
+                            .vertex(p.to_array(), up.to_array(), [0.0, 0.0], white)
+                    });
+                    tri_out(&mut out.mesh, vs[0], vs[1], vs[2]);
+                    tri_out(&mut out.mesh, vs[0], vs[2], vs[3]);
+                }
+            }
+        }
     }
 
     // Signals at urban junctions between real roads; stop signs at minor ones.
@@ -743,22 +983,33 @@ fn crown(o: f32, hw: f32) -> f32 {
 
 /// Cross-section of a paved road, left to right. Urban: sidewalk, curb face,
 /// gutter, cambered asphalt. Rural: gravel shoulder easing into the verge.
-fn paved_profile(hw: f32, urban: bool, kit: &StreetKit) -> Vec<P> {
+/// `walks`: a sidewalk on the (left, right); with none the profile is the country-road one (shoulder, ditch, verge).
+/// A side without a sidewalk in a street that has one on the other side gets a plain shoulder.
+fn paved_profile(hw: f32, walks: (bool, bool), kit: &StreetKit) -> Vec<P> {
     let asphalt = rgb(kit.asphalt);
     let mut v = Vec::new();
-    if urban {
+    if walks.0 || walks.1 {
         let (sw, ch) = (rgb(kit.sidewalk), kit.curb_height + 0.01);
         let curb = rgb(0xaaa8a0);
         let gutter = rgb(0x6c6d70);
-        v.push(p(-hw - 2.4, ch, sw, false));
-        v.push(p(-hw - 0.16, ch, curb, false));
-        v.push(p(-hw - 0.16, 0.03, gutter, false));
+        let shoulder = rgb(0x7b7c70);
+        if walks.0 {
+            v.push(p(-hw - 2.4, ch, sw, false));
+            v.push(p(-hw - 0.16, ch, curb, false));
+            v.push(p(-hw - 0.16, 0.03, gutter, false));
+        } else {
+            v.push(p(-hw - 1.2, 0.0, shoulder, false));
+        }
         v.push(p(-hw, 0.02, asphalt, false));
         v.push(p(0.0, CROWN, asphalt, false));
-        v.push(p(hw, 0.02, gutter, false));
-        v.push(p(hw + 0.16, 0.03, curb, false));
-        v.push(p(hw + 0.16, ch, sw, false));
-        v.push(p(hw + 2.4, ch, sw, false));
+        v.push(p(hw, 0.02, if walks.1 { gutter } else { asphalt }, false));
+        if walks.1 {
+            v.push(p(hw + 0.16, 0.03, curb, false));
+            v.push(p(hw + 0.16, ch, sw, false));
+            v.push(p(hw + 2.4, ch, sw, false));
+        } else {
+            v.push(p(hw + 1.2, 0.0, shoulder, false));
+        }
     } else {
         let gravel = rgb(0x827d6e);
         let verge = rgb(0x6a6c48);
@@ -780,7 +1031,13 @@ fn paved_profile(hw: f32, urban: bool, kit: &StreetKit) -> Vec<P> {
 
 /// Cross-section of ground-following ways: pressed into the ground with soft,
 /// ground-tinted edges (paths, tracks with wheel ruts, rail ballast, drives).
-fn conform_profile(class: RoadClass, paved: bool, urban: bool, kit: &StreetKit) -> Vec<P> {
+fn conform_profile(
+    class: RoadClass,
+    paved: bool,
+    urban: bool,
+    cycleway: bool,
+    kit: &StreetKit,
+) -> Vec<P> {
     let hw = class.width() / 2.0;
     let grass = rgb(0x6a6b44);
     let edge = |c: [f32; 4]| lerp_color(c, grass, 0.65);
@@ -808,12 +1065,28 @@ fn conform_profile(class: RoadClass, paved: bool, urban: bool, kit: &StreetKit) 
             ]
         }
         RoadClass::Path if urban => {
-            let c = rgb(0xc9c3b8);
-            vec![p(-hw - 0.15, 0.0, edge(c), true), p(-hw, 0.03, c, false), p(hw, 0.03, c, true), p(hw + 0.15, 0.0, edge(c), false)]
+            let c = if cycleway {
+                rgb(0xa5503f)
+            } else {
+                rgb(0xc9c3b8)
+            };
+            vec![
+                p(-hw - 0.15, 0.0, edge(c), true),
+                p(0.0, 0.03, c, true),
+                p(hw + 0.15, 0.0, edge(c), false),
+            ]
         }
         RoadClass::Path => {
-            let base = rgb(0xb59a73);
-            vec![p(-hw - 0.5, 0.0, edge(base), true), p(-hw, -0.02, base, true), p(0.0, -0.05, base, true), p(hw, -0.02, base, true), p(hw + 0.5, 0.0, edge(base), false)]
+            let base = if cycleway {
+                rgb(0x9c5a45)
+            } else {
+                rgb(0xb59a73)
+            };
+            vec![
+                p(-hw - 0.5, 0.0, edge(base), true),
+                p(0.0, -0.05, base, true),
+                p(hw + 0.5, 0.0, edge(base), false),
+            ]
         }
         _ => {
             // Service lanes and unpaved roads.
@@ -833,11 +1106,16 @@ fn sweep(m: &mut MeshData, pts: &[Vec3], up: Vec3, prof: &[P], conform: Option<&
     let side = side_dirs(pts, up);
     // Subdivide wide strips (<= ~2 m) so each piece follows the terrain triangles
     // under it instead of spanning a crease between them.
+    // A level cross-section (graded roads) does not follow the terrain triangles, so it needs no subdivision.
     let mut dense: Vec<P> = Vec::new();
     for (k, &a) in prof.iter().enumerate() {
         dense.push(a);
         if let Some(&b) = prof.get(k + 1) {
-            let n = (((b.o - a.o).abs() / 2.0).ceil() as usize).max(1);
+            let n = if flat {
+                1
+            } else {
+                (((b.o - a.o).abs() / 2.0).ceil() as usize).max(1)
+            };
             for j in 1..n {
                 let t = j as f32 / n as f32;
                 let c = if a.grad { lerp_color(a.c, b.c, t) } else { a.c };
@@ -847,12 +1125,26 @@ fn sweep(m: &mut MeshData, pts: &[Vec3], up: Vec3, prof: &[P], conform: Option<&
     }
     let prof = &dense[..];
     // Curtains: extend the profile down at both ends.
+    let curt = skirt > 0.0;
     let mut pr = Vec::with_capacity(prof.len() + 2);
     let first = prof[0];
-    pr.push(P { h: first.h - skirt, o: first.o - skirt * 1.5, grad: false, ..first });
+    if curt {
+        pr.push(P {
+            h: first.h - skirt,
+            o: first.o - skirt * 1.5,
+            grad: false,
+            ..first
+        });
+    }
     pr.extend_from_slice(prof);
     let last = prof[prof.len() - 1];
-    pr.push(P { h: last.h - skirt, o: last.o + skirt * 1.5, ..last });
+    if curt {
+        pr.push(P {
+            h: last.h - skirt,
+            o: last.o + skirt * 1.5,
+            ..last
+        });
+    }
     // Distance along the road, for UVs.
     let mut dist = Vec::with_capacity(pts.len());
     let mut d = 0.0f32;
@@ -869,7 +1161,7 @@ fn sweep(m: &mut MeshData, pts: &[Vec3], up: Vec3, prof: &[P], conform: Option<&
         if let (Some(g), true) = (conform, flat) {
             // Level cross-section at the bed height; the outer curtain slopes down
             // to wherever the terrain is (embankment / cliff), never tilting the deck.
-            if k == 0 || k == pr.len() - 1 {
+            if curt && (k == 0 || k == pr.len() - 1) {
                 let edge = pr[if k == 0 { 1 } else { pr.len() - 2 }].h;
                 let gh = g(pts[i] + side[i] * q.o) - g(pts[i]);
                 h = (edge - 0.3).min(gh - 0.3).max(edge - 6.0);
@@ -878,7 +1170,7 @@ fn sweep(m: &mut MeshData, pts: &[Vec3], up: Vec3, prof: &[P], conform: Option<&
             }
         } else if let Some(g) = conform {
             // Hug the ground under this profile point (curtains share their neighbour's).
-            let at = pts[i] + side[i] * pr[k.clamp(1, pr.len() - 2)].o;
+            let at = pts[i] + side[i] * pr[if curt { k.clamp(1, pr.len() - 2) } else { k }].o;
             // Drape on the real terrain triangles under this point, a hair above them.
             // Highest terrain within ~1.5 m, so a crease between samples can't poke through.
             let fw = side[i].cross(up);
@@ -1001,25 +1293,50 @@ fn dash_runs(pts: &[Vec3], on: f32, off: f32) -> Vec<Vec<Vec3>> {
     runs
 }
 
-fn markings(m: &mut MeshData, pts: &[Vec3], up: Vec3, ground: Option<&dyn Fn(Vec3) -> f32>, flat: bool, class: RoadClass, kit: &StreetKit, oneway: bool) {
+/// Lane lines, centre line and edge lines by the country's rules (`marks`): colours, widths, dash lengths, double
+/// centre lines, broken edge lines, yellow left edges. `hw` is the carriageway half width.
+fn markings(m: &mut MeshData, pts: &[Vec3], up: Vec3, ground: Option<&dyn Fn(Vec3) -> f32>, flat: bool, class: RoadClass, st: &marks::MarkStyle, urban: bool, oneway: bool, hw: f32, lanes: Option<(u8, u8)>) {
     let white = rgb(0xf2f2ee);
     let yellow = rgb(0xf2c230);
-    let hw = class.width() / 2.0;
+    let rank = class.rank();
+    let motorway = rank >= 5;
+    let line = |m: &mut MeshData, c: f32, w: f32, colour: [f32; 4], dash: Option<(f32, f32)>| paint(m, pts, up, ground, flat, hw, c - w / 2.0, c + w / 2.0, colour, dash);
+    let lane_dash = if urban { st.lane_urban } else { st.lane };
+    let lane_w = if motorway { st.lane_w_motorway } else { st.lane_w };
+    let edge_w = if motorway { st.edge_w_motorway } else { st.edge_w };
+    let edge_colour = if st.edge_yellow { yellow } else { white };
     if !oneway {
-        match kit.center_line {
-            CenterLine::DoubleYellow => {
-                paint(m, pts, up, ground, flat, hw, -0.26, -0.11, yellow, None);
-                paint(m, pts, up, ground, flat, hw, 0.11, 0.26, yellow, None);
+        let centre_colour = if st.yellow_centre { yellow } else { white };
+        let lanes_each = lanes.map(|(f, b)| f.max(b).max(1) as i32).unwrap_or(((hw / 3.4).round() as i32).clamp(1, 4)).clamp(1, 6);
+        if 2.0 * hw >= st.min_centre_m {
+            if st.double_centre && ((urban && rank >= 3) || lanes_each >= 2) {
+                let gap = 0.12 + st.centre_w;
+                line(m, -gap / 2.0, st.centre_w, centre_colour, None);
+                line(m, gap / 2.0, st.centre_w, centre_colour, None);
+            } else {
+                line(m, 0.0, st.centre_w, centre_colour, Some(if urban { st.centre_urban } else { st.centre }));
             }
-            CenterLine::SolidWhite if class.rank() >= 3 => paint(m, pts, up, ground, flat, hw, -0.08, 0.08, white, None),
-            _ => paint(m, pts, up, ground, flat, hw, -0.08, 0.08, white, Some((3.0, 6.0))),
         }
-    } else if class.rank() >= 3 {
-        paint(m, pts, up, ground, flat, hw, -0.08, 0.08, white, Some((3.0, 9.0)));
+        // More than one lane each way: white lane lines between them.
+        if rank >= 3 {
+            for k in 1..lanes_each {
+                let o = hw * k as f32 / lanes_each as f32;
+                line(m, o, lane_w, white, Some(lane_dash));
+                line(m, -o, lane_w, white, Some(lane_dash));
+            }
+        }
+    } else if rank >= 3 {
+        // One-way carriageway (motorway, ramp, divided arterial): lane lines between its lanes.
+        let n = lanes.map(|(f, _)| f.max(1) as i32).unwrap_or(((2.0 * hw / 3.5).round() as i32).clamp(1, 5)).clamp(1, 8);
+        for k in 1..n {
+            line(m, -hw + 2.0 * hw * k as f32 / n as f32, lane_w, white, Some(lane_dash));
+        }
     }
-    if class.rank() >= 2 {
-        paint(m, pts, up, ground, flat, hw, hw - 0.5, hw - 0.35, white, None);
-        paint(m, pts, up, ground, flat, hw, -hw + 0.35, -hw + 0.5, white, None);
+    if rank >= st.edge_min_rank {
+        let dash = if motorway { None } else { st.edge_dash };
+        line(m, hw - 0.4, edge_w, edge_colour, dash);
+        let left = if oneway && st.left_edge_yellow { yellow } else { edge_colour };
+        line(m, -hw + 0.4, edge_w, left, dash);
     }
 }
 
@@ -1042,10 +1359,22 @@ fn guardrail(m: &mut MeshData, g: &[Vec3], up: Vec3, s: f32) {
     }
     let steel = rgb(0xb4b9bf);
     let post = rgb(0x7b6a55);
+    // Rails are straight between posts: every other sample is plenty.
+    let mut thin: Vec<Vec3> = g.iter().step_by(2).copied().collect();
+    if g.len() % 2 == 0 {
+        thin.push(g[g.len() - 1]);
+    }
+    let g = &thin[..];
     let side = side_dirs(g, up);
     // W profile in (offset, height); bulges toward the road (negative offset for the right rail).
     let f = -s;
-    let w: [(f32, f32); 7] = [(0.05, 0.45), (0.0, 0.51), (0.05, 0.57), (0.0, 0.63), (0.05, 0.69), (0.1, 0.69), (0.1, 0.45)];
+    let w: [(f32, f32); 5] = [
+        (0.05, 0.45),
+        (0.0, 0.57),
+        (0.05, 0.69),
+        (0.1, 0.69),
+        (0.1, 0.45),
+    ];
     let loop_: Vec<(f32, f32)> = w.iter().map(|&(o, h)| (o * f, h)).collect();
     let n = loop_.len();
     let cen = (loop_.iter().map(|q| q.0).sum::<f32>() / n as f32, loop_.iter().map(|q| q.1).sum::<f32>() / n as f32);
@@ -1089,306 +1418,10 @@ fn guardrail(m: &mut MeshData, g: &[Vec3], up: Vec3, s: f32) {
     }
 }
 
-/// Thin box between two points (beams, cables, hangers).
-fn beam(m: &mut MeshData, a: Vec3, b: Vec3, up: Vec3, half: f32, color: [f32; 4]) {
-    let d = (b - a).normalize_or_zero();
-    if d == Vec3::ZERO {
-        return;
-    }
-    let mut s1 = d.cross(up);
-    if s1.length_squared() < 1e-4 {
-        s1 = d.cross(Vec3::X);
-    }
-    let s1 = s1.normalize() * half;
-    let s2 = d.cross(s1).normalize() * half;
-    let corner = |p: Vec3, i: usize| p + s1 * if i & 1 == 0 { -1.0 } else { 1.0 } + s2 * if i & 2 == 0 { -1.0 } else { 1.0 };
-    let mid = (a + b) * 0.5;
-    for (i, j) in [(0usize, 1usize), (1, 3), (3, 2), (2, 0)] {
-        let q = [corner(a, i), corner(a, j), corner(b, j), corner(b, i)];
-        let face = (q[0] + q[1] + q[2] + q[3]) * 0.25 - mid;
-        let nrm = (q[1] - q[0]).cross(q[3] - q[0]);
-        if nrm.dot(face) >= 0.0 { m.quad(q, [[0.0; 2]; 4], color) } else { m.quad([q[1], q[0], q[3], q[2]], [[0.0; 2]; 4], color) }
-    }
-}
-
-/// Position and across-road direction at fraction `t` of a polyline.
-fn at_frac(pts: &[Vec3], side: &[Vec3], t: f32) -> (Vec3, Vec3, usize) {
-    let f = (t * (pts.len() - 1) as f32).clamp(0.0, (pts.len() - 1) as f32 - 1e-3);
-    let i = f.floor() as usize;
-    let k = f - i as f32;
-    (pts[i].lerp(pts[i + 1], k), side[i].lerp(side[i + 1], k).normalize_or(side[i]), i)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Structure {
-    Beam,
-    ThroughArch,
-    StoneArch,
-    Truss,
-    Suspension,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Edge {
-    Concrete,
-    Stone,
-    Steel,
-    Timber,
-}
-
-/// Everything that makes one bridge look like it belongs where it is: picked from
-/// the region's flavor, the road class and the span (data, not per-bridge code).
-#[derive(Debug, Clone, Copy)]
-struct BridgeStyle {
-    structure: Structure,
-    edge: Edge,
-    main: u32,
-    pier: u32,
-    /// 0..1 per-bridge variation: tower height, arch rise, truss depth.
-    var: f32,
-}
-
-fn bridge_len(pts: &[Vec3]) -> f32 {
-    pts.windows(2).map(|w| (w[1] - w[0]).length()).sum()
-}
-
-fn bridge_style(flavor: BridgeFlavor, class: RoadClass, len: f32, over_water: bool, var: f32) -> BridgeStyle {
-    use BridgeFlavor::*;
-    let foot = !class.is_car_road();
-    let (structure, edge, main, pier) = match (flavor, foot) {
-        (_, true) if class == RoadClass::Rail => (if len > 25.0 { Structure::Truss } else { Structure::Beam }, Edge::Steel, 0x59606a, 0x8d8b86),
-        (Modern, true) => (if len > 60.0 { Structure::ThroughArch } else { Structure::Beam }, Edge::Steel, 0x7d868f, 0xa9a7a1),
-        (Historic, true) => (Structure::StoneArch, Edge::Stone, 0xb5a98f, 0xb5a98f),
-        (Utilitarian, true) => (Structure::Beam, Edge::Timber, 0x7a5c3e, 0x6e5a46),
-        (Modern, false) if len >= 150.0 && over_water => (Structure::Suspension, Edge::Concrete, 0x9aa0a6, 0xb4b2ac),
-        (Modern, false) if len >= 70.0 && over_water => (Structure::ThroughArch, Edge::Concrete, 0x5d7a99, 0xb4b2ac),
-        (Modern, false) => (Structure::Beam, Edge::Concrete, 0xb4b2ac, 0xb4b2ac),
-        (Historic, false) if len >= 150.0 && over_water => (Structure::Suspension, Edge::Stone, 0x7a766d, 0xa89c82),
-        (Historic, false) if over_water && len >= 18.0 => (Structure::StoneArch, Edge::Stone, 0xb5a98f, 0xa89c82),
-        (Historic, false) => (Structure::Beam, Edge::Stone, 0xb5a98f, 0xa89c82),
-        (Utilitarian, false) if len >= 45.0 && over_water => (Structure::Truss, Edge::Steel, 0x6b7480, 0x8d8b86),
-        (Utilitarian, false) => (Structure::Beam, Edge::Steel, 0x80878f, 0x8d8b86),
-    };
-    // Arches, trusses and cables need a real span: short or dry decks are girders on piers.
-    let structure = match structure {
-        Structure::Beam => Structure::Beam,
-        Structure::ThroughArch if len < 60.0 || !over_water => Structure::Beam,
-        Structure::StoneArch if len < 18.0 => Structure::Beam,
-        Structure::Truss if len < 40.0 || !(over_water || class == RoadClass::Rail) => Structure::Beam,
-        Structure::Suspension if len < 150.0 || !over_water => Structure::Beam,
-        s => s,
-    };
-    BridgeStyle { structure, edge, main, pier, var }
-}
-
-/// Solid edge along one side of a bridge: visible parapet/handrail plus an invisible
-/// 1.6 m collision wall, so players and vehicles stay on the deck.
-fn parapet(m: &mut MeshData, col: &mut MeshData, g: &[Vec3], up: Vec3, st: &BridgeStyle) {
-    if g.len() < 2 {
-        return;
-    }
-    let side = side_dirs(g, up);
-    let (h, thick, color) = match st.edge {
-        Edge::Concrete => (1.1, 0.3, rgb(0xb8b6b0)),
-        Edge::Stone => (1.0, 0.5, rgb(0xb5a98f)),
-        Edge::Steel => (1.15, 0.12, rgb(0x6b7480)),
-        Edge::Timber => (1.1, 0.1, rgb(0x7a5c3e)),
-    };
-    for i in 0..g.len() - 1 {
-        let (a, b) = (g[i], g[i + 1]);
-        let fw = (b - a).normalize_or_zero();
-        let len = (b - a).length();
-        let mid = (a + b) * 0.5;
-        let sd = (side[i] + side[i + 1]).normalize_or(side[i]);
-        // Collision wall (two-sided).
-        let w = [a, b, b + up * 1.6, a + up * 1.6];
-        col.quad(w, [[0.0; 2]; 4], color);
-        col.quad([w[1], w[0], w[3], w[2]], [[0.0; 2]; 4], color);
-        match st.edge {
-            Edge::Concrete | Edge::Stone => box_post(m, mid, up, sd, fw, color, thick * 0.5, len * 0.5 + 0.02, -0.3, h),
-            Edge::Steel | Edge::Timber => {
-                box_post(m, mid, up, sd, fw, color, thick * 0.5, len * 0.5 + 0.02, h - 0.1, h);
-                box_post(m, mid, up, sd, fw, color, thick * 0.5, len * 0.5 + 0.02, h * 0.5, h * 0.5 + 0.08);
-            }
-        }
-    }
-    if matches!(st.edge, Edge::Steel | Edge::Timber) {
-        let mut dist = 0.0f32;
-        let mut next = 0.0f32;
-        for i in 0..g.len() - 1 {
-            let seg = g[i + 1] - g[i];
-            let l = seg.length();
-            while next <= dist + l {
-                let t = ((next - dist) / l.max(1e-4)).clamp(0.0, 1.0);
-                let c = g[i].lerp(g[i + 1], t);
-                box_post(m, c, up, side[i], seg.normalize_or_zero(), color, 0.05, 0.05, -0.2, h);
-                next += 2.2;
-            }
-            dist += l;
-        }
-    }
-}
-
-/// Procedural bridge structure for decks over water, by style: beam (piers only), through
-/// arch, masonry arch, steel truss, or suspension with towers, cables and hangers.
-#[allow(clippy::too_many_arguments)]
-fn bridge_structure(m: &mut MeshData, col: &mut MeshData, pts: &[Vec3], bed: &[f32], up: Vec3, hw: f32, ground: &dyn Fn(Vec3) -> f32, st: &BridgeStyle) {
-    let len = bridge_len(pts);
-    if len < 12.0 || pts.len() < 3 {
-        return;
-    }
-    let steel = rgb(0x6b7480);
-    let paint = rgb(st.main);
-    let pier_col = rgb(st.pier);
-    let side = side_dirs(pts, up);
-    let off = hw + 0.4;
-    let tower_legs = |m: &mut MeshData, col: &mut MeshData, t: f32, h: f32| -> [Vec3; 2] {
-        let (c, sd, i) = at_frac(pts, &side, t);
-        let fw = (pts[i + 1] - pts[i]).normalize_or_zero();
-        let mut tops = [Vec3::ZERO; 2];
-        for (k, s) in [1.0f32, -1.0].into_iter().enumerate() {
-            let base = c + sd * (s * off);
-            let depth = ground(base) - 3.0 - bed[i];
-            for mm in [&mut *m, &mut *col] {
-                box_post(mm, base, up, sd, fw, paint, 0.9, 1.1, depth.min(-1.5), h);
-            }
-            tops[k] = base + up * h;
-        }
-        beam(m, tops[0] - up * 1.5, tops[1] - up * 1.5, up, 0.5, paint);
-        beam(m, tops[0] - up * (h * 0.5), tops[1] - up * (h * 0.5), up, 0.4, paint);
-        tops
-    };
-    match st.structure {
-        Structure::Suspension => {
-            let (t0, t1) = (0.2f32, 0.8f32);
-            let h = ((22.0 + len * 0.06).min(70.0)) * (0.85 + 0.3 * st.var);
-            let a = tower_legs(m, col, t0, h);
-            let b = tower_legs(m, col, t1, h);
-            for k in 0..2 {
-                let s = if k == 0 { 1.0 } else { -1.0 };
-                let end0 = pts[0] + side[0] * (s * off) + up * 3.0;
-                let end1 = pts[pts.len() - 1] + side[pts.len() - 1] * (s * off) + up * 3.0;
-                let sag = h * 0.85;
-                let mut prev: Option<Vec3> = None;
-                let n = ((len * 0.6 / 6.0).round() as usize).clamp(8, 40);
-                for j in 0..=n {
-                    let u = j as f32 / n as f32;
-                    let (c, sd, _) = at_frac(pts, &side, t0 + (t1 - t0) * u);
-                    let base = c + sd * (s * off);
-                    let p = a[k].lerp(b[k], u) - up * (4.0 * u * (1.0 - u) * sag);
-                    if let Some(q) = prev {
-                        beam(m, q, p, up, 0.12, steel);
-                    }
-                    if j > 0 && j < n {
-                        beam(m, p, base + up * 0.9, up, 0.04, steel);
-                    }
-                    prev = Some(p);
-                }
-                beam(m, end0, a[k], up, 0.12, steel);
-                beam(m, b[k], end1, up, 0.12, steel);
-            }
-        }
-        Structure::ThroughArch => {
-            let rise = len * (0.10 + 0.06 * st.var);
-            for s in [1.0f32, -1.0] {
-                let mut prev: Option<Vec3> = None;
-                let n = ((len / 7.0).round() as usize).clamp(6, 30);
-                for j in 0..=n {
-                    let t = j as f32 / n as f32;
-                    let (c, sd, _) = at_frac(pts, &side, t);
-                    let base = c + sd * (s * off);
-                    let p = base + up * (4.0 * t * (1.0 - t) * rise + 1.0);
-                    if let Some(q) = prev {
-                        beam(m, q, p, up, 0.35, paint);
-                    }
-                    if j > 0 && j < n {
-                        beam(m, base + up * 0.9, p, up, 0.07, steel);
-                    }
-                    prev = Some(p);
-                }
-            }
-        }
-        Structure::Truss => {
-            // Warren truss: top chord, verticals and alternating diagonals each side.
-            let hgt = (len * 0.1).clamp(4.0, 8.0) * (0.8 + 0.4 * st.var);
-            let n = ((len / 5.0).round() as usize).max(3);
-            for s in [1.0f32, -1.0] {
-                let mut prev_top: Option<Vec3> = None;
-                let mut prev_base = Vec3::ZERO;
-                for j in 0..=n {
-                    let t = j as f32 / n as f32;
-                    let (c, sd, _) = at_frac(pts, &side, t);
-                    let base = c + sd * (s * off) + up * 0.2;
-                    let top = base + up * hgt;
-                    beam(m, base, top, up, 0.12, paint);
-                    if let Some(q) = prev_top {
-                        beam(m, q, top, up, 0.18, paint);
-                        if j % 2 == 0 { beam(m, prev_base, top, up, 0.1, paint) } else { beam(m, base, q, up, 0.1, paint) }
-                    }
-                    prev_top = Some(top);
-                    prev_base = base;
-                }
-            }
-        }
-        Structure::StoneArch => {
-            // Masonry fascia down each side with an arcade look (deeper at the piers).
-            for i in 0..pts.len() - 1 {
-                let seg = pts[i + 1] - pts[i];
-                let mid = (pts[i] + pts[i + 1]) * 0.5;
-                let sd = (side[i] + side[i + 1]).normalize_or(side[i]);
-                for s in [1.0f32, -1.0] {
-                    box_post(m, mid + sd * (s * (hw + 0.1)), up, sd, seg.normalize_or_zero(), pier_col, 0.3, seg.length() * 0.5 + 0.02, -1.4, -0.05);
-                }
-            }
-        }
-        Structure::Beam => {}
-    }
-    // Periodic piers (about every 26 m, wider than the deck's lanes, thin along it) wherever the
-    // deck stands well above whatever is below: water, a valley, another road.
-    let wide = if st.structure == Structure::StoneArch { 1.0 } else { 0.8 };
-    let spacing = if st.structure == Structure::Suspension { 40.0 } else { 26.0 };
-    let n_piers = ((len / spacing).round() as usize).max(1);
-    let mut targets: Vec<f32> = (1..n_piers).map(|k| len * k as f32 / n_piers as f32).collect();
-    if st.structure != Structure::Suspension && len >= 24.0 {
-        targets.push(2.5); // abutments just inside each end
-        targets.push(len - 2.5);
-    }
-    for want in targets {
-        let mut dist = 0.0f32;
-        for i in 0..pts.len() - 1 {
-            let seg = pts[i + 1] - pts[i];
-            let l = seg.length();
-            if want <= dist + l {
-                let t = ((want - dist) / l.max(1e-4)).clamp(0.0, 1.0);
-                let c = pts[i].lerp(pts[i + 1], t);
-                let sd = side[i].lerp(side[i + 1], t).normalize_or(side[i]);
-                let fw = seg.normalize_or_zero();
-                let deck_h = bed[i] + (bed[i + 1] - bed[i]) * t;
-                let gap = deck_h - ground(c);
-                if gap > 2.0 {
-                    let depth = ground(c) - 3.0 - deck_h;
-                    for mm in [&mut *m, &mut *col] {
-                        // Pier shaft plus a cap beam under the deck.
-                        box_post(mm, c, up, sd, fw, pier_col, (hw * wide).max(1.0), 0.6, depth.min(-1.5), -0.8);
-                        box_post(mm, c, up, sd, fw, pier_col, hw + 0.3, 1.0, -0.8, -0.3);
-                    }
-                }
-                break;
-            }
-            dist += l;
-        }
-    }
-}
-
 /// Square post 0.1 m on a side, from 0.25 m underground to 0.7 m.
 fn post_box(m: &mut MeshData, base: Vec3, up: Vec3, sd: Vec3, fw: Vec3, color: [f32; 4]) {
-    box_post(m, base, up, sd, fw, color, 0.05, 0.05, -0.25, 0.7);
-}
-
-/// Axis box with half-sizes `ha` (across) and `hb` (along), from `lo` to `hi` above `base`.
-#[allow(clippy::too_many_arguments)]
-fn box_post(m: &mut MeshData, base: Vec3, up: Vec3, sd: Vec3, fw: Vec3, color: [f32; 4], ha: f32, hb: f32, lo: f32, hi: f32) {
-    let (a, b) = (sd * ha, fw * hb);
+    let (a, b) = (sd * 0.05, fw * 0.05);
+    let (lo, hi) = (-0.25, 0.7);
     let c = |sa: f32, sb: f32, h: f32| base + a * sa + b * sb + up * h;
     let top = [c(-1.0, -1.0, hi), c(1.0, -1.0, hi), c(1.0, 1.0, hi), c(-1.0, 1.0, hi)];
     let bot = [c(-1.0, -1.0, lo), c(1.0, -1.0, lo), c(1.0, 1.0, lo), c(-1.0, 1.0, lo)];
@@ -1447,6 +1480,33 @@ fn street_props(props: &mut Vec<StreetProp>, pts: &[Vec3], up: Vec3, class: Road
 mod tests {
     use super::*;
     use ed_geo::{EnuFrame, Geodetic, tile::TileId};
+
+    #[test]
+    fn markings_follow_the_country() {
+        let pts: Vec<Vec3> = (0..40).map(|i| Vec3::new(i as f32 * 3.0, 0.0, 0.0)).collect();
+        let count = |country: marks::Country, oneway: bool, rank_class: RoadClass| {
+            let st = marks::style_for(country);
+            let mut m = MeshData::default();
+            markings(&mut m, &pts, Vec3::Y, None, true, rank_class, &st, false, oneway, 3.5, None);
+            let y = rgb(0xf2c230);
+            let yellow = m.colors.iter().filter(|c| (c[0] - y[0]).abs() < 1e-3 && (c[1] - y[1]).abs() < 1e-3 && (c[2] - y[2]).abs() < 1e-3).count();
+            (m.triangle_count(), yellow)
+        };
+        let (us_tris, us_yellow) = count(marks::Country::Us, false, RoadClass::Secondary);
+        let (gb_tris, gb_yellow) = count(marks::Country::Britain, false, RoadClass::Secondary);
+        assert!(us_yellow > 0 && gb_yellow == 0, "US centre line is yellow, UK white");
+        assert!(us_tris > 0 && gb_tris > 0);
+        // A one-way ramp: yellow left edge in the Americas only.
+        assert!(count(marks::Country::Us, true, RoadClass::Motorway).1 > 0);
+        assert_eq!(count(marks::Country::Germany, true, RoadClass::Motorway).1, 0);
+        // Ireland paints its edges yellow.
+        assert!(count(marks::Country::Ireland, false, RoadClass::Secondary).1 > 0);
+        // A very narrow street gets no centre line where the manual says so.
+        let st = marks::style_for(marks::Country::Us);
+        let mut narrow = MeshData::default();
+        markings(&mut narrow, &pts, Vec3::Y, None, true, RoadClass::Minor, &st, true, false, 2.0, None);
+        assert!(narrow.is_empty());
+    }
 
     #[test]
     fn kits_differ_by_country() {
@@ -1570,40 +1630,4 @@ mod deck_tests {
         hill.extend((1..=10).map(|i| Vec3::new(30.0 + i as f32 * 3.0, i as f32 * 0.6, 0.0)));
         assert!(simplify_deck(&hill, DECK_TOL_M, DECK_MAX_SPAN_M).contains(&Vec3::new(30.0, 0.0, 0.0)));
     }
-}
-
-/// Isolated bridge for the lookdev board: a straight deck from `a` along `dir` over a
-/// water surface at `a`'s height (bed 3 m below), built by the same code as the world.
-#[allow(clippy::too_many_arguments)]
-pub fn demo_bridge(
-    class: RoadClass, flavor: BridgeFlavor, len: f32, lanes: u8, clearance: f32, seed: f32, a: Vec3, dir: Vec3, up: Vec3,
-) -> MeshData {
-    let n = (len / STEP_M).ceil() as usize;
-    let water_y = a.dot(up);
-    let it_pts: Vec<Vec3> = (0..=n)
-        .map(|i| {
-            let t = i as f32 / n as f32;
-            let edge = (t.min(1.0 - t) * len / (6.0 + clearance * 4.0)).clamp(0.0, 1.0);
-            let edge = edge * edge * (3.0 - 2.0 * edge);
-            a + dir * (len * t) + up * (clearance * edge + (std::f32::consts::PI * t).sin() * (len * 0.02).min(2.0))
-        })
-        .collect();
-    let bed: Vec<f32> = it_pts.iter().map(|p| p.dot(up)).collect();
-    let it = Item { class, kind: Bed::Bridge, uv: Vec::new(), bed: bed.clone(), pts: it_pts.clone(), oneway: false, paved: true, urban: false, over_water: true, lanes, seed };
-    let hw = it.deck_hw();
-    let ground = move |p: Vec3| if (p - a).dot(dir) < 8.0 || (p - a).dot(dir) > len - 8.0 { water_y } else { water_y - 3.0 };
-    let kit = StreetKit::for_region(Region::NorthAmericaCity);
-    let mut m = MeshData::default();
-    let mut col = MeshData::default();
-    let prof = paved_profile(hw, false, &kit);
-    let deck = simplify_deck(&it_pts, DECK_TOL_M, DECK_MAX_SPAN_M);
-    sweep(&mut m, &deck, up, &prof, None, true, 1.2, 0.04, 0.05);
-    markings(&mut m, &deck, up, None, true, class, &kit, false);
-    let st = bridge_style(flavor, class, bridge_len(&it_pts), true, seed);
-    for s in [1.0f32, -1.0] {
-        let g = offset_line(&it_pts, up, s * (hw + 0.15), |_, _| 0.0);
-        parapet(&mut m, &mut col, &g, up, &st);
-    }
-    bridge_structure(&mut m, &mut col, &it_pts, &bed, up, hw, &ground, &st);
-    m
 }
