@@ -60,15 +60,15 @@ struct DrawU {
 }
 
 pub struct GpuMesh {
-    vb: Buf,
-    ib: Buf,
+    vb: Slice,
+    ib: Slice,
     index_count: usize,
     pub center: [f32; 3],
     pub radius: f32,
     /// Spatial sub-ranges of big meshes (empty = draw whole), culled individually per pass.
     clusters: Vec<Cluster>,
     /// LOD levels (simplified copies of the mesh) in one index buffer, per cluster ranges.
-    ib2: Option<Buf>,
+    ib2: Option<Slice>,
     /// Per-vertex ground-layer weights (12 x u8) for the splat terrain shader.
     splat: Option<Buf>,
     /// Impostor per-vertex params(4) + axis(4) + tile uv(2), 10 floats each.
@@ -82,6 +82,95 @@ pub struct GpuMesh {
     pub box_vb: Option<Buf>,
     pub box_ib: Option<Buf>,
     pub box_count: usize,
+}
+
+/// A sub-range of a shared arena buffer.
+#[derive(Clone, Copy)]
+pub(crate) struct Slice {
+    chunk: usize,
+    offset: usize,
+    /// Allocated (aligned) size in bytes.
+    len: usize,
+}
+
+struct ArenaChunk {
+    buf: Buf,
+    size: usize,
+    used: usize,
+    /// Freed (offset, len) ranges, kept sorted and coalesced.
+    free: Vec<(usize, usize)>,
+}
+
+/// Pooled GPU buffer that meshes sub-allocate from. One MTLBuffer per mesh meant hundreds of
+/// driver allocations per city load (the upload spikes); tiles now copy into shared chunks.
+pub(crate) struct Arena {
+    chunks: Vec<ArenaChunk>,
+    chunk_size: usize,
+}
+
+impl Arena {
+    fn new(chunk_size: usize) -> Self {
+        Self { chunks: Vec::new(), chunk_size }
+    }
+
+    fn alloc(&mut self, device: &ProtocolObject<dyn MTLDevice>, len: usize) -> Option<Slice> {
+        if len == 0 {
+            return None;
+        }
+        let align = 16usize;
+        let need = (len + align - 1) & !(align - 1);
+        for (ci, c) in self.chunks.iter_mut().enumerate() {
+            if let Some(pos) = c.free.iter().position(|&(_, l)| l >= need) {
+                let (off, l) = c.free.remove(pos);
+                if l > need {
+                    c.free.push((off + need, l - need));
+                    c.free.sort_unstable();
+                }
+                return Some(Slice { chunk: ci, offset: off, len: need });
+            }
+            if c.used + need <= c.size {
+                let off = c.used;
+                c.used += need;
+                return Some(Slice { chunk: ci, offset: off, len: need });
+            }
+        }
+        let size = need.max(self.chunk_size);
+        let buf = device.newBufferWithLength_options(size, MTLResourceOptions::StorageModeShared)?;
+        self.chunks.push(ArenaChunk { buf, size, used: need, free: Vec::new() });
+        Some(Slice { chunk: self.chunks.len() - 1, offset: 0, len: need })
+    }
+
+    fn write(&self, s: Slice, bytes: &[u8]) {
+        let c = &self.chunks[s.chunk];
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), (c.buf.contents().as_ptr() as *mut u8).add(s.offset), bytes.len());
+        }
+    }
+
+    fn free(&mut self, s: Slice) {
+        let Some(c) = self.chunks.get_mut(s.chunk) else { return };
+        c.free.push((s.offset, s.len));
+        c.free.sort_unstable();
+        let mut merged: Vec<(usize, usize)> = Vec::with_capacity(c.free.len());
+        for &(o, l) in &c.free {
+            if let Some(last) = merged.last_mut() {
+                if last.0 + last.1 == o {
+                    last.1 += l;
+                    continue;
+                }
+            }
+            merged.push((o, l));
+        }
+        c.free = merged;
+    }
+
+    fn buf(&self, s: Slice) -> &Buf {
+        &self.chunks[s.chunk].buf
+    }
+
+    fn offset(&self, s: Slice) -> usize {
+        s.offset
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -305,6 +394,9 @@ pub struct WorldRenderer {
     /// Alternates which far cascade (4 or 5) owns the one-full-redraw-per-frame slot corner; see
     /// the slot logic in `render_frame`.
     far_turn: bool,
+    /// Pooled vertex/index memory for every mesh (no per-mesh MTLBuffer).
+    varena: Arena,
+    iarena: Arena,
 }
 
 /// Shadow map bookkeeping for one cascade. When the cascade's frustum has not moved and its caster
@@ -531,6 +623,8 @@ impl WorldRenderer {
             shadow_deferred: 0,
             shadow_state: std::array::from_fn(|_| None),
             far_turn: false,
+            varena: Arena::new(128 << 20),
+            iarena: Arena::new(64 << 20),
         })
     }
 
@@ -595,7 +689,13 @@ impl WorldRenderer {
         let dead: Vec<u64> = self.meshes.keys().copied().filter(|k| !keep(*k)).collect();
         let mut n = 0;
         for k in dead {
-            self.meshes.remove(&k);
+            if let Some(m) = self.meshes.remove(&k) {
+                self.varena.free(m.vb);
+                self.iarena.free(m.ib);
+                if let Some(s) = m.ib2 {
+                    self.iarena.free(s);
+                }
+            }
             n += 1;
             if n % 4 == 0 && t0.elapsed().as_millis() as u64 >= max_ms {
                 break;
@@ -637,8 +737,22 @@ impl WorldRenderer {
             return;
         }
         let mk = |ptr: *const u8, len: usize| unsafe { self.ctx.device.newBufferWithBytes_length_options(NonNull::new(ptr as *mut c_void).unwrap(), len, MTLResourceOptions::StorageModeShared) };
-        let (Some(vb), Some(ib)) = (mk(p.data.as_ptr() as *const u8, p.data.len() * 4), mk(p.idx.as_ptr() as *const u8, p.idx.len() * 4)) else { return };
-        let ib2 = if p.pidx.is_empty() { None } else { mk(p.pidx.as_ptr() as *const u8, p.pidx.len() * 4) };
+        // Geometry goes into the shared arenas: one driver allocation per chunk instead of one
+        // per mesh (the per-mesh allocations were the spiky, slow part of the load).
+        let vbytes = unsafe { std::slice::from_raw_parts(p.data.as_ptr() as *const u8, p.data.len() * 4) };
+        let ibytes = unsafe { std::slice::from_raw_parts(p.idx.as_ptr() as *const u8, p.idx.len() * 4) };
+        let Some(vb) = self.varena.alloc(&self.ctx.device, vbytes.len()) else { return };
+        let Some(ib) = self.iarena.alloc(&self.ctx.device, ibytes.len()) else { return };
+        self.varena.write(vb, vbytes);
+        self.iarena.write(ib, ibytes);
+        let ib2 = if p.pidx.is_empty() {
+            None
+        } else {
+            let pbytes = unsafe { std::slice::from_raw_parts(p.pidx.as_ptr() as *const u8, p.pidx.len() * 4) };
+            let Some(s) = self.iarena.alloc(&self.ctx.device, pbytes.len()) else { return };
+            self.iarena.write(s, pbytes);
+            Some(s)
+        };
         let clusters = p.clusters.into_iter().map(|c| Cluster { first: c.first, count: c.count, proxy: c.proxy, c: c.c, r: c.r }).collect();
         let (ed_clusters, ed_vb, ed_ib, ed_nverts) = match &p.ed_clusters {
             Some(cm) if !cm.clusters.is_empty() => {
@@ -750,12 +864,15 @@ impl WorldRenderer {
             d.extend_from_slice(&tile_uv[i]);
         }
         // Quads must never be simplified, and cluster bounds only cover the tree centres: pad by the grown radius.
-        m.ib2 = None;
+        let old_ib2 = m.ib2.take();
         let pad = params.iter().take(n).map(|q| q[0]).fold(0.0f32, f32::max) * 6.6 + 1.0;
         for c in &mut m.clusters {
             c.r += pad;
         }
         m.extra = unsafe { self.ctx.device.newBufferWithBytes_length_options(NonNull::new(d.as_ptr() as *mut c_void).unwrap(), d.len() * 4, MTLResourceOptions::StorageModeShared) };
+        if let Some(s) = old_ib2 {
+            self.iarena.free(s);
+        }
     }
 
     /// Probe GI volume (RGBA16F 3D texture, `texels` are f16 bit patterns, x fastest). `box_min`/`box_max`
@@ -1302,14 +1419,14 @@ impl WorldRenderer {
                     let m = &self.meshes[&d.mesh];
                     let du = DrawU { model: d.model, tint: d.tint, emissive: [0.0; 4], mat: [d.rough, d.metal, d.cutoff, 0.0], flags: [if d.ocean { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0] };
                     unsafe {
-                        re.setVertexBuffer_offset_atIndex(Some(&m.vb), 0, 0);
+                        re.setVertexBuffer_offset_atIndex(Some(self.varena.buf(m.vb)), self.varena.offset(m.vb), 0);
                         re.setVertexBytes_length_atIndex(NonNull::new(&du as *const DrawU as *mut c_void).unwrap(), std::mem::size_of::<DrawU>(), 2);
                         if mask {
                             re.setFragmentBytes_length_atIndex(NonNull::new(&du as *const DrawU as *mut c_void).unwrap(), std::mem::size_of::<DrawU>(), 2);
                             re.setFragmentTexture_atIndex(Some(self.textures.get(&d.tex).unwrap_or(&self.white)), 0);
                         }
                         if m.clusters.is_empty() {
-                            re.drawIndexedPrimitives_indexCount_indexType_indexBuffer_indexBufferOffset(MTLPrimitiveType::Triangle, m.index_count, MTLIndexType::UInt32, &m.ib, 0);
+                            re.drawIndexedPrimitives_indexCount_indexType_indexBuffer_indexBufferOffset(MTLPrimitiveType::Triangle, m.index_count, MTLIndexType::UInt32, self.iarena.buf(m.ib), self.iarena.offset(m.ib));
                         } else {
                             let b = bounds[i].as_ref().unwrap();
                             for cl in &m.clusters {
@@ -1325,11 +1442,11 @@ impl WorldRenderer {
                                 }
                                 let far0 = ci == 0 && (l_dist(&b.mm, cl, p.cam_pos)) > 60.0 + r;
                                 match (if far0 { 1 } else { ci }, if no_proxy { &None } else { &m.ib2 }) {
-                                    (0, _) | (_, None) => re.drawIndexedPrimitives_indexCount_indexType_indexBuffer_indexBufferOffset(MTLPrimitiveType::Triangle, cl.count, MTLIndexType::UInt32, &m.ib, cl.first * 4),
+                                    (0, _) | (_, None) => re.drawIndexedPrimitives_indexCount_indexType_indexBuffer_indexBufferOffset(MTLPrimitiveType::Triangle, cl.count, MTLIndexType::UInt32, self.iarena.buf(m.ib), self.iarena.offset(m.ib) + cl.first * 4),
                                     (c, Some(ib2)) => {
                                         let (f, n) = cl.proxy[(c - 1).min(1)];
                                         if n > 0 {
-                                            re.drawIndexedPrimitives_indexCount_indexType_indexBuffer_indexBufferOffset(MTLPrimitiveType::Triangle, n, MTLIndexType::UInt32, ib2, f * 4)
+                                            re.drawIndexedPrimitives_indexCount_indexType_indexBuffer_indexBufferOffset(MTLPrimitiveType::Triangle, n, MTLIndexType::UInt32, self.iarena.buf(*ib2), self.iarena.offset(*ib2) + f * 4)
                                         }
                                     }
                                 }
@@ -1445,7 +1562,7 @@ impl WorldRenderer {
                     re.setVertexBuffer_offset_atIndex(m.extra.as_deref(), 0, 3);
                 }
                 re.setCullMode(if use_i { MTLCullMode::None } else if d.double_sided || d.blend != Blend::Opaque { MTLCullMode::None } else { MTLCullMode::Back });
-                re.setVertexBuffer_offset_atIndex(Some(&m.vb), 0, 0);
+                re.setVertexBuffer_offset_atIndex(Some(self.varena.buf(m.vb)), self.varena.offset(m.vb), 0);
                 let ptr = NonNull::new(&du as *const DrawU as *mut c_void).unwrap();
                 re.setVertexBytes_length_atIndex(ptr, std::mem::size_of::<DrawU>(), 2);
                 re.setFragmentBytes_length_atIndex(ptr, std::mem::size_of::<DrawU>(), 2);
@@ -1469,7 +1586,7 @@ impl WorldRenderer {
                     re.drawIndexedPrimitives_indexCount_indexType_indexBuffer_indexBufferOffset(MTLPrimitiveType::Triangle, m.box_count * 3, MTLIndexType::UInt32, bi, 0);
                     tris += m.box_count as u64;
                 } else if m.clusters.is_empty() {
-                    re.drawIndexedPrimitives_indexCount_indexType_indexBuffer_indexBufferOffset(MTLPrimitiveType::Triangle, m.index_count, MTLIndexType::UInt32, &m.ib, 0);
+                    re.drawIndexedPrimitives_indexCount_indexType_indexBuffer_indexBufferOffset(MTLPrimitiveType::Triangle, m.index_count, MTLIndexType::UInt32, self.iarena.buf(m.ib), self.iarena.offset(m.ib));
                     tris += (m.index_count / 3) as u64;
                 } else {
                     let mm = Mat4::from_cols_array_2d(&d.model);
@@ -1497,12 +1614,12 @@ impl WorldRenderer {
                             (Some(k), Some(ib2)) => {
                                 let (f, n) = cl.proxy[k];
                                 if n > 0 {
-                                    re.drawIndexedPrimitives_indexCount_indexType_indexBuffer_indexBufferOffset(MTLPrimitiveType::Triangle, n, MTLIndexType::UInt32, ib2, f * 4);
+                                    re.drawIndexedPrimitives_indexCount_indexType_indexBuffer_indexBufferOffset(MTLPrimitiveType::Triangle, n, MTLIndexType::UInt32, self.iarena.buf(*ib2), self.iarena.offset(*ib2) + f * 4);
                                     tris += (n / 3) as u64;
                                 }
                             }
                             _ => {
-                                re.drawIndexedPrimitives_indexCount_indexType_indexBuffer_indexBufferOffset(MTLPrimitiveType::Triangle, cl.count, MTLIndexType::UInt32, &m.ib, cl.first * 4);
+                                re.drawIndexedPrimitives_indexCount_indexType_indexBuffer_indexBufferOffset(MTLPrimitiveType::Triangle, cl.count, MTLIndexType::UInt32, self.iarena.buf(m.ib), self.iarena.offset(m.ib) + cl.first * 4);
                                 tris += (cl.count / 3) as u64;
                             }
                         }

@@ -87,6 +87,10 @@ pub fn generate_in_region(vt: &mvt::Tile, ctx: &BuildingContext, region: Region)
 /// Grid of detail chunks per tile side (8 x 8 chunks of ~250-300 m).
 pub const CHUNKS: u8 = 8;
 
+/// Sanity cap for source data, not a height limit: real buildings top out
+/// around 160 floors, so 300 leaves room for any plausible tower.
+const MAX_FLOORS: u32 = 300;
+
 /// Everything decided about one building, before any geometry is made.
 /// Cheap to compute for a whole tile; geometry is built per chunk on demand.
 #[derive(Debug, Clone)]
@@ -463,7 +467,10 @@ fn prepare_one(f: Footprint, ctx: &BuildingContext, index: &RoadIndex, region: R
     };
     let var = archkit::pick(region, neighborhood, f.seed);
     let floors = match f.height {
-        Some(h) => (((h - f.min_height - var.ground_h) / var.floor_h).round() as i32 + 1).clamp(1, 90) as u32,
+        Some(h) => {
+            let n = ((h - f.min_height - var.ground_h) / var.floor_h).round() as i32 + 1;
+            n.clamp(1, MAX_FLOORS as i32) as u32
+        }
         None => {
             let (lo, hi) = var.floors;
             lo as u32 + (crate::hash01(f.seed, 9) * (hi - lo + 1) as f32).floor() as u32
@@ -1739,6 +1746,29 @@ mod tests {
         let ys: Vec<f32> = m.collider.positions.iter().map(|p| p[1]).collect();
         let span = ys.iter().cloned().fold(f32::MIN, f32::max) - ys.iter().cloned().fold(f32::MAX, f32::min);
         assert!((14.0..22.0).contains(&span), "{span}");
+    }
+
+    #[test]
+    fn supertalls_are_not_capped_at_90_floors() {
+        let vt = tile_with(vec![rect(2000.0, 2040.0, 60.0, 60.0)], Some(330.0));
+        let (lat, lon) = (40.0, -3.7);
+        let tile = TileId::containing(lat, lon, 14);
+        let proj = TileProjector::new(tile, EnuFrame::new(Geodetic::new(lat, lon, 0.0)));
+        let grid = TerrainGrid::flat(tile, 8, 100.0);
+        let surface = SurfaceMap::uniform(tile, Biome::TemperateForest);
+        let ctx = BuildingContext {
+            proj: &proj,
+            grid: &grid,
+            surface: &surface,
+            biome: Biome::TemperateForest,
+            roads: &[],
+            keepout: None,
+        };
+        let specs = prepare(&vt, &ctx, Region::NorthAmericaCity);
+        assert_eq!(specs.len(), 1);
+        assert!(specs[0].floors > 90, "floors were capped at {}", specs[0].floors);
+        let (_, height) = specs[0].shadow_outline();
+        assert!((height - 330.0).abs() < 6.0, "330 m source became {height:.1} m");
     }
 
     fn ring3(pts: &[(f32, f32)]) -> Vec<Vec3> {

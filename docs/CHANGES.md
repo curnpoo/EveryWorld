@@ -25,6 +25,17 @@
   six-scene perf battery, and the `GPU adapter` line (Dx12 or Vulkan) from
   `docs/WINDOWS.md`.
 
+## 2026-11-06: tall buildings no longer stop at 90 floors
+- The building generator clamped every source height to 90 floors, so a 93-storey
+  apartment came out three storeys short while everything under the cap looked fine.
+  The safety cap is now 300 floors (the tallest real buildings are around 160).
+- A regression test builds a 330 m tower and checks that the floor count is above 90
+  and the eave height stays within 6 m of the source height. A real-data audit of the
+  Manhattan tile found only the old 90-floor cap shortening buildings; normal buildings
+  stay within ~2.3 m of their source height.
+- Needs Mac check: the apartment tower should now reach its full height; nearby
+  low- and mid-rise buildings should not change.
+
 ## 2026-11-06: stop the menu globe flashing between fine and coarse tiles
 - Root cause: the globe restarted tile selection at `0.85` texels per pixel every frame, then
   multiplied density by `1.4` until it had at most 240 tiles. Around zoom 2.2 and while orbiting,
@@ -835,4 +846,24 @@ builds them but never uses them.
 - Loading screen now starts at spawn-request time and releases when the wanted tiles and the
   upload queue are done (~19 s in the same run).
 - Switches: `EW_FAR_LOD_M`, `EW_UPGRADE_PER_FRAME`, `EW_FAR_DBG`.
+
+## 2026-11-06: M1 pooled GPU buffers (vertex/index arenas) + rotation-lag diagnosis
+- `ed_metal::world::Arena`: vertex and index data now sub-allocate from shared 128 MB / 64 MB
+  `StorageModeShared` chunks (16-byte aligned, first-fit free lists with coalescing, one chunk per
+  oversized mesh). `GpuMesh` holds `Slice { chunk, offset, len }` instead of an MTLBuffer, and every
+  draw/shadow path binds the chunk with an offset. Meshes are freed by returning their ranges.
+- This is N1's "pooled vertex/index buffers": no more one-MTLBuffer-per-mesh allocation churn
+  (the spiky part of city loads). Measured on a 35 s Shibuya load: 82 uploads, 4.4 GB,
+  **1,109 ms** total (before: 96 uploads, 4.8 GB, 1,510 ms) — ~20-27 % faster, and memory no
+  longer fragments per mesh. Visual parity checked with a street-level screenshot.
+- **Not done yet: per-tile entities.** Tiles still spawn ~10-14 `Mesh3d` children each; the
+  renderer still mirrors them. Removing them needs the tile-data channel + renderer-side tile
+  records (N1's second half).
+- **Rotation lag diagnosed (Shibuya street level, headless):** static 28.6 fps; spinning at
+  40 deg/s drops to **3.5 fps** with a 303-job build storm (`applying` 163). Rotating sweeps the
+  view cone over tiles that were never prebuilt. At 25 m altitude the LOD selection wants
+  **~354 tiles** (z14 out to 16 km) while the view holds ~137, so prebuilding all of them is too
+  expensive: a test with the prebuild ring removed timed out the loading screen at 25 s with 773
+  uploads queued. The real fix is fewer/cheaper far tiles (smaller z14 radius, or a cheap
+  far-tile build that skips foliage/props/detail), not a bigger prebuild ring.
 

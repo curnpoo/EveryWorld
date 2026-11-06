@@ -677,6 +677,9 @@ fn select_tiles(
             mgr.cpu.set_priority(t, p);
             continue;
         }
+        // Off-screen wanted tiles beyond the prebuild ring wait: at street level `wanted` is
+        // ~354 tiles (z14 out to 16 km) while the view holds ~137, so building them all is far
+        // too expensive. Rotating into them is a known build storm (see CHANGES 2026-11-06).
         if std::env::var_os("EW_KEEP_TILES").is_none() && !visible && d > OFFSCREEN_PREBUILD {
             continue;
         }
