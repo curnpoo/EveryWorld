@@ -947,4 +947,7 @@ builds them but never uses them.
 - **Ground-level detail is height-gated.** Rock/cliff chunks (`NearMeshes`) now only stream when
   the camera is within 60 m of their height (`NEAR_AGL_M`), so flying over a canyon no longer
   spawns floor detail below. Ground scatter was already limited by its 100 m 3D reach.
+- **Tree/shrub scatter cap is now 8k per tile** (was 16k for z14, 10k for z12/13; `EW_SCATTER_MAX`
+  overrides). At the Grand Canyon that halves the baked tree geometry: 49 M -> 32 M resident,
+  and the user reports the game feels better with no visible loss.
 

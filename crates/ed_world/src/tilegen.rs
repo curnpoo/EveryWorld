@@ -572,8 +572,10 @@ pub fn build(job: &TileJob) -> TileBuild {
         if tile.z >= 10 && !job.far {
             let occ = foliage::Occupancy::from_vector(vt, 512);
             let max = match tile.z {
-                14.. => 16_000,
-                12 | 13 => 10_000,
+                // 8k since 2026-11-06: 16k baked ~1.6 M card triangles per canyon tile and the
+                // whole game felt better at 8k with no visible loss.
+                14.. => 8_000,
+                12 | 13 => 8_000,
                 11 => 7_000,
                 _ => 5_000,
             };
