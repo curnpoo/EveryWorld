@@ -86,11 +86,11 @@ impl Config {
             place_name = "Lookdev stage".into();
         }
         // Daytime by default: 15:00 local solar time unless --hour overrides it.
-        let hour = num("--hour").or(lookdev.as_ref().map(|_| 14.5)).or(Some(15.0));
+        let hour = num("--hour").or(lookdev.as_ref().map(|_| 14.5)).or(Some(crate::menu::DEFAULT_SOLAR_HOUR));
         let unix_override = hour.map(|h| {
             // Today's date (UTC), at the requested *local solar* hour.
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
-            let mut midnight = (now / 86_400.0).floor() * 86_400.0;
+            let mut day = now;
             // `--date YYYY-MM-DD` pins the day (reference shots at a known season).
             if let Some(d) = get("--date") {
                 let p: Vec<i64> = d.split('-').filter_map(|x| x.parse().ok()).collect();
@@ -101,10 +101,10 @@ impl Config {
                     let yoe = y - era * 400;
                     let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + dd - 1;
                     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-                    midnight = ((era * 146_097 + doe - 719_468) * 86_400) as f64;
+                    day = ((era * 146_097 + doe - 719_468) * 86_400) as f64 + 43_200.0;
                 }
             }
-            midnight + (h - start.lon_deg / 15.0) * 3600.0
+            ed_geo::sun::unix_at_solar_hour(day, start.lon_deg, h)
         });
         Self {
             start,

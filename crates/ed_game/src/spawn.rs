@@ -176,7 +176,7 @@ fn finish_requests(
     mut sp: ResMut<Spawner>,
     mut origin: ResMut<WorldOrigin>,
     mut clock: ResMut<crate::sky::Clock>,
-    gfx: Option<Res<crate::menu::GraphicsSettings>>,
+    mut gfx: Option<ResMut<crate::menu::GraphicsSettings>>,
     mut players: Query<(
         &mut Transform,
         &mut Player,
@@ -186,6 +186,7 @@ fn finish_requests(
         Option<&mut Rotation>,
     )>,
     mut cams: Query<&mut Transform, (With<Camera3d>, Without<Player>, Without<crate::globe::GlobeCamera>)>,
+    mut map: Option<ResMut<crate::mapview::MapState>>,
 ) {
     let Ok(res) = sp.rx.try_recv() else { return };
     sp.busy = false;
@@ -197,15 +198,21 @@ fn finish_requests(
         }
     };
     // Keep the chosen local solar hour when teleporting (unless the player
-    // selected "Now", which tracks the real absolute time).
-    let local_hour = gfx
-        .filter(|g| !g.time_live)
-        .map(|_| (clock.unix_s / 3600.0 + origin.frame.origin.lon_deg / 15.0).rem_euclid(24.0));
+    // selected "Now", which tracks the real absolute time). The hour is the
+    // one the player set (3 pm by default), not the one where they came from.
+    let local_hour = gfx.as_ref().filter(|g| !g.time_live).map(|g| g.solar_hour);
     origin.frame = EnuFrame::new(Geodetic { alt_m: 0.0, ..dest });
     origin.generation += 1;
     if let Some(h) = local_hour {
-        let midnight = (clock.unix_s / 86_400.0).floor() * 86_400.0;
-        clock.unix_s = midnight + (h - dest.lon_deg / 15.0) * 3600.0;
+        clock.unix_s = ed_geo::sun::unix_at_solar_hour(clock.unix_s, dest.lon_deg, h);
+    }
+    // The clock was set outright, so the pending hour-offset (a map ease
+    // that never finished) must not be applied on top of it.
+    if let Some(g) = gfx.as_mut() {
+        g.hour_offset_applied = g.hour_offset;
+    }
+    if let Some(m) = map.as_mut() {
+        m.time_target_offset = None;
     }
     let agl = match height {
         SpawnHeight::Sky => DROP_AGL_M,

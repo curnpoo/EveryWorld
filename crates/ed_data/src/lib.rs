@@ -9,7 +9,7 @@
 //! | Climate      | WorldClim 2.1 normals (embedded)         | CC BY 4.0        |
 //! | Land cover   | ESA WorldCover 2021 (COG range reads)    | CC BY 4.0        |
 //! | Geology      | Macrostrat                               | CC BY 4.0        |
-//! | Place search | Open-Meteo geocoding (GeoNames)          | CC BY 4.0        |
+//! | Place search | Open-Meteo geocoding (GeoNames), OSM Nominatim | CC BY 4.0, ODbL |
 //!
 //! Every call here is blocking; the game runs them on Bevy's IO task pool.
 

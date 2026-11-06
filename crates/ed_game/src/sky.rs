@@ -127,13 +127,29 @@ fn fetch_weather(mut commands: Commands, cfg: Res<Config>) {
     commands.insert_resource(CurrentWeather(w));
 }
 
-fn tick_clock(time: Res<Time>, mut clock: ResMut<Clock>, keys: Res<ButtonInput<KeyCode>>) {
+fn tick_clock(
+    time: Res<Time>,
+    mut clock: ResMut<Clock>,
+    keys: Res<ButtonInput<KeyCode>>,
+    origin: Res<WorldOrigin>,
+    mut gfx: Option<ResMut<crate::menu::GraphicsSettings>>,
+) {
     // [ and ] scrub time of day; \ resets to real time rate.
+    let mut scrubbed = false;
     if keys.pressed(KeyCode::BracketRight) {
         clock.unix_s += 1800.0 * time.delta_secs_f64();
+        scrubbed = true;
     }
     if keys.pressed(KeyCode::BracketLeft) {
         clock.unix_s -= 1800.0 * time.delta_secs_f64();
+        scrubbed = true;
+    }
+    if scrubbed {
+        // Scrubbing picks an hour, so the map clicks and drops keep it.
+        if let Some(g) = gfx.as_mut() {
+            g.time_live = false;
+            g.solar_hour = ed_geo::sun::solar_hour(clock.unix_s, origin.frame.origin.lon_deg);
+        }
     }
     clock.unix_s += time.delta_secs_f64() * clock.rate;
 }

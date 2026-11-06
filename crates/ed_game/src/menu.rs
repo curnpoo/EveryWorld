@@ -130,12 +130,20 @@ pub struct GraphicsSettings {
     /// The clock was last set to real current time by the "Now" button.
     pub time_live: bool,
     pub hour_offset: f64,
+    pub hour_offset_applied: f64,
+    /// The local solar hour the player wants wherever they go: 15.0 is 3 pm.
+    /// The time slider and the +/- buttons set it; map clicks and drops apply
+    /// it, so a click on the globe lands in the same daylight you picked.
+    pub solar_hour: f64,
 }
+
+/// The hour every drop-in starts in, unless the player picks another one.
+pub const DEFAULT_SOLAR_HOUR: f64 = 15.0;
 
 impl Default for GraphicsSettings {
     fn default() -> Self {
         let post = !std::env::args().any(|a| a == "--no-post");
-        let mut g = Self { shadows: !std::env::args().any(|a| a == "--no-shadows"), ambient_occlusion: post, bloom: post, render_pct: 67, aa: post, aa_mode: if post { AaMode::Upscale } else { AaMode::Off }, show_stats: false, time_live: false, hour_offset: 0.0 };
+        let mut g = Self { shadows: !std::env::args().any(|a| a == "--no-shadows"), ambient_occlusion: post, bloom: post, render_pct: 67, aa: post, aa_mode: if post { AaMode::Upscale } else { AaMode::Off }, show_stats: false, time_live: false, hour_offset: 0.0, hour_offset_applied: 0.0, solar_hour: DEFAULT_SOLAR_HOUR };
         // Perf bisecting: `EW_GFX=ao=0,bloom=0,aa=0,shadows=0,res=50,stats=1`.
         if let Ok(spec) = std::env::var("EW_GFX") {
             for kv in spec.split(',') {
@@ -273,12 +281,12 @@ struct StatusLine;
 #[derive(Component)]
 struct SettingValue(MenuAction);
 
-const INK: Color = Color::srgb(0.96, 0.96, 0.95);
-const DIM: Color = Color::srgba(0.96, 0.96, 0.95, 0.6);
-const ORANGE: Color = Color::srgb(0.98, 0.45, 0.12);
-const PANEL: Color = Color::srgba(0.06, 0.07, 0.09, 0.9);
-const BTN: Color = Color::srgba(1.0, 1.0, 1.0, 0.08);
-const BTN_HOVER: Color = Color::srgba(1.0, 1.0, 1.0, 0.16);
+pub(crate) const INK: Color = Color::srgb(0.96, 0.96, 0.95);
+pub(crate) const DIM: Color = Color::srgba(0.96, 0.96, 0.95, 0.6);
+pub(crate) const ORANGE: Color = Color::srgb(0.98, 0.45, 0.12);
+pub(crate) const PANEL: Color = Color::srgba(0.06, 0.07, 0.09, 0.9);
+pub(crate) const BTN: Color = Color::srgba(1.0, 1.0, 1.0, 0.08);
+pub(crate) const BTN_HOVER: Color = Color::srgba(1.0, 1.0, 1.0, 0.16);
 
 /// A menu button. `accent` makes it the orange primary action.
 #[allow(deprecated)]
@@ -671,7 +679,10 @@ fn skip_menu_from_cli(cfg: Res<Config>, mut next: ResMut<NextState<GameState>>, 
     }
 }
 
-fn open_pause(
+/// Made `pub` so the map's search systems can order themselves after it: an
+/// Escape that blurs the search field is never also the frame that closes the
+/// menu, because the search systems edit `text_focus` afterwards.
+pub fn open_pause(
     keys: Res<ButtonInput<KeyCode>>,
     pad: Res<Pad>,
     state: Res<State<GameState>>,
@@ -683,6 +694,10 @@ fn open_pause(
 ) {
     // Start on a controller does what Esc does.
     if !keys.just_pressed(KeyCode::Escape) && !pad.start_just {
+        return;
+    }
+    // Typing in the map's search field: Esc only leaves the field, handled there.
+    if keys.just_pressed(KeyCode::Escape) && map.text_focus {
         return;
     }
     match state.get() {
@@ -927,11 +942,17 @@ fn menu_buttons(
             MenuAction::CycleResolution => gfx.render_pct = match gfx.render_pct { 100 => 90, 90 => 85, 85 => 75, 75 => 67, 67 => 50, _ => 100 },
             MenuAction::TimeMinus => {
                 gfx.time_live = false;
+                map.time_target_offset = None;
                 gfx.hour_offset -= 1.0;
+                // The chosen hour follows the clock, so later clicks and
+                // drops keep the hour the player just set.
+                gfx.solar_hour = (gfx.solar_hour - 1.0).rem_euclid(24.0);
             }
             MenuAction::TimePlus => {
                 gfx.time_live = false;
+                map.time_target_offset = None;
                 gfx.hour_offset += 1.0;
+                gfx.solar_hour = (gfx.solar_hour + 1.0).rem_euclid(24.0);
             }
             MenuAction::TimeNow => {
                 let real = std::time::SystemTime::now()
@@ -940,6 +961,13 @@ fn menu_buttons(
                     .unwrap_or(clock.unix_s);
                 gfx.hour_offset += (real - clock.unix_s) / 3600.0;
                 gfx.time_live = true;
+                map.time_target_offset = None;
+                // Live time: the chosen hour is the player's local hour now.
+                let lon = players
+                    .single()
+                    .map(|pt| origin.to_geodetic(pt.translation).lon_deg)
+                    .unwrap_or(0.0);
+                gfx.solar_hour = ed_geo::sun::solar_hour(real, lon);
             }
             MenuAction::SetWeather(name) => {
                 if *name == "Live" {
@@ -1056,6 +1084,7 @@ fn time_slider(
     origin: Res<crate::origin::WorldOrigin>,
     players: Query<&Transform, With<Player>>,
     mut gfx: ResMut<GraphicsSettings>,
+    mut map: ResMut<MapState>,
     track: Query<(&RelativeCursorPosition, &InheritedVisibility), With<TimeTrack>>,
     mut knob: Query<&mut Node, With<TimeKnob>>,
     mut readout: Query<&mut Text, With<TimeReadout>>,
@@ -1066,7 +1095,7 @@ fn time_slider(
         return;
     }
     let lon = players.single().map(|pt| origin.to_geodetic(pt.translation).lon_deg).unwrap_or(0.0);
-    let solar_hour = |unix_s: f64| (unix_s / 3600.0 + lon / 15.0).rem_euclid(24.0);
+    let solar_hour = |unix_s: f64| ed_geo::sun::solar_hour(unix_s, lon);
     let Ok((rcp, vis)) = track.single() else { return };
     // Hidden nodes keep a stale RelativeCursorPosition; ignore the track off its tab.
     if buttons.just_pressed(MouseButton::Left) && vis.get() && rcp.cursor_over {
@@ -1076,11 +1105,14 @@ fn time_slider(
         *dragging = false;
     }
     if *dragging && let Some(n) = rcp.normalized {
+        map.time_target_offset = None;
         let target = ((n.x as f64 + 0.5).clamp(0.0, 1.0)) * 24.0;
         let mut delta = target - solar_hour(clock.unix_s);
         delta -= 24.0 * (delta / 24.0).round();
         gfx.time_live = false;
         gfx.hour_offset += delta;
+        // The slider sets the hour the player wants from here on.
+        gfx.solar_hour = target.rem_euclid(24.0);
     }
     let h = solar_hour(clock.unix_s);
     if let Ok(mut n) = knob.single_mut() {
@@ -1151,10 +1183,9 @@ fn enter_play_on_arrival(mut commands: Commands, arrived: Option<Res<Arrived>>, 
     }
 }
 
-fn apply_graphics(
-    gfx: Res<GraphicsSettings>,
+pub fn apply_graphics(
+    mut gfx: ResMut<GraphicsSettings>,
     mut clock: ResMut<crate::sky::Clock>,
-    mut last_offset: Local<f64>,
     mut commands: Commands,
     cams: Query<(Entity, Has<ScreenSpaceAmbientOcclusion>, Has<Bloom>, Has<TemporalAntiAliasing>), (With<Camera3d>, Without<crate::globe::GlobeCamera>)>,
     mut suns: Query<&mut DirectionalLight, Without<crate::globe::GlobeSun>>,
@@ -1162,8 +1193,9 @@ fn apply_graphics(
     if !gfx.is_changed() {
         return;
     }
-    clock.unix_s += (gfx.hour_offset - *last_offset) * 3600.0;
-    *last_offset = gfx.hour_offset;
+    let last = gfx.hour_offset_applied;
+    clock.unix_s += (gfx.hour_offset - last) * 3600.0;
+    gfx.hour_offset_applied = gfx.hour_offset;
     // Screen-space contact shadows fill in the small-scale contact the
     // cascades miss (EW_CONTACT=0 to A/B).
     let contact = gfx.shadows && std::env::var("EW_CONTACT").map(|v| v != "0").unwrap_or(true);

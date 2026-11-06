@@ -622,7 +622,7 @@ fn preset_for(shot: &str) -> Option<ShotPreset> {
 /// Unix time today at a local solar hour (same rule as `--hour`).
 fn unix_at_solar_hour(lon_deg: f64, hour: f64) -> f64 {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
-    (now / 86_400.0).floor() * 86_400.0 + (hour - lon_deg / 15.0) * 3600.0
+    ed_geo::sun::unix_at_solar_hour(now, lon_deg, hour)
 }
 
 /// Afternoon time when the sun drops to `elev_deg` (bisection, 12h..21h).

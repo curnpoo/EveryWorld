@@ -8,7 +8,7 @@
 //!
 //! Globe space: radius 1, +Y north, lon 0 on +X, 90°E on -Z.
 
-use crate::mapview::{MapCanvas, MapState, Marker, Popup, PopupTitle, build_overlays, scroll_notches};
+use crate::mapview::{MapCanvas, MapState, Marker, Popup, PopupTitle, SearchBar, SearchPin, SearchRing, build_overlays, scroll_notches};
 use crate::menu::GameState;
 use crate::sky::Clock;
 use bevy::asset::{RenderAssetUsages, embedded_asset};
@@ -40,7 +40,9 @@ use ed_world::maprender::PlaceClass;
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
-const LAYER: usize = 1;
+/// Render layer of the globe camera: the main world camera (`camera.rs`) and the sun's shadow
+/// layers never see it, so the native Metal mirror can skip these entities entirely.
+pub const GLOBE_LAYER: usize = 1;
 const FOV: f32 = 40.0 * std::f32::consts::PI / 180.0;
 const MIN_ZOOM: f32 = -4.6;
 /// Zoom at which the whole disc plus atmosphere fits the 40 deg FOV with a margin
@@ -50,6 +52,14 @@ pub const WHOLE_EARTH_ZOOM: f64 = 0.4;
 /// see the region around the player without losing them on a whole planet.
 pub const PAUSE_ZOOM: f64 = 6.0;
 const MAX_ZOOM: f32 = 12.4;
+/// Largest tilt of the map camera away from straight down, in radians.
+const MAX_TILT: f32 = 0.72;
+/// Map zoom (for `MapState::focus`) that frames an angular span of `span_deg`
+/// across the canvas, with about half the screen of margin on each side.
+pub fn zoom_for_span(span_deg: f64) -> f64 {
+    let d = (span_deg.to_radians() / (2.0 * (FOV * 0.5).tan() as f64) / 0.55).max(1e-5);
+    (3.2 / d).log2().clamp(MIN_ZOOM as f64, MAX_ZOOM as f64)
+}
 const EARTH_RADIUS_M: f64 = 6.371e6;
 const SKY_RADIUS: f32 = 2400.0;
 const BODY_DIST: f32 = 900.0;
@@ -279,7 +289,7 @@ fn setup_globe(
     mut atmo_mats: ResMut<Assets<AtmoMaterial>>,
     mut images: ResMut<Assets<Image>>,
 ) {
-    let layers = RenderLayers::layer(LAYER);
+    let layers = RenderLayers::layer(GLOBE_LAYER);
     let target = images.add(target_image(1280, 720));
     let camera = commands
         .spawn((
@@ -621,11 +631,32 @@ fn resize_target(
 
 // ---- input and camera -------------------------------------------------------------
 
-fn fly_to_requests(mut map: ResMut<MapState>, mut g: ResMut<GlobeState>) {
+
+/// Aim the clock at the hour the player has chosen (3 pm by default) for the
+/// place they just picked: the globe's sun swings round so that spot is in
+/// that daylight, and the drop-in keeps the same hour.
+fn retarget_time(map: &mut MapState, gfx: &mut crate::menu::GraphicsSettings, clock: &crate::sky::Clock, dest_lon: f64) {
+    // A live clock is absolute: leave it on real time.
+    if gfx.time_live {
+        return;
+    }
+    let hour = gfx.solar_hour;
+    // The absolute time at which `dest_lon` sees local solar hour `hour`.
+    let target = ed_geo::sun::unix_at_solar_hour(clock.unix_s, dest_lon, hour);
+    let mut delta = (target - clock.unix_s) / 3600.0;
+    // Shortest way round the dial.
+    delta -= 24.0 * (delta / 24.0).round();
+    gfx.time_live = false;
+    map.time_target_offset = Some(gfx.hour_offset + delta);
+}
+
+fn fly_to_requests(mut map: ResMut<MapState>, mut g: ResMut<GlobeState>, clock: Res<crate::sky::Clock>, mut gfx: ResMut<crate::menu::GraphicsSettings>) {
     if let Some((place, zoom)) = map.focus_req.take() {
         let goal = gl::unit_from_latlon(place.lat_deg, place.lon_deg);
         g.fly = Some((goal, (zoom as f32).clamp(MIN_ZOOM, MAX_ZOOM)));
         g.vel = Vec2::ZERO;
+        // The searched place gets the chosen hour, like a click does.
+        retarget_time(&mut map, &mut gfx, &clock, place.lon_deg);
     }
 }
 
@@ -639,9 +670,11 @@ fn control(
     mode: Res<crate::gamepad::InputMode>,
     menu_focus: Res<crate::menu::MenuFocus>,
     canvases: Query<(&RelativeCursorPosition, &ComputedNode, &InheritedVisibility), With<MapCanvas>>,
-    popups: Query<(&RelativeCursorPosition, &InheritedVisibility), (With<Popup>, Without<MapCanvas>)>,
+    popups: Query<(&RelativeCursorPosition, &InheritedVisibility), (Or<(With<Popup>, With<SearchBar>)>, Without<MapCanvas>)>,
     mut map: ResMut<MapState>,
     mut g: ResMut<GlobeState>,
+    clock: Res<crate::sky::Clock>,
+    mut gfx: ResMut<crate::menu::GraphicsSettings>,
 ) {
     let dt = time.delta_secs().min(0.05);
     let Some((size, _, norm, over)) = active_canvas(canvases.iter()) else {
@@ -700,7 +733,10 @@ fn control(
                 if g.moved < 5.0 && hover && (end - start).length() < 0.02 {
                     if let Some(p) = g.cursor_pick {
                         let (lat, lon) = gl::latlon_from_unit(p);
-                        map.selected = Some(Geodetic::new(lat, lon, 0.0));
+                        map.select(Geodetic::new(lat, lon, 0.0));
+                        retarget_time(&mut map, &mut gfx, &clock, lon);
+                        // Bring the picked place to the middle of the view.
+                        g.fly = Some((p, g.goal_zoom));
                     }
                 }
             }
@@ -745,7 +781,9 @@ fn control(
     if pad_mode && pad.a_just && hover && !popup_open && menu_focus.0.is_none() {
         if let Some(p) = g.cursor_pick {
             let (lat, lon) = gl::latlon_from_unit(p);
-            map.selected = Some(Geodetic::new(lat, lon, 0.0));
+            map.select(Geodetic::new(lat, lon, 0.0));
+            retarget_time(&mut map, &mut gfx, &clock, lon);
+            g.fly = Some((p, g.goal_zoom));
         }
     }
 
@@ -761,14 +799,16 @@ fn control(
     let dz = g.zoom - before;
     if dz > 0.0 && (notches > 0.0 || pad_zoom_in) {
         if let Some(p) = g.cursor_pick {
-            let w = (dz * 0.55).clamp(0.0, 0.5);
+            // Walk the view all the way onto the spot under the cursor, so
+            // the place you zoom into ends up in the middle of the screen.
+            let w = (dz * 1.8).clamp(0.0, 1.0);
             g.focus = g.focus.lerp(p, w).normalize();
         }
     }
 
     // Fly-to.
     if let Some((goal, zoom)) = g.fly {
-        let kf = 1.0 - (-dt * 2.6).exp();
+        let kf = 1.0 - (-dt * 1.5).exp();
         g.focus = g.focus.lerp(goal, kf).normalize();
         g.goal_zoom += (zoom - g.goal_zoom) * kf;
         if g.focus.dot(goal) > 0.999_999 && (g.goal_zoom - zoom).abs() < 0.01 {
@@ -782,9 +822,11 @@ fn update_camera(mut g: ResMut<GlobeState>, mut cams: Query<(&mut Transform, &mu
     let Ok((mut tf, mut proj)) = cams.single_mut() else { return };
     let h = g.dist() - 1.0;
     // Tip the view towards the horizon as we get close, so mountains and
-    // coastlines have some depth.
-    let tilt = smoothstep(4.5, 9.5, g.zoom) * 0.95;
-    let w = tilt / 0.95;
+    // coastlines have some depth. The tip eases off again at the deepest
+    // zoom, where looking straight down at a place reads better.
+    let mut tilt = smoothstep(4.5, 9.0, g.zoom) * MAX_TILT;
+    tilt *= 1.0 - 0.4 * smoothstep(10.0, 12.4, g.zoom);
+    let w = (tilt / MAX_TILT).min(1.0);
     let focus = g.focus;
     let north = gl::north_at(focus);
     let pos = focus + (focus * tilt.cos() - north * tilt.sin()) * h;
@@ -1061,7 +1103,7 @@ fn apply_tiles(mut commands: Commands, mut g: ResMut<GlobeState>) {
                 Transform::from_scale(Vec3::splat(1.0 + id.z as f32 * LEVEL_BIAS)),
                 NoFrustumCulling,
                 NotShadowCaster,
-                RenderLayers::layer(LAYER),
+                RenderLayers::layer(GLOBE_LAYER),
             ))
             .id();
         g.shown.insert(id, e);
@@ -1083,18 +1125,97 @@ fn apply_tiles(mut commands: Commands, mut g: ResMut<GlobeState>) {
 fn update_overlays(
     time: Res<Time>,
     g: Res<GlobeState>,
-    map: Res<MapState>,
+    mut map: ResMut<MapState>,
     pin: Res<PlayerPin>,
     canvases: Query<(&RelativeCursorPosition, &ComputedNode, &InheritedVisibility), With<MapCanvas>>,
-    mut marker: Query<(&mut Node, &mut Visibility), (With<Marker>, Without<Popup>, Without<PinRoot>)>,
-    mut popup: Query<(&mut Node, &mut Visibility, &ComputedNode), (With<Popup>, Without<Marker>, Without<PinRoot>)>,
+    mut marker: Query<(&mut Node, &mut Visibility), (With<Marker>, Without<Popup>, Without<PinRoot>, Without<SearchPin>, Without<SearchRing>)>,
+    mut popup: Query<(&mut Node, &mut Visibility, &ComputedNode), (With<Popup>, Without<Marker>, Without<PinRoot>, Without<SearchPin>, Without<SearchRing>)>,
     mut title: Query<&mut Text, (With<PopupTitle>, Without<Readout>)>,
     mut pins: Query<(&mut Node, &mut Visibility, &mut UiTransform), (With<PinRoot>, Without<Marker>, Without<Popup>, Without<PinRing>)>,
     mut rings: Query<(&mut UiTransform, &mut BorderColor), With<PinRing>>,
     mut readout: Query<&mut Text, (With<Readout>, Without<PopupTitle>)>,
+    mut drop: Query<(&mut Node, &mut Visibility, &mut UiTransform), (With<SearchPin>, Without<Marker>, Without<Popup>, Without<PinRoot>, Without<SearchRing>, Without<PinRing>)>,
+    mut ripple: Query<(&mut Node, &mut Visibility, &mut UiTransform, &mut BorderColor), (With<SearchRing>, Without<Marker>, Without<Popup>, Without<PinRoot>, Without<SearchPin>, Without<PinRing>)>,
 ) {
     let Some((size, _, norm, over)) = active_canvas(canvases.iter()) else { return };
     let at = |f: Vec2| f * size;
+
+    // The search pin: fall onto the searched place, then hand the highlight to
+    // the marker/popup flow just below, which opens the drop popup next to it.
+    let secs = time.elapsed_secs();
+    const DROP_T: f32 = 0.6;
+    const DROP_H: f32 = 170.0;
+    const BOUNCE_T: f32 = 0.35;
+    let mut drop_state: Option<(Vec2, f32)> = None;
+    if let Some(l) = map.landing.as_mut() {
+        let p = gl::unit_from_latlon(l.place.lat_deg, l.place.lon_deg);
+        let goal = p;
+        // Wait until the fly-to has centred the place (or a couple of seconds
+        // as a fallback), so the pin never lands on a half-flown frame where
+        // the spot is still drifting toward the middle of the view.
+        // Wait until the fly-to has fully finished (camera centred and zoomed)
+        // before dropping the pin, so it lands on the place, not mid-flight.
+        let done = g.fly.is_none();
+        if l.started.is_none() && (done || secs - l.created > 3.5) {
+            l.started = Some(secs);
+            if g.facing(p) {
+                drop_state = Some((Vec2::new(size.x * 0.5, size.y * 0.5), 0.0));
+            }
+        }
+    }
+    if drop_state.is_none() {
+        if let Some(l) = map.landing.as_ref().filter(|l| l.started.is_some()) {
+            let p = gl::unit_from_latlon(l.place.lat_deg, l.place.lon_deg);
+            if g.facing(p) {
+                drop_state = Some((Vec2::new(size.x * 0.5, size.y * 0.5), secs - l.started.unwrap_or(secs)));
+            }
+        }
+    }
+    for (mut n, mut v, mut t) in &mut drop {
+        match drop_state {
+            Some((px, t_land)) if t_land < DROP_T + BOUNCE_T => {
+                let y_off = if t_land < DROP_T {
+                    // Accelerating fall: d(1-e²)/dt grows with e.
+                    let e = (t_land / DROP_T).clamp(0.0, 1.0);
+                    -DROP_H * (1.0 - e * e)
+                } else {
+                    let u = (t_land - DROP_T) / BOUNCE_T;
+                    -26.0 * (1.0 - 0.4 * u) * (std::f32::consts::PI * u).sin()
+                };
+                t.scale = if t_land < DROP_T {
+                    Vec2::ONE
+                } else {
+                    let u = (t_land - DROP_T) / BOUNCE_T;
+                    let s = (std::f32::consts::PI * u).sin();
+                    Vec2::new(1.0 + 0.2 * s, 1.0 - 0.3 * s)
+                };
+                n.left = Val::Px(px.x - 13.0);
+                n.top = Val::Px(px.y - 36.0 + y_off);
+                *v = Visibility::Inherited;
+            }
+            _ => *v = Visibility::Hidden,
+        }
+    }
+    // One expanding ripple while the tip is on the ground.
+    for (mut n, mut v, mut t, mut bc) in &mut ripple {
+        let hit = drop_state
+            .map(|(px, t_land)| (px, (t_land - DROP_T) / BOUNCE_T))
+            .filter(|(_, u)| (0.0..1.0).contains(u));
+        match hit {
+            Some((px, u)) => {
+                n.left = Val::Px(px.x - 15.0);
+                n.top = Val::Px(px.y - 15.0);
+                t.scale = Vec2::splat(0.4 + 1.5 * u);
+                *bc = BorderColor::all(Color::srgba(0.98, 0.42, 0.1, 0.85 * (1.0 - u)));
+                *v = Visibility::Inherited;
+            }
+            None => *v = Visibility::Hidden,
+        }
+    }
+    // Landed? The drop popup follows right after the bounce.
+    if drop_state.is_some_and(|(_, t_land)| t_land >= DROP_T + BOUNCE_T) {
+        map.land();
+    }
 
     // Pick marker and popup.
     let sel = map.selected.map(|s| (s, gl::unit_from_latlon(s.lat_deg, s.lon_deg)));
@@ -1126,12 +1247,12 @@ fn update_overlays(
         for mut t in &mut title {
             let ns = if s.lat_deg >= 0.0 { 'N' } else { 'S' };
             let ew = if s.lon_deg >= 0.0 { 'E' } else { 'W' };
-            *t = Text::new(format!("{:.3}° {ns}, {:.3}° {ew}", s.lat_deg.abs(), s.lon_deg.abs()));
+            let coords = format!("{:.3}° {ns}, {:.3}° {ew}", s.lat_deg.abs(), s.lon_deg.abs());
+            *t = Text::new(if map.selected_name.is_empty() { coords } else { format!("{}\n{}", map.selected_name, coords) });
         }
     }
 
     // Player pin.
-    let secs = time.elapsed_secs();
     let pin_px = pin.pos.and_then(|(geo, heading)| {
         let p = gl::unit_from_latlon(geo.lat_deg, geo.lon_deg);
         if !g.facing(p) {
@@ -1275,5 +1396,53 @@ fn update_labels(
         node.left = Val::Px(px.x - w * 0.5);
         node.top = Val::Px(px.y - fs * 0.6);
         *vis = Visibility::Inherited;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The clock after the map ease has run out: the offset is applied to
+    /// the clock in hours, like `menu::apply_graphics` does.
+    fn eased_clock(clock: &crate::sky::Clock, gfx: &crate::menu::GraphicsSettings, target: f64) -> f64 {
+        clock.unix_s + (target - gfx.hour_offset) * 3600.0
+    }
+
+    #[test]
+    fn clicking_a_place_puts_the_chosen_hour_there() {
+        let mut map = MapState::default();
+        let mut gfx = crate::menu::GraphicsSettings::default();
+        let clock = crate::sky::Clock { unix_s: 1_710_892_800.0, rate: 1.0 };
+        // 3 pm by default, wherever on Earth you click.
+        for lon in [139.7, -74.0, 7.75, 151.2] {
+            let mut map = MapState::default();
+            retarget_time(&mut map, &mut gfx, &clock, lon);
+            let target = map.time_target_offset.expect("the map sets a time target");
+            let unix = eased_clock(&clock, &gfx, target);
+            assert!((ed_geo::sun::solar_hour(unix, lon) - 15.0).abs() < 1e-6, "lon {lon}");
+        }
+    }
+
+    #[test]
+    fn a_hour_the_player_set_is_the_one_the_click_uses() {
+        let mut map = MapState::default();
+        let mut gfx = crate::menu::GraphicsSettings::default();
+        gfx.solar_hour = 1.0;
+        let clock = crate::sky::Clock { unix_s: 1_710_892_800.0, rate: 1.0 };
+        retarget_time(&mut map, &mut gfx, &clock, 139.7);
+        let target = map.time_target_offset.expect("the map sets a time target");
+        let unix = eased_clock(&clock, &gfx, target);
+        assert!((ed_geo::sun::solar_hour(unix, 139.7) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn live_time_is_left_alone() {
+        let mut map = MapState::default();
+        let mut gfx = crate::menu::GraphicsSettings::default();
+        gfx.time_live = true;
+        let clock = crate::sky::Clock { unix_s: 1_710_892_800.0, rate: 1.0 };
+        retarget_time(&mut map, &mut gfx, &clock, 139.7);
+        assert!(map.time_target_offset.is_none());
     }
 }

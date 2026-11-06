@@ -249,7 +249,7 @@ fn update_text(
         }
         return;
     }
-    let local_h = ((clock.unix_s / 3600.0 + g.lon_deg / 15.0).rem_euclid(24.0)) as f32;
+    let local_h = ed_geo::sun::solar_hour(clock.unix_s, g.lon_deg) as f32;
     let tile = TileId::containing(g.lat_deg, g.lon_deg, 14);
     let w = weather.and_then(|w| w.0.clone());
     let wtxt = w.map_or("weather n/a".to_string(), |w| format!("{} {:.0}°C wind {:.0} m/s", w.describe(), w.temperature_c, w.wind_speed_ms));

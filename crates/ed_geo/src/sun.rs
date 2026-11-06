@@ -26,6 +26,20 @@ pub fn julian_day(unix_s: f64) -> f64 {
     unix_s / 86_400.0 + 2_440_587.5
 }
 
+/// The Unix time, on the UTC day containing `now`, at which `lon_deg` sees
+/// local solar hour `hour`. Local solar time is UTC plus `lon_deg / 15`
+/// hours, so the same hour comes a quarter of an hour earlier for every
+/// 15 degrees east.
+pub fn unix_at_solar_hour(now: f64, lon_deg: f64, hour: f64) -> f64 {
+    let midnight = (now / 86_400.0).floor() * 86_400.0;
+    midnight + (hour - lon_deg / 15.0) * 3600.0
+}
+
+/// The local solar hour (0..24) at `lon_deg` at time `unix_s`.
+pub fn solar_hour(unix_s: f64, lon_deg: f64) -> f64 {
+    (unix_s / 3600.0 + lon_deg / 15.0).rem_euclid(24.0)
+}
+
 /// Solar position for `lat`/`lon` (degrees) at `unix_s` (UTC seconds).
 pub fn sun_position(lat_deg: f64, lon_deg: f64, unix_s: f64) -> SunPosition {
     let jd = julian_day(unix_s);
@@ -115,5 +129,41 @@ mod tests {
         let unix = 1_718_964_000.0 - 3600.0 * 2.0; // 08:00 UTC
         let s = sun_position(46.02, 7.75, unix);
         assert!((60.0..140.0).contains(&s.azimuth_deg), "{s:?}");
+    }
+
+    #[test]
+    fn solar_hour_round_trip() {
+        let now = 1_734_739_200.0; // 2024-12-21 00:00 UTC
+        // 15:00 local solar time at Greenwich is 15:00 UTC.
+        let t = unix_at_solar_hour(now, 0.0, 15.0);
+        assert!((solar_hour(t, 0.0) - 15.0).abs() < 1e-9);
+        // 15:00 at 15 degrees east is 14:00 UTC.
+        let t = unix_at_solar_hour(now, 15.0, 15.0);
+        assert!((solar_hour(t, 15.0) - 15.0).abs() < 1e-9);
+        assert!((t - now - 14.0 * 3600.0).abs() < 1e-6);
+        // Same moment, read at Greenwich: one hour earlier.
+        assert!((solar_hour(t, 0.0) - 14.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn three_pm_puts_the_sun_high_in_the_west() {
+        // 15:00 local solar time on the equinox: the sun is due west, about
+        // 47 deg up - the "3 pm" light the game starts in.
+        let now = 1_710_892_800.0; // 2024-03-20 00:00 UTC
+        for lon in [0.0, -74.0, 139.7] {
+            let t = unix_at_solar_hour(now, lon, 15.0);
+            let s = sun_position(0.0, lon, t);
+            assert!((44.0..49.0).contains(&s.elevation_deg), "lon {lon}: {s:?}");
+            assert!((266.0..274.0).contains(&s.azimuth_deg), "lon {lon}: {s:?}");
+        }
+    }
+
+    #[test]
+    fn evening_hour_rolls_over_midnight() {
+        let now = 1_734_739_200.0; // 2024-12-21 00:00 UTC
+        // 01:00 local solar at 60 east is 21:00 UTC on the previous day.
+        let t = unix_at_solar_hour(now, 60.0, 1.0);
+        assert!((solar_hour(t, 60.0) - 1.0).abs() < 1e-9);
+        assert!((t - now + 3.0 * 3600.0).abs() < 1e-6);
     }
 }
