@@ -358,16 +358,27 @@ struct Tap { float4 ah; float4 nr; };
 Tap gtap(thread const GT& g, int i, float2 uv, float2 dx, float2 dy) {
     Tap t; t.ah = g.al.sample(ts, uv, uint(i), gradient2d(dx, dy)); t.nr = g.nr.sample(ts, uv, uint(i), gradient2d(dx, dy)); return t;
 }
+float2 hash22(float2 p);
+Tap gtap_rot(thread const GT& g, int i, float2 uv, float2 dx, float2 dy, float ang, float k, float2 off) {
+    Tap t = gtap(g, i, rot2(uv * k, ang) + off, rot2(dx * k, ang), rot2(dy * k, ang));
+    float2 n = rot2(t.nr.xy * 2.0 - 1.0, -ang) * k;
+    t.nr = float4(n * 0.5 + 0.5, t.nr.z, t.nr.w);
+    return t;
+}
 Tap gtap_var(thread const GT& g, int i, float2 uv, float2 dx, float2 dy, float vm) {
     float w = smoothstep(0.42, 0.58, vm);
-    float ang = 2.1 + float(i) * 0.37, k = 0.73;
+    float2 cell = floor(uv);
+    float2 h = hash22(cell + float2(float(i) * 19.0, float(i) * 11.0));
+    float2 h2 = hash22(cell + float2(float(i) * 7.0, float(i) * 23.0));
+    float ang_a = h.x * 6.2831853;
+    float k_a = mix(0.55, 1.45, fract(h.x * 3.17 + h.y * 5.31));
+    float2 off_a = h2 * 9.0;
+    float ang_b = h2.x * 6.2831853;
+    float k_b = mix(0.55, 1.45, fract(h2.x * 2.71 + h2.y * 7.19));
+    float2 off_b = h * 9.0 + float2(0.37, 0.61);
     Tap a = {float4(0), float4(0)}, b = {float4(0), float4(0)};
-    if (w < 0.999) a = gtap(g, i, uv, dx, dy);
-    if (w > 0.001) {
-        b = gtap(g, i, rot2(uv * k, ang) + float2(0.37, 0.61), rot2(dx * k, ang), rot2(dy * k, ang));
-        float2 bn = rot2(b.nr.xy * 2.0 - 1.0, -ang) * 0.5 + 0.5;
-        b.nr = float4(bn, b.nr.z, b.nr.w);
-    }
+    if (w < 0.999) a = gtap_rot(g, i, uv, dx, dy, ang_a, k_a, off_a);
+    if (w > 0.001) b = gtap_rot(g, i, uv, dx, dy, ang_b, k_b, off_b);
     if (w <= 0.001) return a;
     if (w >= 0.999) return b;
     Tap t; t.ah = mix(a.ah, b.ah, w); t.nr = mix(a.nr, b.nr, w); return t;

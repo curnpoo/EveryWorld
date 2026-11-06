@@ -274,23 +274,40 @@ fn tap(i: i32, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> Tap {
     return t;
 }
 
-// Anti-tiling for single taps: a second copy of the layer, rotated, scaled by
-// an irrational-ish factor and offset, swapped in by world-space noise `vm`
-// (0..1). Transitions are narrow so both copies stay sharp (no ghosted
-// double image); normals of the second copy are rotated back.
+// Sample a layer with a random per-cell rotation/scale/offset and rotate the
+// tangent normal back into world space. `uv` is in texture-space tiles, so each
+// tile gets its own transform; this is what breaks far-field repeats where the
+// cheaper single-tap path would otherwise show the same texture copy.
+fn tap_rot(i: i32, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>, ang: f32, k: f32, off: vec2<f32>) -> Tap {
+    let t = tap(i, rot2(uv * k, ang) + off, rot2(dx * k, ang), rot2(dy * k, ang));
+    let n = rot2(vec2<f32>(t.nr.x, t.nr.y) * 2.0 - 1.0, -ang) * k;
+    var out: Tap;
+    out.ah = t.ah;
+    out.nr = vec4<f32>(n * 0.5 + 0.5, t.nr.z, t.nr.w);
+    return out;
+}
+
+// Anti-tiling for single taps (far field and triplanar): each texture tile gets
+// its own random rotation, scale and offset, and a second copy is blended in by
+// the macro-noise selector `vm`. Albedo and normal share the same transform.
 fn tap_var(i: i32, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>, vm: f32) -> Tap {
+    let cell = floor(uv);
+    let h = hash22(cell + vec2<f32>(f32(i) * 19.0, f32(i) * 11.0));
+    let h2 = hash22(cell + vec2<f32>(f32(i) * 7.0, f32(i) * 23.0));
     let w = smoothstep(0.42, 0.58, vm);
-    let ang = 2.1 + f32(i) * 0.37;
-    let k = 0.73;
+    let ang_a = h.x * 6.2831853;
+    let k_a = mix(0.55, 1.45, fract(h.x * 3.17 + h.y * 5.31));
+    let off_a = h2 * 9.0;
+    let ang_b = h2.x * 6.2831853;
+    let k_b = mix(0.55, 1.45, fract(h2.x * 2.71 + h2.y * 7.19));
+    let off_b = h * 9.0 + vec2<f32>(0.37, 0.61);
     var a: Tap;
     var b: Tap;
     if w < 0.999 {
-        a = tap(i, uv, dx, dy);
+        a = tap_rot(i, uv, dx, dy, ang_a, k_a, off_a);
     }
     if w > 0.001 {
-        b = tap(i, rot2(uv * k, ang) + vec2<f32>(0.37, 0.61), rot2(dx * k, ang), rot2(dy * k, ang));
-        let bn = rot2(vec2<f32>(b.nr.x, b.nr.y) * 2.0 - 1.0, -ang) * 0.5 + 0.5;
-        b.nr = vec4<f32>(bn, b.nr.z, b.nr.w);
+        b = tap_rot(i, uv, dx, dy, ang_b, k_b, off_b);
     }
     if w <= 0.001 {
         return a;

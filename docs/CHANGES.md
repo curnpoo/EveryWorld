@@ -1,3 +1,20 @@
+## 2026-11-06: break far-field ground-texture repeats
+
+- The cheap single-tap path used beyond 1200 m (and on triplanar cliffs) now
+  randomises every texture tile: each tile gets its own rotation, anisotropic
+  scale, and offset from a deterministic per-cell hash. A second copy is still
+  blended in by the macro-noise selector, but both copies are per-cell random
+  instead of one global rotated copy, so the same ridge/ripple never lines up
+  across the landscape.
+- The normal map shares the exact same transform; `tap_rot` / `gtap_rot` rotate
+  the sampled tangent normal back into world space before blending, so the
+  relief stays registered with the albedo and the same anti-tiling applies to
+  normals and displacement.
+- Applied to both the native Metal (`crates/ed_metal/shaders/world.metal`) and
+  Bevy (`crates/ed_game/src/shaders/terrain.wesl`) terrain shaders.
+- Needs Mac check: desert / sand view from 1500 m and a grass/farmland view
+  from 500-2000 m; no visible grid, stripes, or swimming texture.
+
 ## 2026-11-06: loading screen copy + local-only player freeze
 - The overlay is a centred stack: a large **Welcome to** line, the place name under it,
   then **Loading the world**, the progress bar and the "Streaming the world / Finishing
