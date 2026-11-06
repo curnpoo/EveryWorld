@@ -35,6 +35,9 @@ struct State<K, T> {
     running: HashSet<K>,
     seq: u64,
     shutdown: bool,
+    /// Max concurrent jobs; 0 = no limit (all workers). Lowered while the camera moves so the
+    /// build threads do not starve the main thread (rotation was 2.9 fps at 8 threads, 15.2 at 2).
+    limit: usize,
 }
 
 struct Shared<K, T> {
@@ -59,7 +62,7 @@ where
     pub fn new(name: &str, threads: usize) -> Self {
         let (tx, rx) = crossbeam_channel::unbounded();
         let shared = Arc::new(Shared {
-            state: Mutex::new(State { queue: HashMap::new(), running: HashSet::new(), seq: 0, shutdown: false }),
+            state: Mutex::new(State { queue: HashMap::new(), running: HashSet::new(), seq: 0, shutdown: false, limit: 0 }),
             wake: Condvar::new(),
             tx,
         });
@@ -133,6 +136,14 @@ where
         self.threads.len()
     }
 
+    /// Cap how many jobs run at once (0 = unlimited). Queued work stays queued.
+    pub fn set_limit(&self, n: usize) {
+        let mut st = self.shared.state.lock().unwrap();
+        st.limit = n;
+        drop(st);
+        self.shared.wake.notify_all();
+    }
+
     /// Next finished job, if any. `None` in the value means it panicked.
     pub fn try_recv(&self) -> Option<(K, Option<T>)> {
         self.rx.try_recv().ok()
@@ -147,7 +158,8 @@ fn worker<K: Hash + Eq + Clone, T>(s: &Shared<K, T>) {
                 if st.shutdown {
                     return;
                 }
-                if !st.queue.is_empty() {
+                let limited = st.limit > 0 && st.running.len() >= st.limit;
+                if !st.queue.is_empty() && !limited {
                     break;
                 }
                 st = s.wake.wait(st).unwrap();

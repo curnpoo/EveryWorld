@@ -1516,7 +1516,11 @@ impl WorldRenderer {
         let (vcam, vf, vr, vu) = (Vec3::from(p.cam_pos), Vec3::from(p.cam_fwd), Vec3::from(p.cam_right), Vec3::from(p.cam_up));
         let (vtx, vty) = (p.tan_half_fov * p.aspect, p.tan_half_fov);
         let px_per_m = p.size.1 as f32 / (2.0 * p.tan_half_fov);
+        let no_cull = std::env::var_os("EW_NO_CULL").is_some();
         let in_view = move |c: Vec3, r: f32| -> bool {
+            if no_cull {
+                return true;
+            }
             let v = c - vcam;
             let z = v.dot(vf);
             if z + r < 0.0 {

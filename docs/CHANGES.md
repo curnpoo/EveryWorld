@@ -8,6 +8,21 @@
   `EW_PROBE_DEBUG`, and `EW_NATIVE_DBG` still set the startup values; the
   Debug tab and F3 change them at runtime. `EW_NATIVE_DBG` is now passed through
   `FrameParams` instead of read from the environment inside the Metal encoder.
+- Probe GI now covers a 2 km-wide, radially warped field (1 km radius) with 64x64
+  columns: about 4 m spacing near the camera, widening to roughly 48 m cells at
+  the edge. The vertical span is 128 m, bake rays reach 2 km, and the gathered
+  terrain field uses 8 m cells. This lets a sunlit slope hundreds of metres
+  away contribute bounce to a shaded valley. The full synthetic ridge bake is
+  ~87 ms on 8 threads.
+- Probe GI remains indirect light: direct sun is still removed by the shadow
+  map, while the probe result scales skylight by visibility and adds sun-aware
+  bounce from lit surroundings. A shadowed surface with low sky visibility gets
+  darker unless a nearby lit slope contributes bounce, which is the physically
+  expected behaviour.
+- `Metal debug view` now includes **Indirect diffuse (grey)**: a solid,
+  grayscale view of the indirect diffuse term only. Direct sun, specular
+  environment light, albedo colour and the lit-shading result are removed, so
+  probe visibility and bounce are easy to inspect.
 - Fixed probe debug spheres disappearing under native: the mesh was
   `RENDER_WORLD`-only, so Bevy stripped the CPU vertices the native mirror
   needs. It now uses `native::world_mesh_usage()`.
@@ -883,4 +898,30 @@ builds them but never uses them.
   expensive: a test with the prebuild ring removed timed out the loading screen at 25 s with 773
   uploads queued. The real fix is fewer/cheaper far tiles (smaller z14 radius, or a cheap
   far-tile build that skips foliage/props/detail), not a bigger prebuild ring.
+
+## 2026-11-06: rotation lag — thread count is the lever, culling is not; far massing LOD off by default
+- **Rotation is a streaming build storm, not culling.** Shibuya street level, headless 1600x900,
+  spinning at 40 deg/s, post-30 s average fps:
+  | config | fps | notes |
+  |---|---|---|
+  | 8 build threads | 2.9 | 354 build jobs, 163 tiles waiting to apply |
+  | 4 build threads | 6.0 | apply backlog 3 |
+  | 2 build threads | 15.2 | apply backlog 0 |
+  | 8 threads + `EW_NO_CULL=1` | 3.5 | culling is not the cause |
+  | 8 threads + `EW_NO_VIEW_CONE=1` | 4.6 | prebuilding everything does not help while spinning |
+  | adaptive (2 while turning/moving) | 15.6-24.5 | apply backlog 0-2 |
+  | adaptive, far massing LOD off | 15.6 | best consistent |
+- **Culling is essential at steady state**: `EW_NO_CULL=1` drops a static frame from 28.6 to
+  15.0 fps. Keep it; it was never the rotation problem.
+- **Adaptive build concurrency** (`JobPool::set_limit`, `EW_BUILD_LIMIT_MOVING`=2): the tile build
+  pool runs all threads while the camera is still (fast load) and only 2 while it is turning or
+  moving, so the main thread keeps its frame rate. This is the rotation fix.
+- **Far massing LOD is a net loss as built**: its mesh has no spatial clusters (`prep_flat`), so
+  the whole tile is drawn un-culled. Static Shibuya: **42.2 fps with it off vs 24-28 with it on**,
+  and the far-to-full upgrade caused post-load upload spikes (~1 s/s). Default is now off
+  (`EW_FAR_LOD_M=0`); re-enable after making `prep` cluster the massing without meshopt.
+- 8 km z14 floor (`EW_FINE_RANGE_M`): 112 vs 133 tiles, ~0.5 % pixels changed, +1.8 fps within
+  noise — not worth changing the default. `EW_CHEAP_FAR=1` loses far trees for +1.6 fps; off.
+- Caveat: single runs per config; the 2-thread and adaptive numbers were repeatable, the
+  8-thread/far-on numbers varied by a few fps.
 

@@ -129,9 +129,9 @@ float probe_gi(float3 wp, float3 N, constant FrameU& F, texture3d<float> pv, thr
     float3 res = dims / float3(1.0, 2.0, 4.0);
     // Inverse of ed_world::probes::warp_axis: dense near the camera, sparse out to 1 km.
     float2 v = u.xz * 2.0;
-    float2 g = sign(v) * pow(abs(v), float2(2.0 / 3.0));
-    float s = clamp((g.x * 0.5 + 0.5) * res.x, 0.5, res.x - 0.5);
-    float p = clamp((g.y * 0.5 + 0.5) * res.z, 0.5, res.z - 0.5);
+    float2 gw = sign(v) * pow(abs(v), float2(2.0 / 3.0));
+    float s = clamp((gw.x * 0.5 + 0.5) * res.x, 0.5, res.x - 0.5);
+    float p = clamp((gw.y * 0.5 + 0.5) * res.z, 0.5, res.z - 0.5);
     float4 g = pv.sample(pbs, float3(s / dims.x, 0.5 / dims.y, (p + 3.0 * res.z) / dims.z), level(0));
     float t = clamp((u.y - g.r) / max(g.g, 1e-6), 0.0, 1.0);
     float layer = sqrt(t) * (res.y - 1.0) + 0.5;
@@ -191,9 +191,18 @@ float3 shade_ex(VOut in, float4 base, bool front, constant FrameU& F, constant D
         float3 env = mix(amb, sky_rad(R, L, day), gloss);
         float3 Fenv = (F0 + (max(float3(1.0 - rough), F0) - F0) * pow(1.0 - ndv, 5.0)) * mix(0.3, 1.0, metal);
         float specocc = mix(1.0, saturate(R.y * 4.0 + 1.0), 0.8);
-        float3 ambient = (diffc * amb * (1.0 - Fenv * 0.5) + env * Fenv * specocc * gloss) * ao_in;
+        float3 diffuse_indirect = diffc * amb * (1.0 - Fenv * 0.5) * ao_in;
+        float3 ambient = diffuse_indirect + env * Fenv * specocc * gloss * ao_in;
         col = direct + ambient;
-        if (F.params.w > 0.5) { int m = int(F.params.w + 0.5); return m == 1 ? N * 0.5 + 0.5 : ((m == 2 || m >= 6) ? float3(vis) : (m == 3 ? ambient : (m == 4 ? float3(vd < F.csm_split[0] ? 1 : 0, vd >= F.csm_split[0] && vd < F.csm_split[1] ? 1 : 0, vd >= F.csm_split[1] && vd < F.csm_split[2] ? 1 : 0) : float3(ndl)))); }
+        if (F.params.w > 0.5) {
+            int m = int(F.params.w + 0.5);
+            if (m == 18) return float3(dot(diffuse_indirect, float3(0.2126, 0.7152, 0.0722)));
+            if (m == 1) return N * 0.5 + 0.5;
+            if (m == 2 || m >= 6) return float3(vis);
+            if (m == 3) return ambient;
+            if (m == 4) return float3(vd < F.csm_split[0] ? 1 : 0, vd >= F.csm_split[0] && vd < F.csm_split[1] ? 1 : 0, vd >= F.csm_split[1] && vd < F.csm_split[2] ? 1 : 0);
+            return float3(ndl);
+        }
     }
     col += D.emissive.rgb;
     // Aerial-perspective fog toward the sky colour in the view direction.
@@ -688,6 +697,7 @@ fragment float4 resolve_fs(FsOut in [[stage_in]], constant FrameU& F [[buffer(1)
     // gentle warm tint in the highlights
     float l = dot(c, float3(0.2126, 0.7152, 0.0722));
     c *= mix(float3(1.0), float3(1.03, 1.0, 0.95), smoothstep(0.35, 0.9, l));
+    if (F.params.w > 17.5 && F.params.w < 18.5) c = float3(dot(c, float3(0.2126, 0.7152, 0.0722)));
     return float4(pow(saturate(c), float3(1.0 / 2.2)), 1.0);
 }
 

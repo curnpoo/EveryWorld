@@ -194,6 +194,7 @@ pub enum NativeDebugView {
     Normals,
     ShadowVisibility,
     AmbientGi,
+    IndirectDiffuse,
     CascadeTint,
     SunNdotL,
     Shadow0,
@@ -211,7 +212,8 @@ impl NativeDebugView {
             Self::Off => Self::Normals,
             Self::Normals => Self::ShadowVisibility,
             Self::ShadowVisibility => Self::AmbientGi,
-            Self::AmbientGi => Self::CascadeTint,
+            Self::AmbientGi => Self::IndirectDiffuse,
+            Self::IndirectDiffuse => Self::CascadeTint,
             Self::CascadeTint => Self::SunNdotL,
             Self::SunNdotL => Self::Shadow0,
             Self::Shadow0 => Self::Shadow1,
@@ -230,6 +232,7 @@ impl NativeDebugView {
             Self::Normals => 1,
             Self::ShadowVisibility => 2,
             Self::AmbientGi => 3,
+            Self::IndirectDiffuse => 18,
             Self::CascadeTint => 4,
             Self::SunNdotL => 5,
             Self::Shadow0 => 6,
@@ -248,6 +251,7 @@ impl NativeDebugView {
             Self::Normals => "Normals",
             Self::ShadowVisibility => "Shadow visibility",
             Self::AmbientGi => "Ambient + GI",
+            Self::IndirectDiffuse => "Indirect diffuse (grey)",
             Self::CascadeTint => "Cascade tint",
             Self::SunNdotL => "Sun N dot L",
             Self::Shadow0 => "Shadow map 0",
@@ -265,6 +269,7 @@ impl NativeDebugView {
             1 => Self::Normals,
             2 => Self::ShadowVisibility,
             3 => Self::AmbientGi,
+            18 => Self::IndirectDiffuse,
             4 => Self::CascadeTint,
             5 => Self::SunNdotL,
             6 => Self::Shadow0,
@@ -816,7 +821,7 @@ fn build_menus(mut commands: Commands, assets: Res<AssetServer>) {
                 t.spawn(Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(9.0), width: Val::Px(580.0), ..default() }).with_children(|c| {
                     text(c, "Live renderer controls", 22.0, INK);
                     for (label, action_label, a) in [
-                        ("Probe GI", "Toggle", MenuAction::ToggleProbes),
+                        ("Probe GI (1 km)", "Toggle", MenuAction::ToggleProbes),
                         ("Probe spheres", "Next", MenuAction::CycleProbeView),
                         ("Shadow maps", "Toggle", MenuAction::ToggleShadows),
                         ("Ambient occlusion", "Toggle", MenuAction::ToggleAo),
@@ -1375,7 +1380,7 @@ fn update_debug_readout(
          pipeline io {} / build {} / apply {}\n\
          detail {} loaded / {} in flight\n\
          buildings {}   trees {}   tris {:.1} M\n\n\
-         probe GI {}   view {}\n\
+         probe GI {} (1 km)   view {}\n\
          shadows {}   AO {}   bloom {}\n\
          ocean FFT {}   sea near {}\n\
          Metal view {}\n\n\
@@ -1623,11 +1628,12 @@ mod tests {
     #[test]
     fn native_debug_views_round_trip_to_shader_values() {
         let mut v = NativeDebugView::Off;
-        for _ in 0..13 {
+        for _ in 0..14 {
             v = v.next();
             assert_eq!(NativeDebugView::from_debug_value(v.value()), v);
         }
         assert_eq!(v, NativeDebugView::Off);
+        assert_eq!(NativeDebugView::IndirectDiffuse.value(), 18);
         assert_eq!(NativeDebugView::Shadow4.value(), 16);
         assert_eq!(NativeDebugView::Shadow5.value(), 17);
     }

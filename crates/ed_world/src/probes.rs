@@ -1,9 +1,11 @@
 //! Terrain-following light probes ("probe GI").
 //!
-//! A camera-centred grid of probes hugs the ground: each column sits on the
-//! terrain and its `ny` layers are spaced by `t^2` (dense near the ground,
-//! sparse up to `span` metres). Every probe traces rays through a 2.5D
-//! [`SceneField`] (terrain + building tops) and stores, per ambient-cube face:
+//! A camera-centred grid of probes hugs the ground out to a 1 km radius. The
+//! horizontal grid is radially warped (dense near the camera, sparse at the
+//! edge); each column sits on the terrain and its `ny` layers are spaced by
+//! `t^2` (dense near the ground, sparse up to `span` metres). Every probe
+//! traces rays through a 2.5D [`SceneField`] (terrain + building tops) and
+//! stores, per ambient-cube face:
 //!
 //! * `vis`: sky visibility relative to open flat ground (1 = unoccluded),
 //! * `bounce`: cosine-weighted albedo of what the face sees (light bounced
@@ -64,6 +66,20 @@ impl SceneField {
         let g = |x: usize, z: usize| self.ground[z * self.nx + x];
         let a = g(x0, z0) + (g(x1, z0) - g(x0, z0)) * tx;
         let b = g(x0, z1) + (g(x1, z1) - g(x0, z1)) * tx;
+        a + (b - a) * tz
+    }
+
+    /// Bilinear top of solid (terrain or roofs), used to reject probes that
+    /// start inside geometry between coarse cell centres.
+    fn top_at(&self, x: f32, z: f32) -> f32 {
+        let fx = ((x - self.origin.x) / self.cell).clamp(0.0, (self.nx - 1) as f32);
+        let fz = ((z - self.origin.y) / self.cell).clamp(0.0, (self.nz - 1) as f32);
+        let (x0, z0) = (fx.floor() as usize, fz.floor() as usize);
+        let (x1, z1) = ((x0 + 1).min(self.nx - 1), (z0 + 1).min(self.nz - 1));
+        let (tx, tz) = (fx - x0 as f32, fz - z0 as f32);
+        let t = |x: usize, z: usize| self.top[z * self.nx + x];
+        let a = t(x0, z0) + (t(x1, z0) - t(x0, z0)) * tx;
+        let b = t(x0, z1) + (t(x1, z1) - t(x0, z1)) * tx;
         a + (b - a) * tz
     }
 
@@ -146,7 +162,7 @@ pub fn layer_height(p: &ProbeParams, j: usize) -> f32 {
 }
 
 /// Radial grid warp: 1.5 power keeps the centre at roughly 4 m spacing while
-/// the outer edge reaches about 48 m for the default 2 km-wide volume.
+/// the outer cells widen to roughly 48 m for the default 2 km-wide volume.
 pub fn warp_axis(u: f32) -> f32 {
     u.signum() * u.abs().powf(1.5)
 }
@@ -215,7 +231,7 @@ fn bake_probe(f: &SceneField, p: &ProbeParams, pos: Vec3, dirs: &[Vec3], max_top
                     } else if p.sun.y <= 0.02 {
                         0.0
                     } else {
-                        match trace(f, hp + Vec3::Y * 0.4 + p.sun * 0.3, p.sun, 150.0, max_top, mean) {
+                        match trace(f, hp + Vec3::Y * 0.4 + p.sun * 0.3, p.sun, p.max_dist, max_top, mean) {
                             Hit::Sky => 1.0,
                             Hit::Surface(..) => 0.0,
                         }
@@ -261,7 +277,7 @@ pub fn bake(field: &SceneField, params: &ProbeParams, threads: usize) -> ProbeVo
             let g = field.ground_at(c.x, c.y) + p.h0;
             for j in 0..p.ny {
                 let pos = Vec3::new(c.x, g + layer_height(&p, j), c.y);
-                let inside = field.cell_of(pos.x, pos.z).is_some_and(|ci| pos.y < field.top[ci]);
+                let inside = pos.y < field.top_at(pos.x, pos.z);
                 probes[i + p.nx * (j + p.ny * k)] = Probe { pos, faces: [[0.0; 4]; 6], filled: inside };
             }
         }
@@ -398,6 +414,59 @@ mod tests {
 
     fn small() -> ProbeParams {
         ProbeParams { nx: 4, ny: 3, nz: 4, spacing: 4.0, rays: 256, ..Default::default() }
+    }
+
+    #[test]
+    fn default_grid_reaches_one_kilometre() {
+        let p = ProbeParams::default();
+        assert!((p.nx as f32 * p.spacing * 0.5 - 1024.0).abs() < 1e-3);
+        assert!((p.nz as f32 * p.spacing * 0.5 - 1024.0).abs() < 1e-3);
+        // The first two cell centres are ~4 m apart; the outer edge is much sparser.
+        let half = p.nx as f32 * p.spacing * 0.5;
+        let near = (warp_axis(1.5 / p.nx as f32) - warp_axis(0.5 / p.nx as f32)) * half;
+        let far = (warp_axis(1.0 - 0.5 / p.nx as f32) - warp_axis(1.0 - 1.5 / p.nx as f32)) * half;
+        assert!(near < 8.0, "near spacing {near}");
+        assert!(far > 20.0, "far spacing {far}");
+    }
+
+    #[test]
+    fn distant_lit_slope_supplies_bounce() {
+        let mut f = SceneField::new(Vec2::splat(-1_000.0), 10.0, 201, 201);
+        f.albedo.iter_mut().for_each(|a| *a = [0.05; 3]);
+        for k in 0..f.nz {
+            for i in 0..f.nx {
+                let c = f.cell_center(i, k);
+                if (600.0..620.0).contains(&c.x) {
+                    f.top[k * f.nx + i] = 200.0;
+                    f.albedo[k * f.nx + i] = [0.8, 0.7, 0.55];
+                }
+            }
+        }
+        let p = ProbeParams { nx: 1, ny: 2, nz: 1, spacing: 2.0, span: 2.0, rays: 1_024, max_dist: 1_200.0, ..Default::default() };
+        let v = bake(&f, &p, 4);
+        let east = v.probe(0, 0, 0).faces[0];
+        let west = v.probe(0, 0, 0).faces[1];
+        assert!(east[0] > west[0] + 0.05, "east {} west {}", east[0], west[0]);
+    }
+
+    #[test]
+    #[ignore = "probe bake benchmark"]
+    fn bake_default_grid_bench() {
+        let mut f = SceneField::new(Vec2::splat(-1_088.0), 8.0, 273, 273);
+        f.albedo.iter_mut().for_each(|a| *a = [0.22, 0.24, 0.18]);
+        for k in 0..f.nz {
+            for i in 0..f.nx {
+                let c = f.cell_center(i, k);
+                if c.x > 350.0 && c.x < 700.0 {
+                    f.top[k * f.nx + i] = 600.0;
+                }
+            }
+        }
+        let p = ProbeParams { sun: Vec3::new(0.4, 0.8, 0.2).normalize(), ..Default::default() };
+        let t0 = std::time::Instant::now();
+        let v = bake(&f, &p, 8);
+        eprintln!("probe bake {:?}: {:.1} ms ({} probes)", v.dims(), t0.elapsed().as_secs_f64() * 1000.0, v.probes.len());
+        assert_eq!(v.probes.len(), 64 * 6 * 64);
     }
 
     #[test]

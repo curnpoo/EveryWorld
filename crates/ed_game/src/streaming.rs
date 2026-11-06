@@ -86,7 +86,11 @@ const OFFSCREEN_PREBUILD: f64 = 1.5;
 const BUILDING_ALLOWANCE_M: f32 = 500.0;
 /// Buildings farther than this (m) use the far massing mesh; crossing inward swaps to full geometry.
 fn far_lod_m() -> f64 {
-    env_num("EW_FAR_LOD_M", 3_500.0)
+    // Off by default: the massing mesh has no spatial clusters, so it is drawn un-culled and
+    // measured *worse* than the clustered full geometry at steady state (42 fps with it off vs
+    // 24-28 with it on, Shibuya street). Re-enable once `prep` clusters it without the meshopt
+    // passes. `EW_FAR_LOD_M=3500` turns it back on.
+    env_num("EW_FAR_LOD_M", 0.0)
 }
 
 fn env_num<T: std::str::FromStr>(key: &str, default: T) -> T {
@@ -319,6 +323,8 @@ pub struct TileManager {
     /// Origin generation last seen; a jump means old tiles are off-screen and can retire at once.
     last_generation: u64,
     jumped: bool,
+    /// Camera rotation last select tick (adaptive build concurrency while turning).
+    last_cam_rot: Option<Quat>,
     last_focus: Option<(Vec3, f32, u64)>,
     pub totals: Totals,
     /// Per-tile contribution to `totals`, so retiring a tile subtracts it.
@@ -365,6 +371,7 @@ impl TileManager {
             last_select: -1.0,
             last_generation: 0,
             jumped: false,
+            last_cam_rot: None,
             last_focus: None,
             totals: Totals::default(),
             tile_totals: HashMap::new(),
@@ -591,6 +598,17 @@ fn select_tiles(
     mgr.last_focus = Some((focus_pos, now, origin.generation));
     let ahead_k = scheduler::ahead_weight(vel.length());
     let vel_dir = vel.normalize_or_zero();
+    // Adaptive build concurrency: while the camera turns or moves, keep most cores free for the
+    // main thread (rotation measured 2.9 fps at 8 build threads, 15.2 at 2; static load still
+    // uses all of them).
+    let cam_rot = camera.single().ok().map(|(t, _)| t.rotation());
+    let turned = mgr.last_cam_rot.zip(cam_rot).is_some_and(|(a, b)| a.angle_between(b) > 0.02);
+    mgr.last_cam_rot = cam_rot;
+    let moving = turned || vel.length() > 2.0;
+    if std::env::var_os("EW_BUILD_LIMIT_DBG").is_some() {
+        info!("build limit: turned={turned} vel={:.2} moving={moving}", vel.length());
+    }
+    mgr.cpu.set_limit(if moving { env_num("EW_BUILD_LIMIT_MOVING", 2) } else { 0 });
 
     // Zoom out the root set when high up so the horizon stays covered, and cap the
     // finest zoom so altitude doesn't split into hundreds of tiny tiles (which can't
@@ -626,7 +644,13 @@ fn select_tiles(
         _ => None,
     });
     let ground = mgr.ground_estimate as f32;
-    let in_view: HashSet<TileId> = wanted
+    // `EW_NO_VIEW_CONE=1`: treat every wanted tile as in view (A/B for rotation-triggered
+    // streaming: everything prebuilds at load, rotating never queues anything new).
+    let no_cone = std::env::var_os("EW_NO_VIEW_CONE").is_some();
+    let in_view: HashSet<TileId> = if no_cone {
+        wanted.clone()
+    } else {
+        wanted
         .iter()
         .copied()
         .filter(|t| {
@@ -646,7 +670,8 @@ fn select_tiles(
             let (center, radius) = b.sphere();
             cone.sees_sphere(center, radius)
         })
-        .collect();
+        .collect()
+    };
 
     // Cancel queued work for tiles that are no longer wanted.
     if std::env::var_os("EW_KEEP_TILES").is_none() {

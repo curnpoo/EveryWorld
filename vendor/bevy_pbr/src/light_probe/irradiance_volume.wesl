@@ -136,9 +136,12 @@ fn probe_gi(
         let res = dims / vec3(1.0, 2.0, 4.0);
         let unit_pos = (q.light_from_world * vec4(world_position, 1.0)).xyz;
 
-        // Horizontal texel coords (clamped to the outer probe centers).
-        var s = clamp((unit_pos.x + 0.5) * res.x, 0.5, res.x - 0.5);
-        var p = clamp((unit_pos.z + 0.5) * res.z, 0.5, res.z - 0.5);
+        // Inverse of ed_world::probes::warp_axis: dense near the camera,
+        // sparse out to 1 km. Texel coords are clamped to outer probe centers.
+        let radial = unit_pos.xz * 2.0;
+        let grid = sign(radial) * pow(abs(radial), vec2<f32>(2.0 / 3.0));
+        var s = clamp((grid.x * 0.5 + 0.5) * res.x, 0.5, res.x - 0.5);
+        var p = clamp((grid.y * 0.5 + 0.5) * res.z, 0.5, res.z - 0.5);
 
         // Terrain-following vertical layer.
         let ground = textureSampleLevel(tex, irradiance_volume_sampler, vec3(s / dims.x, 0.5 / dims.y, (p + 3.0 * res.z) / dims.z), 0.0);

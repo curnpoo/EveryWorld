@@ -369,6 +369,9 @@ mod imp {
 
         // Upload newly seen meshes/textures (bounded per frame), build the draw list.
         st.draw_scratch.clear();
+        // `EW_NO_CULL=1`: draw every mirrored mesh regardless of the frustum (A/B for the
+        // rotation cost of culling).
+        let no_cull = std::env::var_os("EW_NO_CULL").is_some();
         let mut uploads = 0;
         let mut tex_uploads = 0;
         for (m3, gt, vis, mat, mtag, is_terrain, no_cast, plume, wing, fol, scat, is_imp, layers, is_tproxy) in &items {
@@ -553,7 +556,7 @@ mod imp {
             let c = model.transform_point3(Vec3::from(gm.center));
             let s = gt.scale().max_element().max(1e-4);
             let rad = gm.radius * s;
-            let visible = !planes.iter().any(|pl| pl.truncate().dot(c) + pl.w < -rad);
+            let visible = no_cull || !planes.iter().any(|pl| pl.truncate().dot(c) + pl.w < -rad);
             st.draw_scratch.push(DrawItem {
                 mesh: id,
                 model: model.to_cols_array_2d(),

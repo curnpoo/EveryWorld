@@ -17,7 +17,8 @@ Native is the default; `EW_NATIVE=0` returns to Bevy. `ed_game::native` mirrors 
   MPSGraph and aborts the process with `MTLReportFailure` a few minutes into a session (see `docs/CHANGES.md`,
   2026-11-06). Crash reports: `~/Library/Logs/DiagnosticReports/earthdrop-*.ips`.
 - **Probe GI** (`ed_world::probes::bake`, `ed_game/probe_gi.rs`, `native::send_probes`, `world.metal::probe_gi`): sun-aware bake
-  (re-bake on 4 degree sun change), texture slot 8 (3D RGBA16F). `EW_PROBE_GI=0/EW_PROBE_K/EW_PROBE_DEBUG`.
+  (re-bake on 4 degree sun change), texture slot 8 (3D RGBA16F), 1 km radius with a radially warped 64x64 grid.
+  `EW_PROBE_GI=0/EW_PROBE_K/EW_PROBE_DEBUG`.
   The pause menu's **Debug** tab changes probe/shadows/AO/bloom/ocean/FFT/Metal views live and shows live diagnostics.
 - **Shadows:** 6 cascades (0-3 to 700 m, 4 to 4 km, 5 to 20 km; 4 and 5 are camera-centred spheres so they cache). Cascade 5 casts buildings
   and terrain; casters under 1.5 texels are culled. Per-cascade cache (`ShadowCache`: caster idents, projection, sun direction, light-space
@@ -35,6 +36,8 @@ Native is the default; `EW_NATIVE=0` returns to Bevy. `ed_game::native` mirrors 
 Loading/streaming: `EW_UPLOAD_MB` (24), `EW_UPLOAD_MAX` (8 meshes/frame), `EW_UPLOAD_BUDGET`/`EW_HIDDEN_UPLOAD_BUDGET`
 (prep requests/frame), `EW_RETIRE_PER_FRAME` (3), `EW_RESIDENT_TILES`, `EW_TILE_THREADS`, `EW_UPLOAD_DBG`,
 `EW_FAR_LOD_M` (3500; buildings past this use the far massing mesh), `EW_UPGRADE_PER_FRAME` (2), `EW_FAR_DBG`,
+`EW_FINE_RANGE_M` (16000; z14 building floor), `EW_CHEAP_FAR=1`, `EW_BUILD_LIMIT_MOVING` (2; build threads
+while the camera moves), `EW_NO_CULL=1`, `EW_NO_VIEW_CONE=1`,
 `EW_NATIVE_FX_RECYCLE` (90 s; the MetalFX temporal effect is recreated this often because the
 ANE/MPSGraph path aborts ~150 s after creation), `EW_HOP="t:lat:lon,..."` (scripted fast travel in headless runs).
 `perf.csv` columns after `applying`: `apply_ms,retire_ms,native_ms,upload_ms,prepq,readyq,uploaded,up_mb`.
