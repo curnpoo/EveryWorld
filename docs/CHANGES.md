@@ -12,8 +12,8 @@
   columns: about 20 m spacing near the camera, widening to roughly 468 m cells
   at the edge. Only one layer sits on the terrain, bake rays reach 40 km, and
   the gathered terrain field uses 128 m cells. This lets canyon-scale lit slopes
-  contribute bounce to shaded valleys. The full synthetic ridge bake is
-  measured by `probes::tests::bake_default_grid_bench`.
+  contribute bounce to shaded valleys. The full synthetic ridge bake is ~27 ms
+  on 8 threads (`probes::tests::bake_default_grid_bench`).
 - Probe GI remains indirect light: direct sun is still removed by the shadow
   map, while the probe result scales skylight by visibility and adds sun-aware
   bounce from lit surroundings. A shadowed surface with low sky visibility gets
@@ -23,6 +23,9 @@
   grayscale view of the indirect diffuse term only. Direct sun, specular
   environment light, albedo colour and the lit-shading result are removed, so
   probe visibility and bounce are easy to inspect.
+- Also added probe diagnostics: coverage, sky visibility, bounce, and separate
+  XZ/Y coverage. Probe spheres now show within 1 km of the camera and scale with
+  distance so sparse far probes remain visible.
 - Fixed probe debug spheres disappearing under native: the mesh was
   `RENDER_WORLD`-only, so Bevy stripped the CPU vertices the native mirror
   needs. It now uses `native::world_mesh_usage()`.

@@ -229,6 +229,26 @@ fn merge_lod(chunks: &[((u8, u8), BuildingMeshes)], with_prep: bool) -> Building
 }
 
 fn ready_tile(mut b: TileBuild, far: bool) -> ReadyTile {
+    // Print before any field is taken: the apply path drains parts, trees and rock chunks, so a
+    // later print shows zeros for them (that is why the canyon total looked unaccounted).
+    if std::env::var_os("EW_TILE_STATS").is_some() {
+        let rock_chunks: usize = b.rock_chunks.iter().map(|m| m.triangle_count()).sum();
+        eprintln!(
+            "TILESTAT z{} terrain={} water={} roads={} trees={} rocks={} rock_chunks={} street={} bld={} total={} trees_n={} rocks_n={}",
+            b.tile.z,
+            b.terrain.triangle_count(),
+            b.water.triangle_count(),
+            b.roads.triangle_count(),
+            b.trees.triangle_count(),
+            b.rocks.triangle_count(),
+            rock_chunks,
+            b.street_props.triangle_count(),
+            b.building_lod.iter().map(|(_, m)| m.triangle_count()).sum::<usize>(),
+            b.stats.triangles,
+            b.stats.trees,
+            b.stats.rocks
+        );
+    }
     // The collider is the terrain grid without the render subdivision, so it
     // doubles as the terrain's shadow caster (the sun never needs the splat vertices).
     let terrain_shadow = b.collider.as_ref().filter(|(v, _)| v.len() * 4 < b.terrain.positions.len()).map(|(verts, tris)| {
@@ -1038,9 +1058,6 @@ fn apply_tiles(
                     pending: HashSet::new(),
                 },
             );
-        }
-        if std::env::var_os("EW_TILE_STATS").is_some() {
-            eprintln!("TILESTAT z{} terrain={} water={} roads={} trees={} rocks={} street={} bld={} total={} trees_n={}", t.z, b.terrain.triangle_count(), b.water.triangle_count(), b.roads.triangle_count(), b.trees.triangle_count(), b.rocks.triangle_count(), b.street_props.triangle_count(), b.building_lod.iter().map(|(_, m)| m.triangle_count()).sum::<usize>(), b.stats.triangles, b.stats.trees);
         }
         mgr.tile_totals.insert(t, Totals { buildings: b.stats.buildings, trees: b.stats.trees, triangles: b.stats.triangles });
         mgr.heights.insert(t, b.min_max_height);

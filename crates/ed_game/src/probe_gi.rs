@@ -388,8 +388,10 @@ fn debug_spheres(
         idx.extend(tris.iter().map(|i| base + i));
     }
     if pos.is_empty() {
+        info!("probe GI debug spheres: none within {} m", DEBUG_RADIUS);
         return;
     }
+    info!("probe GI debug spheres: {} probes within {} m", pos.len() / up.len(), DEBUG_RADIUS);
     let mesh = Mesh::new(PrimitiveTopology::TriangleList, crate::native::world_mesh_usage())
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
         .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, nrm)
