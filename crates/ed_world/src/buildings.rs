@@ -259,6 +259,26 @@ pub fn build_lod<'a>(specs: impl IntoIterator<Item = &'a BuildingSpec>, up: Vec3
     out
 }
 
+/// Tier-2 far massing for one tile: each building becomes its footprint extruded to the eaves plus a
+/// flat roof cap (no windows, no roof forms), all in one mesh with vertex colours. A city tile drops
+/// from ~290k triangles to a few tens of thousands, which is what makes distant tiles cheap to
+/// upload and draw. Used only past `FAR_LOD_M`; near tiles keep the LOD/full geometry.
+pub fn build_massing<'a>(specs: impl IntoIterator<Item = &'a BuildingSpec>, up: Vec3) -> MeshData {
+    let mut m = MeshData::default();
+    for s in specs {
+        for w in &s.walls {
+            if w.len < 0.5 {
+                continue;
+            }
+            let p = [w.a, w.b, w.b + up * s.wall_top, w.a + up * s.wall_top];
+            m.quad(p, [[0.04, 0.5]; 4], s.wall_c);
+        }
+        let cap: Vec<Vec3> = s.ring.iter().map(|p| *p + up * s.wall_top).collect();
+        mk::polygon(&mut m, &cap, &[], up, 2.0, s.roof_c);
+    }
+    m
+}
+
 #[derive(Debug, Clone)]
 struct Footprint {
     /// Roof form the data asks for (Overture `roof:shape`); `None` leaves it to the regional table.

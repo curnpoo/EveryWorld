@@ -587,6 +587,22 @@ impl WorldRenderer {
     pub fn retain_meshes(&mut self, mut keep: impl FnMut(u64) -> bool) {
         self.meshes.retain(|k, _| keep(*k));
     }
+    /// Drop meshes not in `keep` until `max_ms` of driver work has been spent. Buffer frees are
+    /// not free: a fast travel can leave hundreds of large buffers to release at once, and doing
+    /// that in one frame froze the game for seconds.
+    pub fn retain_meshes_timed(&mut self, mut keep: impl FnMut(u64) -> bool, max_ms: u64) -> usize {
+        let t0 = std::time::Instant::now();
+        let dead: Vec<u64> = self.meshes.keys().copied().filter(|k| !keep(*k)).collect();
+        let mut n = 0;
+        for k in dead {
+            self.meshes.remove(&k);
+            n += 1;
+            if n % 4 == 0 && t0.elapsed().as_millis() as u64 >= max_ms {
+                break;
+            }
+        }
+        n
+    }
     pub fn mesh_count(&self) -> usize {
         self.meshes.len()
     }
@@ -614,6 +630,9 @@ impl WorldRenderer {
 
     /// Turn prepared mesh CPU data into Metal buffers and make it drawable.
     pub fn upload_prepped(&mut self, id: u64, p: MeshPrep) {
+        let dbg = std::env::var_os("EW_UPLOAD_DBG").is_some();
+        let t0 = std::time::Instant::now();
+        let (mb_v, mb_i, mb_p) = (p.data.len() * 4 / (1 << 20), p.idx.len() * 4 / (1 << 20), p.pidx.len() * 4 / (1 << 20));
         if p.data.is_empty() || p.idx.is_empty() {
             return;
         }
@@ -700,6 +719,12 @@ impl WorldRenderer {
             (vbuf, ibuf, 12usize)
         };
         self.meshes.insert(id, GpuMesh { vb, ib, index_count: p.idx.len(), center: p.center, radius: p.radius, clusters, ib2, splat: None, extra: None, ed_clusters, ed_vb, ed_ib, ed_nverts, box_vb, box_ib, box_count });
+        if dbg {
+            let ms = t0.elapsed().as_secs_f64() * 1e3;
+            if ms > 5.0 {
+                eprintln!("UPLOADDBG id={id} vtx={mb_v}MB idx={mb_i}MB proxy={mb_p}MB -> {ms:.1} ms");
+            }
+        }
     }
 
     /// Per-vertex splat weights (12 bytes per vertex: 12 layer weights) for an uploaded terrain mesh.
@@ -1836,6 +1861,38 @@ pub fn prep(positions: &[[f32; 3]], normals: &[[f32; 3]], uvs: &[[f32; 2]], colo
         Some(ed_gpu::cluster::flatten(&ed_gpu::cluster::build_hierarchy(positions, indices)))
     };
     MeshPrep { data, idx, center, radius, clusters, pidx, ed_clusters, box_min: blo, box_max: bhi, box_avg_color: bavg }
+}
+
+/// Prep for a mesh that is already a far LOD (the massing mesh): interleaved vertices + indices,
+/// no cluster grid and no simplification passes. `prep()` spends seconds running meshopt on a
+/// >40k-triangle mesh, which is wasted on geometry that is only ever drawn from far away.
+pub fn prep_flat(positions: &[[f32; 3]], normals: &[[f32; 3]], uvs: &[[f32; 2]], colors: &[[f32; 4]], indices: &[u32]) -> MeshPrep {
+    let mut data: Vec<f32> = Vec::with_capacity(positions.len() * 12);
+    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+    let mut bavg = [0.0f32; 4];
+    for (i, p) in positions.iter().enumerate() {
+        let n = normals.get(i).copied().unwrap_or([0.0, 1.0, 0.0]);
+        let uv = uvs.get(i).copied().unwrap_or([0.0; 2]);
+        let c = colors.get(i).copied().unwrap_or([1.0; 4]);
+        data.extend_from_slice(&[p[0], p[1], p[2], n[0], n[1], n[2], uv[0], uv[1], c[0], c[1], c[2], c[3]]);
+        for k in 0..3 {
+            lo[k] = lo[k].min(p[k]);
+            hi[k] = hi[k].max(p[k]);
+        }
+        for k in 0..4 {
+            bavg[k] += c[k];
+        }
+    }
+    let n = positions.len().max(1) as f32;
+    for k in 0..4 {
+        bavg[k] /= n;
+    }
+    if positions.is_empty() {
+        (lo, hi) = ([0.0; 3], [0.0; 3]);
+    }
+    let center = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5, (lo[2] + hi[2]) * 0.5];
+    let radius = ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + (hi[2] - lo[2]).powi(2)).sqrt() * 0.5;
+    MeshPrep { data, idx: indices.to_vec(), center, radius, clusters: Vec::new(), pidx: Vec::new(), ed_clusters: None, box_min: lo, box_max: hi, box_avg_color: bavg }
 }
 
 /// Stable identity of one shadow caster within a cascade: mesh, translation quantised to the

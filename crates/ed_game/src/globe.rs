@@ -325,7 +325,7 @@ fn setup_globe(
     // Polar caps beyond the Web-Mercator limit.
     for (north, col) in [(true, Color::srgb(0.80, 0.86, 0.92)), (false, Color::srgb(0.90, 0.93, 0.96))] {
         commands.spawn((
-            Mesh3d(meshes.add(crate::meshconv::to_mesh(&gl::polar_cap(north, 96, 6)))),
+            Mesh3d(meshes.add(crate::meshconv::to_bevy_mesh(&gl::polar_cap(north, 96, 6)))),
             MeshMaterial3d(mats.add(StandardMaterial { base_color: col, perceptual_roughness: 0.6, cull_mode: None, ..default() })),
             layers.clone(),
             NotShadowCaster,
@@ -1067,7 +1067,7 @@ fn receive_tiles(
             anisotropy_clamp: 8,
             ..default()
         });
-        let mesh = meshes.add(crate::meshconv::to_mesh(&gl::tile_mesh(f.id, level_mesh_n(f.id.z))));
+        let mesh = meshes.add(crate::meshconv::to_bevy_mesh(&gl::tile_mesh(f.id, level_mesh_n(f.id.z))));
         let mat = mats.add(StandardMaterial {
             base_color_texture: Some(images.add(img)),
             perceptual_roughness: 0.82,

@@ -19,6 +19,7 @@ mod ground_scatter;
 mod hud;
 mod impostors;
 mod library;
+mod loading;
 mod lookdev;
 mod globe;
 mod headless;
@@ -33,6 +34,7 @@ mod origin;
 mod perf;
 mod render_scale;
 mod player;
+mod probes;
 mod probe_gi;
 mod shadows;
 mod far_shadows;
@@ -89,7 +91,7 @@ fn main() {
     .insert_resource(Gravity(Vec3::NEG_Y * 9.81))
     .insert_resource(cfg.clone())
     .add_plugins((origin::OriginPlugin, assets::AssetsPlugin, building_materials::BuildingMaterialsPlugin, sky::SkyPlugin, shadows::ShadowsPlugin, far_shadows::FarShadowsPlugin, camera::CameraPlugin, foliage::FoliagePlugin))
-    .add_plugins((clouds::CloudsPlugin, cloud_half::CloudHalfPlugin, perf::PerfPlugin, render_scale::RenderScalePlugin, library::LibraryPlugin, native::NativePlugin))
+    .add_plugins((clouds::CloudsPlugin, cloud_half::CloudHalfPlugin, perf::PerfPlugin, render_scale::RenderScalePlugin, library::LibraryPlugin, native::NativePlugin, loading::LoadingPlugin))
     .add_systems(Update, headless::quit_after);
     if cfg.headless {
         app.add_plugins(headless::HeadlessPlugin);

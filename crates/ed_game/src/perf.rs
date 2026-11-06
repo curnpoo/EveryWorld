@@ -19,7 +19,7 @@ impl Plugin for PerfPlugin {
         }
         let path = std::env::var("EW_PERF_OUT").unwrap_or_else(|_| "perf.csv".into());
         let mut f = std::fs::File::create(&path).expect("create perf csv");
-        let _ = writeln!(f, "t_s,fps,avg_ms,p99_ms,max_ms,tiles,pending,desired,tris_m,entities,vis_terrain_m,vis_scatter_m,vis_foliage_m,vis_other_m,meshes_vis,io_jobs,build_jobs,applying");
+        let _ = writeln!(f, "t_s,fps,avg_ms,p99_ms,max_ms,tiles,pending,desired,tris_m,entities,vis_terrain_m,vis_scatter_m,vis_foliage_m,vis_other_m,meshes_vis,io_jobs,build_jobs,applying,apply_ms,retire_ms,native_ms,upload_ms,prepq,readyq,uploaded,up_mb");
         info!("perf logging to {path}");
         app.insert_resource(PerfLog { file: f, frames: Vec::new(), since: 0.0, reported_gpu: false })
             .add_systems(Last, record);
@@ -102,7 +102,8 @@ fn record(
     let (vs, ns) = count(&mut scatter.iter());
     let (vf, nf) = count(&mut foliage.iter().chain(impostors.iter()));
     let (vo, no) = count(&mut other.iter());
-    let _ = writeln!(log.file, "{t:.1},{:.1},{avg:.2},{p99:.2},{max:.2},{tiles},{pending},{desired},{tris:.2},{},{vt:.2},{vs:.2},{vf:.2},{vo:.2},{},{io},{build},{applying}", 1000.0 / avg.max(1e-3), entities.iter().count(), nt + ns + nf + no);
+    let crate::probes::ProbeRow { apply_ms, retire_ms, native_ms, upload_ms, prepq, readyq, uploaded, up_mb } = crate::probes::take();
+    let _ = writeln!(log.file, "{t:.1},{:.1},{avg:.2},{p99:.2},{max:.2},{tiles},{pending},{desired},{tris:.2},{},{vt:.2},{vs:.2},{vf:.2},{vo:.2},{},{io},{build},{applying},{apply_ms:.2},{retire_ms:.2},{native_ms:.2},{upload_ms:.2},{prepq},{readyq},{uploaded},{up_mb:.1}", 1000.0 / avg.max(1e-3), entities.iter().count(), nt + ns + nf + no);
     let _ = log.file.flush();
     log.since = 0.0;
 }

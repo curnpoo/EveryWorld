@@ -30,6 +30,8 @@ pub struct Upscaler {
     out: Option<Tex>,
     prev_vp: Option<Mat4>,
     pub frame: u32,
+    /// When the current scaler instance was created (recycled to dodge the ANE crash).
+    born: Option<std::time::Instant>,
 }
 
 /// Halton(2,3) sample `i` (1-based) centred on 0, in pixels.
@@ -58,7 +60,7 @@ impl Upscaler {
         let lib = ctx.library(include_str!("../shaders/upscale.metal")).map_err(|e| log::error!("upscale shader: {e}")).ok()?;
         let f = lib.newFunctionWithName(&NSString::from_str("motion_cs"))?;
         let motion_pso = ctx.device.newComputePipelineStateWithFunction_error(&f).ok()?;
-        Some(Self { device: ctx.device.clone(), motion_pso, scaler: None, dims: (0, 0, 0, 0), motion: None, out: None, prev_vp: None, frame: 0 })
+        Some(Self { device: ctx.device.clone(), motion_pso, scaler: None, dims: (0, 0, 0, 0), motion: None, out: None, prev_vp: None, frame: 0, born: None })
     }
 
     fn tex(&self, fmt: MTLPixelFormat, w: usize, h: usize, usage: MTLTextureUsage) -> Tex {
@@ -72,6 +74,18 @@ impl Upscaler {
     /// applied this frame. Returns the output texture.
     #[allow(clippy::too_many_arguments)]
     pub fn encode(&mut self, cb: &ProtocolObject<dyn MTLCommandBuffer>, hdr: &Tex, depth: &Tex, ow: usize, oh: usize, vp: Mat4, jit: (f32, f32), cam_jump: bool) -> Option<Tex> {
+        // The MetalFX temporal effect runs an MPSGraph/ANE executable per frame, and on this
+        // machine that path aborts the process (~2.5 min after the scaler is created, frame
+        // count varies). Recreating the effect resets that model instance; `EW_NATIVE_FX_RECYCLE`
+        // sets the interval in seconds (0 disables recycling).
+        let recycle = std::env::var("EW_NATIVE_FX_RECYCLE").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(90.0);
+        if recycle > 0.0 && self.born.is_some_and(|b| b.elapsed().as_secs_f32() > recycle) {
+            self.scaler = None;
+            self.motion = None;
+            self.out = None;
+            self.dims = (0, 0, 0, 0);
+            self.born = None;
+        }
         let (iw, ih) = (hdr.width(), hdr.height());
         let mut reset = cam_jump || self.prev_vp.is_none();
         if self.dims != (iw, ih, ow, oh) || self.scaler.is_none() {
@@ -97,6 +111,7 @@ impl Upscaler {
             self.motion = Some(self.tex(MTLPixelFormat::RG16Float, iw, ih, MTLTextureUsage::ShaderRead | MTLTextureUsage::ShaderWrite));
             self.out = Some(self.tex(MTLPixelFormat::RGBA16Float, ow, oh, MTLTextureUsage::ShaderRead | MTLTextureUsage::ShaderWrite | MTLTextureUsage::RenderTarget));
             self.dims = (iw, ih, ow, oh);
+            self.born = Some(std::time::Instant::now());
             reset = true;
         }
         let (motion, out, scaler) = (self.motion.clone()?, self.out.clone()?, self.scaler.clone()?);

@@ -74,10 +74,17 @@ fn affine_to_transform(a: DAffine3) -> Transform {
 fn apply_anchors(origin: Res<WorldOrigin>, mut q: Query<(Ref<GeoAnchored>, &mut Transform)>) {
     let to_render = origin.frame.ecef_to_render();
     let all = origin.is_changed();
+    let t0 = std::time::Instant::now();
+    let mut moved = 0usize;
     for (anchor, mut t) in &mut q {
         if all || anchor.is_changed() {
             *t = affine_to_transform(to_render * anchor.0);
+            moved += 1;
         }
+    }
+    // A teleport rewrites every static transform; Avian then re-syncs their colliders.
+    if all && moved > 0 && t0.elapsed().as_millis() > 30 {
+        warn!("apply_anchors moved {moved} statics in {} ms", t0.elapsed().as_millis());
     }
 }
 

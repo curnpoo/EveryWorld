@@ -31,6 +31,12 @@ Native is the default; `EW_NATIVE=0` returns to Bevy. `ed_game::native` mirrors 
 `EW_NATIVE=0`, `EW_NATIVE_SCALE`, `EW_NATIVE_NOAA`, `EW_NATIVE_NOSSR/NOBOUNCE/NOAO/NOBLOOM/NOGROUND/NOSHADOW`, `EW_NATIVE_DBG`,
 `EW_NATIVE_AOVIS`, `EW_NATIVE_FX_AUTOEX`, `EW_NATIVE_SDBG`, `EW_SHADOW_SUN_EPS`, `EW_PREP_JOBS`, `EW_GFX=...`, `EW_HOLD_SPACE=1`,
 `EW_PROBE_GI`, `EW_PROBE_K`, `EW_PROBE_DEBUG`, `EW_CONTACT`, `EW_WEATHER`.
+Loading/streaming: `EW_UPLOAD_MB` (24), `EW_UPLOAD_MAX` (8 meshes/frame), `EW_UPLOAD_BUDGET`/`EW_HIDDEN_UPLOAD_BUDGET`
+(prep requests/frame), `EW_RETIRE_PER_FRAME` (3), `EW_RESIDENT_TILES`, `EW_TILE_THREADS`, `EW_UPLOAD_DBG`,
+`EW_FAR_LOD_M` (3500; buildings past this use the far massing mesh), `EW_UPGRADE_PER_FRAME` (2), `EW_FAR_DBG`,
+`EW_NATIVE_FX_RECYCLE` (90 s; the MetalFX temporal effect is recreated this often because the
+ANE/MPSGraph path aborts ~150 s after creation), `EW_HOP="t:lat:lon,..."` (scripted fast travel in headless runs).
+`perf.csv` columns after `applying`: `apply_ms,retire_ms,native_ms,upload_ms,prepq,readyq,uploaded,up_mb`.
 
 ## How to verify headless (keep short; shell tool times out at 120 s, run long ones in background)
 `./target/release/earthdrop --headless --fly|--play --lat .. --lon .. --alt .. --heading .. --pitch .. --hour 15 --width 1280 --height 720 --frames 500 --no-wait --screenshot out.png`

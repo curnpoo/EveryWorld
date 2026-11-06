@@ -218,7 +218,7 @@ pub fn to_mesh(m: ImpostorMesh) -> (Mesh, Aabb) {
     }
     let pad = Vec3::splat(r * GROW_MAX * 1.1 + 1.0);
     let aabb = Aabb::from_min_max(lo - pad, hi + pad);
-    let mesh = Mesh::new(PrimitiveTopology::TriangleList, crate::native::mesh_usage())
+    let mesh = Mesh::new(PrimitiveTopology::TriangleList, crate::native::world_mesh_usage())
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, m.positions)
         .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, m.normals)
         .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, m.corners)

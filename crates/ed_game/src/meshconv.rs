@@ -1,13 +1,23 @@
 //! `ed_world::MeshData` -> `bevy::Mesh`.
 
 use crate::ground_material::{ATTRIBUTE_PIVOT, ATTRIBUTE_SPLAT0, ATTRIBUTE_SPLAT1, ATTRIBUTE_SPLAT2, ATTRIBUTE_SPLAT_PAD};
+use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
 use ed_world::ground_scatter::ScatterChunk;
 use ed_world::mesh::MeshData;
 
 pub fn to_mesh(m: &MeshData) -> Mesh {
-    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, crate::native::mesh_usage())
+    to_mesh_with_usage(m, crate::native::world_mesh_usage())
+}
+
+/// Mesh for a Bevy-rendered scene that the native world renderer does not mirror.
+pub fn to_bevy_mesh(m: &MeshData) -> Mesh {
+    to_mesh_with_usage(m, RenderAssetUsages::RENDER_WORLD)
+}
+
+fn to_mesh_with_usage(m: &MeshData, usage: RenderAssetUsages) -> Mesh {
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, usage)
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, m.positions.clone())
         .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, m.normals.clone())
         .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, m.uvs.clone())
@@ -27,4 +37,15 @@ pub fn to_mesh(m: &MeshData) -> Mesh {
 /// Ground-cover chunk: the usual attributes plus per-vertex instance pivots.
 pub fn to_scatter_mesh(c: &ScatterChunk) -> Mesh {
     to_mesh(&c.mesh).with_inserted_attribute(ATTRIBUTE_PIVOT, c.pivots.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bevy_mesh_is_available_to_the_render_world() {
+        let mesh = to_bevy_mesh(&MeshData::default());
+        assert_eq!(mesh.asset_usage, RenderAssetUsages::RENDER_WORLD);
+    }
 }

@@ -56,7 +56,16 @@ pub struct Spawner {
 
 /// Fired once the player has been placed somewhere new.
 #[derive(Resource, Clone)]
-pub struct Arrived;
+pub struct Arrived {
+    /// Increases on every spawn, so a watcher can tell one arrival from the next.
+    pub serial: u64,
+}
+
+static ARRIVAL_SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Last spawn serial, kept as its own resource because `Arrived` is consumed by the menu.
+#[derive(Resource, Default, Clone, Copy)]
+pub struct SpawnSerial(pub u64);
 
 const DROP_AGL_M: f64 = 1_200.0;
 
@@ -247,7 +256,9 @@ fn finish_requests(
     sp.status = String::new();
     commands.insert_resource(crate::player::Settling { until_s: Some(f32::MAX) });
     commands.insert_resource(crate::hud::ArrivalNotice { name, until_s: 0.0 });
-    commands.insert_resource(Arrived);
+    let serial = ARRIVAL_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    commands.insert_resource(SpawnSerial(serial));
+    commands.insert_resource(Arrived { serial });
 }
 
 #[cfg(test)]

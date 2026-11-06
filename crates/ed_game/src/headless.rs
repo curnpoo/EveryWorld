@@ -12,6 +12,7 @@
 //! Frame time is then max(CPU, GPU) with the usual overlap.
 
 use crate::config::Config;
+use crate::spawn::{SpawnHeight, SpawnRequest};
 use bevy::prelude::*;
 use bevy::render::renderer::RenderDevice;
 use bevy::render::{Render, RenderApp, RenderSystems};
@@ -28,6 +29,42 @@ impl Plugin for HeadlessPlugin {
         if let Some(render) = app.get_sub_app_mut(RenderApp) {
             render.add_systems(Render, wait_for_gpu.in_set(RenderSystems::ExtractCommands));
         }
+        app.add_systems(Update, scripted_hops);
+    }
+}
+
+/// `EW_HOP="t:lat:lon,..."`: scripted fast travels at elapsed seconds (perf runs).
+/// The ground height is looked up from the cache so the camera lands on the street.
+pub fn scripted_hops(
+    time: Res<Time<Real>>,
+    cfg: Res<Config>,
+    mut reqs: MessageWriter<SpawnRequest>,
+    mut plan: Local<Option<Vec<(f32, f64, f64)>>>,
+) {
+    let plan = plan.get_or_insert_with(|| {
+        let Ok(spec) = std::env::var("EW_HOP") else { return Vec::new() };
+        spec.split(',')
+            .filter_map(|part| {
+                let mut it = part.split(':');
+                let t = it.next()?.parse().ok()?;
+                let lat = it.next()?.parse().ok()?;
+                let lon = it.next()?.parse().ok()?;
+                Some((t, lat, lon))
+            })
+            .collect()
+    });
+    let now = time.elapsed_secs();
+    while plan.first().is_some_and(|(t, _, _)| now >= *t) {
+        let (t, lat, lon) = plan.remove(0);
+        let mut pos = ed_geo::Geodetic::new(lat, lon, 0.0);
+        let tile = ed_geo::tile::TileId::containing(lat, lon, 12);
+        let t_fetch = std::time::Instant::now();
+        if let Ok(h) = ed_data::elevation::fetch(&cfg.cache, tile) {
+            let (u, v) = tile.geodetic_to_uv(lat, lon);
+            pos.alt_m = h.sample(u, v).max(0.0) as f64;
+        }
+        info!("hop at {t:.0}s -> {lat:.4},{lon:.4} ({:.0} m, elevation lookup {} ms)", pos.alt_m, t_fetch.elapsed().as_millis());
+        reqs.write(SpawnRequest::At { pos, name: String::new(), height: SpawnHeight::Ground });
     }
 }
 

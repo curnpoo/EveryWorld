@@ -20,6 +20,17 @@ pub fn mesh_usage() -> bevy::asset::RenderAssetUsages {
     }
 }
 
+/// Usage for meshes the native renderer mirrors. Under native the Bevy 3D camera is off, so a
+/// render-world copy is a second full upload into wgpu memory plus its free cost on retire;
+/// keep the main-world copy (which the mirror reads) only.
+pub fn world_mesh_usage() -> bevy::asset::RenderAssetUsages {
+    if enabled() {
+        bevy::asset::RenderAssetUsages::MAIN_WORLD
+    } else {
+        bevy::asset::RenderAssetUsages::RENDER_WORLD
+    }
+}
+
 pub struct NativePlugin;
 
 #[cfg(not(target_os = "macos"))]
@@ -44,11 +55,11 @@ mod imp {
     use super::*;
     use crate::impostors::ImpostorMaterial;
     use bevy::camera::visibility::{InheritedVisibility, RenderLayers};
-    use bevy::tasks::AsyncComputeTaskPool;
     use bevy::window::{PrimaryWindow, RawHandleWrapper};
     use ed_metal::world::{Blend, DrawItem, FrameParams, MeshPrep, WorldRenderer, prep};
+    use ed_runtime::jobs::JobPool;
     use raw_window_handle::RawWindowHandle;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, VecDeque};
     use std::time::Instant;
 
     /// Hand the baked impostor atlas to the Metal renderer once it exists.
@@ -124,10 +135,14 @@ mod imp {
         shot_done: Option<u64>,
         ground_sent: bool,
         clouds_failed: bool,
-        prep_tx: crossbeam_channel::Sender<(u64, MeshPrep)>,
-        prep_rx: crossbeam_channel::Receiver<(u64, MeshPrep)>,
-        /// Mesh ids whose off-thread prep is in flight.
-        prepping: std::collections::HashSet<u64>,
+        /// Off-thread mesh prep on its own workers (priority + cancellation).
+        prep_pool: JobPool<u64, MeshPrep>,
+        /// Prep results waiting for a per-frame upload slice.
+        prepped: VecDeque<(u64, MeshPrep)>,
+        /// Meshes sitting in `prepped` (or in flight) so the mirror never re-requests them.
+        prepped_ids: std::collections::HashSet<u64>,
+        /// Reverse id map, so preps for despawned meshes can be dropped.
+        gid_asset: HashMap<u64, AssetId<Mesh>>,
         /// Mesh ids whose prep produced nothing (missing attributes); never re-requested.
         prep_failed: std::collections::HashSet<u64>,
         /// Whether the ocean FFT ran last frame (for the log line).
@@ -136,7 +151,6 @@ mod imp {
 
     impl Default for NativeState {
         fn default() -> Self {
-            let (prep_tx, prep_rx) = crossbeam_channel::unbounded();
             Self {
                 renderer: None,
                 tried: false,
@@ -153,11 +167,12 @@ mod imp {
                 shot_done: None,
                 ground_sent: false,
                 clouds_failed: false,
-                prepping: std::collections::HashSet::new(),
+                prep_pool: JobPool::new("mesh-prep", prep_permits()),
+                prepped: VecDeque::new(),
+                prepped_ids: std::collections::HashSet::new(),
+                gid_asset: HashMap::new(),
                 prep_failed: std::collections::HashSet::new(),
                 ocean_fft: false,
-                prep_tx,
-                prep_rx,
             }
         }
     }
@@ -168,40 +183,12 @@ mod imp {
     const UPLOAD_BUDGET: usize = 48;
     const HIDDEN_UPLOAD_BUDGET: usize = 16;
 
-    /// How many mesh preps may run at the same time. Each prep builds a cluster grid and three
-    /// decimation levels for one mesh, which is seconds of CPU for a big city tile. Unbounded
-    /// concurrency filled every core and starved the main thread: the framerate fell to single
-    /// digits while a city streamed in, which is what "worse and worse framerate" looked like.
-    /// `EW_PREP_JOBS` overrides the default.
+    /// How many mesh prep workers run at the same time. Each prep builds a cluster grid and
+    /// three decimation levels for one mesh, which is seconds of CPU for a big city tile.
+    /// A dedicated pool (instead of the shared async pool + a blocking gate) keeps prep from
+    /// starving detail builds and the main thread. `EW_PREP_JOBS` overrides the default.
     fn prep_permits() -> usize {
         std::env::var("EW_PREP_JOBS").ok().and_then(|v| v.parse().ok()).unwrap_or(2).clamp(1, 8)
-    }
-
-    fn prep_gate() -> &'static (std::sync::Mutex<usize>, std::sync::Condvar) {
-        static GATE: std::sync::OnceLock<(std::sync::Mutex<usize>, std::sync::Condvar)> = std::sync::OnceLock::new();
-        GATE.get_or_init(|| (std::sync::Mutex::new(prep_permits()), std::sync::Condvar::new()))
-    }
-
-    /// Block until a prep slot is free, run `f`, release the slot.
-    fn with_prep_slot<T>(f: impl FnOnce() -> T) -> T {
-        let (lock, cv) = prep_gate();
-        let mut left = {
-            let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
-            while *g == 0 {
-                g = cv.wait(g).unwrap_or_else(|e| e.into_inner());
-            }
-            *g -= 1;
-            *g
-        };
-        let out = f();
-        {
-            let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
-            *g += 1;
-            left = *g;
-        }
-        cv.notify_one();
-        let _ = left;
-        out
     }
 
     /// Replaces `render_scale::sync_cameras` while native: 3D camera off, UI camera owns the window.
@@ -264,6 +251,7 @@ mod imp {
         gfx: Res<crate::menu::GraphicsSettings>,
         items: Query<(&Mesh3d, &GlobalTransform, &InheritedVisibility, Option<&MeshMaterial3d<StandardMaterial>>, Option<&bevy::mesh::MeshTag>, Has<MeshMaterial3d<crate::ground_material::TerrainMaterial>>, Has<bevy::light::NotShadowCaster>, Has<crate::boot_plume::PlumeMesh>, Has<crate::body::WingMesh>, Option<&MeshMaterial3d<crate::foliage::FoliageMaterial>>, Option<&MeshMaterial3d<crate::ground_material::ScatterMaterial>>, Has<MeshMaterial3d<ImpostorMaterial>>, Option<&RenderLayers>, Has<crate::streaming::TerrainShadowProxy>), (Without<MeshMaterial3d<crate::clouds::CloudMaterial>>)>,
     ) {
+        let frame_t0 = Instant::now();
         let st = &mut *st;
         let headless = cfg.headless;
         let window = windows.single().ok();
@@ -289,14 +277,61 @@ mod imp {
         }
         let Some(r) = st.renderer.as_mut() else { return };
         let r = &mut *r;
-        // Off-thread mesh prep results land here: buffers now, so earlier frames' requests are ready.
-        while let Ok((gid, p)) = st.prep_rx.try_recv() {
-            if p.data.is_empty() || p.idx.is_empty() {
-                st.prep_failed.insert(gid);
+        // Off-thread mesh prep results land here. Only a byte-bounded slice becomes
+        // buffers per frame: a burst of finished city meshes used to upload in one
+        // frame and stall it for hundreds of milliseconds. `EW_UPLOAD_MB` overrides.
+        while let Some((gid, p)) = st.prep_pool.try_recv() {
+            match p {
+                Some(p) if !p.data.is_empty() && !p.idx.is_empty() => {
+                    if st.prepped_ids.insert(gid) {
+                        st.prepped.push_back((gid, p));
+                    }
+                }
+                _ => { st.prep_failed.insert(gid); }
             }
-            r.upload_prepped(gid, p);
-            st.prepping.remove(&gid);
         }
+        // Build workers hand over already-prepared tile meshes: the mirror never copies
+        // their attributes on the main thread (that was the load-phase stall).
+        mgr.drain_preps(|aid, prep| {
+            let Some(p) = prep else { return };
+            let gid = *st.ids.entry(aid).or_insert_with(|| {
+                st.next_id += 1;
+                st.next_id
+            });
+            st.gid_asset.insert(gid, aid);
+            if st.prepped_ids.insert(gid) {
+                st.prepped.push_back((gid, p));
+            }
+        });
+        let upload_t0 = Instant::now();
+        let up_budget = std::env::var("EW_UPLOAD_MB").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(24) * (1 << 20);
+        let up_max = std::env::var("EW_UPLOAD_MAX").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(8);
+        let mut up_spent = 0usize;
+        let mut up_count = 0usize;
+        while up_count < up_max {
+            let Some((gid, p)) = st.prepped.pop_front() else { break };
+            st.prepped_ids.remove(&gid);
+            let alive = st.gid_asset.get(&gid).is_some_and(|a| meshes.contains(*a));
+            if !alive {
+                continue; // mesh despawned (retired tile / fast travel): drop the prep
+            }
+            // Heuristic bytes touched by `upload_prepped`: vertex data is copied twice
+            // (raw + cluster-interleaved), plus the index lists.
+            let bytes = (p.data.len() * 2 + p.idx.len() + p.pidx.len()) * 4;
+            if up_spent > 0 && up_spent + bytes > up_budget {
+                st.prepped.push_front((gid, p));
+                st.prepped_ids.insert(gid);
+                break;
+            }
+            up_spent += bytes;
+            up_count += 1;
+            crate::probes::add_upload_stat(bytes);
+            r.upload_prepped(gid, p);
+        }
+        crate::probes::add_upload(upload_t0.elapsed());
+        let (pq, pr) = st.prep_pool.load();
+        crate::probes::set_prepq(pq + pr);
+        crate::probes::set_readyq(st.prepped.len());
         if !st.ground_sent && std::env::var_os("EW_NATIVE_NOGROUND").is_none() {
             if let Some(g) = crate::ground_material::GROUND_CPU.get() {
                 let al: Vec<&[u8]> = g.albedo.iter().map(|v| v.as_slice()).collect();
@@ -432,6 +467,7 @@ mod imp {
                 st.next_id += 1;
                 st.next_id
             });
+            st.gid_asset.insert(id, m3.0.id());
             // Dynamic meshes (the boot plume) are rebuilt on the CPU every frame: re-upload each time
             // and skip the draw while they are empty.
             if dynamic && meshes.get(&m3.0).is_none_or(|m| m.indices().is_none_or(|i| i.is_empty())) {
@@ -441,7 +477,7 @@ mod imp {
                 // Static meshes stream in on a worker (see `drain_preps`); request at most the
                 // budget per frame. Tiles stage hidden first, so most requests happen before
                 // reveal and cost nothing at the reveal frame.
-                let queued = !dynamic && (st.prepping.contains(&id) || st.prep_failed.contains(&id));
+                let queued = !dynamic && (st.prep_pool.contains(&id) || st.prepped_ids.contains(&id) || st.prep_failed.contains(&id));
                 if queued || uploads >= if vis_ok { std::env::var("EW_UPLOAD_BUDGET").ok().and_then(|v| v.parse().ok()).unwrap_or(UPLOAD_BUDGET) } else { std::env::var("EW_HIDDEN_UPLOAD_BUDGET").ok().and_then(|v| v.parse().ok()).unwrap_or(HIDDEN_UPLOAD_BUDGET) } {
                     continue;
                 }
@@ -463,14 +499,11 @@ mod imp {
                 if dynamic {
                     r.upload(id, pos, &nor, &uv, &col, &idx);
                 } else {
-                    st.prepping.insert(id);
-                    let tx = st.prep_tx.clone();
                     let pos = pos.to_vec();
-                    AsyncComputeTaskPool::get().spawn(async move {
-                        let p = with_prep_slot(|| prep(&pos, &nor, &uv, &col, &idx));
-                        let _ = tx.send((id, p));
-                    })
-                    .detach();
+                    // Visible meshes prepped before hidden staging ones.
+                    st.prep_pool.submit(id, if vis_ok { 0.0 } else { 1_000.0 }, move || {
+                        prep(&pos, &nor, &uv, &col, &idx)
+                    });
                 }
                 uploads += 1;
             }
@@ -609,12 +642,25 @@ mod imp {
             r.render(&fp, &st.draw_scratch);
         }
 
+        // Free retired meshes a slice at a time (2 ms/frame), so a fast travel does not release
+        // a whole city's buffers in one frame. Cheap: one map walk per frame.
+        {
+            let live: std::collections::HashSet<u64> = meshes.iter().filter_map(|(id, _)| st.ids.get(&id).copied()).collect();
+            r.retain_meshes_timed(|k| live.contains(&k), 2);
+        }
+        crate::probes::add_native(frame_t0.elapsed());
         st.frame += 1;
         st.frames_since_report += 1;
-        if st.frame % 240 == 0 {
+        // Every 60 frames (not 240): after a fast travel the old city's prep queue must stop
+        // costing CPU within a couple of seconds, and the retain itself is cheap.
+        if st.frame % 60 == 0 {
             let live: std::collections::HashSet<u64> = meshes.iter().filter_map(|(id, _)| st.ids.get(&id).copied()).collect();
-            r.retain_meshes(|k| live.contains(&k));
             st.ids.retain(|k, _| meshes.contains(*k));
+            // Fast travel / tile retire: drop prep work for meshes that are gone.
+            st.prep_pool.retain_queued(|g| live.contains(g));
+            st.prepped.retain(|(g, _)| live.contains(g));
+            st.prepped_ids.retain(|g| live.contains(g));
+            st.gid_asset.retain(|g, _| live.contains(g));
             if let Some(pool) = &sat {
                 let live: std::collections::HashSet<u64> = pool.cpu.values().flat_map(|v| [(1u64 << 40) | v.0, (1u64 << 41) | v.0]).collect();
                 let used: std::collections::HashSet<u64> = st.tex_ids.values().copied().collect();

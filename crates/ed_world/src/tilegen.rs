@@ -57,6 +57,8 @@ pub struct TileBuild {
     /// Distant building versions, one per detail chunk (always shown unless
     /// the chunk's full-detail version is loaded).
     pub building_lod: Vec<((u8, u8), BuildingMeshes)>,
+    /// Far massing (extruded footprints + flat roofs) for tiles past `FAR_LOD_M`.
+    pub building_far: MeshData,
     /// Inputs for building full-detail chunks on demand near the player.
     pub building_detail: Option<Arc<DetailSet>>,
     /// Trees and shrubs: per-chunk far-LOD meshes + instances for near detail.
@@ -392,6 +394,7 @@ pub fn build(job: &TileJob) -> TileBuild {
         water: MeshData::default(),
         roads: MeshData::default(),
         building_lod: Vec::new(),
+        building_far: MeshData::default(),
         building_detail: None,
         trees: trees::TileTrees::default(),
         rocks: MeshData::default(),
@@ -511,6 +514,7 @@ pub fn build(job: &TileJob) -> TileBuild {
             let mut lod: Vec<((u8, u8), BuildingMeshes)> = chunks.iter().map(|(c, v)| (*c, buildings::build_lod(v.iter(), up))).collect();
             lod.sort_by_key(|(c, _)| *c);
             out.building_lod = lod;
+            out.building_far = buildings::build_massing(chunks.values().flatten(), up);
             out.building_detail = Some(Arc::new(DetailSet {
                 ctx: buildings::DetailCtx { proj, grid: grid.clone(), roads: r.centerlines.clone() },
                 chunks,
@@ -558,6 +562,7 @@ pub fn build(job: &TileJob) -> TileBuild {
             let mut lod: Vec<((u8, u8), BuildingMeshes)> = chunks.iter().map(|(c, v)| (*c, buildings::build_lod(v.iter(), up))).collect();
             lod.sort_by_key(|(c, _)| *c);
             out.building_lod = lod;
+            out.building_far = buildings::build_massing(chunks.values().flatten(), up);
         }
         if tile.z >= 10 {
             let occ = foliage::Occupancy::from_vector(vt, 512);

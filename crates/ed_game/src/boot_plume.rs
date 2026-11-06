@@ -117,7 +117,7 @@ fn particle_texture() -> Image {
         TextureDimension::D2,
         data,
         TextureFormat::Rgba8UnormSrgb,
-        crate::native::mesh_usage(),
+        crate::native::world_mesh_usage(),
     );
     img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor::linear());
     img

@@ -1,3 +1,11 @@
+## 2026-11-06: restore satellite texture on the menu globe
+- The native-only mesh-usage optimization was applied to the shared `meshconv::to_mesh`, so the
+  menu globe's satellite tiles stayed in the main world while its Bevy camera rendered from the
+  render world. The globe showed only the blue base sphere and polar caps.
+- The globe and polar caps now use `meshconv::to_bevy_mesh`, which explicitly keeps those meshes in
+  `RenderAssetUsages::RENDER_WORLD`. Native-mirrored world meshes keep the main-world-only path.
+- Needs Mac check: the main menu and pause map show satellite imagery at whole-Earth and regional zoom.
+
 ## 2026-11-06: city performance is BAD right now (status marker, no code change)
 - **City performance is currently bad.** Recorded plainly so nobody reads the older "35-44 fps
   after the shadow fix" line and assumes the city is fine.
@@ -697,3 +705,91 @@ the per-building ranges to survive the tile merge, which the merged mesh does no
 
 Switches: `EW_LOD_PROXY=0` builds no LOD levels (full geometry everywhere), `EW_LOD_USE=0`
 builds them but never uses them.
+## 2026-11-06: city loading reworked — dedup, build-time prep, budgeted uploads, scaler recycle
+- **Symptom.** Dropping into Shibuya: fine for ~4 s, then frozen. Measured headless at 1600x900,
+  street level: frames of 0.3-3.3 s through the load, `gpu_wait` up to 1.5 s, and an abort
+  ~150 s into every session (`MTLReportFailure` -> `GPU::ANERegionCallOpHandler`, SIGABRT).
+- **The upload queue was re-requesting the same meshes every frame.** Once a prep finished but
+  had not uploaded yet, it left the prep pool, so the mirror saw "not ready" and requested it
+  again. The ready queue grew to 9,000 entries and uploaded the same city over and over.
+  Fixed with an explicit `prepped_ids` set. Ready queue is now ~200-700 entries at peak.
+- **Mesh prep moved to the tile build workers** (`prep()` on `ed_world::MeshData`, results ride
+  the `BuildingBatch`/`ReadyTile` to the main thread). The mirror used to clone up to 64 newly
+  seen meshes' attributes per frame on the main thread (tens of MB each); that copy is gone.
+  Detail chunks and per-chunk LOD batches use the same path.
+- **Prep got its own `JobPool`** (2 threads, `EW_PREP_JOBS`) with priorities and cancellation,
+  instead of `AsyncComputeTaskPool` tasks that each blocked a pool thread on a condvar gate.
+- **Uploads are budgeted** (`EW_UPLOAD_MB`=24 MB, `EW_UPLOAD_MAX`=8 meshes per frame) and preps
+  for despawned meshes are dropped by asset liveness. A burst of finished city meshes can no
+  longer upload in one frame.
+- **Retirement is budgeted** (`EW_RETIRE_PER_FRAME`=3): the despawn storm after an origin jump
+  is spread over frames. Prep queue pruning runs every 60 frames (was 240), so fast travel stops
+  paying for the old city within a couple of seconds.
+- **No wgpu copy of world meshes under native** (`native::world_mesh_usage()` = `MAIN_WORLD`).
+  Every tile mesh was being extracted and uploaded into Bevy's render world as well as the Metal
+  renderer, duplicating memory and upload bandwidth; the 3D camera is off under native.
+- **MetalFX temporal scaler is recycled** every 90 s (`EW_NATIVE_FX_RECYCLE`). The scaler runs an
+  MPSGraph/ANE executable per frame on this machine and aborts ~150 s after creation, at a frame
+  count that varies with fps (1028 at 7 fps, 325 at 2 fps) — so it is time-based, not a leak of
+  frames. `autoExposureEnabled` is false by default per the macOS 27 SDK, so the earlier
+  auto-exposure switch never addressed this. Recreating the effect resets the model instance:
+  a 240 s Shibuya run with MetalFX on and recycling had zero ANE failures.
+- **Measured (headless 1600x900, M3 Pro).**
+  - Full-res, no scaler: steady **26-27 fps**, GPU-bound (`gpu_wait` 29 ms; world 26 ms,
+    shadow5 8-14 ms, shadow4 6-11 ms, resolve 5.6 ms, water 4 ms). Load-to-steady ~45 s at
+    ~11-13 fps average.
+  - MetalFX 0.67 + recycle: steady 26.7 fps, load ~45-80 s, no crash in 240 s.
+  - Metal buffer micro-benchmark (`cargo run --release -p ed_metal --example bufbench`):
+    `newBufferWithBytes` 128 MB = 9 ms idle (13.5 GB/s), 45 ms under load (2.8 GB/s);
+    single uploads in-game still spike to 500 ms for 27 MB (allocation, not copy bandwidth).
+  - Fast travel (Shibuya -> Midtown at t=60 s): before these changes **9.5 s freeze**, then
+    1-4 fps for ~40 s, back to 26-31 fps at t=136 (76 s to recover). After: worst frame
+    **5.0 s**, recovery **~8 s** (h4) / **~2 s** when hopping at t=45 (h5). The remaining spike
+    is the one-frame despawn/asset-free flush when ~130 tiles go at once; the retire loop itself
+    is 0.05-0.03 s and the rebase moves statics in <30 ms (`apply_anchors` warning if it ever
+    exceeds 30 ms). Old tiles now retire immediately on an origin jump (they are off-screen)
+    instead of 3 per frame, which is what shortened the transition.
+- **Still the load bottleneck:** a city load uploads GBs of building vertex data (z14 tiles out
+  to ~16 km, each merged tile mesh 6-74 MB). Options measured/estimated: per-building far LOD
+  (`docs/plans/far-buildings-and-nanite.md`) is the real cut; vertex compression (colours
+  4xf32 -> 4xu8, normals -> oct f16: 48 B -> 28 B per vertex, ~-42 %) is contained; a mesh arena
+  would remove the allocation spikes.
+- **Tooling added:** `perf.csv` now has `apply_ms,retire_ms,native_ms,upload_ms,prepq,readyq,
+  uploaded,up_mb`; `EW_HOP="t:lat:lon,..."` scripts fast travels in headless runs; `bufbench`
+  example; `EW_UPLOAD_DBG=1` logs slow single uploads.
+- Needs Mac check: windowed fps after the load (headless includes a readback), and that fast
+  travel still lands on the ground in the real game.
+
+## 2026-11-06: loading screen for spawns and fast travel
+- New `loading.rs`: a full-screen overlay (place name, thin progress bar, status line) shown from
+  the moment a spawn/teleport lands until **all wanted tiles are in and the native upload queue
+  is empty**, or `EW_LOAD_TIMEOUT` (25 s) passes. While it is up the player/camera is held at the
+  drop point, so the skydive starts over a finished city instead of freezing mid-fall.
+- Progress is the in-view tile fraction; the status switches to "Finishing geometry" while the
+  upload queue drains. Minimum on-screen time 0.6 s, 0.35 s fade-out.
+- Verified headless (Shibuya spawn): begins with the place name, releases after 18.5 s at
+  "100% tiles, 0 queued - ready". Hidden for `--screenshot` unless `EW_LOAD_SHOT=1`.
+- `Arrived` now carries a spawn serial and `SpawnSerial` keeps the last one (the menu consumes
+  `Arrived`), so the overlay triggers on both menu spawns and map teleports.
+
+## 2026-11-06: far-building massing LOD (tier 2) + load is build-bound, not upload-bound
+- `ed_world::buildings::build_massing()`: each building becomes its footprint extruded to the
+  eaves plus a flat roof cap, in one vertex-coloured mesh per tile. Tiles farther than
+  `EW_FAR_LOD_M` (3500 m) upload and draw this instead of the full tile LOD; crossing inward
+  (`EW_UPGRADE_PER_FRAME`=2) swaps to the full buckets. The full buckets are kept un-uploaded in
+  `TileManager::deferred` until then, and the tile's collider is still the full one.
+- Measured on a Shibuya load: 120 of 132 tiles were far, and their massing came to **5.0 M
+  triangles instead of ~94 M** (near tiles: 9.3 M full). Distant buildings read as plain boxes
+  with flat roofs at 3.5-16 km; near buildings are unchanged (screenshot checked from 800 m).
+- Far massing meshes skip the meshopt LOD passes (`ed_metal::world::prep_flat`); running the
+  normal `prep()` on a >40k-triangle massing mesh was spending seconds per tile and made the
+  load slower at first.
+- **The load is now CPU tile-build bound, not upload bound.** With the dedup fix in place, a
+  full city load uploads ~4.8 GB of buffers in **1.5 s of main-thread time** (96 uploads,
+  `EW_UPLOAD_DBG`), while the 132 tiles take ~20 s to generate on 8 build threads. Cutting
+  geometry further will not shorten the load; the levers are a built-tile disk cache, more build
+  threads, or a smaller z14 radius.
+- Loading screen now starts at spawn-request time and releases when the wanted tiles and the
+  upload queue are done (~19 s in the same run).
+- Switches: `EW_FAR_LOD_M`, `EW_UPGRADE_PER_FRAME`, `EW_FAR_DBG`.
+
