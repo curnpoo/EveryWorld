@@ -59,13 +59,15 @@ pub fn build_v2(
     }
     let t1 = std::time::Instant::now();
     let gfn = ground::load(cache, tile, wm);
+    let inferred = if infer::enabled() { infer::infer_bridges(&mut net, &*gfn) } else { 0 };
     let t2 = std::time::Instant::now();
     let solved = solve::solve(&net, &*gfn);
     if std::env::var_os("EW_ROAD_TALLY").is_some() {
         eprintln!(
-            "  ROADTIME net={:?} ground_load={:?} solve={:?}",
+            "  ROADTIME net={:?} ground+infer={:?} (inferred bridges {}) solve={:?}",
             t1 - t0,
             t2 - t1,
+            inferred,
             t2.elapsed()
         );
     }
@@ -87,6 +89,7 @@ pub fn force_v2(v: Option<bool>) {
 }
 
 pub mod ground;
+pub mod infer;
 pub mod junction;
 pub mod keepout;
 pub mod marks;
