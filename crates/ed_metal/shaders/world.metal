@@ -185,7 +185,9 @@ float3 shade_ex(VOut in, float4 base, bool front, constant FrameU& F, constant D
         float3 up = mix(float3(ul), upr, 0.45) * 1.0;
         float3 ground = float3(0.34, 0.31, 0.27) * day * (0.5 + 0.5 * L.y);
         float3 amb = mix(ground, up, N.y * 0.5 + 0.5);
-        { float pvis; float3 pbn; float pw = probe_gi(in.wpos, N, F, pv, pvis, pbn); amb = mix(amb, amb * pvis + up * pbn, pw); }
+        float pvis; float3 pbn;
+        float pw = probe_gi(in.wpos, N, F, pv, pvis, pbn);
+        amb = mix(amb, amb * pvis + up * pbn, pw);
         float3 R = reflect(-V, N);
         float gloss = (1.0 - rough) * (1.0 - rough) * mix(0.35, 1.0, metal);
         float3 env = mix(amb, sky_rad(R, L, day), gloss);
@@ -197,6 +199,14 @@ float3 shade_ex(VOut in, float4 base, bool front, constant FrameU& F, constant D
         if (F.params.w > 0.5) {
             int m = int(F.params.w + 0.5);
             if (m == 18) return float3(dot(diffuse_indirect, float3(0.2126, 0.7152, 0.0722)));
+            if (m == 19) return float3(pw);
+            if (m == 20) return float3(pvis);
+            if (m == 21) return float3(dot(pbn, float3(0.2126, 0.7152, 0.0722)));
+            if (m == 22 || m == 23) {
+                float3 du = (in.wpos - F.pb0.xyz) * F.pb1.xyz - 0.5;
+                float3 de = (0.5 - abs(du)) / float3(0.06, 0.02, 0.06);
+                return m == 22 ? float3(saturate(min(de.x, de.z))) : float3(saturate(de.y));
+            }
             if (m == 1) return N * 0.5 + 0.5;
             if (m == 2 || m >= 6) return float3(vis);
             if (m == 3) return ambient;

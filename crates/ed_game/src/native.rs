@@ -96,7 +96,18 @@ mod imp {
         *last = Some(live);
         let texels: Vec<u16> = vol.texels.iter().flat_map(|t| t.iter().map(|c| crate::probe_gi::f32_to_f16(*c))).collect();
         let c = live.0;
-        info!("native: probe GI volume uploaded {:?} k={:.2}", vol.dims(), gi.bounce_k);
+        let mut vis = (1.0f32, 0.0f32);
+        let mut bounce = (f32::MAX, 0.0f32);
+        for p in &vol.probes {
+            for face in p.faces {
+                vis.0 = vis.0.min(face[3]);
+                vis.1 = vis.1.max(face[3]);
+                let b = face[0].max(face[1]).max(face[2]);
+                bounce.0 = bounce.0.min(b);
+                bounce.1 = bounce.1.max(b);
+            }
+        }
+        info!("native: probe GI volume uploaded {:?} k={:.2} vis {:.2}..{:.2} bounce {:.2}..{:.2}", vol.dims(), gi.bounce_k, vis.0, vis.1, bounce.0, bounce.1);
         r.upload_probe_volume(vol.dims(), &texels, (c + vol.box_min).to_array(), (c + vol.box_max).to_array());
     }
 

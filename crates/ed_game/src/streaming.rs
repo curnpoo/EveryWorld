@@ -709,7 +709,9 @@ fn select_tiles(
         if std::env::var_os("EW_KEEP_TILES").is_none() && !visible && d > OFFSCREEN_PREBUILD {
             continue;
         }
-        let far_lod = cam.distance_to(t.center()) > far_lod_m();
+        // 0 (or negative) disables the far massing LOD entirely; it must not mean "every tile is far".
+        let far_m = far_lod_m();
+        let far_lod = far_m > 0.0 && cam.distance_to(t.center()) > far_m;
         // `EW_CHEAP_FAR=1` also skips trees/props/rocks when building far tiles (A/B switch).
         let cheap_far = far_lod && std::env::var_os("EW_CHEAP_FAR").is_some();
         let job = TileJob { tile: *t, frame: origin.frame, cache: cfg.cache.clone(), vector_template: mgr.template.clone(), far: cheap_far };

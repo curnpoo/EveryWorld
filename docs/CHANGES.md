@@ -916,10 +916,14 @@ builds them but never uses them.
 - **Adaptive build concurrency** (`JobPool::set_limit`, `EW_BUILD_LIMIT_MOVING`=2): the tile build
   pool runs all threads while the camera is still (fast load) and only 2 while it is turning or
   moving, so the main thread keeps its frame rate. This is the rotation fix.
-- **Far massing LOD is a net loss as built**: its mesh has no spatial clusters (`prep_flat`), so
-  the whole tile is drawn un-culled. Static Shibuya: **42.2 fps with it off vs 24-28 with it on**,
-  and the far-to-full upgrade caused post-load upload spikes (~1 s/s). Default is now off
-  (`EW_FAR_LOD_M=0`); re-enable after making `prep` cluster the massing without meshopt.
+- **Far massing LOD: neutral at street level, but not the win it looked like.** Correction: an
+  earlier run quoted "42.2 fps with it off" — that was measured while `EW_FAR_LOD_M=0` still meant
+  "every tile is farther than 0", i.e. *all-massing*, not off. With the sentinel fixed
+  (`far_m > 0.0 && dist > far_m`), far-off is full geometry: ~25 fps steady (the 13 fps average in
+  that run was the post-load upload drain), while mixed (massing past 3.5 km) is 24-28 fps. So the
+  massing is roughly neutral for fps at street level; it cuts GPU memory/upload but adds the
+  far-to-full upgrade work. Default stays off until the massing is clustered (it currently draws
+  un-culled) and the upgrade is cheaper.
 - 8 km z14 floor (`EW_FINE_RANGE_M`): 112 vs 133 tiles, ~0.5 % pixels changed, +1.8 fps within
   noise — not worth changing the default. `EW_CHEAP_FAR=1` loses far trees for +1.6 fps; off.
 - Caveat: single runs per config; the 2-thread and adaptive numbers were repeatable, the

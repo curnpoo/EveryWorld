@@ -195,6 +195,11 @@ pub enum NativeDebugView {
     ShadowVisibility,
     AmbientGi,
     IndirectDiffuse,
+    ProbeWeight,
+    ProbeVisibility,
+    ProbeBounce,
+    ProbeXzCoverage,
+    ProbeYCoverage,
     CascadeTint,
     SunNdotL,
     Shadow0,
@@ -213,7 +218,12 @@ impl NativeDebugView {
             Self::Normals => Self::ShadowVisibility,
             Self::ShadowVisibility => Self::AmbientGi,
             Self::AmbientGi => Self::IndirectDiffuse,
-            Self::IndirectDiffuse => Self::CascadeTint,
+            Self::IndirectDiffuse => Self::ProbeWeight,
+            Self::ProbeWeight => Self::ProbeVisibility,
+            Self::ProbeVisibility => Self::ProbeBounce,
+            Self::ProbeBounce => Self::ProbeXzCoverage,
+            Self::ProbeXzCoverage => Self::ProbeYCoverage,
+            Self::ProbeYCoverage => Self::CascadeTint,
             Self::CascadeTint => Self::SunNdotL,
             Self::SunNdotL => Self::Shadow0,
             Self::Shadow0 => Self::Shadow1,
@@ -233,6 +243,11 @@ impl NativeDebugView {
             Self::ShadowVisibility => 2,
             Self::AmbientGi => 3,
             Self::IndirectDiffuse => 18,
+            Self::ProbeWeight => 19,
+            Self::ProbeVisibility => 20,
+            Self::ProbeBounce => 21,
+            Self::ProbeXzCoverage => 22,
+            Self::ProbeYCoverage => 23,
             Self::CascadeTint => 4,
             Self::SunNdotL => 5,
             Self::Shadow0 => 6,
@@ -252,6 +267,11 @@ impl NativeDebugView {
             Self::ShadowVisibility => "Shadow visibility",
             Self::AmbientGi => "Ambient + GI",
             Self::IndirectDiffuse => "Indirect diffuse (grey)",
+            Self::ProbeWeight => "Probe coverage",
+            Self::ProbeVisibility => "Probe visibility",
+            Self::ProbeBounce => "Probe bounce",
+            Self::ProbeXzCoverage => "Probe XZ coverage",
+            Self::ProbeYCoverage => "Probe Y coverage",
             Self::CascadeTint => "Cascade tint",
             Self::SunNdotL => "Sun N dot L",
             Self::Shadow0 => "Shadow map 0",
@@ -270,6 +290,11 @@ impl NativeDebugView {
             2 => Self::ShadowVisibility,
             3 => Self::AmbientGi,
             18 => Self::IndirectDiffuse,
+            19 => Self::ProbeWeight,
+            20 => Self::ProbeVisibility,
+            21 => Self::ProbeBounce,
+            22 => Self::ProbeXzCoverage,
+            23 => Self::ProbeYCoverage,
             4 => Self::CascadeTint,
             5 => Self::SunNdotL,
             6 => Self::Shadow0,
@@ -1628,12 +1653,13 @@ mod tests {
     #[test]
     fn native_debug_views_round_trip_to_shader_values() {
         let mut v = NativeDebugView::Off;
-        for _ in 0..14 {
+        for _ in 0..19 {
             v = v.next();
             assert_eq!(NativeDebugView::from_debug_value(v.value()), v);
         }
         assert_eq!(v, NativeDebugView::Off);
         assert_eq!(NativeDebugView::IndirectDiffuse.value(), 18);
+        assert_eq!(NativeDebugView::ProbeWeight.value(), 19);
         assert_eq!(NativeDebugView::Shadow4.value(), 16);
         assert_eq!(NativeDebugView::Shadow5.value(), 17);
     }
