@@ -6,9 +6,17 @@
 //! Input format (little endian): "EWB1"/"EWL1", u32 vertex count, u32 index count, then
 //! positions (3 f32), normals (3 f32), colours (4 f32) per vertex, then indices (u32).
 
+#[cfg(target_os = "macos")]
 use ed_metal::world::prep;
+#[cfg(target_os = "macos")]
 use std::io::Write;
 
+// Mac-only dev tool (uses the Metal renderer). Non-macOS builds get an empty
+// main so `cargo test --workspace` still compiles this example.
+#[cfg(not(target_os = "macos"))]
+fn main() {}
+
+#[cfg(target_os = "macos")]
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let input = args.get(1).cloned().unwrap_or_else(|| "tile_lod.bin".into());
@@ -101,6 +109,7 @@ fn main() {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn write_obj(path: &std::path::Path, pos: &[[f32; 3]], idx: &[u32], error: Option<f32>) {
     let mut f = std::io::BufWriter::new(std::fs::File::create(path).expect("create obj"));
     if let Some(e) = error {

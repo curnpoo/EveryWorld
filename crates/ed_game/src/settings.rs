@@ -1,7 +1,9 @@
 //! Player settings that survive between sessions: audio mix, graphics
 //! toggles, mouse, cosmetics. Stored as JSON at
-//! `~/Library/Application Support/EveryWorld/settings.json` (macOS) or
-//! `$XDG_CONFIG_HOME/everyworld/settings.json`; `EW_SETTINGS=path` overrides.
+//! `~/Library/Application Support/EveryWorld/settings.json` (macOS),
+//! `%APPDATA%\EveryWorld\settings.json` (Windows), or
+//! `$XDG_CONFIG_HOME/everyworld/settings.json` (Linux);
+//! `EW_SETTINGS=path` overrides.
 //!
 //! Loaded at PreStartup, saved ~1 s after the last change (and on exit).
 //! Automated runs (`--screenshot`, `--perf`, `--headless`, `--lookdev`, or any
@@ -93,6 +95,14 @@ struct SavedGraphics {
 fn settings_path() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("EW_SETTINGS") {
         return Some(PathBuf::from(p));
+    }
+    // Windows: HOME/XDG are usually unset in cmd/PowerShell, so the fallback
+    // below would silently never persist. APPDATA is set for every
+    // interactive session (Roaming; survives roaming profiles).
+    if cfg!(target_os = "windows") {
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            return Some(PathBuf::from(appdata).join("EveryWorld").join("settings.json"));
+        }
     }
     let home = std::env::var_os("HOME").map(PathBuf::from);
     if cfg!(target_os = "macos") {
@@ -270,5 +280,25 @@ mod tests {
         write_atomic(&p, "{}").unwrap();
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "{}");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // The Windows body is compiled on every platform (cfg! is a runtime
+    // constant) so `cargo test` on macOS validates it too; it only RUNS on
+    // Windows CI, where HOME is often unset and the old code silently fell
+    // through to a .config path that never persisted.
+    #[test]
+    fn default_path_matches_platform() {
+        if std::env::var_os("EW_SETTINGS").is_some() {
+            return; // explicit override; nothing to assert
+        }
+        let Some(p) = settings_path() else {
+            return; // environment without HOME/APPDATA: nothing to assert
+        };
+        assert!(p.ends_with("settings.json"), "{p:?}");
+        if cfg!(target_os = "windows") {
+            let appdata = PathBuf::from(std::env::var_os("APPDATA").expect("APPDATA is set on Windows"));
+            assert!(p.starts_with(&appdata), "{p:?} not under {appdata:?}");
+            assert!(p.ends_with("EveryWorld/settings.json"), "{p:?}");
+        }
     }
 }

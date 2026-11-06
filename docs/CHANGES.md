@@ -1,3 +1,30 @@
+## 2026-11-06: Windows build/test groundwork (settings path, example gates, CI)
+- **Settings path:** on non-macOS the code fell through to `$HOME/.config`,
+  which plain Windows shells never set, so graphics/audio settings silently
+  never saved. Windows now uses `%APPDATA%\EveryWorld\settings.json`; the new
+  test compiles on every OS and asserts the APPDATA path when run on Windows.
+- **`ed_metal` examples gated to macOS** (`lod_dump`, `bufbench`): `cargo test`
+  compiles examples, and both used Metal APIs with no target gate - they would
+  have broken `cargo test --workspace` on Windows. Non-macOS now gets an empty
+  `main`, the same pattern the `ed_metal` bins already used.
+- **`docs/WINDOWS.md`:** one-time setup (rustup MSVC + VS Build Tools C++),
+  everyday commands, PowerShell versions of the GPU-adapter probe, screenshot
+  smoke test and six-scene perf battery (CSV summary in PowerShell, no Python),
+  plus a paste-back checklist for handing the run to a coding agent.
+- **CI** (`.github/workflows/ci.yml`): `cargo test --workspace --locked` on
+  `macos-latest` + `windows-latest` with a shared build cache - the first
+  red/green signal for a Windows compile before any local session.
+- **`.gitattributes`:** text stays LF in every checkout (Windows
+  `core.autocrlf` would otherwise CRLF-convert `.rs`/`.metal`/`.wesl`/`.sh` on
+  clone and churn diffs); binaries marked explicitly.
+- Audit: no Unix-only APIs in the crates; no test needs a GPU, window, network
+  or Node; `ring` needs no NASM on MSVC (pre-generated objects ship in the
+  crates.io package).
+- Needs checking on Windows: `cargo test --workspace` green, one
+  `cargo build --release`, one windowed run, one headless screenshot, the
+  six-scene perf battery, and the `GPU adapter` line (Dx12 or Vulkan) from
+  `docs/WINDOWS.md`.
+
 ## 2026-11-06: stop the menu globe flashing between fine and coarse tiles
 - Root cause: the globe restarted tile selection at `0.85` texels per pixel every frame, then
   multiplied density by `1.4` until it had at most 240 tiles. Around zoom 2.2 and while orbiting,

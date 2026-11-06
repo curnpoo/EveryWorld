@@ -1,0 +1,34 @@
+# Keep text files LF in the repo AND in every checkout. Windows Git defaults
+# (core.autocrlf=true) would otherwise convert these to CRLF on clone, which
+# churns every diff and breaks the bash tools when run from Git Bash.
+* text=auto
+
+*.rs text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+*.sh text eol=lf
+*.metal text eol=lf
+*.wesl text eol=lf
+*.ps1 text eol=lf
+*.py text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.lock text eol=lf
+*.csv text eol=lf
+
+# Batch files require CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary assets: never line-convert.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.bin binary
+*.wav binary
+*.mp3 binary
+*.ttf binary
+*.ktx2 binary
+*.trace binary

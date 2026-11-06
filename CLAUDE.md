@@ -32,6 +32,10 @@ cargo test -- --ignored         # hits real network
 cargo check --offline -p ed_game
 tools/shoot_places.sh OUT_DIR   # 6 reference scenes (Central Park, Zermatt, Aix, Marrakech, Shibuya, Manhattan)
 ```
+Windows (PowerShell): same `cargo` commands; setup, the screenshot/perf
+batteries and the agent checklist are in `docs/WINDOWS.md`. Set
+`$env:RUST_LOG = "info,wgpu=error,naga=warn,bevy_render=warn"` to see the
+`GPU adapter` line (Dx12 or Vulkan) and other info logs.
 Cache dir `.earthdrop-cache/` (tiles cached forever; gitignored). Dev profile: deps opt-level 3, own code 1.
 
 ## Crates (dependency order; all but ed_game are engine-free, unit-tested, thread-safe)

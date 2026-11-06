@@ -6,12 +6,23 @@
 //! Answers "how fast can we get mesh vertex data into a buffer on this GPU",
 //! which decides whether streaming uploads should be spread, staged, or cut.
 
+#[cfg(target_os = "macos")]
 use ed_metal::context::MetalContext;
+#[cfg(target_os = "macos")]
 use objc2_metal::*;
+#[cfg(target_os = "macos")]
 use std::ffi::c_void;
+#[cfg(target_os = "macos")]
 use std::ptr::NonNull;
+#[cfg(target_os = "macos")]
 use std::time::Instant;
 
+// Mac-only dev tool (Metal buffer upload benchmark). Non-macOS builds get an
+// empty main so `cargo test --workspace` still compiles this example.
+#[cfg(not(target_os = "macos"))]
+fn main() {}
+
+#[cfg(target_os = "macos")]
 fn main() {
     let ctx = MetalContext::new().expect("metal");
     println!("device: {}", ctx.name());

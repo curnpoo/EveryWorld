@@ -133,7 +133,7 @@ Goal: rocket to the Moon and beyond, with the same world rules (determinism plus
 
 Goal: ship beyond the dev Mac.
 
-1. **Windows:** D3D12 backend (native), DLSS and FSR3 through the upscaler interface, hardware ray tracing (RTX) through the acceleration-structure interface, perf gate on Windows. Target: 120 fps High on RTX 3060.
+1. **Windows:** D3D12 backend (native), DLSS and FSR3 through the upscaler interface, hardware ray tracing (RTX) through the acceleration-structure interface, perf gate on Windows. Target: 120 fps High on RTX 3060. Dev/test on Windows through the existing Bevy/wgpu path is already in place (CI on macOS + Windows, `docs/WINDOWS.md` with test batteries and an agent checklist, 2026-11-06); the native backend above is still this stage's job.
 2. **Mobile:** iOS first (shares the Metal backend; tile memory is the big win), then Android (Vulkan backend). Low-power tier with its own budget.
 3. macOS app bundle and signing.
 

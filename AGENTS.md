@@ -71,8 +71,18 @@ cargo test -- --ignored         # hits real network data sources
 cargo check --offline -p ed_game
 ```
 
-Cache: `~/Library/Caches/earthdrop` on macOS (override with
-`EARTHDROP_CACHE`). Tiles are cached forever; weather has a TTL.
+Windows (PowerShell; one-time setup, batteries and the agent checklist are in
+`docs/WINDOWS.md`):
+
+```powershell
+cargo test --workspace          # same suite; CI runs it on macOS + Windows
+cargo build --release           # -> target\release\earthdrop.exe
+cargo run --release -- --place "Zermatt"
+```
+
+Cache: `~/Library/Caches/earthdrop` on macOS, `%LOCALAPPDATA%\earthdrop` on
+Windows (override with `EARTHDROP_CACHE`). Tiles are cached forever; weather
+has a TTL.
 
 ---
 
@@ -308,6 +318,9 @@ artifacts as source.
   logic tests.
 - `cargo test --workspace` must stay fast and offline.
 - `#[ignore]` tests touch the network (`cargo test -- --ignored`).
+- Windows: the same `cargo test --workspace` (CI runs macOS + Windows on every
+  push). The `.sh` batteries are macOS-only; PowerShell versions of the
+  screenshot smoke and six-scene perf battery live in `docs/WINDOWS.md`.
 - Visual checks: `tools/shoot_places.sh OUT_DIR` (Central Park, Zermatt, Aix,
   Marrakech, Shibuya, Manhattan); `--lookdev` boards.
 - `--screenshot` may produce a black image in some two-camera/render-scale
