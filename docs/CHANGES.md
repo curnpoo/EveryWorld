@@ -1,3 +1,107 @@
+## 2026-11-06: city performance is BAD right now (status marker, no code change)
+- **City performance is currently bad.** Recorded plainly so nobody reads the older "35-44 fps
+  after the shadow fix" line and assumes the city is fine.
+- Measured today on the native Metal renderer, Shibuya at street level (35.6595 N, 139.7005 E),
+  2144x1206, headless:
+  - settled city: **27-32 fps, `gpu_wait` 20.8 ms**, 474 draws, 15.61 M triangles submitted;
+    world pass 14.8 ms (71%), water 5.2 ms (25%), shadows 4.08 ms.
+  - the ocean FFT costs a few ms of that (three 128^2 cascades evolved and inverse-FFT'd every
+    frame, 8 km from the sea). The earlier "4.8 ms, 23 % of the frame" figure does not survive
+    repetition (19.57 vs 19.71 ms best-of-three, inside the run-to-run noise), so treat it as
+    "a few ms", not a settled number.
+  - while the city streams: `gpu_wait` 93 -> 207 ms, 1639 shadow draws, 0 cascades cached -
+    every arriving tile invalidates all six cascades.
+  - the LOD fix stopped the towers shredding into sails but did not cut the triangle count:
+    23.4 M triangles at street level vs 26.9 M with the LOD off. In a city the triangles *are*
+    the buildings, and `meshopt` can only remove ~17 % of them within a sane error budget.
+- **Verdict: below the 30 fps floor in a city, and unplayable while the city loads.** The
+  6 reference scenes have not been re-measured since the shadow-cache and prep fixes, so the
+  baseline table (Stage A item 3.1) is still missing.
+- What has to happen before a city is called good again, in order:
+  1. Skip the ocean FFT when the camera's tile has no sea in it (`TileBuild::sea_fraction`) -
+     in a city that is a few ms for free.
+  2. Make the shadow cache survive streaming: a new tile must not invalidate all six cascades.
+  3. A per-building far LOD (merged footprints, then boxes) - the only thing that really cuts
+     the city's triangle count (`docs/plans/far-buildings-and-nanite.md`).
+  4. GPU-driven per-cluster culling (M2) - the renderer still submits per-tile merged geometry.
+- Needs Mac check: the numbers above are headless (they include a framebuffer readback);
+  re-measure windowed before quoting them.
+
+## 2026-11-06: ocean water: waves fade out with distance, the sea floor stops showing through, and the FFT only runs when the sea is near
+- The open sea no longer shows pale patches of sea floor through the water. The elevation data
+  clamps the ocean to 0 m and the tile builder carves it 2.5 m down, so the "sea floor" is a flat
+  plane a metre or two under the surface, shaded like a lake bed (mud and sand). The water was
+  shallow enough for it to show through. The global ocean surface is now marked separately from
+  lakes (`OCEAN_MARK`) and treated as deep water for the colour, while the shore logic still
+  uses the real depth. Lakes keep their shallow, transparent look.
+- Waves only matter within a couple of hundred metres, so the wave slope now fades out between
+  100 m and 400 m and the sea beyond that is a smooth sheet. The fade is wide on purpose: the
+  old cut was visible as a line where the flat ocean and the FFT water met, because the two
+  were a different colour.
+- Whitecaps were covering whole patches of the sea instead of the crests: the Jacobian test was
+  `smoothstep(0.35, 0.05)`, which catches a lot of ordinary wave. Now only genuinely folded
+  crests foam (`smoothstep(0.02, -0.25)`), at half the strength, and the foam fades with the
+  waves so the sea has one soft transition instead of two.
+- The sun's highlight was a solid pale patch up close, because the glitter that should break it
+  up only started at 120 m - exactly backwards, since the glitter's features go sub-pixel with
+  distance. It now breaks the highlight up near the camera and fades out where it would alias.
+- The ocean FFT (three 128^2 cascades evolved and inverse-FFT'd every frame) now only runs when
+  the camera's tile has real sea in it. The signal is the *area* of the tile at or below sea
+  level (`TileBuild.sea_fraction`), because the elevation data clamps the ocean to 0 m and the
+  height alone cannot tell the sea from a coastal plain. Measured: off in Shibuya, on at the
+  beach and over the open sea.
+- New switches: `EW_OCEAN_FFT=1/0` forces the FFT on or off (for A/B runs). The `native:` log
+  line now ends with `ocean fft on/off sea N%`.
+- Note on the numbers: an earlier claim that the FFT costs 4.8 ms of the city frame does not
+  survive repetition - three alternating runs of the forest scene with the FFT forced on and
+  off gave 19.57 ms and 19.71 ms at best, inside the run-to-run noise (19.6-32 ms in that
+  scene). The per-pass counters are not reliable enough to attribute milliseconds between
+  passes without repeated runs.
+- Needs checking on the Mac: the open sea (36.0, -123.5) and the beach (36.96, -122.02) at
+  `--hour 16`; the shoreline should be a clean foam line with no pale patches over the sand, and
+  the waves should be gone by a few hundred metres out.
+
+## 2026-11-06: docs only, voxel proxies + navara plan, and a measured cost breakdown
+- New plan `docs/plans/voxel-proxy-and-navara.md`: what is worth taking from MapLibre's
+  navara (read the occluder, spike PMTiles for pinned data versions, 3D Tiles/PLATEAU later)
+  and from a custom-engine post (CLODs, voxel far representation instead of impostors,
+  proxies without instance data). It also records where the frame time actually goes, measured
+  today on the native Metal renderer at 2144x1206.
+- Measured, settled city (Shibuya, street level): 27-32 fps, `gpu_wait` 20.8 ms, 474 draws,
+  15.61 M triangles submitted; world pass 14.8 ms (71%), water 5.2 ms (25%), shadows 4.08 ms.
+  The cost is the **ocean FFT**: three 128^2 cascades evolved and inverse-FFT'd every frame
+  (`ed_metal/src/ocean.rs`). With `EW_NATIVE_NOFFT=1`: 33-34 fps, `gpu_wait` 19.2 ms, shadows
+  1.83 ms, world 13.1 ms; with `EW_NATIVE_NOWATER=1`: 34 fps, `gpu_wait` 19.3 ms, shadows
+  0.61 ms. So the FFT compute costs ~4.8 ms (23% of the frame) in a city 8 km from the sea -
+  it is the compute stealing GPU throughput from the shadow cascades (-2.25 ms) and the main
+  pass (-1.7 ms), not the water shading. The ocean disc itself is already `NotShadowCaster`.
+- Measured, settled forest (Black Forest, alt 3000 m): 32-34 fps, `gpu_wait` 20.2 ms, world
+  10.6 ms, water 5.6 ms, shadows 0.46 ms (6/6 cached).
+- Measured, city while streaming: `gpu_wait` 93 -> 207 ms with 1639 shadow draws and 0 cached,
+  because every arriving tile invalidates all six cascades.
+- Measured, upstream: a z14 forest tile carries ~1.8 M rock/cliff triangles against 301 k of
+  terrain; the `TILESTAT` line does not print them.
+- Also found: `EW_BISECT=hide:bld` does nothing in native mode and `hide:std` can make the
+  frame slower; the bisect set assumes the Bevy renderer.
+- No code changed. Needs on the Mac: re-run the same numbers **windowed** (headless includes a
+  framebuffer readback), and check the ocean-FFT cost with the city and the lake/ocean scenes.
+
+## 2026-11-06: one chosen hour everywhere (3 pm default), map camera centred and less tilted
+- The game now has a *chosen local solar hour* (`GraphicsSettings::solar_hour`, default 15.0 = 3 pm) instead of "whatever hour the place you came from happened to have". The time slider, the +/- buttons and the in-game `[` `]` scrub set it; "Now" (live time) leaves it on real time.
+- Clicking a place on the map globe eases the clock so *that* place sees the chosen hour - the sun swings round to it on the globe - and the drop-in keeps the same hour. Before, a click copied the hour of wherever the globe was pointing (often the middle of the Atlantic), and the spawn then overwrote it again with the hour of the place you left, so the destination rarely landed on 3 pm.
+- A drop-in (`spawn.rs`) now sets the destination's clock to the chosen hour and clears a half-finished map ease, so the sky you land in is the sky you asked for. `--hour` and `--date` still win at startup.
+- `ed_geo::sun::unix_at_solar_hour` / `solar_hour` are the shared helpers for "UTC + lon/15" (used by the clock, the menu, the HUD, the clouds), with tests: 15:00 local solar puts the sun due west at ~47 deg on the equinox.
+- Menu map camera (`globe.rs`): the tilt towards the horizon is smaller (max 0.72 rad, was 0.95) and eases off again at the deepest zoom, where looking straight down reads better; zooming in now walks the view onto the spot under the cursor so the place you zoom into ends up in the middle of the screen; clicking a place also brings it to the middle of the view.
+- Needs Mac check: click Tokyo on the map and watch the sun swing to 3 pm over Japan; drop in and check the sun is high in the west; set the time to 1 am in the pause menu and click another place (it should be 1 am there); zoom the menu map in and check the tilt and the centring.
+
+## 2026-11-06: map search bar (place / state / region / address) + time-of-day ease
+- New search widget docked top-left of the menu map (`mapview.rs`): text field + orange "Search" button + status line, styled with the menu palette. Mouse-only: click the field to type, click elsewhere or Esc to let go (Esc while typing no longer closes the menu; `menu::open_pause` yields while the field holds the keyboard).
+- Backend: `ed_data::geocode::forward` — OSM Nominatim free-form search (countries, states/regions, towns, street addresses), English display names, one-month disk cache (`geocode/fwd2/<query>.json`). Falls back to the display name when `name` is a multilingual collection ("Schweiz / Suisse / …"). Span from the bounding box drives the destination zoom via `globe::zoom_for_span`.
+- Flow: search flies the globe to the result; a small map pin accelerates down onto the centre of the view (waits for the fly-to to centre first), then hands over to the normal click flow — highlight pin + the drop popup titled with the place name, so "Drop from the sky" / "Start on the ground" / "Cancel" work unchanged; the search name is carried into the spawn (arrival toast).
+- Clicking the field or button never lands a map pick (the globe's click filter now also excludes the search bar). Network test: `cargo test -p ed_data geocode -- --ignored`.
+- Time-of-day: searching or clicking on the globe eases the clock so the destination is in daytime (solar noon), so Japan is no longer dark every time; the search pin falls onto the centre of the view instead of drifting with the half-flown camera. The fly-to now waits until it has fully centred and zoomed before the pin drops, and runs slower (rotate + zoom in, ~4 s) for an aiming-then-descending feel. Driven by `MapState::time_target_offset` + `ease_map_time` (before `apply_graphics`); `GraphicsSettings::hour_offset_applied` replaces the old `Local` so the slider stays in sync.
+- Needs Mac check: type a country, a state and a street address; watch the pin land centred with the popup beside it; confirm daytime at the destination; Enter re-searches; Esc blurs then closes.
+
 # Changes
 
 ## 2026-11-06 (second pass): retaining walls, roof shapes, national markings, OSM tags, inferred bridges, measured heights
@@ -443,3 +547,153 @@ If something looks wrong, the pieces are separate commits (`dfa506c`, `0598c84`,
 
 - `streaming.rs`: the desired tile set is filtered against the camera's view cone before builds start. Superseded on Nov 4 by `ed_runtime::view` (height-aware) and the residency cap.
 - `sky.rs`, `hud.rs`: celestial body meshes and their HUD rings/labels appear only above 100 km altitude.
+
+## 2026-11-06: shadow deferral no longer fires on camera movement (flicker fix)
+
+- The far-cascade deferral (one of cascade 4/5 per frame) reused a shadow map computed for a
+  different camera position whenever the camera moved, which read as flicker/popping in the
+  4-20 km band during fly/vehicle motion. `ShadowCache` now stores the camera position it was
+  drawn for; a far cascade only defers when that position is unchanged (stationary camera, where
+  the sun is the only thing moving and the 1-frame staleness is invisible). Cascade 4 (mid, 4 km)
+  already refreshes every frame. Moving camera now does full far-cascade redraws (no flicker);
+  stationary scenes keep the amortisation.
+- Needs Mac check: fly through a valley at speed, shadows should track without shimmer; stationary
+  view keeps the `shadow draws N (+X cached, Y deferred)` line.
+
+## 2026-11-06: EW_KEEP_TILES + tunable upload budget
+
+- `EW_KEEP_TILES=1` disables tile-level streaming culling: every tile in the
+  lod radius is queued regardless of view cone, queued work is never cancelled,
+  and the resident cap becomes unlimited, so tiles stay loaded when you look
+  around. Object/building/ground-cover/tree frustum culling in the native
+  renderer is untouched. Combine with `EW_TILE_THREADS=4` for smoothness.
+- Upload budget now tunable via `EW_UPLOAD_BUDGET` / `EW_HIDDEN_UPLOAD_BUDGET`
+  (defaults 48 / 16, up from 24 / 8) to reduce LOD pop-in on the native path.
+
+## 2026-11-06: high-altitude terrain actually fills the view
+
+- `select_tiles` now caps the finest zoom by altitude (z14 below 15 km, z10 to 40 km,
+  z7 to 100 km, z5 to 200 km, z4 above) and zooms the root set out to match (z6..z2).
+  Before, altitude kept splitting to z6-z7 (~400 tiles) plus a z13 clump under the
+  nadir; those could never all build, so most of a high view was the empty sea globe.
+  Now 100 km yields a few dozen ~500 km tiles that cover the visible disc almost at
+  once (verified: 400 m town / 20 km relief / 100 km whole-disc screenshots).
+- Reverted the earlier attempt at this (altitude-gated 16 km detail rule + root-zoom
+  ramp) and the far-building 12-tri box LOD, which flattened whole terrain tiles.
+- Needs Mac check: fly up from Zermatt; terrain should stay filled from ground to
+  100 km with no bare sea-globe patches, and refine again on the way down.
+
+## 2026-11-06: higher-res satellite textures for coarse tiles (sharp from high up)
+
+- Coarse tiles carried a single 512px satellite texture over hundreds of km
+  (~1 km/texel), so they blurred quickly with altitude. Now the satellite mosaic
+  is a general NxN grid of the tile's descendants (`SurfaceMap::with_satellite_grid`)
+  and coarse tiles mosaic deeper: z<=6 -> 4x4 grandchildren at 1024px, z7-9 ->
+  2x2 children at 512px, z>=10 -> single 256px tile (`tilegen::sat_levels`).
+  Roughly doubles texel density exactly where it is needed (verified: sharp
+  ridgelines/snow from 60 km; ground level unchanged).
+- `SAT_CLASSES` retuned to the three sizes (1024/512/256; the vestigial 128 class
+  is gone) and `terrain.wesl` texel-remap constants updated to match. The native
+  renderer reads the real texture width, so it benefits without shader changes.
+- Memory: satellite arrays grow ~100 MB (1024 class is 16x per layer); tune
+  `SAT_CLASSES` layer counts if that matters. Beyond ~60 km the softness that
+  remains is aerial-perspective haze (fog), not texture resolution.
+- Needs Mac check: fly to 30-60 km (clear sky) and confirm the terrain stays
+  crisp; check ground level still shows satellite colour everywhere.
+
+## 2026-11-06: Shibuya crash fixed, and the city stops crawling
+
+Reported as "play in Shibuya: the framerate gets worse and worse, then the game
+crashes and is unusable". Three separate causes, all measured headless in
+Shibuya (35.6595 N, 139.7005 E) at street level, native Metal renderer:
+
+**1. The crash was MetalFX, not our code.** `~/Library/Logs/DiagnosticReports/
+earthdrop-2026-11-05-222253.ips` (the session that reported it) and
+`earthdrop-2026-11-06-005025.ips` (a fresh reproduction) are the same abort:
+`SIGABRT` -> `MTLReportFailure` -> `MPSGraph` ->
+`GPU::ANERegionCallOpHandler::encodeAsynchronousWithSharedEvents`, i.e. the
+MetalFX temporal scaler's **auto-exposure** path (the only part of it that runs
+on the Apple Neural Engine) trips a Metal assertion. Before that the process
+usually hangs first: the main thread sits in `MTLCommandBuffer
+waitUntilCompleted` while the Metal queue's dispatch thread is stuck inside
+`IOGPUCommandQueueSubmitCommandBuffers` - the app is frozen, not slow.
+`setAutoExposureEnabled(false)` now (the scaler runs with a fixed exposure);
+`EW_NATIVE_FX_AUTOEX=1` re-enables the old behaviour. 5+ minutes of street-level
+Shibuya after the fix: no abort, no hang.
+
+**2. The framerate collapse while the city streams in was CPU starvation.**
+`ed_metal::world::prep` (cluster grid + three decimation levels per streamed
+mesh) was the hottest function in the game, and it ran on the async compute pool
+with no limit, so every core was busy while the main thread tried to draw.
+- `simplify()` is now hash-free (sort + binary search instead of `HashMap` /
+  `HashSet`); it was the top of the stack in every profile.
+- Mesh preps are gated to `EW_PREP_JOBS` (default 2) at a time.
+- Effect on the load phase in Shibuya (1280x720, warm cache): 1-6 fps -> 14-25 fps.
+
+**3. Every shadow cascade was re-rasterised every frame.** The sun creeps by
+0.004 deg/s, but that was enough to change the light matrix and invalidate all
+six cascades: ~2800 shadow draw calls and ~30 ms of GPU per frame in a dense
+city, growing as the city streams in. A cascade now keeps its projection while
+the sun has moved less than `EW_SHADOW_SUN_EPS` (default 0.1 deg) and the
+quantised light-space box has not moved by more than a texel; the frozen
+projection is used for both drawing and sampling, so the shadows stay
+consistent (worst case the shadow of a 100 m tower is 17 cm out of date).
+Steady-state Shibuya: shadow GPU time 42 ms -> ~15 ms, shadow draws 2800 -> 300-600.
+
+**Instrumentation:** the native renderer now also reports `gpu_wait` (the wall
+time the GPU needed for the whole frame) and `cpu_encode` next to the per-pass
+GPU counters, so untimed work (clouds, post, MetalFX) is visible.
+
+- Needs Mac check: play Shibuya on foot; shadows should track the sun and not
+  lag or shimmer; the frame rate should hold while the city loads.
+
+## 2026-11-06: boot plume log spam gone
+
+- The boot plume entity starts with an empty mesh and is rewritten every frame; while the player
+  is not boosting, that mesh has no vertices, and Bevy extracts it anyway and warns
+  "Mesh contains no vertices" ~38 times a second. The plume is now hidden while its mesh is
+  empty (`hide_empty_plume` in `boot_plume.rs`). Same for the per-frame `IMPDBG` impostor
+  fingerprint dump, which printed three lines per frame and is gone.
+
+## 2026-11-06: the city LOD stopped shredding buildings (and how to look at it)
+
+**The glitch:** distant towers came out as sails of stretched triangles, and whole facades went
+missing (the user's screenshot, Central Park). It was the LOD proxy, not the roof generator and
+not the building data.
+
+**The cause:** the proxy was built by *vertex clustering* - every vertex snapped to an arbitrary
+neighbour in a grid cell (0.5 / 1.5 / 4 m). Flat walls do not survive that: each wall corner
+lands in its own cell and snaps to a different vertex, so the wall twists, and a wall is exactly
+what a tower is made of. At 700 m the twist is a few metres, which is the sail. The same proxies
+also fed the shadow cascades, so the shadows were cast by the twisted geometry too.
+
+**The fix:** the proxies are now proper simplifications. `ed_gpu::cluster::simplify_levels`
+welds the mesh (1 mm grid - the LOD geometry is a soup of quads with duplicated corners, and
+without welding a simplifier cannot collapse anything) and then simplifies it with `meshopt`
+under an absolute error budget (`LOD_ERRORS` in `ed_metal::world`, 1 / 8 / 32 m). `meshopt`
+collapses the edges that cost the least shape error, so walls stay flat and the silhouette
+survives. The levels are grouped into the same spatial cells as the full geometry, so the
+renderer still picks a level per cell.
+
+**Verified by looking at it** (new tools):
+- `cargo run --release -p ed_world --example dump_tile_lod -- <lat> <lon> /tmp/tile.bin`
+  dumps a real tile's building LOD.
+- `cargo run --release -p ed_metal --example lod_dump -- /tmp/tile.bin /tmp/lod_out` runs the
+  renderer's own preparation over it and writes each level as an OBJ.
+- `python3 tools/lod_sheet.py /tmp/lod_out /tmp/sheet.png` renders the levels side by side.
+
+**Numbers (NYC Midtown, street level, native renderer, 1280x720):**
+- Before: towers shredded from ~150 m outwards, 15.0 M triangles drawn, 40 fps.
+- After: the LOD render is pixel-identical to the full geometry (0 pixels differ by more than
+  40/765 over the whole frame), 23.4 M triangles, 32 fps.
+- With the LOD off: 26.9 M triangles, 25 fps - so the LOD is still worth ~30 %.
+- Shibuya at street level: 29-41 fps, 31 M triangles, buildings clean.
+
+**What the LOD cannot do (yet):** in a city the triangles *are* the buildings - `meshopt` can
+only remove ~17 % of them within a sane error budget, because merging two buildings is a huge
+shape error. The big win (and the repo's plan in `docs/plans/far-buildings-and-nanite.md`) is a
+*per building* far LOD: merged footprints for 3-8 km, simplified boxes for 8-20 km. That needs
+the per-building ranges to survive the tile merge, which the merged mesh does not carry today.
+
+Switches: `EW_LOD_PROXY=0` builds no LOD levels (full geometry everywhere), `EW_LOD_USE=0`
+builds them but never uses them.

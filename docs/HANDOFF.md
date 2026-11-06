@@ -13,10 +13,15 @@ Native is the default; `EW_NATIVE=0` returns to Bevy. `ed_game::native` mirrors 
 - **Renderer core:** reverse-Z, analytic sky, GGX PBR, HDR + normal + depth, splat terrain (12 layers, hex stochastic/non-repeating tiling,
   triplanar, macro variation; skipped beyond 5 km), hemi-octahedral impostors (draw mode 2), GTAO, SSR, bounce, bloom, exposure, tonemap.
 - **MetalFX temporal upscaler** (`upscale.rs`), `EW_NATIVE_SCALE`, `EW_NATIVE_NOAA`. Menu: upscaler and AA are mutually exclusive (`AaMode`).
+  **Auto exposure is OFF** (`EW_NATIVE_FX_AUTOEX=1` turns it back on): it runs on the Apple Neural Engine through
+  MPSGraph and aborts the process with `MTLReportFailure` a few minutes into a session (see `docs/CHANGES.md`,
+  2026-11-06). Crash reports: `~/Library/Logs/DiagnosticReports/earthdrop-*.ips`.
 - **Probe GI** (`ed_world::probes::bake`, `ed_game/probe_gi.rs`, `native::send_probes`, `world.metal::probe_gi`): sun-aware bake
   (re-bake on 4 degree sun change), texture slot 8 (3D RGBA16F). `EW_PROBE_GI=0/EW_PROBE_K/EW_PROBE_DEBUG`.
 - **Shadows:** 6 cascades (0-3 to 700 m, 4 to 4 km, 5 to 20 km; 4 and 5 are camera-centred spheres so they cache). Cascade 5 casts buildings
-  and terrain; casters under 1.5 texels are culled. Per-cascade hash cache (`shadow_keys`, `shadow_skipped`).
+  and terrain; casters under 1.5 texels are culled. Per-cascade cache (`ShadowCache`: caster idents, projection, sun direction, light-space
+  box). A cascade keeps its projection while the sun has moved less than `EW_SHADOW_SUN_EPS` (default 0.1 deg) and the box has not
+  moved by more than a texel, so it is not re-rasterised every frame.
 - **Contact shadows:** `post.metal::post_contact`, `EW_CONTACT=0` to disable.
 - **Boot flames** (`boot_plume.rs`): triangle layered flames, vibration, wind bend, smoke trail, no HDR gain; old emissive cones in `body.rs` hidden.
 - **Default weather is clear** (`clouds.rs::weather_override`; `--weather live` or `EW_WEATHER=live` for the real report).
@@ -24,7 +29,8 @@ Native is the default; `EW_NATIVE=0` returns to Bevy. `ed_game::native` mirrors 
 
 ## Env switches
 `EW_NATIVE=0`, `EW_NATIVE_SCALE`, `EW_NATIVE_NOAA`, `EW_NATIVE_NOSSR/NOBOUNCE/NOAO/NOBLOOM/NOGROUND/NOSHADOW`, `EW_NATIVE_DBG`,
-`EW_NATIVE_AOVIS`, `EW_GFX=...`, `EW_HOLD_SPACE=1`, `EW_PROBE_GI`, `EW_PROBE_K`, `EW_PROBE_DEBUG`, `EW_CONTACT`, `EW_WEATHER`.
+`EW_NATIVE_AOVIS`, `EW_NATIVE_FX_AUTOEX`, `EW_NATIVE_SDBG`, `EW_SHADOW_SUN_EPS`, `EW_PREP_JOBS`, `EW_GFX=...`, `EW_HOLD_SPACE=1`,
+`EW_PROBE_GI`, `EW_PROBE_K`, `EW_PROBE_DEBUG`, `EW_CONTACT`, `EW_WEATHER`.
 
 ## How to verify headless (keep short; shell tool times out at 120 s, run long ones in background)
 `./target/release/earthdrop --headless --fly|--play --lat .. --lon .. --alt .. --heading .. --pitch .. --hour 15 --width 1280 --height 720 --frames 500 --no-wait --screenshot out.png`
@@ -36,6 +42,12 @@ Filter FPS with `grep "native: [0-9]* fps"`.
 Native water is a dedicated pass: `WorldRenderer::encode` draws opaque, blits depth+HDR copies (`dcopy`/`hcopy`), then draws meshes marked `attenuation_distance == WATER_MARK` (`assets.rs`) with `water_fs`. GPU FFT ocean (`ocean.rs`, 3 cascades) feeds slopes and Jacobian foam; shoaling, breakers, refraction and caustics come from scene depth. Switches: `EW_NATIVE_NOWATER=1` (opaque water draw), `EW_NATIVE_NOFFT=1` (analytic waves). Full status and the specs for **phase 6 (CPU deterministic wave model / buoyancy / spray)** and **phase 7 (underwater pass)**, which are NOT done, are in `docs/plans/ultra-water-port.md`. Also open: vertex displacement, per-tile shore map, terrain swash, planar reflection, double-counted sky where SSR hits.
 
 ## Open work, in priority order
+0. **City performance is BAD right now (2026-11-06).** Shibuya, street level, native renderer, 2144x1206:
+   27-32 fps settled (`gpu_wait` 20.8 ms, 15.6 M triangles, 474 per-tile draws) and unusable while the
+   city streams (`gpu_wait` 93 -> 207 ms - every arriving tile invalidates all six shadow cascades).
+   Fixes in order: skip the ocean FFT when the camera's tile has no sea (`sea_fraction`), make the shadow
+   cache survive streaming, per-building far LOD, then GPU-driven per-cluster culling (M2).
+   Details and numbers: `docs/CHANGES.md`, 2026-11-06.
 1. **NYC window frames render detached** from facades (street level). Likely transform/offset in the window geometry mirrored by `native.rs`. See BUGS B13.
 2. **Far buildings to 20 km** per `docs/plans/far-buildings-and-nanite.md` (tiers 3-8 km merged footprints, 8-20 km simplified; `ed_world/src/lod.rs` floor 16 km).
    Verify 20 km shadows visually (low sun, NYC) and shadow-map cost.
