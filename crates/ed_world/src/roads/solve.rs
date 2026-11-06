@@ -19,6 +19,7 @@
 
 use super::RoadClass;
 use super::ground::smooth_ground;
+use super::measured::Measured;
 use super::net::{RoadNet, dist};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
@@ -115,6 +116,8 @@ pub struct Stats {
     pub max_cut: f32,
     pub bridges: usize,
     pub tunnels: usize,
+    /// Decks and tunnels whose heights came from a survey.
+    pub measured: usize,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -416,7 +419,70 @@ fn find_crossings(edges: &[SolvedEdge], net: &RoadNet) -> Vec<Crossing> {
     merged
 }
 
+/// A deck's or tunnel floor's heights from the survey, if enough of the edge is covered: gaps filled by
+/// interpolation, spikes removed by a median filter, grade-limited. `None` = infer as usual.
+fn measured_profile(e: &SolvedEdge, m: &Measured, want: i8) -> Option<Vec<f32>> {
+    let n = e.pts.len();
+    let mut z: Vec<Option<f32>> = (0..n)
+        .map(|k| {
+            let (a, b) = (e.pts[k.saturating_sub(1)], e.pts[(k + 1).min(n - 1)]);
+            let l = dist(a, b).max(1e-9);
+            let (zm, _) = m.at(e.pts[k], [(b[0] - a[0]) / l, (b[1] - a[1]) / l], want)?;
+            // A height far from the ground it should be above or below is a mismatch (another road).
+            let g = e.ground[k];
+            let sane = if want > 0 { zm >= g - 3.0 && zm <= g + 120.0 } else { zm <= g + 3.0 && zm >= g - 120.0 };
+            sane.then_some(zm)
+        })
+        .collect();
+    let hits = z.iter().filter(|v| v.is_some()).count();
+    if hits < 3 || (hits as f64) < 0.6 * n as f64 {
+        return None;
+    }
+    // Fill gaps: linear between known samples, constant past the ends.
+    let known: Vec<usize> = (0..n).filter(|&k| z[k].is_some()).collect();
+    let mut out = vec![0.0f32; n];
+    for k in 0..n {
+        out[k] = match z[k] {
+            Some(v) => v,
+            None => {
+                let prev = known.iter().rev().find(|&&i| i < k);
+                let next = known.iter().find(|&&i| i > k);
+                match (prev, next) {
+                    (Some(&a), Some(&b)) => {
+                        let t = (e.s[k] - e.s[a]) / (e.s[b] - e.s[a]).max(1e-6);
+                        z[a].unwrap() + (z[b].unwrap() - z[a].unwrap()) * t
+                    }
+                    (Some(&a), None) => z[a].unwrap(),
+                    (None, Some(&b)) => z[b].unwrap(),
+                    _ => unreachable!(),
+                }
+            }
+        };
+    }
+    // Median of three removes single-sample spikes, then a grade limiter (12 %) in both directions.
+    let src = out.clone();
+    for k in 1..n - 1 {
+        let mut t = [src[k - 1], src[k], src[k + 1]];
+        t.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        out[k] = t[1];
+    }
+    for k in 1..n {
+        let d = (e.s[k] - e.s[k - 1]).max(1e-3);
+        out[k] = out[k].clamp(out[k - 1] - 0.12 * d, out[k - 1] + 0.12 * d);
+    }
+    for k in (0..n - 1).rev() {
+        let d = (e.s[k + 1] - e.s[k]).max(1e-3);
+        out[k] = out[k].clamp(out[k + 1] - 0.12 * d, out[k + 1] + 0.12 * d);
+    }
+    z.clear();
+    Some(out)
+}
+
 pub fn solve(net: &RoadNet, ground: &dyn Fn(f64, f64) -> f32) -> Solved {
+    solve_with(net, ground, None)
+}
+
+pub fn solve_with(net: &RoadNet, ground: &dyn Fn(f64, f64) -> f32, measured: Option<&Measured>) -> Solved {
     let mut edges: Vec<SolvedEdge> = Vec::new();
     let mut of_net: Vec<Option<usize>> = vec![None; net.edges.len()];
     let mut node_ids: BTreeMap<(i64, i64), usize> = BTreeMap::new();
@@ -480,12 +546,18 @@ pub fn solve(net: &RoadNet, ground: &dyn Fn(f64, f64) -> f32) -> Solved {
         }
     };
     // Targets, floors.
+    let mut is_measured = vec![false; edges.len()];
     let mut z0 = vec![f32::MIN; nv];
     let mut floor = vec![f32::MIN; nv];
     for (ei, e) in edges.iter_mut().enumerate() {
         let ne = &net.edges[e.net_idx];
         let n = e.pts.len();
-        let mut target: Vec<f32> = if ne.tunnel {
+        // Surveyed heights, where the source has this deck or tunnel.
+        let meas_target = measured.filter(|_| ne.bridge || ne.tunnel).and_then(|m| measured_profile(e, m, if ne.bridge { 1 } else { -1 }));
+        is_measured[ei] = meas_target.is_some();
+        let mut target: Vec<f32> = if let Some(t) = meas_target {
+            t
+        } else if ne.tunnel {
             lower_hull(&e.s, &e.ground)
         } else if ne.bridge {
             let (ga, gb, l) = (e.ground[0], e.ground[n - 1], e.length().max(1e-3));
@@ -494,9 +566,12 @@ pub fn solve(net: &RoadNet, ground: &dyn Fn(f64, f64) -> f32) -> Solved {
             let mask = vec![true; n];
             box_smooth(&e.ground, 4, 2, &mask)
         };
-        // Ends are nodes: they carry the ground target exactly.
-        target[0] = e.ground[0];
-        target[n - 1] = e.ground[n - 1];
+        // Ends are nodes: they carry the ground target exactly (a surveyed deck keeps its measured abutments, and
+        // the approach roads are lifted to meet them).
+        if !is_measured[ei] {
+            target[0] = e.ground[0];
+            target[n - 1] = e.ground[n - 1];
+        }
         for k in 0..n {
             let v = {
                 let last = n - 1;
@@ -509,7 +584,7 @@ pub fn solve(net: &RoadNet, ground: &dyn Fn(f64, f64) -> f32) -> Solved {
                 }
             };
             z0[v] = z0[v].max(target[k]);
-            if ne.bridge && k > 0 && k < n - 1 {
+            if ne.bridge && !is_measured[ei] && k > 0 && k < n - 1 {
                 // Eases in from the abutments so the floor itself never demands a steep approach.
                 let ease = (0.05 * e.s[k].min(e.length() - e.s[k])).min(DECK_FLOOR_M);
                 floor[v] = floor[v].max(e.ground[k] + ease);
@@ -567,6 +642,10 @@ pub fn solve(net: &RoadNet, ground: &dyn Fn(f64, f64) -> f32) -> Solved {
         // Lower bounds from the current heights of the roads underneath.
         let mut lb = vec![f32::MIN; nv];
         for c in &crossings {
+            // A surveyed deck is where it is: its headroom is real, not a requirement to meet.
+            if is_measured[c.upper] {
+                continue;
+            }
             let (up, lo) = (&edges[c.upper], &edges[c.lower]);
             let (cu, cl) = (net.edges[up.net_idx].class, net.edges[lo.net_idx].class);
             let clear = if cl == RoadClass::Rail {
@@ -637,6 +716,7 @@ pub fn solve(net: &RoadNet, ground: &dyn Fn(f64, f64) -> f32) -> Solved {
         e.kind = kind;
     }
     // Statistics and the clearance audit.
+    stats.measured = is_measured.iter().filter(|b| **b).count();
     for e in &edges {
         let ne = &net.edges[e.net_idx];
         stats.samples += e.pts.len();
@@ -650,6 +730,9 @@ pub fn solve(net: &RoadNet, ground: &dyn Fn(f64, f64) -> f32) -> Solved {
         }
     }
     for c in &crossings {
+        if is_measured[c.upper] {
+            continue; // surveyed headroom is what it is
+        }
         let (up, lo) = (&edges[c.upper], &edges[c.lower]);
         let cu = net.edges[up.net_idx].class;
         let clear = up.z_at(c.su) - lo.z_at(c.sl) - deck_depth(cu);
@@ -811,6 +894,39 @@ pub(crate) mod tests {
         );
         assert!(e.kind.iter().any(|&k| k == 2), "deep middle is a full tube");
         assert_eq!(e.kind[0], 0, "portal region is open");
+    }
+
+    #[test]
+    fn a_surveyed_deck_keeps_its_measured_height_and_lifts_its_approaches() {
+        use crate::roads::measured::{MSeg, Measured};
+        let roads = || {
+            vec![
+                edge(RoadClass::Primary, false, vec![[0.0, 300.0], [300.0, 300.0]]),
+                edge(RoadClass::Primary, true, vec![[300.0, 300.0], [700.0, 300.0]]),
+                edge(RoadClass::Primary, false, vec![[700.0, 300.0], [1000.0, 300.0]]),
+            ]
+        };
+        let net = RoadNet::from_edges(2400.0, roads());
+        let plain = solve(&net, &flat);
+        let deck_plain = &plain.edges[plain.of_net[1].unwrap()];
+        assert!(deck_plain.z.iter().all(|z| *z < 0.8), "inferred: a deck over flat ground stays within its 0.7 m floor");
+        // The survey says the deck is 12 m up (and so is the ground-level road next to it, so the datum offset is 0).
+        let m = Measured::from_segs(
+            vec![
+                MSeg { a: [300.0, 300.0], b: [700.0, 300.0], za: 12.0, zb: 12.0, level: 1, lanes: None, width: None },
+                MSeg { a: [0.0, 300.0], b: [200.0, 300.0], za: 0.0, zb: 0.0, level: 0, lanes: None, width: None },
+            ],
+            true,
+            &flat,
+        );
+        let s = solve_with(&net, &flat, Some(&m));
+        assert_eq!(s.stats.measured, 1);
+        let deck = &s.edges[s.of_net[1].unwrap()];
+        assert!(deck.z.iter().all(|z| (z - 12.0).abs() < 0.3), "{:?}", &deck.z[..4]);
+        let appr = &s.edges[s.of_net[0].unwrap()];
+        let at_100m_back = appr.z_at(appr.length() - 100.0);
+        assert!(at_100m_back >= 12.0 - 100.0 * max_grade(RoadClass::Primary) - 0.2, "approach climbs to meet the deck: {at_100m_back}");
+        assert!(appr.z[0] < 0.5, "and is back on the ground far away");
     }
 
     #[test]

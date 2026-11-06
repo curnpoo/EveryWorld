@@ -61,7 +61,22 @@ pub fn build_v2(
     let gfn = ground::load(cache, tile, wm);
     let inferred = if infer::enabled() { infer::infer_bridges(&mut net, &*gfn) } else { 0 };
     let t2 = std::time::Instant::now();
-    let solved = solve::solve(&net, &*gfn);
+    // Surveyed heights (France, Norway): fetched for the same 3x3 block, cached per tile.
+    let measured = ed_data::roadz::source_for(tile).and_then(|src| {
+        let blocks: Vec<(i32, i32, ed_geo::tile::TileId, Vec<ed_data::roadz::Seg>)> = (-1..=1i32)
+            .flat_map(|dy| (-1..=1i32).map(move |dx| (dx, dy)))
+            .filter_map(|(dx, dy)| {
+                let t = tile.offset(dx as i64, dy as i64)?;
+                ed_data::roadz::fetch(cache, src, t).ok().map(|segs| (dx, dy, t, segs))
+            })
+            .collect();
+        let m = measured::Measured::build(wm, &blocks, src.flags_levels(), &*gfn);
+        (!m.is_empty()).then_some(m)
+    });
+    if let Some(m) = &measured {
+        measured::fill_tags(&mut net, m);
+    }
+    let solved = solve::solve_with(&net, &*gfn, measured.as_ref());
     if std::env::var_os("EW_ROAD_TALLY").is_some() {
         eprintln!(
             "  ROADTIME net={:?} ground+infer={:?} (inferred bridges {}) solve={:?}",
@@ -93,6 +108,7 @@ pub mod infer;
 pub mod junction;
 pub mod keepout;
 pub mod marks;
+pub mod measured;
 pub mod median;
 pub mod nav;
 pub mod net;

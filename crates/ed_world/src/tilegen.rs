@@ -96,6 +96,15 @@ pub fn prefetch(job: &TileJob) {
     if tile.z >= 14 && roads::v2_enabled() {
         // The road network is assembled from the 3x3 block around the tile.
         roads::ground::prefetch(&job.cache, tile);
+        if let Some(src) = ed_data::roadz::source_for(tile) {
+            for dy in -1..=1i64 {
+                for dx in -1..=1i64 {
+                    if let Some(n) = tile.offset(dx, dy) {
+                        ed_data::roadz::prefetch(&job.cache, src, n);
+                    }
+                }
+            }
+        }
         if let Some(tpl) = &job.vector_template {
             for (dx, dy) in [
                 (-1, -1),
@@ -264,13 +273,14 @@ pub fn build(job: &TileJob) -> TileBuild {
             if std::env::var_os("EW_TILE_STATS").is_some() {
                 let st = &solved.stats;
                 eprintln!(
-                    "ROADS v2 z{} edges={} tagged={} samples={} bridges={} tunnels={} crossings={} deficits={} max_fill={:.1} max_cut={:.1}",
+                    "ROADS v2 z{} edges={} tagged={} samples={} bridges={} tunnels={} measured={} crossings={} deficits={} max_fill={:.1} max_cut={:.1}",
                     tile.z,
                     net.edges.len(),
                     net.edges.iter().filter(|e| !e.tags.is_empty()).count(),
                     st.samples,
                     st.bridges,
                     st.tunnels,
+                    st.measured,
                     st.crossings,
                     st.deficits.len(),
                     st.max_fill,
@@ -592,6 +602,25 @@ mod tests {
             }
         }
         roads::force_v2(None);
+    }
+
+    /// Measured heights on real tiles (France: IGN, Norway: NVDB): how many decks and tunnels the survey covers.
+    #[test]
+    #[ignore]
+    fn measured_real() {
+        let cache = DiskCache::new(std::env::temp_dir().join("ed-net-test"));
+        let tpl = vector::tile_template(&cache).ok();
+        for (name, lat, lon) in [("Paris Pont Neuf", 48.8566, 2.3412), ("Oslo Bjorvika", 59.9085, 10.7480), ("Lyon", 45.7578, 4.8320)] {
+            let tile = TileId::containing(lat, lon, 14);
+            let vt = vector::fetch(&cache, tpl.as_ref().unwrap(), tile).unwrap();
+            let t0 = std::time::Instant::now();
+            let (net, solved, _) = roads::build_v2(&cache, tpl.as_deref(), tile, &vt);
+            let st = &solved.stats;
+            eprintln!(
+                "{name}: edges={} tagged={} bridges={} tunnels={} measured={} crossings={} deficits={} {:?}",
+                net.edges.len(), net.edges.iter().filter(|e| !e.tags.is_empty()).count(), st.bridges, st.tunnels, st.measured, st.crossings, st.deficits.len(), t0.elapsed()
+            );
+        }
     }
 
     /// Garages from baked Overture tiles: `tools/bake_overture.py` first.

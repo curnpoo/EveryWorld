@@ -23,6 +23,7 @@ pub mod http;
 pub mod mvt;
 pub mod osmtags;
 pub mod overture;
+pub mod roadz;
 pub mod satellite;
 pub mod vector;
 pub mod weather;
