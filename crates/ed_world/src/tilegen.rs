@@ -264,9 +264,10 @@ pub fn build(job: &TileJob) -> TileBuild {
             if std::env::var_os("EW_TILE_STATS").is_some() {
                 let st = &solved.stats;
                 eprintln!(
-                    "ROADS v2 z{} edges={} samples={} bridges={} tunnels={} crossings={} deficits={} max_fill={:.1} max_cut={:.1}",
+                    "ROADS v2 z{} edges={} tagged={} samples={} bridges={} tunnels={} crossings={} deficits={} max_fill={:.1} max_cut={:.1}",
                     tile.z,
                     net.edges.len(),
+                    net.edges.iter().filter(|e| !e.tags.is_empty()).count(),
                     st.samples,
                     st.bridges,
                     st.tunnels,

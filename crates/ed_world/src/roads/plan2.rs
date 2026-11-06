@@ -161,7 +161,7 @@ pub fn plan_v2(
         }
         let mut pts = pts;
         if sol.is_some() && !e.bridge && !e.tunnel {
-            mark_walled(&mut pts, width::carriageway(e.class, row[ni]) as f64 / 2.0, wm, grid);
+            mark_walled(&mut pts, width::edge_width(e, row[ni]) as f64 / 2.0, wm, grid);
         }
         let pts = split(&pts, [emit_r, grade_r]);
         let seg_k = |i: usize| -> u8 {
@@ -233,7 +233,7 @@ pub fn plan_v2(
                 .cover_at(uv[0].0.clamp(0.0, 1.0), uv[0].1.clamp(0.0, 1.0))
                 .is_urban();
             let width = if matches!(kind, Bed::Graded | Bed::Bridge | Bed::Tunnel | Bed::Fill) {
-                width::carriageway(e.class, row[ni])
+                width::edge_width(e, row[ni])
             } else {
                 e.class.width()
             };
@@ -270,6 +270,9 @@ pub fn plan_v2(
                     kind == Bed::Tunnel && next_open,
                 ),
                 clear_arcs,
+                sidewalk: e.tags.sidewalk,
+                cycle: e.tags.cycle,
+                lanes: e.tags.lane_split(e.oneway),
                 depth: if kind == Bed::Fill {
                     (run.iter().map(|p| p.z - p.g).fold(0.0f32, f32::max) + 0.8).clamp(1.5, 14.0)
                 } else {
@@ -312,7 +315,7 @@ pub fn plan_v2(
         {
             continue;
         }
-        let hw = width::carriageway(e.class, row[ni]) as f64 / 2.0;
+        let hw = width::edge_width(e, row[ni]) as f64 / 2.0;
         let n = e.pts.len();
         for (p, q) in [(e.pts[0], e.pts[1]), (e.pts[n - 1], e.pts[n - 2])] {
             if !(0.0..wm).contains(&p[0]) || !(0.0..wm).contains(&p[1]) {

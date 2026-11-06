@@ -165,10 +165,10 @@ impl NavTile {
                     to: ib,
                     class: e.class,
                     level: e.level(),
-                    lanes: lanes_for(e.class, e.oneway),
+                    lanes: e.tags.lane_split(e.oneway).unwrap_or_else(|| lanes_for(e.class, e.oneway)),
                     oneway: e.oneway,
-                    speed_mps: speed_mps(e.class, region),
-                    half_width: e.class.width() / 2.0,
+                    speed_mps: e.tags.maxspeed_kmh.map(|v| v / 3.6).unwrap_or_else(|| speed_mps(e.class, region)),
+                    half_width: super::width::edge_width(e, None) / 2.0,
                     pts,
                 });
             }

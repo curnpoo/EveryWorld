@@ -680,6 +680,7 @@ pub(crate) mod tests {
             oneway: false,
             paved: true,
             cycleway: false,
+            tags: Default::default(),
             pts,
         }
     }

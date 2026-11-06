@@ -27,6 +27,8 @@ pub struct Edge {
     pub oneway: bool,
     pub paved: bool,
     pub cycleway: bool,
+    /// OSM lanes, width, sidewalks, cycle lanes, speed (empty without baked tags).
+    pub tags: super::osm::EdgeTags,
     pub pts: Vec<[f64; 2]>,
 }
 
@@ -191,6 +193,7 @@ impl RoadNet {
                         oneway: oneway_v != 0.0,
                         paved: !matches!(f.str("surface"), Some("unpaved")),
                         cycleway: f.str("subclass") == Some("cycleway"),
+                        tags: Default::default(),
                         pts: Vec::new(),
                     };
                     for line in &f.rings {
@@ -499,6 +502,7 @@ mod tests {
             oneway: false,
             paved: true,
             cycleway: false,
+            tags: Default::default(),
             pts: vec![],
         };
         assert_eq!(e.level(), 0, "layer alone does not make a deck");

@@ -7,7 +7,7 @@
 //! Elsewhere (front yards, open land) the class default stays.
 
 use super::RoadClass;
-use super::net::{BuildingPoly, RoadNet, dist};
+use super::net::{BuildingPoly, Edge, RoadNet, dist};
 use std::collections::BTreeMap;
 
 const STEP_M: f64 = 12.0;
@@ -143,6 +143,23 @@ pub fn carriageway(class: RoadClass, row: Option<f32>) -> f32 {
     }
 }
 
+/// The width the road is drawn at: a mapped `width`, else the OSM lane count times a lane width for its class,
+/// else the facade-measured street, else the class default.
+pub fn edge_width(e: &Edge, row: Option<f32>) -> f32 {
+    if let Some(w) = e.tags.width {
+        return w.clamp(2.5, 30.0);
+    }
+    if let Some((f, b)) = e.tags.lane_split(e.oneway) {
+        let lane = match e.class {
+            RoadClass::Motorway | RoadClass::Trunk => 3.6,
+            RoadClass::Primary | RoadClass::Secondary => 3.4,
+            _ => 3.0,
+        };
+        return ((f + b).max(1) as f32 * lane).clamp(2.8, 30.0);
+    }
+    carriageway(e.class, row)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,6 +175,7 @@ mod tests {
             oneway: false,
             paved: true,
             cycleway: false,
+            tags: Default::default(),
             pts: vec![[x0, 0.0], [x1, 0.0]],
         }
     }
@@ -183,6 +201,21 @@ mod tests {
         assert!((r - 16.0).abs() < 0.5, "{r}");
         let w = carriageway(RoadClass::Minor, Some(r));
         assert!((4.55..=11.7).contains(&w), "{w}");
+    }
+
+    #[test]
+    fn mapped_tags_beat_everything_else() {
+        let mut e = street(0.0, 100.0);
+        assert_eq!(edge_width(&e, None), RoadClass::Minor.width());
+        e.tags.lanes = Some(2);
+        assert!((edge_width(&e, None) - 6.0).abs() < 1e-4, "2 lanes of 3.0 m");
+        e.tags.width = Some(9.5);
+        assert!((edge_width(&e, None) - 9.5).abs() < 1e-4);
+        let mut m = street(0.0, 100.0);
+        m.class = RoadClass::Motorway;
+        m.oneway = true;
+        m.tags.lanes = Some(3);
+        assert!((edge_width(&m, Some(20.0)) - 10.8).abs() < 1e-4, "a 3-lane motorway carriageway is 10.8 m, not 15");
     }
 
     #[test]

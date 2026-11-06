@@ -47,7 +47,16 @@ pub fn build_v2(
     let mut block: Vec<(i32, i32, &mvt::Tile)> = vec![(0, 0, centre)];
     block.extend(neighbours.iter().map(|(a, b, c)| (*a, *b, c)));
     let t0 = std::time::Instant::now();
-    let net = net::RoadNet::from_tiles(tile, wm, &block);
+    let mut net = net::RoadNet::from_tiles(tile, wm, &block);
+    // Baked OSM tags (lanes, width, sidewalks, cycle lanes, speed limits) for the same 3x3 block, if there are any.
+    let baked: Vec<(i32, i32, ed_data::osmtags::OsmTile)> = (-1..=1i32)
+        .flat_map(|dy| (-1..=1i32).map(move |dx| (dx, dy)))
+        .filter_map(|(dx, dy)| tile.offset(dx as i64, dy as i64).and_then(|t| ed_data::osmtags::load(cache, t)).map(|t| (dx, dy, t)))
+        .collect();
+    if !baked.is_empty() {
+        let refs: Vec<(i32, i32, &ed_data::osmtags::OsmTile)> = baked.iter().map(|(a, b, c)| (*a, *b, c)).collect();
+        osm::attach(&mut net, &refs);
+    }
     let t1 = std::time::Instant::now();
     let gfn = ground::load(cache, tile, wm);
     let t2 = std::time::Instant::now();
@@ -84,6 +93,7 @@ pub mod marks;
 pub mod median;
 pub mod nav;
 pub mod net;
+pub mod osm;
 pub mod plan2;
 pub mod solve;
 mod structures;
@@ -398,6 +408,12 @@ struct Item {
     clear_arcs: Vec<(f32, f32)>,
     /// Depth of the solid section under the driving surface (`Bed::Fill`).
     depth: f32,
+    /// Sidewalks on the (left, right) when OSM says; `None` = by urban cover.
+    sidewalk: Option<(bool, bool)>,
+    /// Cycle facility on the (left, right): 0 none, 1 painted lane, 2 track.
+    cycle: (u8, u8),
+    /// Lanes (forward, backward) when OSM says.
+    lanes: Option<(u8, u8)>,
 }
 
 /// Road layout for one tile: bed heights decided once, used both to carve the
@@ -506,6 +522,9 @@ pub fn plan(vt: &mvt::Tile, proj: &TileProjector, grid: &TerrainGrid, surface: &
                 portal: (false, false),
                 clear_arcs: Vec::new(),
                 depth: 0.0,
+                sidewalk: None,
+                cycle: (0, 0),
+                lanes: None,
             });
         }
     }
@@ -665,9 +684,7 @@ pub fn generate(plan: &RoadPlan, proj: &TileProjector, grid: &TerrainGrid, surfa
                         None,
                         true,
                         class,
-                        &st, it.urban, it.oneway,
-                        hw,
-                    );
+                        &st, it.urban, it.oneway, hw, it.lanes);
                 }
                 let mut arc = vec![0.0f32; pts.len()];
                 for i in 1..pts.len() {
@@ -685,7 +702,7 @@ pub fn generate(plan: &RoadPlan, proj: &TileProjector, grid: &TerrainGrid, surfa
                 structures::sweep_raw(&mut out.mesh, &deck, up, &prof);
                 structures::sweep_raw(&mut out.collider, &deck, up, &prof);
                 if it.paved && class.rank() >= 1 {
-                    markings(&mut out.mesh, &deck, up, None, true, class, &st, it.urban, it.oneway, hw);
+                    markings(&mut out.mesh, &deck, up, None, true, class, &st, it.urban, it.oneway, hw, it.lanes);
                 }
             }
             Bed::Tunnel => {
@@ -701,9 +718,7 @@ pub fn generate(plan: &RoadPlan, proj: &TileProjector, grid: &TerrainGrid, surfa
                         None,
                         true,
                         class,
-                        &st, it.urban, it.oneway,
-                        hw,
-                    );
+                        &st, it.urban, it.oneway, hw, it.lanes);
                 }
                 let n = pts.len();
                 if it.portal.0 && n >= 2 {
@@ -715,7 +730,8 @@ pub fn generate(plan: &RoadPlan, proj: &TileProjector, grid: &TerrainGrid, surfa
             }
             Bed::Graded => {
                 let deck = simplify_deck(pts, DECK_TOL_M, DECK_MAX_SPAN_M);
-                let prof = paved_profile(hw, it.urban, &kit);
+                let walks = it.sidewalk.unwrap_or((it.urban, it.urban));
+                let prof = paved_profile(hw, walks, &kit);
                 sweep(
                     &mut out.mesh,
                     &deck,
@@ -736,12 +752,21 @@ pub fn generate(plan: &RoadPlan, proj: &TileProjector, grid: &TerrainGrid, surfa
                         Some(&ground as &dyn Fn(Vec3) -> f32),
                         true,
                         class,
-                        &st, it.urban, it.oneway,
-                        hw,
-                    );
+                        &st, it.urban, it.oneway, hw, it.lanes);
                 }
                 tally.entry("graded markings".into()).or_default().0 +=
                     out.mesh.indices.len() / 3 - m0;
+                // Cycle lanes: the national bike-lane colour inside the carriageway edge, with a white line.
+                let bike = if marks::locate(proj.tile.center().lat_deg, proj.tile.center().lon_deg) == marks::Country::Us { rgb(0x3f8f5c) } else { rgb(0xb3503f) };
+                let ground_fn = Some(&ground as &dyn Fn(Vec3) -> f32);
+                for (side, kind) in [(-1.0f32, it.cycle.0), (1.0f32, it.cycle.1)] {
+                    if kind > 0 && hw > 2.5 {
+                        let (inner, outer) = (hw - 1.7, hw - 0.15);
+                        let (a, b) = (side * inner, side * outer);
+                        paint(&mut out.mesh, &deck, up, ground_fn, true, hw, a.min(b), a.max(b), bike, None);
+                        paint(&mut out.mesh, &deck, up, ground_fn, true, hw, side * inner - 0.05, side * inner + 0.05, rgb(0xf2f2ee), None);
+                    }
+                }
                 let g0 = out.mesh.indices.len() / 3;
                 if matches!(class, RoadClass::Motorway | RoadClass::Trunk) && !it.urban {
                     let off = hw + 1.5;
@@ -939,22 +964,33 @@ fn crown(o: f32, hw: f32) -> f32 {
 
 /// Cross-section of a paved road, left to right. Urban: sidewalk, curb face,
 /// gutter, cambered asphalt. Rural: gravel shoulder easing into the verge.
-fn paved_profile(hw: f32, urban: bool, kit: &StreetKit) -> Vec<P> {
+/// `walks`: a sidewalk on the (left, right); with none the profile is the country-road one (shoulder, ditch, verge).
+/// A side without a sidewalk in a street that has one on the other side gets a plain shoulder.
+fn paved_profile(hw: f32, walks: (bool, bool), kit: &StreetKit) -> Vec<P> {
     let asphalt = rgb(kit.asphalt);
     let mut v = Vec::new();
-    if urban {
+    if walks.0 || walks.1 {
         let (sw, ch) = (rgb(kit.sidewalk), kit.curb_height + 0.01);
         let curb = rgb(0xaaa8a0);
         let gutter = rgb(0x6c6d70);
-        v.push(p(-hw - 2.4, ch, sw, false));
-        v.push(p(-hw - 0.16, ch, curb, false));
-        v.push(p(-hw - 0.16, 0.03, gutter, false));
+        let shoulder = rgb(0x7b7c70);
+        if walks.0 {
+            v.push(p(-hw - 2.4, ch, sw, false));
+            v.push(p(-hw - 0.16, ch, curb, false));
+            v.push(p(-hw - 0.16, 0.03, gutter, false));
+        } else {
+            v.push(p(-hw - 1.2, 0.0, shoulder, false));
+        }
         v.push(p(-hw, 0.02, asphalt, false));
         v.push(p(0.0, CROWN, asphalt, false));
-        v.push(p(hw, 0.02, gutter, false));
-        v.push(p(hw + 0.16, 0.03, curb, false));
-        v.push(p(hw + 0.16, ch, sw, false));
-        v.push(p(hw + 2.4, ch, sw, false));
+        v.push(p(hw, 0.02, if walks.1 { gutter } else { asphalt }, false));
+        if walks.1 {
+            v.push(p(hw + 0.16, 0.03, curb, false));
+            v.push(p(hw + 0.16, ch, sw, false));
+            v.push(p(hw + 2.4, ch, sw, false));
+        } else {
+            v.push(p(hw + 1.2, 0.0, shoulder, false));
+        }
     } else {
         let gravel = rgb(0x827d6e);
         let verge = rgb(0x6a6c48);
@@ -1240,7 +1276,7 @@ fn dash_runs(pts: &[Vec3], on: f32, off: f32) -> Vec<Vec<Vec3>> {
 
 /// Lane lines, centre line and edge lines by the country's rules (`marks`): colours, widths, dash lengths, double
 /// centre lines, broken edge lines, yellow left edges. `hw` is the carriageway half width.
-fn markings(m: &mut MeshData, pts: &[Vec3], up: Vec3, ground: Option<&dyn Fn(Vec3) -> f32>, flat: bool, class: RoadClass, st: &marks::MarkStyle, urban: bool, oneway: bool, hw: f32) {
+fn markings(m: &mut MeshData, pts: &[Vec3], up: Vec3, ground: Option<&dyn Fn(Vec3) -> f32>, flat: bool, class: RoadClass, st: &marks::MarkStyle, urban: bool, oneway: bool, hw: f32, lanes: Option<(u8, u8)>) {
     let white = rgb(0xf2f2ee);
     let yellow = rgb(0xf2c230);
     let rank = class.rank();
@@ -1252,7 +1288,7 @@ fn markings(m: &mut MeshData, pts: &[Vec3], up: Vec3, ground: Option<&dyn Fn(Vec
     let edge_colour = if st.edge_yellow { yellow } else { white };
     if !oneway {
         let centre_colour = if st.yellow_centre { yellow } else { white };
-        let lanes_each = ((hw / 3.4).round() as i32).clamp(1, 4);
+        let lanes_each = lanes.map(|(f, b)| f.max(b).max(1) as i32).unwrap_or(((hw / 3.4).round() as i32).clamp(1, 4)).clamp(1, 6);
         if 2.0 * hw >= st.min_centre_m {
             if st.double_centre && ((urban && rank >= 3) || lanes_each >= 2) {
                 let gap = 0.12 + st.centre_w;
@@ -1272,7 +1308,7 @@ fn markings(m: &mut MeshData, pts: &[Vec3], up: Vec3, ground: Option<&dyn Fn(Vec
         }
     } else if rank >= 3 {
         // One-way carriageway (motorway, ramp, divided arterial): lane lines between its lanes.
-        let n = ((2.0 * hw / 3.5).round() as i32).clamp(1, 5);
+        let n = lanes.map(|(f, _)| f.max(1) as i32).unwrap_or(((2.0 * hw / 3.5).round() as i32).clamp(1, 5)).clamp(1, 8);
         for k in 1..n {
             line(m, -hw + 2.0 * hw * k as f32 / n as f32, lane_w, white, Some(lane_dash));
         }
@@ -1432,7 +1468,7 @@ mod tests {
         let count = |country: marks::Country, oneway: bool, rank_class: RoadClass| {
             let st = marks::style_for(country);
             let mut m = MeshData::default();
-            markings(&mut m, &pts, Vec3::Y, None, true, rank_class, &st, false, oneway, 3.5);
+            markings(&mut m, &pts, Vec3::Y, None, true, rank_class, &st, false, oneway, 3.5, None);
             let y = rgb(0xf2c230);
             let yellow = m.colors.iter().filter(|c| (c[0] - y[0]).abs() < 1e-3 && (c[1] - y[1]).abs() < 1e-3 && (c[2] - y[2]).abs() < 1e-3).count();
             (m.triangle_count(), yellow)
@@ -1449,7 +1485,7 @@ mod tests {
         // A very narrow street gets no centre line where the manual says so.
         let st = marks::style_for(marks::Country::Us);
         let mut narrow = MeshData::default();
-        markings(&mut narrow, &pts, Vec3::Y, None, true, RoadClass::Minor, &st, true, false, 2.0);
+        markings(&mut narrow, &pts, Vec3::Y, None, true, RoadClass::Minor, &st, true, false, 2.0, None);
         assert!(narrow.is_empty());
     }
 
