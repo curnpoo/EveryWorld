@@ -1,5 +1,10 @@
 # Changes
 
+## 2026-11-06 (second pass): retaining walls, roof shapes, national markings, OSM tags, inferred bridges, measured heights
+- One commit each; details and numbers in `docs/plans/roads.md`, "Follow-ups". New off switches: `EW_OSMTAGS=0`, `EW_INFER_BRIDGES=0`, `EW_ROADZ=0`.
+- Walled embankments (`Bed::Fill`), Overture `roof:shape` in the building generator, per-country marking tables (`roads/marks.rs`), OSM lanes/width/sidewalks/cycle lanes/speed from baked Postpass tiles (`tools/bake_osm_tags.py`), bridges inferred from ground height at untagged crossings, surveyed deck and tunnel heights for France (IGN) and Norway (NVDB).
+- Needs checking on the Mac: the checklist in `docs/plans/roads.md` plus: walled fills look right and carry a car; roof shapes on baked Overture tiles; lane lines and bike lanes after `python3 tools/bake_osm_tags.py --lat .. --lon ..`; an inferred bridge where a road passes over another in a cutting; a French or Norwegian bridge at its surveyed height. US lidar heights are not done.
+
 ## 2026-11-06: roads v2 (world-space network, solved heights, decks, tunnels, junctions, nav graph), Overture buildings, garages
 - Full write-up and Mac checklist: `docs/plans/roads.md`. `EW_ROADS=legacy` returns to the old planner, `EW_OVERTURE=0` to OpenFreeMap buildings.
 - `ed_world/src/roads.rs` became `roads/mod.rs` plus `net`, `ground`, `solve`, `plan2`, `structures`, `junction`, `width`, `median`, `keepout`, `nav`. The network is assembled from the 3x3 block of vector tiles (each source tile clipped to its own square, pieces joined on borders), levels come from `brunnel` and `layer`, and one solver (`solve.rs`) picks every height: decks clear what runs under them by 6 m plus deck depth, approaches climb onto fill at the class grade, tunnel floors take the lower hull of the ground. Real-tile runs: LA Four Level 957 crossings, 13 audit deficits (worst 5.7 m).
