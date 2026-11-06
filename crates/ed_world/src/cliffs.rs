@@ -46,7 +46,10 @@ pub fn slab_mesh(c: [f32; 4]) -> MeshData {
     ];
     let mut m = MeshData::default();
     for (ti, t) in tris.iter().enumerate().take(16) {
-        let (a, b, cc) = (corners[t[0]], corners[t[1]], corners[t[2]]);
+        // The table above is wound clockwise seen from outside, so every slab drew its inside
+        // faces and back-face culling left the broken "only the backface" look. Swap the last
+        // two corners (this also flips the computed normal outward).
+        let (a, b, cc) = (corners[t[0]], corners[t[2]], corners[t[1]]);
         let n = (b - a).cross(cc - a).normalize_or_zero();
         // Slight per-facet tone so facets separate even in flat light.
         let f = 0.88 + 0.24 * crate::hash01(ti as u64, 77);
@@ -144,5 +147,18 @@ mod tests {
         }
         let m = slab_mesh([1.0; 4]);
         assert_eq!(m.indices.len(), 16 * 3);
+    }
+
+    #[test]
+    fn slab_faces_point_outward() {
+        let m = slab_mesh([1.0; 4]);
+        for t in m.indices.chunks_exact(3) {
+            let a = Vec3::from(m.positions[t[0] as usize]);
+            let b = Vec3::from(m.positions[t[1] as usize]);
+            let c = Vec3::from(m.positions[t[2] as usize]);
+            let n = (b - a).cross(c - a);
+            let mid = (a + b + c) / 3.0;
+            assert!(n.dot(mid) > -1e-4, "slab triangle is wound inward (normal {n:?} at {mid:?})");
+        }
     }
 }

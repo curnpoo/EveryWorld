@@ -8,12 +8,12 @@
   `EW_PROBE_DEBUG`, and `EW_NATIVE_DBG` still set the startup values; the
   Debug tab and F3 change them at runtime. `EW_NATIVE_DBG` is now passed through
   `FrameParams` instead of read from the environment inside the Metal encoder.
-- Probe GI now covers a 2 km-wide, radially warped field (1 km radius) with 64x64
-  columns: about 4 m spacing near the camera, widening to roughly 48 m cells at
-  the edge. The vertical span is 128 m, bake rays reach 2 km, and the gathered
-  terrain field uses 8 m cells. This lets a sunlit slope hundreds of metres
-  away contribute bounce to a shaded valley. The full synthetic ridge bake is
-  ~87 ms on 8 threads.
+- Probe GI now covers a 20 km-radius, radially warped surface grid with 128x128
+  columns: about 20 m spacing near the camera, widening to roughly 468 m cells
+  at the edge. Only one layer sits on the terrain, bake rays reach 40 km, and
+  the gathered terrain field uses 128 m cells. This lets canyon-scale lit slopes
+  contribute bounce to shaded valleys. The full synthetic ridge bake is
+  measured by `probes::tests::bake_default_grid_bench`.
 - Probe GI remains indirect light: direct sun is still removed by the shadow
   map, while the probe result scales skylight by visibility and adds sun-aware
   bounce from lit surroundings. A shadowed surface with low sky visibility gets
@@ -928,4 +928,20 @@ builds them but never uses them.
   noise — not worth changing the default. `EW_CHEAP_FAR=1` loses far trees for +1.6 fps; off.
 - Caveat: single runs per config; the 2-thread and adaptive numbers were repeatable, the
   8-thread/far-on numbers varied by a few fps.
+
+## 2026-11-06: Grand Canyon triangle count explained; cliff slabs were inside-out; ground detail gated by height
+- **The "insane count" at the Grand Canyon is rock/shrub chunks, not buildings.** Measured
+  headless (36.0544 N, 112.1401 W, 300 m AGL): **49.0 M resident triangles** across 150 tiles,
+  but only **~2.5 M visible** (terrain 2.44 M, everything else 0.05 M) and **42 fps settled**.
+  Per z14 tile: terrain 0.30 M, roads 0.02-0.11 M, buildings 0 — and ~1.7 M in `rock_chunks`
+  (the scatter rocks + cliff slabs; `TILESTAT` does not print that field, so it looked
+  unaccounted). `foliage::scatter` emits up to 16 k instances per z14 tile, ~15 k of them here.
+  The HUD's `tris` is *resident*, not drawn — at the canyon the frame cost is fine.
+- **Cliff slabs were wound inside-out.** Every triangle in `cliffs::slab_mesh` had its front face
+  inward, so back-face culling showed the interior — the "only renders the backface" look. The
+  winding is flipped (the computed normals now point outward) and a regression test
+  (`slab_faces_point_outward`) checks every triangle.
+- **Ground-level detail is height-gated.** Rock/cliff chunks (`NearMeshes`) now only stream when
+  the camera is within 60 m of their height (`NEAR_AGL_M`), so flying over a canyon no longer
+  spawns floor detail below. Ground scatter was already limited by its 100 m 3D reach.
 

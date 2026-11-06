@@ -107,7 +107,9 @@ mod imp {
                 bounce.1 = bounce.1.max(b);
             }
         }
-        info!("native: probe GI volume uploaded {:?} k={:.2} vis {:.2}..{:.2} bounce {:.2}..{:.2}", vol.dims(), gi.bounce_k, vis.0, vis.1, bounce.0, bounce.1);
+        let bmin = c + vol.box_min;
+        let bmax = c + vol.box_max;
+        info!("native: probe GI volume uploaded {:?} k={:.2} vis {:.2}..{:.2} bounce {:.2}..{:.2} box {:.1},{:.1},{:.1}..{:.1},{:.1},{:.1} center {:.1},{:.1},{:.1}", vol.dims(), gi.bounce_k, vis.0, vis.1, bounce.0, bounce.1, bmin.x, bmin.y, bmin.z, bmax.x, bmax.y, bmax.z, c.x, c.y, c.z);
         r.upload_probe_volume(vol.dims(), &texels, (c + vol.box_min).to_array(), (c + vol.box_max).to_array());
     }
 

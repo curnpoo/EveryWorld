@@ -28,11 +28,11 @@ use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, futures_lite::future};
 use ed_world::probes::{self, FACES, ProbeParams, ProbeVolume, SceneField};
 use std::sync::Arc;
 
-/// Gather cell size (m). The probe grid is sparse, so 8 m terrain cells are
-/// enough for the 1 km-radius bounce field and keep the gather affordable.
-const CELL: f32 = 8.0;
+/// Gather cell size (m). The probe grid is sparse, so 128 m terrain cells keep
+/// the 20 km-radius bounce field affordable.
+const CELL: f32 = 128.0;
 /// Scene margin beyond the probe grid (m), so edge probes see occluders.
-const MARGIN: f32 = 64.0;
+const MARGIN: f32 = 256.0;
 /// Cells gathered per frame.
 const CELLS_PER_FRAME: usize = 3000;
 /// Re-centre when the camera moves this far from the volume centre (m).
@@ -42,7 +42,9 @@ const REFRESH_S: f32 = 10.0;
 /// Roof albedo (no per-building colour here).
 const ROOF_ALBEDO: [f32; 3] = [0.32, 0.30, 0.28];
 /// Debug spheres within this distance of the camera.
-const DEBUG_RADIUS: f32 = 48.0;
+const DEBUG_RADIUS: f32 = 1_024.0;
+/// Cast the roof/ground probe down from high enough for mountain-scale terrain.
+const PROBE_TOP: f32 = 12_000.0;
 
 pub struct ProbeGiPlugin;
 
@@ -213,8 +215,8 @@ fn gather_cells(g: &mut Gather, tiles: &Query<(&GlobalTransform, &GroundCover)>,
 
         // Top of solid: terrain or roof, from the colliders.
         let top = spatial
-            .cast_ray(Vec3::new(w.x, g.center.y + 4000.0, w.z), Dir3::NEG_Y, 8000.0, true, &filter)
-            .map(|hit| g.center.y + 4000.0 - hit.distance);
+            .cast_ray(Vec3::new(w.x, g.center.y + PROBE_TOP, w.z), Dir3::NEG_Y, PROBE_TOP * 2.0, true, &filter)
+            .map(|hit| g.center.y + PROBE_TOP - hit.distance);
 
         let (gy, albedo) = match (ground, top) {
             (Some(gr), _) => gr,
@@ -356,10 +358,11 @@ fn debug_spheres(
     let (mut pos, mut nrm, mut col, mut idx) = (vec![], vec![], vec![], vec![]);
     let local_cam = cam - center;
     for pr in &vol.probes {
-        if pr.pos.distance(local_cam) > DEBUG_RADIUS {
+        let dist = pr.pos.distance(local_cam);
+        if dist > DEBUG_RADIUS {
             continue;
         }
-        let r = 0.3;
+        let r = (0.3 + dist * 0.004).min(4.0);
         let base = pos.len() as u32;
         for v in &up {
             let n = Vec3::from(*v);

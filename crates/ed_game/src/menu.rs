@@ -846,7 +846,7 @@ fn build_menus(mut commands: Commands, assets: Res<AssetServer>) {
                 t.spawn(Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(9.0), width: Val::Px(580.0), ..default() }).with_children(|c| {
                     text(c, "Live renderer controls", 22.0, INK);
                     for (label, action_label, a) in [
-                        ("Probe GI (1 km)", "Toggle", MenuAction::ToggleProbes),
+                        ("Probe GI (20 km)", "Toggle", MenuAction::ToggleProbes),
                         ("Probe spheres", "Next", MenuAction::CycleProbeView),
                         ("Shadow maps", "Toggle", MenuAction::ToggleShadows),
                         ("Ambient occlusion", "Toggle", MenuAction::ToggleAo),
@@ -1405,7 +1405,7 @@ fn update_debug_readout(
          pipeline io {} / build {} / apply {}\n\
          detail {} loaded / {} in flight\n\
          buildings {}   trees {}   tris {:.1} M\n\n\
-         probe GI {} (1 km)   view {}\n\
+         probe GI {} (20 km)   view {}\n\
          shadows {}   AO {}   bloom {}\n\
          ocean FFT {}   sea near {}\n\
          Metal view {}\n\n\

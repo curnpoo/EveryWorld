@@ -71,6 +71,9 @@ pub fn center_of(positions: &[[f32; 3]]) -> Vec3 {
 
 /// Rocks collide only this close to the camera (m).
 const COLLIDE_M: f32 = 90.0;
+/// Ground-level detail only streams when the camera is this close to it in height (m): flying
+/// 300 m over a canyon should not spawn rock/cliff chunks on the floor below.
+const NEAR_AGL_M: f32 = 60.0;
 /// Trimesh builds per frame at most.
 const COLLIDERS_PER_FRAME: usize = 3;
 
@@ -89,9 +92,11 @@ fn stream_near_meshes(
     for (root, gt, mut set) in &mut sets {
         let (range, mat) = (set.range, set.material.clone());
         for it in set.items.iter_mut() {
-            let d = gt.transform_point(it.center).distance(cam);
+            let w = gt.transform_point(it.center);
+            let d = w.distance(cam);
+            let near_ground = (w.y - cam.y).abs() < NEAR_AGL_M;
             let r = range + if it.entity.is_some() { range * 0.1 } else { 0.0 };
-            if d < r {
+            if d < r && near_ground {
                 if it.entity.is_none() && spawned < SPAWNS_PER_FRAME {
                     if it.handle.is_none() {
                         it.handle = it.src.take().map(|m| meshes.add(m));
@@ -104,7 +109,7 @@ fn stream_near_meshes(
             } else if let Some(e) = it.entity.take() {
                 commands.entity(e).despawn();
             }
-            let want_col = d < COLLIDE_M;
+            let want_col = d < COLLIDE_M && near_ground;
             if want_col && it.col_entity.is_none() {
                 if it.collider.is_none() && built < COLLIDERS_PER_FRAME {
                     if let Some(m) = it.col_src.take() {

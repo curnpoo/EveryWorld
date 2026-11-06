@@ -1,6 +1,6 @@
 //! Terrain-following light probes ("probe GI").
 //!
-//! A camera-centred grid of probes hugs the ground out to a 1 km radius. The
+//! A camera-centred surface grid of probes hugs the ground out to a 20 km radius. The
 //! horizontal grid is radially warped (dense near the camera, sparse at the
 //! edge); each column sits on the terrain and its `ny` layers are spaced by
 //! `t^2` (dense near the ground, sparse up to `span` metres). Every probe
@@ -117,7 +117,7 @@ pub struct ProbeParams {
 
 impl Default for ProbeParams {
     fn default() -> Self {
-        Self { nx: 64, ny: 6, nz: 64, spacing: 32.0, h0: 0.4, span: 128.0, rays: 48, max_dist: 2_000.0, sun: Vec3::ZERO }
+        Self { nx: 128, ny: 1, nz: 128, spacing: 312.5, h0: 1.0, span: 0.0, rays: 48, max_dist: 40_000.0, sun: Vec3::ZERO }
     }
 }
 
@@ -161,8 +161,8 @@ pub fn layer_height(p: &ProbeParams, j: usize) -> f32 {
     p.span * t * t
 }
 
-/// Radial grid warp: 1.5 power keeps the centre at roughly 4 m spacing while
-/// the outer cells widen to roughly 48 m for the default 2 km-wide volume.
+/// Radial grid warp: 1.5 power keeps the centre at roughly 27 m spacing while
+/// the outer cells widen to roughly 468 m for the default 40 km-wide volume.
 pub fn warp_axis(u: f32) -> f32 {
     u.signum() * u.abs().powf(1.5)
 }
@@ -310,7 +310,7 @@ pub fn bake(field: &SceneField, params: &ProbeParams, threads: usize) -> ProbeVo
         }
     }
     let box_min = Vec3::new(-half_x, gmin - 2.0, -half_z);
-    let box_max = Vec3::new(half_x, gmax + p.h0 + p.span + 4.0, half_z);
+    let box_max = Vec3::new(half_x, max_top.max(gmax + p.h0 + p.span) + 4.0, half_z);
     let texels = pack(&probes, &p, field, box_min, box_max);
     ProbeVolume { params: p, box_min, box_max, probes, texels }
 }
@@ -417,16 +417,17 @@ mod tests {
     }
 
     #[test]
-    fn default_grid_reaches_one_kilometre() {
+    fn default_grid_reaches_twenty_kilometres() {
         let p = ProbeParams::default();
-        assert!((p.nx as f32 * p.spacing * 0.5 - 1024.0).abs() < 1e-3);
-        assert!((p.nz as f32 * p.spacing * 0.5 - 1024.0).abs() < 1e-3);
-        // The first two cell centres are ~4 m apart; the outer edge is much sparser.
+        assert!((p.nx as f32 * p.spacing * 0.5 - 20_000.0).abs() < 1e-3);
+        assert!((p.nz as f32 * p.spacing * 0.5 - 20_000.0).abs() < 1e-3);
+        assert_eq!(p.ny, 1, "surface probes only");
+        // The inner cells are ~20 m apart; the outer edge is much sparser.
         let half = p.nx as f32 * p.spacing * 0.5;
         let near = (warp_axis(1.5 / p.nx as f32) - warp_axis(0.5 / p.nx as f32)) * half;
         let far = (warp_axis(1.0 - 0.5 / p.nx as f32) - warp_axis(1.0 - 1.5 / p.nx as f32)) * half;
-        assert!(near < 8.0, "near spacing {near}");
-        assert!(far > 20.0, "far spacing {far}");
+        assert!(near < 32.0, "near spacing {near}");
+        assert!(far > 180.0, "far spacing {far}");
     }
 
     #[test]
@@ -452,13 +453,13 @@ mod tests {
     #[test]
     #[ignore = "probe bake benchmark"]
     fn bake_default_grid_bench() {
-        let mut f = SceneField::new(Vec2::splat(-1_088.0), 8.0, 273, 273);
+        let mut f = SceneField::new(Vec2::splat(-20_256.0), 128.0, 317, 317);
         f.albedo.iter_mut().for_each(|a| *a = [0.22, 0.24, 0.18]);
         for k in 0..f.nz {
             for i in 0..f.nx {
                 let c = f.cell_center(i, k);
-                if c.x > 350.0 && c.x < 700.0 {
-                    f.top[k * f.nx + i] = 600.0;
+                if c.x > 5_000.0 && c.x < 12_000.0 {
+                    f.top[k * f.nx + i] = 2_000.0;
                 }
             }
         }
@@ -466,7 +467,7 @@ mod tests {
         let t0 = std::time::Instant::now();
         let v = bake(&f, &p, 8);
         eprintln!("probe bake {:?}: {:.1} ms ({} probes)", v.dims(), t0.elapsed().as_secs_f64() * 1000.0, v.probes.len());
-        assert_eq!(v.probes.len(), 64 * 6 * 64);
+        assert_eq!(v.probes.len(), 128 * 128);
     }
 
     #[test]
@@ -548,7 +549,7 @@ mod tests {
                 }
             }
         }
-        let p = ProbeParams { nx: 4, ny: 3, nz: 4, spacing: 2.0, rays: 64, ..Default::default() };
+        let p = ProbeParams { nx: 4, ny: 3, nz: 4, spacing: 2.0, span: 48.0, rays: 64, ..Default::default() };
         let v = bake(&f, &p, 2);
         let inner = v.probe(1, 0, 1);
         assert!(inner.filled);
