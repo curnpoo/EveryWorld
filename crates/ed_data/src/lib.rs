@@ -4,6 +4,7 @@
 //! |--------------|------------------------------------------|------------------|
 //! | Elevation    | AWS Terrain Tiles (Terrarium PNG)        | various, open    |
 //! | Map vectors  | OpenFreeMap (OpenMapTiles schema, OSM)   | ODbL             |
+//! | Buildings    | Overture Maps (baked offline, pinned)    | ODbL / CDLA      |
 //! | Weather      | Open-Meteo                               | CC BY 4.0        |
 //! | Climate      | WorldClim 2.1 normals (embedded)         | CC BY 4.0        |
 //! | Land cover   | ESA WorldCover 2021 (COG range reads)    | CC BY 4.0        |
@@ -20,6 +21,7 @@ pub mod geocode;
 pub mod geology;
 pub mod http;
 pub mod mvt;
+pub mod overture;
 pub mod satellite;
 pub mod vector;
 pub mod weather;

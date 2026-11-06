@@ -272,7 +272,7 @@ mod tests {
     }
 
     fn flat_grid() -> TerrainGrid {
-        TerrainGrid { tile: ed_geo::tile::TileId { z: 14, x: 0, y: 0 }, segments: 4, heights: vec![10.0; 25] }
+        TerrainGrid { tile: ed_geo::tile::TileId { z: 14, x: 0, y: 0 }, segments: 4, heights: vec![10.0; 25], holes: Vec::new() }
     }
 
     #[test]

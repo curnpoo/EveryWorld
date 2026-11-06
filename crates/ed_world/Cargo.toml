@@ -10,3 +10,4 @@ glam = { workspace = true }
 serde = { workspace = true }
 log = { workspace = true }
 earcutr = "0.5"
+serde_json = { workspace = true }

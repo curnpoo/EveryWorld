@@ -19,6 +19,8 @@ pub struct TerrainGrid {
     pub segments: usize,
     /// (segments+1)^2 heights, row 0 = north.
     pub heights: Vec<f32>,
+    /// `segments^2` flags, row-major: collider quads removed over shallow tunnels. Empty = none.
+    pub holes: Vec<bool>,
 }
 
 impl TerrainGrid {
@@ -40,7 +42,12 @@ impl TerrainGrid {
                 heights.push(src.sample_cubic(u, v));
             }
         }
-        Self { tile, segments, heights }
+        Self {
+            tile,
+            segments,
+            heights,
+            holes: Vec::new(),
+        }
     }
 
     /// Same surface at `f`x the resolution (exact on the old triangles), so roads
@@ -53,11 +60,21 @@ impl TerrainGrid {
                 heights.push(self.sample(i as f64 / segments as f64, j as f64 / segments as f64));
             }
         }
-        Self { tile: self.tile, segments, heights }
+        Self {
+            tile: self.tile,
+            segments,
+            heights,
+            holes: Vec::new(),
+        }
     }
 
     pub fn flat(tile: TileId, segments: usize, h: f32) -> Self {
-        Self { tile, segments, heights: vec![h; (segments + 1) * (segments + 1)] }
+        Self {
+            tile,
+            segments,
+            heights: vec![h; (segments + 1) * (segments + 1)],
+            holes: Vec::new(),
+        }
     }
 
     #[inline]
@@ -210,6 +227,9 @@ pub fn build_collider(grid: &TerrainGrid, proj: &TileProjector) -> (Vec<Vec3>, V
     let mut tris = Vec::with_capacity(seg * seg * 2);
     for j in 0..seg {
         for i in 0..seg {
+            if grid.holes.get(j * seg + i).copied().unwrap_or(false) {
+                continue;
+            }
             let a = (j * n + i) as u32;
             let (b, c) = (a + 1, a + n as u32);
             let d = c + 1;

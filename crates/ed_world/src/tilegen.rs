@@ -48,6 +48,10 @@ pub struct TileBuild {
     /// Far sun-shadow textures (`EW_FAR_SHADOWS=1` only, see `farshadow.rs`).
     pub far_shadow: Option<crate::farshadow::FarShadowTex>,
     pub collider: Option<(Vec<Vec3>, Vec<[u32; 3]>)>,
+    /// Bridge decks and tunnel tubes (the terrain collider does not cover them).
+    pub road_collider: Option<(Vec<Vec3>, Vec<[u32; 3]>)>,
+    /// Road network for AI and traffic (nodes, lanes, speeds), tile-local.
+    pub nav: Option<Arc<roads::nav::NavTile>>,
     pub water: MeshData,
     pub roads: MeshData,
     /// Distant building versions, one per detail chunk (always shown unless
@@ -89,6 +93,26 @@ pub fn prefetch(job: &TileJob) {
     {
         let _ = vector::prefetch(&job.cache, tpl, tile.ancestor(tile.z.min(vector::MAX_ZOOM)).0);
     }
+    if tile.z >= 14 && roads::v2_enabled() {
+        // The road network is assembled from the 3x3 block around the tile.
+        roads::ground::prefetch(&job.cache, tile);
+        if let Some(tpl) = &job.vector_template {
+            for (dx, dy) in [
+                (-1, -1),
+                (0, -1),
+                (1, -1),
+                (-1, 0),
+                (1, 0),
+                (-1, 1),
+                (0, 1),
+                (1, 1),
+            ] {
+                if let Some(n) = tile.offset(dx, dy) {
+                    let _ = vector::prefetch(&job.cache, tpl, n);
+                }
+            }
+        }
+    }
     if crate::farshadow::enabled() {
         crate::farshadow::prefetch(&job.cache, tile);
     }
@@ -100,7 +124,7 @@ pub fn prefetch(job: &TileJob) {
     }
 }
 
-fn elevation_zoom(z: u8) -> u8 {
+pub(crate) fn elevation_zoom(z: u8) -> u8 {
     z.min(14)
 }
 
@@ -227,7 +251,44 @@ pub fn build(job: &TileJob) -> TileBuild {
     }
     // Roads: decide bed heights, then cut/fill the grid to them so the road,
     // its collider, buildings and trees all share one ground.
+    let mut road_net: Option<(
+        roads::net::RoadNet,
+        roads::solve::Solved,
+        roads::ground::GroundFn,
+    )> = None;
     let road_plan = match &vt {
+        Some((vid, t)) if tile.z >= 14 && *vid == tile && roads::v2_enabled() => {
+            // v2: one network over the 3x3 block of vector tiles, solved for heights in world space.
+            let (net, solved, gfn) =
+                roads::build_v2(&job.cache, job.vector_template.as_deref(), tile, t);
+            if std::env::var_os("EW_TILE_STATS").is_some() {
+                let st = &solved.stats;
+                eprintln!(
+                    "ROADS v2 z{} edges={} samples={} bridges={} tunnels={} crossings={} deficits={} max_fill={:.1} max_cut={:.1}",
+                    tile.z,
+                    net.edges.len(),
+                    st.samples,
+                    st.bridges,
+                    st.tunnels,
+                    st.crossings,
+                    st.deficits.len(),
+                    st.max_fill,
+                    st.max_cut
+                );
+            }
+            let tp = std::time::Instant::now();
+            let p = roads::plan2::plan_v2(&net, &solved, &proj, &grid, &surface);
+            if std::env::var_os("EW_ROAD_TALLY").is_some() {
+                eprintln!("  ROADTIME plan_v2={:?}", tp.elapsed());
+            }
+            if p.grades_terrain() {
+                grid = grid.upsampled(2);
+                roads::grade(&mut grid, &p);
+                roads::plan2::carve_holes(&mut grid, &p);
+            }
+            road_net = Some((net, solved, gfn));
+            Some(p)
+        }
         Some((vid, t)) if tile.z >= 14 && *vid == tile => {
             let mut p = roads::plan(t, &proj, &grid, &surface);
             if p.grades_terrain() {
@@ -261,6 +322,8 @@ pub fn build(job: &TileJob) -> TileBuild {
         detail_tex,
         far_shadow: None,
         collider,
+        road_collider: None,
+        nav: None,
         water: MeshData::default(),
         roads: MeshData::default(),
         building_lod: Vec::new(),
@@ -304,8 +367,73 @@ pub fn build(job: &TileJob) -> TileBuild {
             let r = roads::generate(road_plan.as_ref().unwrap(), &proj, &grid, &surface, region);
             out.placements.extend(props::place_street_props(crate::library::get(), &r.props, up));
             out.stats.props = r.props.len();
-            let ctx = BuildingContext { proj: &proj, grid: &grid, surface: &surface, biome, roads: &r.centerlines };
-            let specs = buildings::prepare(vt, &ctx, region);
+            // Overture's footprints (baked offline) replace OpenFreeMap's where available.
+            let mut overture = ed_data::overture::building_tile(&job.cache, tile);
+            let wm = tile.width_m();
+            // Parking structures become open, drivable decks instead of boxes (Overture's `class = parking`).
+            let mut garage_vis = MeshData::default();
+            let mut garage_col = MeshData::default();
+            if let Some(ot) = overture.as_mut() {
+                for layer in ot.layers.iter_mut().filter(|l| l.name == "building") {
+                    let ext = layer.extent as f64;
+                    layer.features.retain(|f| {
+                        if f.str("class") != Some("parking")
+                            || f.num("render_min_height").unwrap_or(0.0) > 0.5
+                        {
+                            return true;
+                        }
+                        let Some((outer, _)) = ed_data::mvt::polygons(f).into_iter().next() else {
+                            return true;
+                        };
+                        let m2 =
+                            ed_data::mvt::ring_area(&outer).abs() as f64 * (wm / ext) * (wm / ext);
+                        if (m2 as f32) < crate::garage::MIN_AREA_M2 {
+                            return true;
+                        }
+                        let ring: Vec<Vec3> = outer
+                            .iter()
+                            .map(|p| {
+                                proj.local(
+                                    p[0] as f64 / ext,
+                                    p[1] as f64 / ext,
+                                    grid.sample(
+                                        (p[0] as f64 / ext).clamp(0.0, 1.0),
+                                        (p[1] as f64 / ext).clamp(0.0, 1.0),
+                                    ) as f64,
+                                )
+                            })
+                            .collect();
+                        let floors =
+                            crate::garage::floors_for(f.num("render_height").map(|h| h as f32));
+                        match crate::garage::build(&ring, up, floors) {
+                            Some(g) => {
+                                garage_vis.append(&g.visible);
+                                garage_col.append(&g.collider);
+                                false
+                            }
+                            None => true,
+                        }
+                    });
+                }
+            }
+            let bvt = overture.as_ref().unwrap_or(vt);
+            let keep = road_net
+                .as_ref()
+                .map(|(n, _, _)| roads::keepout::KeepOut::new(n));
+            let keep_fn = keep
+                .as_ref()
+                .map(|k| move |u: f64, v: f64| k.blocks(u * wm, v * wm));
+            let ctx = BuildingContext {
+                proj: &proj,
+                grid: &grid,
+                surface: &surface,
+                biome,
+                roads: &r.centerlines,
+                keepout: keep_fn
+                    .as_ref()
+                    .map(|f| f as &(dyn Fn(f64, f64) -> bool + Sync)),
+            };
+            let specs = buildings::prepare(bvt, &ctx, region);
             out.stats.buildings = specs.len();
             if crate::farshadow::enabled() {
                 far_bldgs.extend(specs.iter().map(|s| s.shadow_outline()));
@@ -321,11 +449,40 @@ pub fn build(job: &TileJob) -> TileBuild {
                 ctx: buildings::DetailCtx { proj, grid: grid.clone(), roads: r.centerlines.clone() },
                 chunks,
             }));
+            let mut deck_col = r.collider;
+            deck_col.append(&garage_col);
+            if !deck_col.is_empty() {
+                let verts: Vec<Vec3> = deck_col.positions.iter().map(|p| Vec3::from(*p)).collect();
+                let tris: Vec<[u32; 3]> = deck_col
+                    .indices
+                    .chunks_exact(3)
+                    .map(|t| [t[0], t[1], t[2]])
+                    .collect();
+                out.road_collider = Some((verts, tris));
+            }
+            out.street_props.append(&garage_vis);
+            if let Some((net, solved, gfn)) = &road_net {
+                out.nav = Some(Arc::new(roads::nav::NavTile::build(
+                    net, solved, &**gfn, &proj, region,
+                )));
+            }
             out.roads = r.mesh;
         } else if tile.z == 13 && *vid == tile {
             // Far tiles: real OSM footprints as cheap massing only (no roads, props, detail, colliders).
-            let region = Region::locate(center.lat_deg, center.lon_deg, ((hmin + hmax) * 0.5) as f64, buildings::tile_is_dense(vt));
-            let ctx = BuildingContext { proj: &proj, grid: &grid, surface: &surface, biome, roads: &[] };
+            let region = Region::locate(
+                center.lat_deg,
+                center.lon_deg,
+                ((hmin + hmax) * 0.5) as f64,
+                buildings::tile_is_dense(vt),
+            );
+            let ctx = BuildingContext {
+                proj: &proj,
+                grid: &grid,
+                surface: &surface,
+                biome,
+                roads: &[],
+                keepout: None,
+            };
             let specs = buildings::prepare(vt, &ctx, region);
             out.stats.buildings = specs.len();
             let mut chunks: HashMap<(u8, u8), Vec<buildings::BuildingSpec>> = HashMap::new();
@@ -392,6 +549,109 @@ pub fn build(job: &TileJob) -> TileBuild {
 mod tests {
     use super::*;
     use ed_geo::Geodetic;
+
+    /// Legacy versus v2 roads on real tiles, including big interchanges. Prints triangle counts, solver
+    /// statistics and timings. `cargo test --release -p ed_world road_compare -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn road_compare() {
+        let cache = DiskCache::new(std::env::temp_dir().join("ed-net-test"));
+        let tpl = vector::tile_template(&cache).ok();
+        for (name, lat, lon) in [
+            ("Central Park", 40.7812, -73.9665),
+            ("Zermatt", 46.0207, 7.7491),
+            ("Shibuya", 35.6595, 139.7005),
+            ("LA Four Level", 34.0561, -118.2358),
+            ("Dallas High Five", 32.9056, -96.7693),
+            ("Zurich Hardbruecke", 47.3857, 8.5171),
+        ] {
+            let tile = TileId::containing(lat, lon, 14);
+            let job = TileJob {
+                tile,
+                frame: EnuFrame::new(Geodetic::new(lat, lon, 0.0)),
+                cache: cache.clone(),
+                vector_template: tpl.clone(),
+            };
+            prefetch(&job);
+            for v2 in [false, true] {
+                roads::force_v2(Some(v2));
+                let t0 = std::time::Instant::now();
+                let b = build(&job);
+                let col = b.road_collider.as_ref().map_or(0, |c| c.1.len());
+                eprintln!(
+                    "{name:18} {} road_tris={:7} deck_collider_tris={:6} terrain_collider_tris={:6} nav_edges={:4} total={:?} errors={}",
+                    if v2 { "v2    " } else { "legacy" },
+                    b.roads.triangle_count(),
+                    col,
+                    b.collider.as_ref().map_or(0, |c| c.1.len()),
+                    b.nav.as_ref().map_or(0, |n| n.edges.len()),
+                    t0.elapsed(),
+                    b.errors.len()
+                );
+            }
+        }
+        roads::force_v2(None);
+    }
+
+    /// Garages from baked Overture tiles: `tools/bake_overture.py` first.
+    #[test]
+    #[ignore]
+    fn garages_real() {
+        let cache = DiskCache::new(std::env::temp_dir().join("ed-net-test"));
+        let tpl = vector::tile_template(&cache).ok();
+        for (name, lat, lon) in [("Shibuya", 35.6595, 139.7005), ("LAX", 33.9425, -118.4081)] {
+            let tile = TileId::containing(lat, lon, 14);
+            let job = TileJob {
+                tile,
+                frame: EnuFrame::new(Geodetic::new(lat, lon, 0.0)),
+                cache: cache.clone(),
+                vector_template: tpl.clone(),
+            };
+            let b = build(&job);
+            eprintln!(
+                "{name}: garage+prop mesh tris={} road_collider_tris={} buildings={}",
+                b.street_props.triangle_count(),
+                b.road_collider.as_ref().map_or(0, |c| c.1.len()),
+                b.stats.buildings
+            );
+        }
+    }
+
+    /// Dump the solved network of a tile as JSON for plotting: `EW_DUMP=/path/out.json EW_LL=lat,lon`.
+    #[test]
+    #[ignore]
+    fn dump_roads() {
+        let Some(out) = std::env::var_os("EW_DUMP") else {
+            return;
+        };
+        let ll: Vec<f64> = std::env::var("EW_LL")
+            .unwrap()
+            .split(',')
+            .map(|v| v.parse().unwrap())
+            .collect();
+        let cache = DiskCache::new(std::env::temp_dir().join("ed-net-test"));
+        let tpl = vector::tile_template(&cache).ok();
+        let tile = TileId::containing(ll[0], ll[1], 14);
+        let vt = vector::fetch(&cache, tpl.as_ref().unwrap(), tile).unwrap();
+        let (net, solved, gfn) = roads::build_v2(&cache, tpl.as_deref(), tile, &vt);
+        let mut rows = Vec::new();
+        for e in &solved.edges {
+            let ne = &net.edges[e.net_idx];
+            let pts: Vec<[f64; 3]> = (0..e.pts.len())
+                .map(|k| [e.pts[k][0], e.pts[k][1], e.z[k] as f64])
+                .collect();
+            let g: Vec<f64> = (0..e.pts.len()).map(|k| e.ground[k] as f64).collect();
+            rows.push(serde_json::json!({"class": format!("{:?}", ne.class), "level": ne.level(), "bridge": ne.bridge, "tunnel": ne.tunnel, "pts": pts, "ground": g}));
+        }
+        let cross: Vec<_> = solved
+            .crossings
+            .iter()
+            .map(|c| serde_json::json!({"p": c.p, "upper": c.upper, "lower": c.lower}))
+            .collect();
+        let _ = &gfn;
+        let doc = serde_json::json!({"wm": net.wm, "edges": rows, "crossings": cross, "deficits": solved.stats.deficits.iter().map(|d| serde_json::json!([d.0, d.1])).collect::<Vec<_>>()});
+        std::fs::write(out, doc.to_string()).unwrap();
+    }
 
     /// Real data, real places. `cargo test -p ed_world tilegen -- --ignored --nocapture`
     #[test]
