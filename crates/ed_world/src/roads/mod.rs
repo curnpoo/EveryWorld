@@ -367,6 +367,9 @@ pub enum Bed {
     Bridge,
     /// Covered tunnel section (low arch or full tube): drawn as a tube, terrain render mesh untouched.
     Tunnel,
+    /// Road on a high embankment held by retaining walls: a solid section dug into the natural ground (so the
+    /// terrain is not graded under it), with its own collider.
+    Fill,
 }
 
 #[derive(Debug, Clone)]
@@ -392,6 +395,8 @@ struct Item {
     portal: (bool, bool),
     /// Arc ranges (m from the item start) where another road passes underneath a deck: no piers there.
     clear_arcs: Vec<(f32, f32)>,
+    /// Depth of the solid section under the driving surface (`Bed::Fill`).
+    depth: f32,
 }
 
 /// Road layout for one tile: bed heights decided once, used both to carve the
@@ -418,7 +423,7 @@ impl RoadPlan {
     pub fn grades_terrain(&self) -> bool {
         self.items
             .iter()
-            .any(|i| !matches!(i.kind, Bed::Bridge | Bed::Tunnel))
+            .any(|i| !matches!(i.kind, Bed::Bridge | Bed::Tunnel | Bed::Fill))
     }
 }
 
@@ -474,7 +479,7 @@ pub fn plan(vt: &mvt::Tile, proj: &TileProjector, grid: &TerrainGrid, surface: &
                     let n = ground.len() - 1;
                     (0..=n).map(|i| a + (b - a) * i as f32 / n as f32).collect()
                 }
-                Bed::Conform | Bed::Tunnel => smooth(&ground, 5, 2),
+                Bed::Conform | Bed::Tunnel | Bed::Fill => smooth(&ground, 5, 2),
             };
             let pts = uv
                 .iter()
@@ -499,6 +504,7 @@ pub fn plan(vt: &mvt::Tile, proj: &TileProjector, grid: &TerrainGrid, surface: &
                 section: 0,
                 portal: (false, false),
                 clear_arcs: Vec::new(),
+                depth: 0.0,
             });
         }
     }
@@ -555,7 +561,7 @@ pub fn grade(grid: &mut TerrainGrid, plan: &RoadPlan) {
     for it in plan
         .items
         .iter()
-        .filter(|i| !matches!(i.kind, Bed::Bridge | Bed::Tunnel))
+        .filter(|i| !matches!(i.kind, Bed::Bridge | Bed::Tunnel | Bed::Fill))
     {
         let hw = it.width as f64 / 2.0;
         // Wide roads: every triangle under the deck lies on the flat bench. Trails
@@ -624,7 +630,7 @@ pub fn generate(plan: &RoadPlan, proj: &TileProjector, grid: &TerrainGrid, surfa
         // Re-snap the centerline to the graded terrain, so every offset below is
         // relative to the surface that actually renders. Decks and tubes keep their line.
         let snapped: Vec<Vec3>;
-        let pts: &Vec<Vec3> = if matches!(it.kind, Bed::Bridge | Bed::Tunnel)
+        let pts: &Vec<Vec3> = if matches!(it.kind, Bed::Bridge | Bed::Tunnel | Bed::Fill)
             || (plan.v2 && it.kind == Bed::Graded)
         {
             &it.pts
@@ -667,6 +673,16 @@ pub fn generate(plan: &RoadPlan, proj: &TileProjector, grid: &TerrainGrid, surfa
                     .map(|i| it.bed[i] - depth - grid.sample(it.uv[i].0, it.uv[i].1))
                     .collect();
                 structures::piers(&mut out.mesh, pts, up, hw, depth, &room, &it.clear_arcs);
+            }
+            Bed::Fill => {
+                // An embankment held by retaining walls: parapet, curb, asphalt, and a solid body down into the ground.
+                let deck = simplify_deck(pts, DECK_TOL_M, DECK_MAX_SPAN_M);
+                let prof = structures::deck_profile(hw, it.depth, &kit);
+                structures::sweep_raw(&mut out.mesh, &deck, up, &prof);
+                structures::sweep_raw(&mut out.collider, &deck, up, &prof);
+                if it.paved && class.rank() >= 1 {
+                    markings(&mut out.mesh, &deck, up, None, true, class, &kit, it.oneway, hw);
+                }
             }
             Bed::Tunnel => {
                 let tube = simplify_deck(pts, DECK_TOL_M, DECK_MAX_SPAN_M);

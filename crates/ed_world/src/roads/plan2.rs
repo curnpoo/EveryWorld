@@ -22,6 +22,10 @@ struct Pt {
     z: f32,
     k: u8,
     arc: f32,
+    /// Smoothed natural ground under the point.
+    g: f32,
+    /// Embankment high enough, and level enough across, for retaining walls.
+    w: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -53,6 +57,8 @@ fn lerp(a: &Pt, b: &Pt, t: f64) -> Pt {
         z: a.z + (b.z - a.z) * t as f32,
         k: a.k,
         arc: a.arc + (b.arc - a.arc) * t as f32,
+        g: a.g + (b.g - a.g) * t as f32,
+        w: a.w,
     }
 }
 
@@ -124,6 +130,8 @@ pub fn plan_v2(
                     z: s.z[k],
                     k: s.kind[k],
                     arc: s.s[k],
+                    g: s.ground[k],
+                    w: false,
                 })
                 .collect(),
             None => {
@@ -141,6 +149,8 @@ pub fn plan_v2(
                             z: 0.0,
                             k: 0,
                             arc,
+                            g: 0.0,
+                            w: false,
                         }
                     })
                     .collect()
@@ -149,12 +159,16 @@ pub fn plan_v2(
         if pts.len() < 2 {
             continue;
         }
+        let mut pts = pts;
+        if sol.is_some() && !e.bridge && !e.tunnel {
+            mark_walled(&mut pts, width::carriageway(e.class, row[ni]) as f64 / 2.0, wm, grid);
+        }
         let pts = split(&pts, [emit_r, grade_r]);
         let seg_k = |i: usize| -> u8 {
             if e.tunnel {
                 pts[i].k.max(pts[i + 1].k)
             } else {
-                0
+                (pts[i].w && pts[i + 1].w) as u8
             }
         };
         let seg_c = |i: usize| -> u8 {
@@ -188,15 +202,15 @@ pub fn plan_v2(
             } else if e.bridge {
                 Bed::Bridge
             } else if sol.is_some() {
-                Bed::Graded
+                if k == 1 { Bed::Fill } else { Bed::Graded }
             } else {
                 Bed::Conform
             };
             // Halo pieces only matter where they reshape the terrain.
-            if c == 1 && !matches!(kind, Bed::Graded | Bed::Conform) {
+            if c == 1 && !matches!(kind, Bed::Graded | Bed::Conform | Bed::Fill) {
                 continue;
             }
-            if c == 1 && kind == Bed::Conform {
+            if c == 1 && matches!(kind, Bed::Conform | Bed::Fill) {
                 continue;
             }
             let run = &pts[a..=b + 1];
@@ -218,7 +232,7 @@ pub fn plan_v2(
             let urban = surface
                 .cover_at(uv[0].0.clamp(0.0, 1.0), uv[0].1.clamp(0.0, 1.0))
                 .is_urban();
-            let width = if kind == Bed::Graded || kind == Bed::Bridge || kind == Bed::Tunnel {
+            let width = if matches!(kind, Bed::Graded | Bed::Bridge | Bed::Tunnel | Bed::Fill) {
                 width::carriageway(e.class, row[ni])
             } else {
                 e.class.width()
@@ -256,6 +270,11 @@ pub fn plan_v2(
                     kind == Bed::Tunnel && next_open,
                 ),
                 clear_arcs,
+                depth: if kind == Bed::Fill {
+                    (run.iter().map(|p| p.z - p.g).fold(0.0f32, f32::max) + 0.8).clamp(1.5, 14.0)
+                } else {
+                    0.0
+                },
             });
         }
     }
@@ -363,6 +382,44 @@ pub fn plan_v2(
     plan
 }
 
+/// Samples of a ground road that sit on a real embankment: at least `FILL_MIN_M` above the natural ground, with no
+/// hillside rising to the road level on either side (a sidehill cut must stay a graded cut). Runs shorter than
+/// `FILL_RUN_M` are dropped.
+pub const FILL_MIN_M: f32 = 2.5;
+pub const FILL_RUN_M: f32 = 24.0;
+
+fn mark_walled(pts: &mut [Pt], hw: f64, wm: f64, grid: &TerrainGrid) {
+    let n = pts.len();
+    let off = hw + 3.5;
+    for k in 0..n {
+        let (a, b) = (pts[k.saturating_sub(1)], pts[(k + 1).min(n - 1)]);
+        let l = ((b.x - a.x).hypot(b.y - a.y)).max(1e-9);
+        let (nx, ny) = (-(b.y - a.y) / l, (b.x - a.x) / l);
+        let side = |s: f64| {
+            let (u, v) = (((pts[k].x + nx * off * s) / wm).clamp(0.0, 1.0), ((pts[k].y + ny * off * s) / wm).clamp(0.0, 1.0));
+            grid.sample(u, v)
+        };
+        pts[k].w = pts[k].z - pts[k].g >= FILL_MIN_M && side(1.0).max(side(-1.0)) <= pts[k].z + 0.3;
+    }
+    let mut i = 0;
+    while i < n {
+        if !pts[i].w {
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        while j + 1 < n && pts[j + 1].w {
+            j += 1;
+        }
+        if pts[j].arc - pts[i].arc < FILL_RUN_M {
+            for p in &mut pts[i..=j] {
+                p.w = false;
+            }
+        }
+        i = j + 1;
+    }
+}
+
 /// Mark the terrain collider's quads over low-arch tunnel sections as holes, so a car can drive through the
 /// shallow cover (the render mesh is untouched; the tube mesh is what you see and collide with inside).
 pub fn carve_holes(grid: &mut TerrainGrid, plan: &RoadPlan) {
@@ -420,7 +477,44 @@ mod tests {
             z: x as f32,
             k: 0,
             arc: x as f32,
+            g: 0.0,
+            w: false,
         }
+    }
+
+    fn road(len: usize, z: f32, g: f32) -> Vec<Pt> {
+        (0..len).map(|i| Pt { x: 100.0 + i as f64 * 4.0, y: 600.0, z, k: 0, arc: i as f32 * 4.0, g, w: false }).collect()
+    }
+
+    #[test]
+    fn embankment_is_walled_but_a_sidehill_cut_is_not() {
+        let tile = ed_geo::tile::TileId::new(14, 8544, 5827);
+        let wm = tile.width_m();
+        let flat = TerrainGrid::flat(tile, 64, 0.0);
+        let mut p = road(20, 5.0, 0.0);
+        mark_walled(&mut p, 5.0, wm, &flat);
+        assert!(p.iter().all(|q| q.w), "5 m on flat ground over 76 m is a walled fill");
+        // Short run: dropped.
+        let mut short = road(4, 5.0, 0.0);
+        mark_walled(&mut short, 5.0, wm, &flat);
+        assert!(short.iter().all(|q| !q.w));
+        // Low fill: graded, not walled.
+        let mut low = road(20, 1.5, 0.0);
+        mark_walled(&mut low, 5.0, wm, &flat);
+        assert!(low.iter().all(|q| !q.w));
+        // Hillside on one side rising above the road: stays a graded cut.
+        let mut hill = TerrainGrid::flat(tile, 64, 0.0);
+        let n = 65;
+        for j in 0..n {
+            for i in 0..n {
+                if (j as f64) / 64.0 * wm < 600.0 {
+                    hill.heights[j * n + i] = 9.0;
+                }
+            }
+        }
+        let mut side = road(20, 5.0, 0.0);
+        mark_walled(&mut side, 5.0, wm, &hill);
+        assert!(side.iter().all(|q| !q.w));
     }
 
     #[test]
