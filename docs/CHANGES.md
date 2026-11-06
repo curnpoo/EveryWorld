@@ -1,5 +1,10 @@
 # Changes
 
+## 2026-11-06: docs only, BeamNG.Earth lessons and tile-load hitch investigation
+- New `docs/plans/beamng-earth-lessons.md`: what BeamNG.Earth (MIT, github.com/TecnaGamer/BeamNG.Earth) does for roads, data sources, terrain grading, ground imagery, trees, buildings, streets, nav graph and streaming, compared to us, with an ordered plan (R0-R13 for roads) and where each step fits the roadmap. Read from their docs and module headers; their mod was not run.
+- New `docs/plans/tile-load-hitch.md`: per-tile cost sheet (worker CPU 1.0-3.5 s warm, 1.9-4.9 s cold; 301k terrain, 140k-587k road and up to 565k wall triangles per z14 tile) and ranked hypotheses for the white-tile-then-freeze symptom. Leading cause: `ed_metal::world::WorldRenderer::upload` clusters and simplifies every mesh over 40k triangles on the main thread (~0.45 ms per 1k triangles in a CPU replica, ~250-700 ms per dense tile on a Linux box), invisible to `FrameBudget`. White comes from the `unwrap_or(&self.white)` texture fallback in the terrain draw.
+- No code changed. Needs on the Mac: steps M1-M5 and A0-A6 in the hitch doc to confirm or reject each hypothesis. Licence flag: `ed_data/satellite.rs` says the EOX Sentinel-2 mosaic is CC BY-NC-SA 4.0 (non-commercial).
+
 ## 2026-11-05: native shadows to 20 km (cached), screen-space contact shadows
 - `world.rs`: cascades 4 (to 4 km) and 5 (to 20 km) are now camera-centred spheres, so turning the camera no longer changes their matrices; the existing per-cascade hash (matrix + caster list, texel-snapped positions) then skips the re-render until you move a texel (`shadow_skipped`). Cascade 5 now casts buildings too (casters smaller than 1.5 texels, ~29 m at 20 km, are culled; terrain always casts).
 - `post.metal` `post_contact` + `post.rs`: port of Bevy's `ContactShadows` (12 steps, 0.25 m thickness, 1.5 m reach, scaled with distance). Marches toward the sun through the linear depth buffer, darkens HDR by 0.45 x N.L-gated, in place before SSR. `EW_CONTACT=0` disables it (same switch as Bevy).
