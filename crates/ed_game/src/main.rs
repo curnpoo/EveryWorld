@@ -95,6 +95,9 @@ fn main() {
     .add_systems(Update, headless::quit_after);
     if cfg.headless {
         app.add_plugins(headless::HeadlessPlugin);
+    } else if cfg.lookdev.is_none() {
+        // `EW_HOP` fast-travel harness, also usable for windowed visual checks.
+        app.add_systems(Update, headless::scripted_hops);
     }
     if let Some(dir) = &cfg.lookdev {
         std::fs::create_dir_all(dir).expect("create lookdev dir");

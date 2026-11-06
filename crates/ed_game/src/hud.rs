@@ -59,8 +59,14 @@ fn pill(bg: Color) -> (Node, BackgroundColor) {
 #[derive(Component)]
 struct HudRoot;
 
-fn hud_visibility(cfg: Res<crate::config::Config>, state: Res<State<crate::menu::GameState>>, mut roots: Query<&mut Visibility, With<HudRoot>>) {
-    let want = if *state.get() == crate::menu::GameState::Playing && !cfg.no_hud { Visibility::Inherited } else { Visibility::Hidden };
+fn hud_visibility(
+    cfg: Res<crate::config::Config>,
+    state: Res<State<crate::menu::GameState>>,
+    loading: Option<Res<crate::loading::LoadingScreen>>,
+    mut roots: Query<&mut Visibility, With<HudRoot>>,
+) {
+    let loading = loading.is_some_and(|l| l.active);
+    let want = if *state.get() == crate::menu::GameState::Playing && !cfg.no_hud && !loading { Visibility::Inherited } else { Visibility::Hidden };
     for mut v in &mut roots {
         v.set_if_neq(want);
     }
@@ -322,6 +328,7 @@ fn stats_visibility(gfx: Res<GraphicsSettings>, mut roots: Query<&mut Visibility
 fn update_toast(
     time: Res<Time>,
     state: Res<State<GameState>>,
+    loading: Option<Res<crate::loading::LoadingScreen>>,
     mut commands: Commands,
     notice: Option<ResMut<ArrivalNotice>>,
     mut roots: Query<&mut Visibility, With<ArrivalToast>>,
@@ -340,7 +347,7 @@ fn update_toast(
             t.0 = format!("You've arrived at {}", notice.name);
         }
     }
-    let show = playing && time.elapsed_secs_f64() < notice.until_s;
+    let show = playing && !loading.is_some_and(|l| l.active) && time.elapsed_secs_f64() < notice.until_s;
     for mut v in &mut roots {
         v.set_if_neq(if show { Visibility::Inherited } else { Visibility::Hidden });
     }

@@ -44,19 +44,25 @@ impl Plugin for PlayerPlugin {
             .init_resource::<Settling>()
             .add_systems(
                 FixedUpdate,
-                (ground_probe, drive_player, hold_until_ground)
+                (ground_probe, drive_player.run_if(player_ready), hold_until_ground)
                     .chain()
                     .run_if(in_state(crate::menu::GameState::Playing)),
             )
             .add_systems(
                 Update,
                 (
-                    player_input.run_if(in_state(crate::menu::GameState::Playing)),
+                    player_input.run_if(in_state(crate::menu::GameState::Playing)).run_if(player_ready),
                     camera_follow,
                 )
                     .chain(),
             );
     }
+}
+
+/// While a loading screen is up the local avatar is held still; the rest of the
+/// world (and any other players) keeps simulating.
+fn player_ready(loading: Option<Res<crate::loading::LoadingScreen>>) -> bool {
+    !loading.is_some_and(|l| l.active)
 }
 
 /// Loose spring-damper state for the third-person camera focus point.

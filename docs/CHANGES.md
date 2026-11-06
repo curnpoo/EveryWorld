@@ -1,3 +1,24 @@
+## 2026-11-06: loading screen copy + local-only player freeze
+- The overlay is a centred stack: a large **Welcome to** line, the place name under it,
+  then **Loading the world**, the progress bar and the "Streaming the world / Finishing
+  geometry" detail line. The whole overlay (text, bar, backdrop) fades in over 0.25 s
+  and out over 0.35 s; before this only the backdrop faded.
+- The overlay is a `GlobalZIndex(100)` root and the HUD, minimap and arrival toast are
+  hidden while it is up, so the compass, stats, mode pill and "You've arrived" popup no
+  longer draw over the loading screen.
+- Only the local player is frozen while it is up: the drop point is pinned, linear and
+  angular velocity are zeroed, the body gets `RigidBodyDisabled`, and the player
+  input/drive systems are gated. The rest of the physics world keeps stepping, so
+  remote entities are unaffected (no global `Time<Physics>` pause).
+- The place name is re-read from `ArrivalNotice` if it was not present on the first
+  frame (the notice is inserted in the same command flush as the spawn serial).
+- `EW_HOP` now also runs in windowed sessions (it was headless-only), so a spawn can be
+  scripted for visual checks.
+- Verified headless (Grand Canyon -> Shibuya hop): opened as "Shibuya, Japan" and the
+  player drifted 0.00 m across a 25 s timeout load. Verified windowed: the clean stack
+  reads "Welcome to / Shibuya, Japan / Loading the world / Streaming the world 38%" with
+  the HUD, minimap, crosshair, control hints and arrival toast all hidden.
+
 ## 2026-11-06: pause menu Debug tab with live renderer diagnostics
 - Added a sixth pause-menu tab, **Debug**. It has live toggles for probe GI,
   shadow maps, AO, bloom, ocean FFT, and the native world diagnostic view

@@ -193,10 +193,14 @@ fn sync_cursor(
     }
 }
 
-fn sync_crosshair(mode: Res<InputMode>, mut q: Query<&mut Visibility, With<Crosshair>>) {
+fn sync_crosshair(
+    mode: Res<InputMode>,
+    loading: Option<Res<crate::loading::LoadingScreen>>,
+    mut q: Query<&mut Visibility, With<Crosshair>>,
+) {
     let want = match *mode {
-        InputMode::Controller => Visibility::Inherited,
-        InputMode::Keyboard => Visibility::Hidden,
+        InputMode::Controller if !loading.is_some_and(|l| l.active) => Visibility::Inherited,
+        _ => Visibility::Hidden,
     };
     for mut v in &mut q {
         v.set_if_neq(want);
@@ -352,10 +356,12 @@ fn update_hints(
     state: Res<State<GameState>>,
     view: Res<MenuView>,
     map: Res<crate::mapview::MapState>,
+    loading: Option<Res<crate::loading::LoadingScreen>>,
     bars: Query<Entity, With<HintBar>>,
-    mut last: Local<Option<(InputMode, GameState, MenuView, bool)>>,
+    mut last: Local<Option<(InputMode, GameState, MenuView, bool, bool)>>,
 ) {
-    let key = (*mode, *state.get(), *view, map.selected.is_some());
+    let loading = loading.is_some_and(|l| l.active);
+    let key = (*mode, *state.get(), *view, map.selected.is_some(), loading);
     if *last == Some(key) {
         return;
     }
@@ -363,7 +369,7 @@ fn update_hints(
     for e in &bars {
         commands.entity(e).despawn();
     }
-    if *mode != InputMode::Controller {
+    if *mode != InputMode::Controller || key.4 {
         return;
     }
     let items = hints_for(key.1, key.2, key.3);
