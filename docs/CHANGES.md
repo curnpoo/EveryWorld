@@ -1,20 +1,3 @@
-## 2026-11-06: break far-field ground-texture repeats
-
-- The cheap single-tap path used beyond 1200 m (and on triplanar cliffs) now
-  randomises every texture tile: each tile gets its own rotation, anisotropic
-  scale, and offset from a deterministic per-cell hash. A second copy is still
-  blended in by the macro-noise selector, but both copies are per-cell random
-  instead of one global rotated copy, so the same ridge/ripple never lines up
-  across the landscape.
-- The normal map shares the exact same transform; `tap_rot` / `gtap_rot` rotate
-  the sampled tangent normal back into world space before blending, so the
-  relief stays registered with the albedo and the same anti-tiling applies to
-  normals and displacement.
-- Applied to both the native Metal (`crates/ed_metal/shaders/world.metal`) and
-  Bevy (`crates/ed_game/src/shaders/terrain.wesl`) terrain shaders.
-- Needs Mac check: desert / sand view from 1500 m and a grass/farmland view
-  from 500-2000 m; no visible grid, stripes, or swimming texture.
-
 ## 2026-11-06: loading screen copy + local-only player freeze
 - The overlay is a centred stack: a large **Welcome to** line, the place name under it,
   then **Loading the world**, the progress bar and the "Streaming the world / Finishing
@@ -35,25 +18,6 @@
   player drifted 0.00 m across a 25 s timeout load. Verified windowed: the clean stack
   reads "Welcome to / Shibuya, Japan / Loading the world / Streaming the world 38%" with
   the HUD, minimap, crosshair, control hints and arrival toast all hidden.
-
-## 2026-11-06: finer, non-repeating ground textures
-- Ground layer repeats are 45% smaller: rock/snow 8 -> 4.4 m, grass/dry
-  grass/farmland 6 -> 3.2 m, paving 4.8 -> 2.64 m, sand 4 -> 2.2 m, and the
-  remaining detail layers 4 -> 2.2 m. This puts more texels on every square
-  metre instead of treating the old repeats as fixed.
-- The existing hex stochastic tiling now also jitters each copy's physical
-  size independently on both axes and randomly mirrors it, seeded by the same
-  per-cell hash as its rotation and offset. A slow, aperiodic macro-noise drift
-  adds a wider 0.55-1.45x size change across the landscape. Albedo, height,
-  roughness, AO, and normals share the exact transform; normals also get the
-  inverse-transform correction, so their relief stays registered and scaled.
-- Directional layers (farmland rows, sand ripples, snow drifts, paving joints)
-  use a gentler per-cell size jitter and a few degrees of angle jitter,
-  so their direction remains coherent while the row frequency no longer lines
-  up across the view.
-- Applied to both the native Metal and Bevy terrain shaders. Needs Mac check:
-  compare the Grand Canyon viewpoint from the repeat report and a grass or
-  farmland view at 50-500 m; no grid, no swimming, no normal-map shimmer.
 
 ## 2026-11-06: pause menu Debug tab with live renderer diagnostics
 - Added a sixth pause-menu tab, **Debug**. It has live toggles for probe GI,
