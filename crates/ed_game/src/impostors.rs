@@ -46,7 +46,6 @@ impl Plugin for ImpostorPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "shaders/impostor.wesl");
         app.add_plugins(MaterialPlugin::<ImpostorMaterial>::default()).add_systems(Update, install_atlas);
-        app.add_systems(Update, imp_dbg_fingerprint); // TEMP debug
         app.add_systems(Update, imp_dbg_hide); // TEMP debug
     }
 }
@@ -59,27 +58,6 @@ fn imp_dbg_hide(mut q: Query<&mut Visibility, With<MeshMaterial3d<ImpostorMateri
     for mut v in &mut q {
         *v = Visibility::Hidden;
     }
-}
-
-// TEMP debug: one line per frame with impostor count and a fingerprint of the set.
-fn imp_dbg_fingerprint(q: Query<(Entity, &Aabb, &GlobalTransform), With<MeshMaterial3d<ImpostorMaterial>>>, cams: Query<&GlobalTransform, With<Camera3d>>, mut frame: Local<u64>) {
-    use std::hash::{Hash, Hasher};
-    *frame += 1;
-    for c in cams.iter() {
-        eprintln!("IMPDBG cam frame {} pos {:?}", *frame, c.translation());
-    }
-    let mut rows: Vec<(u64, [i64; 6])> = q
-        .iter()
-        .map(|(e, a, g)| {
-            let c = a.center;
-            let t = g.translation();
-            (e.to_bits(), [(c.x * 100.0) as i64, (c.y * 100.0) as i64, (c.z * 100.0) as i64, (t.x * 100.0) as i64, (t.y * 100.0) as i64, (t.z * 100.0) as i64])
-        })
-        .collect();
-    rows.sort_by_key(|r| r.0);
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    rows.hash(&mut h);
-    eprintln!("IMPDBG frame {} count {} hash {:016x}", *frame, rows.len(), h.finish());
 }
 
 #[derive(Clone, Copy, ShaderType, Debug)]

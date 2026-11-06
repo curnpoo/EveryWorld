@@ -39,7 +39,8 @@ impl Plugin for BootPlumePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<BootNozzles>()
             .add_systems(Startup, spawn_plume)
-            .add_systems(PostUpdate, update_plume.after(TransformSystems::Propagate));
+            .add_systems(PostUpdate, update_plume.after(TransformSystems::Propagate))
+            .add_systems(PostUpdate, hide_empty_plume.after(update_plume));
     }
 }
 
@@ -398,9 +399,28 @@ fn update_plume(
             }
         }
     }
+    if n == 0 && mesh.count_vertices() == 0 {
+        // Nothing to draw and the mesh is already empty. Rewriting it would make Bevy
+        // re-extract an empty mesh every frame and warn "Mesh contains no vertices".
+        return;
+    }
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, nor);
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, col);
     mesh.insert_indices(Indices::U32(idx));
+}
+
+/// With no particles the plume mesh is empty, and Bevy extracts (and warns about) it every
+/// frame: "Mesh contains no vertices", dozens of times a second. Hide the entity while it is
+/// empty. This has to be its own system: `update_plume` returns early when there is no single
+/// camera, which is exactly when the plume sits idle.
+fn hide_empty_plume(meshes: Res<Assets<Mesh>>, mut q: Query<(&Mesh3d, &mut Visibility), With<PlumeMesh>>) {
+    for (m, mut vis) in &mut q {
+        let empty = meshes.get(&m.0).is_none_or(|mesh| mesh.count_vertices() == 0);
+        let want = if empty { Visibility::Hidden } else { Visibility::Inherited };
+        if *vis != want {
+            *vis = want;
+        }
+    }
 }

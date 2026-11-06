@@ -221,42 +221,6 @@ fn build_stage(
     {
     }
 
-    // --- Bridges: procedural types, spans, lane counts and clearances over still water ---
-    {
-        use roads::{BridgeFlavor::*, RoadClass::*};
-        let rows: [(roads::RoadClass, roads::BridgeFlavor, f32, u8, f32, f32, &str); 8] = [
-            (Primary, Modern, 40.0, 2, 4.0, 0.3, "girder"),
-            (Primary, Modern, 90.0, 4, 6.0, 0.6, "arch"),
-            (Motorway, Modern, 220.0, 6, 14.0, 0.5, "suspension"),
-            (Secondary, Historic, 60.0, 2, 5.0, 0.4, "stone"),
-            (Secondary, Historic, 200.0, 4, 12.0, 0.8, "stone_suspension"),
-            (Secondary, Utilitarian, 80.0, 2, 5.0, 0.2, "truss"),
-            (Path, Utilitarian, 40.0, 0, 3.0, 0.5, "timber_foot"),
-            (Path, Modern, 100.0, 0, 6.0, 0.9, "foot_arch"),
-        ];
-        let base = to_local(3400.0, 3400.0, GROUND_H);
-        let east = Vec3::X;
-        let south = Vec3::Z;
-        for (i, (class, flavor, len, lanes, clear, seed, name)) in rows.iter().enumerate() {
-            let a = base + south * (60.0 * i as f32);
-            let m = roads::demo_bridge(*class, *flavor, *len, *lanes, *clear, *seed, a, east, up);
-            add(&m, &mats.matte);
-            let mut water = MeshData::default();
-            let (x0, x1, z0, z1) = (8.0f32, *len - 8.0, -28.0f32, 28.0f32);
-            let wp = |x: f32, z: f32| (a + east * x + south * z + up * 0.05).to_array();
-            let c = rgb_water();
-            let v = [water.vertex(wp(x0, z0), up.to_array(), [0.0; 2], c), water.vertex(wp(x1, z0), up.to_array(), [0.0; 2], c), water.vertex(wp(x1, z1), up.to_array(), [0.0; 2], c), water.vertex(wp(x0, z1), up.to_array(), [0.0; 2], c)];
-            water.tri(v[0], v[2], v[1]);
-            water.tri(v[0], v[3], v[2]);
-            add(&water, &mats.water);
-            let mid = a + east * (*len * 0.5);
-            let w = |p: Vec3| p + anchor_v;
-            shots.push(Shot { name: format!("bridge_{name}_side"), eye: w(mid + south * (len * 0.45 + 25.0) + up * (clear + 7.0)), target: w(mid + up * (clear * 0.5 + 3.0)), tonemap: None });
-            shots.push(Shot { name: format!("bridge_{name}_deck"), eye: w(a + east * 4.0 + up * (1.8 + 0.0)), target: w(a + east * (len * 0.6) + up * (clear * 0.8 + 2.0)), tonemap: None });
-        }
-        shots.push(Shot { name: "bridge_overview".into(), eye: base + anchor_v + east * 40.0 + south * 700.0 + up * 220.0, target: base + anchor_v + east * 110.0 + south * 200.0, tonemap: None });
-    }
-
     // --- Clouds (volumetric sky, see clouds.rs for each shot's weather) ---
     shots.extend(cloud_shots(to_world(3400.0, 2000.0, GROUND_H)));
 
