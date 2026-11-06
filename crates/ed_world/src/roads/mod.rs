@@ -80,6 +80,7 @@ pub fn force_v2(v: Option<bool>) {
 pub mod ground;
 pub mod junction;
 pub mod keepout;
+pub mod marks;
 pub mod median;
 pub mod nav;
 pub mod net;
@@ -616,6 +617,10 @@ pub fn grade(grid: &mut TerrainGrid, plan: &RoadPlan) {
 pub fn generate(plan: &RoadPlan, proj: &TileProjector, grid: &TerrainGrid, surface: &SurfaceMap, region: Region) -> RoadOutput {
     let mut out = RoadOutput::default();
     let kit = StreetKit::for_region(region);
+    let st = {
+        let c = proj.tile.center();
+        marks::style_for(marks::locate(c.lat_deg, c.lon_deg))
+    };
     let up = proj.up();
     let uvm = proj.uv_map();
     let ground = |p: Vec3| {
@@ -660,8 +665,7 @@ pub fn generate(plan: &RoadPlan, proj: &TileProjector, grid: &TerrainGrid, surfa
                         None,
                         true,
                         class,
-                        &kit,
-                        it.oneway,
+                        &st, it.urban, it.oneway,
                         hw,
                     );
                 }
@@ -681,7 +685,7 @@ pub fn generate(plan: &RoadPlan, proj: &TileProjector, grid: &TerrainGrid, surfa
                 structures::sweep_raw(&mut out.mesh, &deck, up, &prof);
                 structures::sweep_raw(&mut out.collider, &deck, up, &prof);
                 if it.paved && class.rank() >= 1 {
-                    markings(&mut out.mesh, &deck, up, None, true, class, &kit, it.oneway, hw);
+                    markings(&mut out.mesh, &deck, up, None, true, class, &st, it.urban, it.oneway, hw);
                 }
             }
             Bed::Tunnel => {
@@ -697,8 +701,7 @@ pub fn generate(plan: &RoadPlan, proj: &TileProjector, grid: &TerrainGrid, surfa
                         None,
                         true,
                         class,
-                        &kit,
-                        it.oneway,
+                        &st, it.urban, it.oneway,
                         hw,
                     );
                 }
@@ -733,8 +736,7 @@ pub fn generate(plan: &RoadPlan, proj: &TileProjector, grid: &TerrainGrid, surfa
                         Some(&ground as &dyn Fn(Vec3) -> f32),
                         true,
                         class,
-                        &kit,
-                        it.oneway,
+                        &st, it.urban, it.oneway,
                         hw,
                     );
                 }
@@ -858,8 +860,8 @@ pub fn generate(plan: &RoadPlan, proj: &TileProjector, grid: &TerrainGrid, surfa
                 .iter()
                 .filter(|b| (1..=4).contains(&b.class.rank()))
             {
-                for (c, d, lat) in junction::crosswalk_bars(j.pos, b, reach) {
-                    let (hl, hw2) = (1.5, 0.25);
+                for (c, d, lat) in junction::crosswalk_bars(j.pos, b, reach, st.zebra.0 as f64, st.zebra.1 as f64) {
+                    let (hl, hw2) = (1.5, st.zebra.0 as f64 / 2.0);
                     let corner = |sa: f64, sb: f64| {
                         at(
                             c[0] + d[0] * hl * sa + lat[0] * hw2 * sb,
@@ -1236,73 +1238,50 @@ fn dash_runs(pts: &[Vec3], on: f32, off: f32) -> Vec<Vec<Vec3>> {
     runs
 }
 
-fn markings(
-    m: &mut MeshData,
-    pts: &[Vec3],
-    up: Vec3,
-    ground: Option<&dyn Fn(Vec3) -> f32>,
-    flat: bool,
-    class: RoadClass,
-    kit: &StreetKit,
-    oneway: bool,
-    hw: f32,
-) {
+/// Lane lines, centre line and edge lines by the country's rules (`marks`): colours, widths, dash lengths, double
+/// centre lines, broken edge lines, yellow left edges. `hw` is the carriageway half width.
+fn markings(m: &mut MeshData, pts: &[Vec3], up: Vec3, ground: Option<&dyn Fn(Vec3) -> f32>, flat: bool, class: RoadClass, st: &marks::MarkStyle, urban: bool, oneway: bool, hw: f32) {
     let white = rgb(0xf2f2ee);
     let yellow = rgb(0xf2c230);
+    let rank = class.rank();
+    let motorway = rank >= 5;
+    let line = |m: &mut MeshData, c: f32, w: f32, colour: [f32; 4], dash: Option<(f32, f32)>| paint(m, pts, up, ground, flat, hw, c - w / 2.0, c + w / 2.0, colour, dash);
+    let lane_dash = if urban { st.lane_urban } else { st.lane };
+    let lane_w = if motorway { st.lane_w_motorway } else { st.lane_w };
+    let edge_w = if motorway { st.edge_w_motorway } else { st.edge_w };
+    let edge_colour = if st.edge_yellow { yellow } else { white };
     if !oneway {
-        match kit.center_line {
-            CenterLine::DoubleYellow => {
-                paint(m, pts, up, ground, flat, hw, -0.26, -0.11, yellow, None);
-                paint(m, pts, up, ground, flat, hw, 0.11, 0.26, yellow, None);
+        let centre_colour = if st.yellow_centre { yellow } else { white };
+        let lanes_each = ((hw / 3.4).round() as i32).clamp(1, 4);
+        if 2.0 * hw >= st.min_centre_m {
+            if st.double_centre && ((urban && rank >= 3) || lanes_each >= 2) {
+                let gap = 0.12 + st.centre_w;
+                line(m, -gap / 2.0, st.centre_w, centre_colour, None);
+                line(m, gap / 2.0, st.centre_w, centre_colour, None);
+            } else {
+                line(m, 0.0, st.centre_w, centre_colour, Some(if urban { st.centre_urban } else { st.centre }));
             }
-            CenterLine::SolidWhite if class.rank() >= 3 => {
-                paint(m, pts, up, ground, flat, hw, -0.08, 0.08, white, None)
-            }
-            _ => paint(
-                m,
-                pts,
-                up,
-                ground,
-                flat,
-                hw,
-                -0.08,
-                0.08,
-                white,
-                Some(kit.dash),
-            ),
         }
-    } else if class.rank() >= 3 {
-        // One-way carriageway (motorway, ramp): dashed lane line; the Americas paint the left edge yellow.
-        paint(
-            m,
-            pts,
-            up,
-            ground,
-            flat,
-            hw,
-            -0.08,
-            0.08,
-            white,
-            Some((kit.dash.0, kit.dash.1.max(6.0) + 3.0)),
-        );
-        if kit.center_line == CenterLine::DoubleYellow {
-            paint(
-                m,
-                pts,
-                up,
-                ground,
-                flat,
-                hw,
-                -hw + 0.35,
-                -hw + 0.5,
-                yellow,
-                None,
-            );
+        // More than one lane each way: white lane lines between them.
+        if rank >= 3 {
+            for k in 1..lanes_each {
+                let o = hw * k as f32 / lanes_each as f32;
+                line(m, o, lane_w, white, Some(lane_dash));
+                line(m, -o, lane_w, white, Some(lane_dash));
+            }
+        }
+    } else if rank >= 3 {
+        // One-way carriageway (motorway, ramp, divided arterial): lane lines between its lanes.
+        let n = ((2.0 * hw / 3.5).round() as i32).clamp(1, 5);
+        for k in 1..n {
+            line(m, -hw + 2.0 * hw * k as f32 / n as f32, lane_w, white, Some(lane_dash));
         }
     }
-    if class.rank() >= 2 {
-        paint(m, pts, up, ground, flat, hw, hw - 0.5, hw - 0.35, white, None);
-        paint(m, pts, up, ground, flat, hw, -hw + 0.35, -hw + 0.5, white, None);
+    if rank >= st.edge_min_rank {
+        let dash = if motorway { None } else { st.edge_dash };
+        line(m, hw - 0.4, edge_w, edge_colour, dash);
+        let left = if oneway && st.left_edge_yellow { yellow } else { edge_colour };
+        line(m, -hw + 0.4, edge_w, left, dash);
     }
 }
 
@@ -1446,6 +1425,33 @@ fn street_props(props: &mut Vec<StreetProp>, pts: &[Vec3], up: Vec3, class: Road
 mod tests {
     use super::*;
     use ed_geo::{EnuFrame, Geodetic, tile::TileId};
+
+    #[test]
+    fn markings_follow_the_country() {
+        let pts: Vec<Vec3> = (0..40).map(|i| Vec3::new(i as f32 * 3.0, 0.0, 0.0)).collect();
+        let count = |country: marks::Country, oneway: bool, rank_class: RoadClass| {
+            let st = marks::style_for(country);
+            let mut m = MeshData::default();
+            markings(&mut m, &pts, Vec3::Y, None, true, rank_class, &st, false, oneway, 3.5);
+            let y = rgb(0xf2c230);
+            let yellow = m.colors.iter().filter(|c| (c[0] - y[0]).abs() < 1e-3 && (c[1] - y[1]).abs() < 1e-3 && (c[2] - y[2]).abs() < 1e-3).count();
+            (m.triangle_count(), yellow)
+        };
+        let (us_tris, us_yellow) = count(marks::Country::Us, false, RoadClass::Secondary);
+        let (gb_tris, gb_yellow) = count(marks::Country::Britain, false, RoadClass::Secondary);
+        assert!(us_yellow > 0 && gb_yellow == 0, "US centre line is yellow, UK white");
+        assert!(us_tris > 0 && gb_tris > 0);
+        // A one-way ramp: yellow left edge in the Americas only.
+        assert!(count(marks::Country::Us, true, RoadClass::Motorway).1 > 0);
+        assert_eq!(count(marks::Country::Germany, true, RoadClass::Motorway).1, 0);
+        // Ireland paints its edges yellow.
+        assert!(count(marks::Country::Ireland, false, RoadClass::Secondary).1 > 0);
+        // A very narrow street gets no centre line where the manual says so.
+        let st = marks::style_for(marks::Country::Us);
+        let mut narrow = MeshData::default();
+        markings(&mut narrow, &pts, Vec3::Y, None, true, RoadClass::Minor, &st, true, false, 2.0);
+        assert!(narrow.is_empty());
+    }
 
     #[test]
     fn kits_differ_by_country() {

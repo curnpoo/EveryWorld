@@ -108,14 +108,17 @@ pub fn corner_fill(p0: [f64; 2], b1: &Branch, b2: &Branch, radius: f64) -> Optio
 }
 
 /// Zebra bars across a branch at distance `at` from the node: (centre, along-road direction, lateral direction).
-pub fn crosswalk_bars(p0: [f64; 2], b: &Branch, at: f64) -> Vec<([f64; 2], [f64; 2], [f64; 2])> {
+/// `bar` and `gap` are the national bar width and gap (m).
+pub fn crosswalk_bars(p0: [f64; 2], b: &Branch, at: f64, bar: f64, gap: f64) -> Vec<([f64; 2], [f64; 2], [f64; 2])> {
     let d = norm(b.dir);
     let lat = [-d[1], d[0]];
     let c = [p0[0] + d[0] * at, p0[1] + d[1] * at];
-    let n = ((2.0 * b.hw - 0.8) / 1.0).floor().max(0.0) as i32;
+    let pitch = (bar + gap).max(0.2);
+    let n = ((2.0 * b.hw - 0.8 + gap) / pitch).floor().max(0.0) as i32;
+    let span = n as f64 * pitch - gap;
     (0..n)
         .map(|k| {
-            let o = -b.hw + 0.4 + 0.5 + k as f64;
+            let o = -span / 2.0 + bar / 2.0 + k as f64 * pitch;
             ([c[0] + lat[0] * o, c[1] + lat[1] * o], d, lat)
         })
         .collect()
@@ -168,7 +171,7 @@ mod tests {
 
     #[test]
     fn crosswalk_bars_span_the_carriageway() {
-        let bars = crosswalk_bars([0.0, 0.0], &br([1.0, 0.0], 3.5), 10.0);
+        let bars = crosswalk_bars([0.0, 0.0], &br([1.0, 0.0], 3.5), 10.0, 0.5, 0.5);
         assert!(bars.len() >= 5);
         assert!(
             bars.iter()
