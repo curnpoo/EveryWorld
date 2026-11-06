@@ -379,8 +379,8 @@ float2 hash22(float2 p) {
 float lsize(constant GroundU& G, int i) { return G.size[i / 4][i % 4]; }
 float lbump(constant GroundU& G, int i) { return G.bump[i / 4][i % 4]; }
 
-Layer sample_planar(thread const GT& g, constant GroundU& G, int i, float2 p, float2 dp_dx, float2 dp_dy, float hexw, float3 n, float strength, float vm) {
-    float inv = 1.0 / lsize(G, i);
+Layer sample_planar(thread const GT& g, constant GroundU& G, int i, float2 p, float2 dp_dx, float2 dp_dy, float hexw, float3 n, float strength, float vm, float tile_scale) {
+    float inv = tile_scale / lsize(G, i);
     float2 st = p * inv, dx = dp_dx * inv, dy = dp_dy * inv;
     float4 ah = float4(0), nr = float4(0);
     float2 nxy = float2(0);
@@ -400,11 +400,22 @@ Layer sample_planar(thread const GT& g, constant GroundU& G, int i, float2 p, fl
         for (int k = 0; k < 3; k++) {
             if (wv[k] < 0.01) continue;
             float2 h = hash22(v[k] + float2(float(i) * 17.0, float(i) * 5.0));
+            float hash_scale = fract(h.x * 5.31 + h.y * 2.71);
+            float hash_scale_y = fract(h.x * 11.73 + h.y * 7.19);
+            float hash_flip = fract(h.x * 3.17 + h.y * 13.31);
             float ang = directional ? 0.0 : h.x * 6.2831853;
+            float2 copy_scale = directional
+                ? float2(mix(0.70, 1.30, hash_scale), mix(0.78, 1.22, hash_scale_y))
+                : float2(mix(0.55, 1.45, hash_scale), mix(0.55, 1.45, hash_scale_y));
+            if (directional) ang = (h.x - 0.5) * 0.20;
+            if (hash_flip < 0.5) copy_scale.x = -copy_scale.x;
+            if (fract(hash_flip * 2.71) < 0.5) copy_scale.y = -copy_scale.y;
             float2 off = h * 9.0;
-            Tap t = gtap(g, i, rot2(st, ang) + off, rot2(dx, ang), rot2(dy, ang));
+            float2 stc = st * copy_scale;
+            Tap t = gtap(g, i, rot2(stc, ang) + off, rot2(dx * copy_scale, ang), rot2(dy * copy_scale, ang));
             ah += t.ah * wv[k]; nr += t.nr * wv[k];
-            nxy += rot2(t.nr.xy * 2.0 - 1.0, -ang) * wv[k];
+            float2 tn = rot2(t.nr.xy * 2.0 - 1.0, -ang) * copy_scale;
+            nxy += tn * wv[k];
         }
     }
     Layer l; l.albedo = ah.rgb; l.height = ah.a;
@@ -413,8 +424,8 @@ Layer sample_planar(thread const GT& g, constant GroundU& G, int i, float2 p, fl
     l.rough = nr.z; l.ao = nr.w;
     return l;
 }
-Layer sample_triplanar(thread const GT& g, constant GroundU& G, int i, float3 p, float3 dp_dx, float3 dp_dy, float3 n, float strength, float vm) {
-    float inv = 1.0 / lsize(G, i);
+Layer sample_triplanar(thread const GT& g, constant GroundU& G, int i, float3 p, float3 dp_dx, float3 dp_dy, float3 n, float strength, float vm, float tile_scale) {
+    float inv = tile_scale / lsize(G, i);
     float3 bw = pow(abs(n), float3(4.0)); bw = bw / (bw.x + bw.y + bw.z);
     Tap tx = gtap_var(g, i, p.zy * inv, dp_dx.zy * inv, dp_dy.zy * inv, fract(vm + 0.31));
     Tap ty = gtap_var(g, i, p.xz * inv, dp_dx.xz * inv, dp_dy.xz * inv, vm);
@@ -469,6 +480,9 @@ fragment GOut terrain_fs(TOut in [[stage_in]], bool front [[front_facing]],
     float4 m_c = mtex.sample(ts, rot2(p2 / 1777.0, 0.83));
     float4 m_b = mtex.sample(ts, rot2(p2 / 263.0, 1.91));
     float4 m_a = mac(mtex, p2, 41.0, 0.31, float2(0));
+    // Slow, aperiodic size drift: some patches expose meaningfully more
+    // ground detail without hard seams or a global texture-scale pulse.
+    float tile_scale = mix(0.55, 1.45, clamp(m_b.g * 0.58 + m_a.b * 0.42, 0.0, 1.0));
     float4 m_d = mac(mtex, p2, 23.0, 1.27, float2(0.31, 0.17));
     float4 m_e = mac(mtex, p2, 67.0, 2.71, float2(0.53, 0.81));
     float4 m_p = mac(mtex, p2, 29.0, 4.03, float2(0.70, 0.20));
@@ -522,11 +536,11 @@ fragment GOut terrain_fs(TOut in [[stage_in]], bool front [[front_facing]],
     for (int i = 0; i < 12; i++) {
         if (w[i] < 0.012 || dist > 5000.0) continue;
         Layer l;
-        if (tri_t < 0.01) l = sample_planar(g, G, i, p2, dp3_dx.xz, dp3_dy.xz, hexw, n, strength, vm);
-        else if (tri_t > 0.99) l = sample_triplanar(g, G, i, p3, dp3_dx, dp3_dy, n, strength, vm);
+        if (tri_t < 0.01) l = sample_planar(g, G, i, p2, dp3_dx.xz, dp3_dy.xz, hexw, n, strength, vm, tile_scale);
+        else if (tri_t > 0.99) l = sample_triplanar(g, G, i, p3, dp3_dx, dp3_dy, n, strength, vm, tile_scale);
         else {
-            Layer a = sample_planar(g, G, i, p2, dp3_dx.xz, dp3_dy.xz, hexw, n, strength, vm);
-            Layer b = sample_triplanar(g, G, i, p3, dp3_dx, dp3_dy, n, strength, vm);
+            Layer a = sample_planar(g, G, i, p2, dp3_dx.xz, dp3_dy.xz, hexw, n, strength, vm, tile_scale);
+            Layer b = sample_triplanar(g, G, i, p3, dp3_dx, dp3_dy, n, strength, vm, tile_scale);
             l.albedo = mix(a.albedo, b.albedo, tri_t); l.height = mix(a.height, b.height, tri_t);
             l.normal = normalize(mix(a.normal, b.normal, tri_t)); l.rough = mix(a.rough, b.rough, tri_t); l.ao = mix(a.ao, b.ao, tri_t);
         }

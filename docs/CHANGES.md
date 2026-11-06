@@ -19,6 +19,25 @@
   reads "Welcome to / Shibuya, Japan / Loading the world / Streaming the world 38%" with
   the HUD, minimap, crosshair, control hints and arrival toast all hidden.
 
+## 2026-11-06: finer, non-repeating ground textures
+- Ground layer repeats are 45% smaller: rock/snow 8 -> 4.4 m, grass/dry
+  grass/farmland 6 -> 3.2 m, paving 4.8 -> 2.64 m, sand 4 -> 2.2 m, and the
+  remaining detail layers 4 -> 2.2 m. This puts more texels on every square
+  metre instead of treating the old repeats as fixed.
+- The existing hex stochastic tiling now also jitters each copy's physical
+  size independently on both axes and randomly mirrors it, seeded by the same
+  per-cell hash as its rotation and offset. A slow, aperiodic macro-noise drift
+  adds a wider 0.55-1.45x size change across the landscape. Albedo, height,
+  roughness, AO, and normals share the exact transform; normals also get the
+  inverse-transform correction, so their relief stays registered and scaled.
+- Directional layers (farmland rows, sand ripples, snow drifts, paving joints)
+  use a gentler per-cell size jitter and a few degrees of angle jitter,
+  so their direction remains coherent while the row frequency no longer lines
+  up across the view.
+- Applied to both the native Metal and Bevy terrain shaders. Needs Mac check:
+  compare the Grand Canyon viewpoint from the repeat report and a grass or
+  farmland view at 50-500 m; no grid, no swimming, no normal-map shimmer.
+
 ## 2026-11-06: pause menu Debug tab with live renderer diagnostics
 - Added a sixth pause-menu tab, **Debug**. It has live toggles for probe GI,
   shadow maps, AO, bloom, ocean FFT, and the native world diagnostic view

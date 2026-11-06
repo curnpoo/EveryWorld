@@ -14,13 +14,13 @@ use crate::surface::{Ground, LAYERS};
 /// Real-world size (meters) that one texture repeat covers.
 pub fn world_size_m(g: Ground) -> f32 {
     match g {
-        Ground::Rock => 8.0,
-        Ground::Farmland => 6.0,
-        Ground::Snow => 8.0,
-        Ground::Paving => 4.8,
-        Ground::Sand => 4.0,
-        Ground::Grass | Ground::DryGrass => 6.0,
-        _ => 4.0,
+        Ground::Rock => 4.4,
+        Ground::Farmland => 3.2,
+        Ground::Snow => 4.4,
+        Ground::Paving => 2.64,
+        Ground::Sand => 2.2,
+        Ground::Grass | Ground::DryGrass => 3.2,
+        _ => 2.2,
     }
 }
 
@@ -298,7 +298,7 @@ pub fn layer(g: Ground, size: u32) -> LayerTexture {
             }
         }
         Ground::Farmland => {
-            let rows = 9.0; // 6 m tile -> ~0.67 m spacing
+            let rows = 9.0; // 3.2 m tile -> ~0.36 m spacing
             cv.fill(|s, t| {
                 let warp = (fbm(s * 3.0, t * 3.0, seed, 3, 3) - 0.5) as f64 * 0.04;
                 let ph = ((s + warp) * rows).fract() as f32;

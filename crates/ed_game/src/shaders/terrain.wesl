@@ -314,8 +314,8 @@ fn hash22(p: vec2<f32>) -> vec2<f32> {
 // rotation of the texture, and the three overlapping copies are blended by
 // barycentric weight (sharpened), so no repeat survives. `hexw` < 0.5 falls
 // back to one plain tap (far away, where mips already average the pattern).
-fn sample_planar(i: i32, p: vec2<f32>, dp_dx: vec2<f32>, dp_dy: vec2<f32>, hexw: f32, n: vec3<f32>, strength: f32, vm: f32) -> Layer {
-    let inv = 1.0 / layer_size(i);
+fn sample_planar(i: i32, p: vec2<f32>, dp_dx: vec2<f32>, dp_dy: vec2<f32>, hexw: f32, n: vec3<f32>, strength: f32, vm: f32, tile_scale: f32) -> Layer {
+    let inv = tile_scale / layer_size(i);
     let st = p * inv;
     let dx = dp_dx * inv;
     let dy = dp_dy * inv;
@@ -356,16 +356,25 @@ fn sample_planar(i: i32, p: vec2<f32>, dp_dx: vec2<f32>, dp_dy: vec2<f32>, hexw:
                 continue;
             }
             let h = hash22(v[k] + vec2<f32>(f32(i) * 17.0, f32(i) * 5.0));
+            let hash_scale = fract(h.x * 5.31 + h.y * 2.71);
+            let hash_scale_y = fract(h.x * 11.73 + h.y * 7.19);
+            let hash_flip = fract(h.x * 3.17 + h.y * 13.31);
             var ang = h.x * 6.2831853;
+            var copy_scale = vec2<f32>(mix(0.55, 1.45, hash_scale), mix(0.55, 1.45, hash_scale_y));
             if directional {
-                ang = 0.0;
+                ang = (h.x - 0.5) * 0.20;
+                copy_scale = vec2<f32>(mix(0.70, 1.30, hash_scale), mix(0.78, 1.22, hash_scale_y));
             }
+            if hash_flip < 0.5 { copy_scale.x = -copy_scale.x; }
+            if fract(hash_flip * 2.71) < 0.5 { copy_scale.y = -copy_scale.y; }
             let off = h * 9.0;
-            let t = tap(i, rot2(st, ang) + off, rot2(dx, ang), rot2(dy, ang));
+            let stc = st * copy_scale;
+            let t = tap(i, rot2(stc, ang) + off, rot2(dx * copy_scale, ang), rot2(dy * copy_scale, ang));
             ah += t.ah * wv[k];
             nr += t.nr * wv[k];
             // Tangent normal back into world orientation.
-            nxy += rot2(vec2<f32>(t.nr.x, t.nr.y) * 2.0 - 1.0, -ang) * wv[k];
+            let tn = rot2(vec2<f32>(t.nr.x, t.nr.y) * 2.0 - 1.0, -ang) * copy_scale;
+            nxy += tn * wv[k];
         }
     }
     var l: Layer;
@@ -379,8 +388,8 @@ fn sample_planar(i: i32, p: vec2<f32>, dp_dx: vec2<f32>, dp_dy: vec2<f32>, hexw:
 }
 
 // Triplanar (UDN normal blend) for cliffs and steep banks.
-fn sample_triplanar(i: i32, p: vec3<f32>, dp_dx: vec3<f32>, dp_dy: vec3<f32>, n: vec3<f32>, strength: f32, vm: f32) -> Layer {
-    let inv = 1.0 / layer_size(i);
+fn sample_triplanar(i: i32, p: vec3<f32>, dp_dx: vec3<f32>, dp_dy: vec3<f32>, n: vec3<f32>, strength: f32, vm: f32, tile_scale: f32) -> Layer {
+    let inv = tile_scale / layer_size(i);
     var bw = pow(abs(n), vec3<f32>(4.0));
     bw = bw / (bw.x + bw.y + bw.z);
     // Each projection gets its own noise phase so the cliff, ledge and side
@@ -460,6 +469,9 @@ fn fragment(in: TerrainVertexOutput, @builtin(front_facing) is_front: bool) -> F
     let m_c = textureSample(macro_tex, macro_sampler, rot2(p2 / 1777.0, 0.83));
     let m_b = textureSample(macro_tex, macro_sampler, rot2(p2 / 263.0, 1.91));
     let m_a = mac(p2, 41.0, 0.31, vec2<f32>(0.0));
+    // Slow, aperiodic size drift: some patches expose meaningfully more
+    // ground detail without hard seams or a global texture-scale pulse.
+    let tile_scale = mix(0.55, 1.45, clamp(m_b.g * 0.58 + m_a.b * 0.42, 0.0, 1.0));
     // Mid-frequency detail: the 1-20 m band the scales above skip. Analytic
     // noise, so it doesn't average away with distance like layer mips do.
     let m_d = mac(p2, 23.0, 1.27, vec2<f32>(0.31, 0.17));
@@ -560,12 +572,12 @@ fn fragment(in: TerrainVertexOutput, @builtin(front_facing) is_front: bool) -> F
         }
         var l: Layer;
         if tri_t < 0.01 {
-            l = sample_planar(i, p2, dp3_dx.xz, dp3_dy.xz, hexw, n, strength, vm);
+            l = sample_planar(i, p2, dp3_dx.xz, dp3_dy.xz, hexw, n, strength, vm, tile_scale);
         } else if tri_t > 0.99 {
-            l = sample_triplanar(i, p3, dp3_dx, dp3_dy, n, strength, vm);
+            l = sample_triplanar(i, p3, dp3_dx, dp3_dy, n, strength, vm, tile_scale);
         } else {
-            let a = sample_planar(i, p2, dp3_dx.xz, dp3_dy.xz, hexw, n, strength, vm);
-            let b = sample_triplanar(i, p3, dp3_dx, dp3_dy, n, strength, vm);
+            let a = sample_planar(i, p2, dp3_dx.xz, dp3_dy.xz, hexw, n, strength, vm, tile_scale);
+            let b = sample_triplanar(i, p3, dp3_dx, dp3_dy, n, strength, vm, tile_scale);
             l.albedo = mix(a.albedo, b.albedo, tri_t);
             l.height = mix(a.height, b.height, tri_t);
             l.normal = normalize(mix(a.normal, b.normal, tri_t));

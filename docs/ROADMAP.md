@@ -58,7 +58,9 @@ Goal: stop guessing. Find the real bottleneck and make the existing game solid b
    - Golden-hash CI: each reference tile must generate bit-identical output (no platform-dependent hashing, no thread-order-dependent float reductions, f64 or fixed-point in generators).
    - Pin data versions: stamp the tile cache with the OSM / elevation / land-cover snapshot so every client builds the same world. Live data revisions are a silent source of mismatch.
    - Separate simulation state from render state in `ed_game` (fixed timestep for sim, interpolated render).
-7. **Feature items that already work and just need a review:** art direction round 2 (lookdev boards).
+7. **Feature items that already work and just need a review:** art direction round 2 (lookdev boards);
+   ground layer tiling now varies rotation, offset, and physical repeat size (2026-11-06) and
+   needs the real-world near/far visual check.
 
 ## Stage B: Fast
 
