@@ -233,11 +233,12 @@ fn array_image(layers: &[&[u8]], size: u32, format: TextureFormat, srgb: bool) -
 }
 
 /// Satellite texture classes: (texels per side, layers). Sizes match
-/// `ed_world::tilegen` (z<=9: 512, z<=12: 256, finer: 128). Layer counts cover
-/// the ~90 resident tiles plus the coarse tiles kept during hole-free swaps;
-/// if a class runs out, the tile simply renders without satellite colour.
-/// Memory is fixed: ~100 MB + 24 MB + 12 MB.
-pub const SAT_CLASSES: [(u32, u32); 3] = [(512, 72), (256, 320), (128, 192)];
+/// `ed_world::tilegen` (`sat_levels`: z<=6 -> 1024, z7-9 -> 512, z>=10 -> 256).
+/// Layer counts cover the ~90 resident tiles plus the coarse tiles kept during
+/// hole-free swaps; if a class runs out, the tile simply renders without
+/// satellite colour. The 1024 class exists so coarse tiles stay sharp from high
+/// altitude. Memory is fixed: ~135 MB + 85 MB + 85 MB plus mips.
+pub const SAT_CLASSES: [(u32, u32); 3] = [(1024, 32), (512, 80), (256, 320)];
 
 /// Tag bit: the satellite layer also has baked DEM detail.
 pub const DETAIL_BIT: u32 = 1 << 23;

@@ -70,6 +70,10 @@ pub struct TileBuild {
     /// (name, IATA, local position) of airports in this tile.
     pub airports: Vec<(String, String, Vec3)>,
     pub min_max_height: (f32, f32),
+    /// Share of the tile's ground at or below sea level. The elevation data clamps the ocean to
+    /// 0 m, so the minimum height cannot tell the sea from a coastal plain at 0 m, but the area
+    /// can. The renderer uses this to decide whether the ocean waves are worth simulating.
+    pub sea_fraction: f32,
     /// Finest tiles only: what the game needs to scatter near-camera ground
     /// cover (grass, pebbles, ...) over this tile.
     pub ground: Option<std::sync::Arc<crate::ground_scatter::GroundSource>>,
@@ -126,15 +130,51 @@ pub fn prefetch(job: &TileJob) {
         crate::farshadow::prefetch(&job.cache, tile);
     }
     let sat_max = ed_data::satellite::MAX_ZOOM;
-    if ed_data::satellite::prefetch(&job.cache, tile.ancestor(tile.z.min(sat_max)).0).is_ok() && tile.z < sat_max && tile.z <= 9 {
-        for c in tile.children() {
-            let _ = ed_data::satellite::prefetch(&job.cache, c);
+    if ed_data::satellite::prefetch(&job.cache, tile.ancestor(tile.z.min(sat_max)).0).is_ok() {
+        // Coarse tiles mosaic their descendants for extra texels; warm those too.
+        let levels = sat_levels(tile.z).min(2);
+        if levels > 0 && tile.z + levels as u8 <= sat_max {
+            for id in sat_grid_ids(tile, levels) {
+                let _ = ed_data::satellite::prefetch(&job.cache, id);
+            }
         }
     }
 }
 
 pub(crate) fn elevation_zoom(z: u8) -> u8 {
     z.min(14)
+}
+
+/// How many times to subdivide the satellite mosaic for a tile (and thus the
+/// texture side, `256 << levels`). Coarse tiles span huge areas, so they mosaic
+/// deeper (2x2 children, 4x4 grandchildren, ...) to keep real texels when the
+/// tile is viewed from high altitude instead of a blurry 1 km/texel smear.
+/// Levels are capped at 2 (1024 px) so a tile's texture fits a SAT class.
+pub fn sat_levels(z: u8) -> usize {
+    if z <= 6 {
+        2
+    } else if z <= 9 {
+        1
+    } else {
+        0
+    }
+}
+
+/// `gn`x`gn` descendant tiles at `z + log2(gn)` covering `tile`, row-major
+/// `gx + gn*gy`, clamped at the poles and wrapped at the antimeridian.
+fn sat_grid_ids(tile: TileId, levels: usize) -> Vec<TileId> {
+    let gn = 1usize << levels;
+    let zp = tile.z + levels as u8;
+    let np = TileId::n(zp);
+    let mut out = Vec::with_capacity(gn * gn);
+    for gy in 0..gn {
+        for gx in 0..gn {
+            let x = (tile.x * gn as u32 + gx as u32) % np;
+            let y = (tile.y * gn as u32 + gy as u32).min(np - 1);
+            out.push(TileId::new(zp, x, y));
+        }
+    }
+    out
 }
 
 /// Everything needed to build any detail chunk of a tile later.
@@ -199,6 +239,13 @@ pub fn build(job: &TileJob) -> TileBuild {
         crate::amplify::apply(&mut grid, a);
     }
     let (hmin, hmax) = grid.min_max();
+    // How much of the tile is at or below sea level (the ocean is clamped to 0 m in the
+    // elevation data, so this is what separates the sea from a coastal plain at 0 m).
+    let sea_fraction = if grid.heights.is_empty() {
+        0.0
+    } else {
+        grid.heights.iter().filter(|h| **h <= 0.0).count() as f32 / grid.heights.len() as f32
+    };
     let center = tile.center();
     let biome = Biome::classify(center.lat_deg, center.lon_deg, ((hmin + hmax) * 0.5).max(0.0) as f64);
 
@@ -243,11 +290,18 @@ pub fn build(job: &TileJob) -> TileBuild {
     match ed_data::satellite::fetch(&job.cache, tile.ancestor(tile.z.min(ed_data::satellite::MAX_ZOOM)).0) {
         Ok(s) => {
             surface = surface.with_satellite(s);
-            // Coarse tiles span huge areas: mosaic the four children for 2x the texels.
-            if tile.z < ed_data::satellite::MAX_ZOOM && tile.z <= 9 {
-                let k: Vec<_> = tile.children().iter().filter_map(|c| ed_data::satellite::fetch(&job.cache, *c).ok()).collect();
-                if let Ok(k) = <[_; 4]>::try_from(k) {
-                    surface = surface.with_satellite_kids(k);
+            // Coarse tiles span huge areas: mosaic their descendants (2x2, 4x4, ...)
+            // so a high view keeps real texels instead of a blurry smear.
+            let levels = sat_levels(tile.z).min(2);
+            if levels > 0 && tile.z + levels as u8 <= ed_data::satellite::MAX_ZOOM {
+                let gn = 1usize << levels;
+                let tiles: Vec<_> = sat_grid_ids(tile, levels)
+                    .into_iter()
+                    .map(|id| ed_data::satellite::fetch(&job.cache, id))
+                    .collect::<Result<_, _>>()
+                    .unwrap_or_default();
+                if tiles.len() == gn * gn {
+                    surface = surface.with_satellite_grid(tiles, gn);
                 }
             }
         }
@@ -314,7 +368,7 @@ pub fn build(job: &TileJob) -> TileBuild {
     };
     let skirt = (tile.width_m() as f32 * 0.02).clamp(5.0, 3_000.0);
     let terrain_mesh = terrain::build_mesh(&grid, &proj, &surface, skirt);
-    let sat_n = if tile.z <= 9 { 512 } else { 256 };
+    let sat_n = 256usize << sat_levels(tile.z);
     let sat_tex = surface.sat_texture(sat_n, |u, v| grid.sample(u, v)).map(|d| (sat_n as u32, d));
     // Detail rides on the satellite layer slot, so only tiles with one get it.
     let detail_tex = match (&sat_tex, &amp) {
@@ -346,6 +400,7 @@ pub fn build(job: &TileJob) -> TileBuild {
         placements: Vec::new(),
         airports: Vec::new(),
         min_max_height: (hmin, hmax),
+        sea_fraction,
         ground: None,
         sound: None,
         stats: TileStats::default(),

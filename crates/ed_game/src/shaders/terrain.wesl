@@ -103,11 +103,11 @@ fn vertex(v: TerrainVertex) -> TerrainVertexOutput {
 fn sample_sat(uv: vec2<f32>, tag: u32) -> vec4<f32> {
     let cls = tag >> 24u;
     let layer = i32(tag & 0xFFFu);
-    var n = 128.0;
+    var n = 256.0;
     if cls == 1u {
-        n = 512.0;
+        n = 1024.0;
     } else if cls == 2u {
-        n = 256.0;
+        n = 512.0;
     }
     let k = (n - 1.0) / n;
     let st = uv * k + 0.5 / n;
@@ -129,11 +129,11 @@ fn sample_sat(uv: vec2<f32>, tag: u32) -> vec4<f32> {
 fn sample_detail(uv: vec2<f32>, tag: u32) -> vec4<f32> {
     let cls = tag >> 24u;
     let layer = i32(tag & 0xFFFu);
-    var n = 128.0;
+    var n = 256.0;
     if cls == 1u {
-        n = 512.0;
+        n = 1024.0;
     } else if cls == 2u {
-        n = 256.0;
+        n = 512.0;
     }
     let k = (n - 1.0) / n;
     let st = uv * k + 0.5 / n;

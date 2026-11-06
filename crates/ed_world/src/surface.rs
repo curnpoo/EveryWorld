@@ -254,8 +254,11 @@ pub struct SatView {
     pub u0: f64,
     pub v0: f64,
     pub s: f64,
-    /// Optional finer mosaic: the four children (index cx + 2*cy) of `tile`.
-    pub kids: Option<[std::sync::Arc<ed_data::satellite::SatTile>; 4]>,
+    /// Optional finer mosaic of the tile's descendants: `gn`x`gn` tiles at
+    /// (z + log2(gn)), row-major index `gx + gn*gy`, covering this tile. Lets a
+    /// coarse tile carry more real satellite texels (2x2 children, 4x4
+    /// grandchildren, ...) so it stays sharp when viewed from high altitude.
+    pub grid: Option<(Vec<std::sync::Arc<ed_data::satellite::SatTile>>, usize)>,
 }
 
 impl SurfaceMap {
@@ -341,14 +344,16 @@ impl SurfaceMap {
     /// Attach satellite imagery. `sat.id` must be an ancestor of (or equal to) this tile.
     pub fn with_satellite(mut self, sat: ed_data::satellite::SatTile) -> Self {
         let (_, u0, v0, s) = self.tile.ancestor(sat.id.z);
-        self.sat = Some(SatView { tile: std::sync::Arc::new(sat), u0, v0, s, kids: None });
+        self.sat = Some(SatView { tile: std::sync::Arc::new(sat), u0, v0, s, grid: None });
         self
     }
 
-    /// Upgrade to a 2x finer mosaic of the surface tile's children (tile must equal the sat tile).
-    pub fn with_satellite_kids(mut self, kids: [ed_data::satellite::SatTile; 4]) -> Self {
+    /// Upgrade to a `gn`x`gn` finer mosaic of the surface tile's descendants
+    /// (row-major `gx + gn*gy`; the tile must equal the sat tile). `gn` is a
+    /// power of two; level 0 of the grid is the tile's own row-major children.
+    pub fn with_satellite_grid(mut self, tiles: Vec<ed_data::satellite::SatTile>, gn: usize) -> Self {
         if let Some(s) = self.sat.as_mut() {
-            s.kids = Some(kids.map(std::sync::Arc::new));
+            s.grid = Some((tiles.into_iter().map(std::sync::Arc::new).collect(), gn));
         }
         self
     }
@@ -370,10 +375,11 @@ impl SurfaceMap {
     /// Real-world colour (linear RGB) at tile (u, v), if satellite data is loaded.
     pub fn sat_linear(&self, u: f64, v: f64) -> Option<[f32; 3]> {
         let s = self.sat.as_ref()?;
-        if let Some(k) = &s.kids {
-            let (x, y) = (u.clamp(0.0, 1.0 - 1e-9) * 2.0, v.clamp(0.0, 1.0 - 1e-9) * 2.0);
-            let (cx, cy) = (x as usize, y as usize);
-            return Some(k[cx + 2 * cy].sample(x - cx as f64, y - cy as f64));
+        if let Some((tiles, gn)) = &s.grid {
+            let gnf = *gn as f64;
+            let (x, y) = (u.clamp(0.0, 1.0 - 1e-9) * gnf, v.clamp(0.0, 1.0 - 1e-9) * gnf);
+            let (gx, gy) = (x as usize, y as usize);
+            return Some(tiles[gx + gn * gy].sample(x - gx as f64, y - gy as f64));
         }
         Some(s.tile.sample(s.u0 + u * s.s, s.v0 + v * s.s))
     }

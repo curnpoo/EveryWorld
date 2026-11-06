@@ -14,6 +14,9 @@ impl Plugin for AssetsPlugin {
 
 /// Marker stored in `StandardMaterial::attenuation_distance` so the native renderer can recognise water surfaces.
 pub const WATER_MARK: f32 = 1234.5;
+/// Marker for the global ocean surface, so the renderer can tell the sea from a lake: the sea is
+/// deep even where the elevation data has no bathymetry, a lake is not.
+pub const OCEAN_MARK: f32 = 1234.6;
 
 #[derive(Resource, Clone)]
 pub struct WorldMaterials {
@@ -65,7 +68,7 @@ fn setup_materials(
             base_color: Color::srgb(0.12, 0.32, 0.45),
             perceptual_roughness: 0.08,
             reflectance: 0.55,
-            attenuation_distance: WATER_MARK,
+            attenuation_distance: OCEAN_MARK,
             ..default()
         }),
     };

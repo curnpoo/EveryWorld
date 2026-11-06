@@ -246,6 +246,10 @@ pub struct TileManager {
     /// Ground height range of loaded tiles (for the view test of their
     /// descendants and themselves).
     heights: HashMap<TileId, (f32, f32)>,
+    /// Share of each loaded tile's ground at or below sea level.
+    sea_frac: HashMap<TileId, f32>,
+    /// The z14 tile the focus is in. Used to ask whether the sea is near the camera.
+    pub focus_tile: Option<TileId>,
     /// Satellite pool slot per loaded/applying tile (`MeshTag` value).
     sat_tags: HashMap<TileId, u32>,
     /// When each loaded tile was last in view.
@@ -285,9 +289,11 @@ impl TileManager {
             wanted: HashSet::new(),
             in_view: HashSet::new(),
             heights: HashMap::new(),
+            sea_frac: HashMap::new(),
+            focus_tile: None,
             sat_tags: HashMap::new(),
             seen: Lru::default(),
-            resident_cap: env_num("EW_RESIDENT_TILES", RESIDENT_CAP),
+            resident_cap: if std::env::var_os("EW_KEEP_TILES").is_some() { usize::MAX } else { env_num("EW_RESIDENT_TILES", RESIDENT_CAP) },
             ground_estimate: 0.0,
             last_select: -1.0,
             last_focus: None,
@@ -309,6 +315,27 @@ impl TileManager {
         self.template_resolved && self.pending.is_empty() && self.desired.iter().all(|t| self.loaded.contains_key(t))
     }
 
+    /// True when the sea is within a few hundred metres of `center`: one of the loaded tiles at or
+    /// next to it has ground at or below sea level. The ocean is drawn everywhere as a global
+    /// disc, but the wave detail is only visible close to the camera, so this is what decides
+    /// whether the ocean FFT is worth running at all.
+    pub fn sea_near(&self) -> bool {
+        // The elevation data carries real bathymetry, so a tile that reaches below sea level has
+        // the sea in it. A river channel at 0 m does not count, and a coastal tile a few km away
+        // does not either: the waves are only visible inside a couple of hundred metres.
+        // The ocean itself is clamped to 0 m in the elevation data, so the test is on the area of
+        // the tile that is at or below sea level: a tile that is mostly sea turns the waves on, a
+        // city tile with a river at 0 m does not.
+        let Some(center) = self.focus_tile else { return false };
+        self.sea_frac.get(&center).copied().unwrap_or(0.0) > 0.02
+    }
+
+    /// Share of the tile the focus is in that is at or below sea level.
+    pub fn focus_sea_fraction(&self) -> f32 {
+        let Some(center) = self.focus_tile else { return 0.0 };
+        self.sea_frac.get(&center).copied().unwrap_or(0.0)
+    }
+
     /// (io queued+running, cpu queued+running, applying) for the HUD/perf log.
     pub fn pipeline(&self) -> (usize, usize, usize) {
         let (iq, ir) = self.io.load();
@@ -324,6 +351,12 @@ impl TileManager {
 
 #[derive(Component)]
 pub struct WorldTile;
+
+/// The bare-grid terrain shadow proxy on the sun-only layer (`CLOUD_SHADOW_LAYER`). The Metal
+/// mirror marks it as a terrain caster so the far (terrain-only) cascade keeps drawing it; the
+/// Bevy pipeline uses its layer, so this is inert there.
+#[derive(Component)]
+pub struct TerrainShadowProxy;
 
 /// Full-detail building chunks near the player.
 #[derive(Resource)]
@@ -382,6 +415,7 @@ const NEAR_IN_M: f32 = 70.0;
 const NEAR_OUT_M: f32 = 100.0;
 /// Tiles with a building chunk this close explode into per-chunk LOD so their
 /// buildings cast shadows (the far cascade ends at 700 m, `sky.rs`).
+/// Bevy renderer only: on native the merged tile LOD casts, so no explode.
 const SHADOW_EXPLODE_M: f32 = 750.0;
 /// Rock chunks are entities only within this distance of the camera.
 const ROCK_RANGE_M: f32 = 500.0;
@@ -461,6 +495,9 @@ fn select_tiles(
     let Some(ft) = focus.iter().next() else { return };
     let focus_pos = ft.translation();
     let cam = origin.to_geodetic(focus_pos);
+    // Where the focus is, at the finest zoom the world streams. The ocean FFT is only worth
+    // running when the sea is near this tile.
+    mgr.focus_tile = Some(ed_geo::tile::TileId::containing(cam.lat_deg, cam.lon_deg, 14));
 
     // Velocity for prefetching ahead (skip the tick a floating-origin rebase jumps).
     let vel = match mgr.last_focus {
@@ -471,9 +508,24 @@ fn select_tiles(
     let ahead_k = scheduler::ahead_weight(vel.length());
     let vel_dir = vel.normalize_or_zero();
 
+    // Zoom out the root set when high up so the horizon stays covered, and cap the
+    // finest zoom so altitude doesn't split into hundreds of tiny tiles (which can't
+    // all build in time and leave the sea globe showing through). At 100 km this
+    // yields a few dozen ~500 km tiles that cover the visible disc almost at once.
+    let (root_zoom, max_zoom) = if cam.alt_m > 200_000.0 {
+        (2u8, 4u8)
+    } else if cam.alt_m > 100_000.0 {
+        (3u8, 5u8)
+    } else if cam.alt_m > 40_000.0 {
+        (4u8, 7u8)
+    } else if cam.alt_m > 15_000.0 {
+        (5u8, 10u8)
+    } else {
+        (6u8, 14u8)
+    };
     let params = LodParams {
-        // Zoom out the root set when high up so the horizon stays covered.
-        root_zoom: if cam.alt_m > 200_000.0 { 3 } else if cam.alt_m > 40_000.0 { 5 } else { 6 },
+        root_zoom,
+        max_zoom,
         ..default()
     };
     let wanted: HashSet<TileId> = lod::select(cam, mgr.ground_estimate, &params).into_iter().collect();
@@ -512,12 +564,14 @@ fn select_tiles(
         .collect();
 
     // Cancel queued work for tiles that are no longer wanted.
-    let mut dropped = Vec::new();
-    mgr.io.retain_queued(|t| wanted.contains(t) || { dropped.push(*t); false });
-    mgr.cpu.retain_queued(|t| wanted.contains(t) || { dropped.push(*t); false });
-    for t in dropped {
-        mgr.pending.remove(&t);
-        mgr.jobs.remove(&t);
+    if std::env::var_os("EW_KEEP_TILES").is_none() {
+        let mut dropped = Vec::new();
+        mgr.io.retain_queued(|t| wanted.contains(t) || { dropped.push(*t); false });
+        mgr.cpu.retain_queued(|t| wanted.contains(t) || { dropped.push(*t); false });
+        for t in dropped {
+            mgr.pending.remove(&t);
+            mgr.jobs.remove(&t);
+        }
     }
 
     // Queue (or re-rank) wanted tiles: visible ones, then the ground right around you.
@@ -539,7 +593,7 @@ fn select_tiles(
             mgr.cpu.set_priority(t, p);
             continue;
         }
-        if !visible && d > OFFSCREEN_PREBUILD {
+        if std::env::var_os("EW_KEEP_TILES").is_none() && !visible && d > OFFSCREEN_PREBUILD {
             continue;
         }
         let job = TileJob { tile: *t, frame: origin.frame, cache: cfg.cache.clone(), vector_template: mgr.template.clone() };
@@ -721,7 +775,7 @@ fn apply_tiles(
                     }
                     let terrain_proxy = a.ready.terrain_shadow.take();
                     if let Some(m) = terrain_proxy.as_ref() {
-                        commands.spawn((Mesh3d(meshes.add(m.clone())), MeshMaterial3d(mats.matte.clone()), Transform::default(), RenderLayers::layer(crate::clouds::CLOUD_SHADOW_LAYER), ChildOf(parent_id)));
+                        commands.spawn((Mesh3d(meshes.add(m.clone())), MeshMaterial3d(mats.matte.clone()), Transform::default(), RenderLayers::layer(crate::clouds::CLOUD_SHADOW_LAYER), TerrainShadowProxy, ChildOf(parent_id)));
                     }
                     for (part, mesh) in a.ready.parts.drain(..) {
                         if hidden_part(&format!("{part:?}")) {
@@ -791,8 +845,14 @@ fn apply_tiles(
                         commands.spawn((RigidBody::Static, col, Transform::default(), ChildOf(parent_id)));
                     }
                     if !batch.buckets.is_empty() {
+                        // Bevy's shadow pass has no sub-mesh culling, so the merged tile LOD
+                        // would cast whole into every cascade — chunk stand-ins cover the sun
+                        // instead (see `Shadow`). The Metal renderer cluster-culls per pass, so
+                        // on native the merged LOD casts directly and chunks exist only for
+                        // near detail.
+                        let shadow = if crate::native::enabled() { Shadow::Cast } else { Shadow::None };
                         let e = commands.spawn((Transform::default(), Visibility::default(), ChildOf(parent_id))).id();
-                        spawn_buckets(&mut commands, &mut meshes, &bmats, batch, e, Shadow::None);
+                        spawn_buckets(&mut commands, &mut meshes, &bmats, batch, e, shadow);
                         a.lod_root = Some(e);
                     }
                     a.stage = Stage::Trees;
@@ -849,6 +909,7 @@ fn apply_tiles(
         }
         mgr.tile_totals.insert(t, Totals { buildings: b.stats.buildings, trees: b.stats.trees, triangles: b.stats.triangles });
         mgr.heights.insert(t, b.min_max_height);
+        mgr.sea_frac.insert(t, b.sea_fraction);
         mgr.recount();
         mgr.loaded.insert(t, parent_id);
         mgr.pending.remove(&t);
@@ -885,6 +946,7 @@ fn retire_tiles(mut commands: Commands, mut mgr: ResMut<TileManager>, mut dm: Re
         commands.entity(e).despawn();
         mgr.tile_totals.remove(&t);
         mgr.heights.remove(&t);
+        mgr.sea_frac.remove(&t);
         mgr.seen.remove(&t);
         dm.tiles.remove(&t);
         if let Some(tag) = mgr.sat_tags.remove(&t) {
@@ -924,7 +986,12 @@ fn stream_detail(
         for chunk in td.set.chunks.keys() {
             let c = gt.transform_point(td.set.chunk_center(*chunk));
             let d = c.distance(fp);
-            shadow_near |= d < SHADOW_EXPLODE_M;
+            // Exploding into per-chunk entities to feed Bevy's shadow passes churns the whole
+            // caster list (cascades across 750 m); on native the merged LOD casts its own
+            // shadows, so chunks are only built when near detail actually wants them.
+            if !crate::native::enabled() {
+                shadow_near |= d < SHADOW_EXPLODE_M;
+            }
             let cur = td.loaded.get(chunk).map(|l| l.1);
             // Level this chunk should show: keep the current one inside the band.
             let lite = if d < NEAR_IN_M { false } else if d > NEAR_OUT_M { true } else { cur.unwrap_or(true) };
