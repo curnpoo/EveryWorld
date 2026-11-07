@@ -777,7 +777,7 @@ fn net_update_avatars(
         let Some((_root_pos, root_rot, pitch, boot, throttle, wingsuit, speed)) = avatars.get(&part.id).copied() else { *vis = Visibility::Hidden; continue };
         let _ = (pitch, wingsuit);
         let lean = (speed / 6.0).clamp(0.0, 0.35);
-        let base = root_rot * Quat::from_rotation_x(pitch * 0.6 + lean);
+        let base = Quat::from_rotation_x(pitch * 0.6 + lean);
         let up = Vec3::Y;
         let ph = phase.map.get(&part.id).copied().unwrap_or(0.0);
         // Local joints
@@ -872,7 +872,7 @@ fn net_update_avatars(
         let flying = wingsuit && matches!(boot, 1|2|3);
         if !flying { *vis = Visibility::Hidden; continue; }
         *vis = Visibility::Visible;
-        let base = root_rot * Quat::from_rotation_x(pitch*0.6);
+        let base = Quat::from_rotation_x(pitch*0.6);
         let back = base * Vec3::Z;
         // recompute joints quickly (approx)
         let chest = base*Vec3::new(0.0,0.42,0.0);
