@@ -726,6 +726,9 @@ fn net_update_avatars(
     mut meshes: ResMut<Assets<bevy::mesh::Mesh>>,
 ) {
     let dt = time.delta_secs().clamp(1e-4, 0.05);
+    if !remote.players.is_empty() {
+        bevy::log::info!("net_update_avatars: {} remotes, {} avatars", remote.players.len(), q.iter().count());
+    }
     // Collect avatar transforms by id
     let mut avatars: HashMap<u64, (Vec3, Quat, f32, u8, f32, bool, f32)> = HashMap::new(); // pos, rot, pitch, boot, throttle, wingsuit, speed
     for (mut t, av) in q.iter_mut() {
