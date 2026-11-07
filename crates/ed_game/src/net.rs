@@ -95,7 +95,8 @@ impl Plugin for NetPlugin {
         })
         .insert_resource(RemotePlayers::default())
         .insert_resource(RemoteAvatarEntities::default())
-        .add_systems(Update, (net_drain_events, net_send_state, net_spawn_avatars, net_update_avatars, net_update_status_text, net_menu_actions).chain());
+        .insert_resource(RemoteNametagEntities::default())
+        .add_systems(Update, (net_drain_events, net_send_state, net_spawn_avatars, net_update_avatars, net_update_nametags, net_update_status_text, net_menu_actions).chain());
     }
 }
 
@@ -245,12 +246,23 @@ pub struct RemoteAvatarRing {
     pub id: u64,
 }
 
+#[derive(Component)]
+pub struct RemoteNametag {
+    pub id: u64,
+}
+
+#[derive(Resource, Default)]
+pub struct RemoteNametagEntities {
+    pub map: HashMap<u64, Entity>,
+}
+
 pub fn net_spawn_avatars(
     mut commands: Commands,
     mut meshes: ResMut<Assets<bevy::mesh::Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     remote: Res<RemotePlayers>,
     mut ents: ResMut<RemoteAvatarEntities>,
+    mut nametag_entities: ResMut<RemoteNametagEntities>,
 ) {
     for (id, rp) in remote.players.iter() {
         if ents.map.contains_key(id) {
@@ -268,13 +280,6 @@ pub fn net_spawn_avatars(
             crate::origin::Rebased,
             Name::new(format!("remote_{}", rp.name)),
         )).with_children(|p| {
-            // nametag
-            p.spawn((
-                bevy::sprite::Text2d::new(rp.name.clone()),
-                TextFont { font_size: bevy::text::FontSize::Px(14.0), ..default() },
-                TextColor(Color::WHITE),
-                Transform::from_translation(Vec3::new(0.0, 2.2, 0.0)),
-            ));
             // far ring (hidden by default)
             p.spawn((
                 Mesh3d(ring_mesh),
@@ -284,12 +289,31 @@ pub fn net_spawn_avatars(
                 RemoteAvatarRing { id: *id },
             ));
         }).id();
+        // screen-space nametag (UI, draws over terrain)
+        let nametag = commands.spawn((
+            RemoteNametag { id: *id },
+            Text::new(rp.name.clone()),
+            TextFont { font_size: bevy::text::FontSize::Px(18.0), ..default() },
+            TextColor(Color::srgb(1.0, 0.9, 0.2)),
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(-1000.0),
+                top: Val::Px(-1000.0),
+                ..default()
+            },
+            ZIndex(20),
+        )).id();
+        ents.map.insert(*id, entity); // avatar entity
+        nametag_entities.map.insert(*id, nametag);
         ents.map.insert(*id, entity);
     }
     // despawn removed
     let to_remove: Vec<u64> = ents.map.keys().copied().filter(|id| !remote.players.contains_key(id)).collect();
     for id in to_remove {
         if let Some(e) = ents.map.remove(&id) {
+            commands.entity(e).despawn();
+        }
+        if let Some(e) = nametag_entities.map.remove(&id) {
             commands.entity(e).despawn();
         }
     }
@@ -315,6 +339,40 @@ pub fn net_menu_actions(
                 net.status = NetStatus::Disconnected;
             }
             _ => {}
+        }
+    }
+}
+
+fn net_update_nametags(
+    origin: Res<WorldOrigin>,
+    remote: Res<RemotePlayers>,
+    camera: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<crate::globe::GlobeCamera>)>,
+    mut q: Query<(&mut Node, &RemoteNametag, &mut Visibility)>,
+) {
+    let cam = camera.iter().next();
+    for (mut node, nt, mut vis) in q.iter_mut() {
+        let Some(rp) = remote.players.get(&nt.id) else {
+            *vis = Visibility::Hidden;
+            continue;
+        };
+        let Some((cam_t, cam_c)) = cam else {
+            *vis = Visibility::Hidden;
+            continue;
+        };
+        let ecef = DVec3::new(rp.pos[0], rp.pos[1], rp.pos[2]);
+        let world = origin.frame.ecef_to_render().transform_point3(ecef).as_vec3();
+        // distance check (100 km)
+        let dist = (world - cam_t.translation).length();
+        if dist > 100_000.0 {
+            *vis = Visibility::Hidden;
+            continue;
+        }
+        if let Ok(screen) = cam_c.world_to_viewport(cam_t, world) {
+            node.left = Val::Px(screen.x - 40.0);
+            node.top = Val::Px(screen.y - 60.0);
+            *vis = Visibility::Visible;
+        } else {
+            *vis = Visibility::Hidden;
         }
     }
 }
