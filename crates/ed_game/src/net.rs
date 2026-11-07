@@ -559,8 +559,14 @@ fn join_paint(
     mut name_t: Query<&mut Text, (With<crate::menu::NameFieldText>, Without<crate::menu::ServerFieldText>)>,
 ) {
     let caret = |f: u8, my: u8| if f == my { "│" } else { "" };
-    for mut t in &mut server_t { t.0 = format!("{}{}", form.server, caret(form.focus, 1)); }
-    for mut t in &mut name_t { t.0 = format!("{}{}", form.name, caret(form.focus, 2)); }
+    for mut t in &mut server_t {
+        let s = format!("{}{}", form.server, caret(form.focus, 1));
+        if t.0 != s { t.0 = s; }
+    }
+    for mut t in &mut name_t {
+        let s = format!("{}{}", form.name, caret(form.focus, 2));
+        if t.0 != s { t.0 = s; }
+    }
 }
 
 pub fn net_menu_actions(
