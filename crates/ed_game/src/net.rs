@@ -768,7 +768,7 @@ fn net_update_avatars(
         // speed from span
         let delta = (rp.pos[0]-rp.prev_pos[0]).powi(2)+(rp.pos[1]-rp.prev_pos[1]).powi(2)+(rp.pos[2]-rp.prev_pos[2]).powi(2);
         let speed = (delta.sqrt() / span.max(1e-4)) as f32;
-        t.translation = render;
+        t.translation = render + Vec3::Y * (time.elapsed_secs() * 3.0).sin() * 0.15;
         t.rotation = Quat::from_rotation_y(yaw);
         avatars.insert(av.id, (render, t.rotation, pitch, boot, throttle, wingsuit, speed));
         // phase for walk swing
