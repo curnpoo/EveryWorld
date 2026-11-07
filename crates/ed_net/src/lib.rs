@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 pub const DEFAULT_PORT: u16 = 7777;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -36,6 +36,8 @@ pub enum C2S {
         yaw: f32,
         pitch: f32,
         boot: u8,
+        throttle: f32,
+        wingsuit: bool,
         t: f64,
     },
     Bye,
@@ -54,6 +56,8 @@ pub enum S2C {
         yaw: f32,
         pitch: f32,
         boot: u8,
+        throttle: f32,
+        wingsuit: bool,
         t: f64,
     },
     Leave { id: u64 },
