@@ -141,6 +141,8 @@ fn build_stage(
     mats: Res<WorldMaterials>,
     bmats: Res<crate::building_materials::BuildingMaterials>,
     mut foliage_assets: ResMut<crate::foliage::FoliageAssets>,
+    body_assets: Res<crate::body::BodyAssets>,
+    cosmetics: Res<crate::body::Cosmetics>,
 ) {
     let tile = TileId::containing(origin.frame.origin.lat_deg, origin.frame.origin.lon_deg, 14);
     let proj = TileProjector::new(tile, origin.frame);
@@ -229,11 +231,18 @@ fn build_stage(
         let spot = to_world(3400.0, 1500.0, GROUND_H);
         let up_w = origin.up_at(spot);
         let pos = spot + up_w * crate::player::RIDE_HEIGHT;
-        commands.spawn((
+        let dummy = commands.spawn((
             crate::player::Player::idle(0.5, crate::player::MoveMode::Walk),
             avian3d::prelude::LinearVelocity::default(),
             Transform::from_translation(pos),
-        ));
+        )).id();
+        crate::body::spawn_body_parts(
+            &mut commands,
+            &body_assets,
+            &mut meshes,
+            dummy,
+            &cosmetics,
+        );
         let fwd = Quat::from_rotation_arc(Vec3::Y, up_w) * Quat::from_rotation_y(0.5) * Vec3::NEG_Z;
         let right = fwd.cross(up_w);
         shots.push(Shot { name: "character_front".into(), eye: pos + fwd * 2.3 + right * 0.9 + up_w * 0.3, target: pos + up_w * 0.05, tonemap: None });
