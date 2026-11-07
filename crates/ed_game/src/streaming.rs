@@ -634,6 +634,7 @@ fn select_tiles(
     // finest zoom so altitude doesn't split into hundreds of tiny tiles (which can't
     // all build in time and leave the sea globe showing through). At 100 km this
     // yields a few dozen ~500 km tiles that cover the visible disc almost at once.
+    let win_lite = cfg!(target_os = "windows");
     let (root_zoom, max_zoom) = if cam.alt_m > 200_000.0 {
         (2u8, 4u8)
     } else if cam.alt_m > 100_000.0 {
@@ -648,7 +649,9 @@ fn select_tiles(
     let params = LodParams {
         root_zoom,
         max_zoom,
-        fine_range_m: env_num("EW_FINE_RANGE_M", if cfg!(target_os = "windows") { 1_600.0 } else { 16_000.0 }),
+        root_radius: if win_lite { 0 } else { 2 },
+        fine_range_m: env_num("EW_FINE_RANGE_M", if win_lite { 400.0 } else { 16_000.0 }),
+        max_distance_m: if win_lite { 400.0 } else { f64::INFINITY },
         ..default()
     };
     let wanted: HashSet<TileId> = lod::select(cam, mgr.ground_estimate, &params).into_iter().collect();
