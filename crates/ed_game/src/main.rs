@@ -87,6 +87,7 @@ fn main() {
         app.add_plugins(bevy::app::ScheduleRunnerPlugin::run_loop(std::time::Duration::ZERO));
     }
     app.add_plugins(plugins)
+    .add_plugins(bevy::pbr::experimental::meshlet::MeshletPlugin { cluster_buffer_slots: 1 << 22 })
     .add_plugins(PhysicsPlugins::default())
     .insert_resource(Gravity(Vec3::NEG_Y * 9.81))
     .insert_resource(cfg.clone())
