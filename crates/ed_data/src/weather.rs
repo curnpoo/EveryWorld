@@ -85,7 +85,7 @@ pub fn fetch(cache: &DiskCache, lat: f64, lon: f64) -> anyhow::Result<Weather> {
          &hourly=temperature_2m,precipitation,cloud_cover,wind_speed_10m,wind_direction_10m,weather_code\
          &wind_speed_unit=ms&timeformat=unixtime&forecast_days=2"
     );
-    let key = format!("weather/{la:.1}_{lo:.1}.json");
+    let key = format!("weather/{}/{:.1}_{:.1}.json", crate::DATA_VERSION, la, lo);
     let bytes = cache.get_or_fetch(&key, Some(Duration::from_secs(900)), || crate::http::get_bytes(&url))?;
     parse(&bytes)
 }

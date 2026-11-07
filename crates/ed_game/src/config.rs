@@ -32,6 +32,10 @@ pub struct Config {
     pub lookdev_only: Option<String>,
     /// Spectator fly camera instead of the robot.
     pub fly: bool,
+    /// Multiplayer server address (host:port) for ghost multiplayer.
+    pub server: Option<String>,
+    /// Player name shown to others.
+    pub player_name: Option<String>,
     /// `--no-post`: drop bloom, TAA and SSAO.
     pub no_post: bool,
     /// `--no-hud`: hide the compass, readout and minimap (clean screenshots).
@@ -122,6 +126,8 @@ impl Config {
             lookdev,
             lookdev_only: get("--only"),
             fly: args.iter().any(|a| a == "--fly"),
+            server: get("--server"),
+            player_name: get("--name"),
             no_post: args.iter().any(|a| a == "--no-post"),
             no_hud: args.iter().any(|a| a == "--no-hud"),
             scale: num("--scale"),

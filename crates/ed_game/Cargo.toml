@@ -28,6 +28,7 @@ ed_audio = { path = "../ed_audio" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 ed_runtime = { path = "../ed_runtime" }
+ed_net = { path = "../ed_net" }
 bevy = { version = "0.20", features = ["system_font_discovery"] }
 avian3d = "0.8"
 glam = { workspace = true }

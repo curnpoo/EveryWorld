@@ -91,6 +91,7 @@ pub enum MenuView {
     Character,
     Controls,
     Debug,
+    Multiplayer,
 }
 
 /// How the frame is anti-aliased: the temporal upscaler (renders low, AA included), plain AA at native
@@ -404,6 +405,8 @@ pub enum MenuAction {
     ToggleBackpack,
     ToggleMute,
     ToggleCalm,
+    ConnectServer,
+    DisconnectServer,
 }
 
 /// One audio mix slider; the track carries it, the knob and readout are children of the row.
@@ -477,6 +480,8 @@ enum Screen {
 /// A tab body inside the pause menu.
 #[derive(Component, Clone, Copy, PartialEq, Eq)]
 struct TabBody(MenuView);
+#[derive(Component)]
+pub(crate) struct NetStatusText;
 
 /// The pause screen's heading ("Paused" in game, the game name from the main menu).
 #[derive(Component)]
@@ -710,6 +715,7 @@ fn build_menus(mut commands: Commands, assets: Res<AssetServer>) {
                     ("Character", MenuView::Character),
                     ("Controls", MenuView::Controls),
                     ("Debug", MenuView::Debug),
+                    ("Multiplayer", MenuView::Multiplayer),
                 ] {
                     button(r, label, MenuAction::Tab(v), false);
                 }
@@ -878,6 +884,17 @@ fn build_menus(mut commands: Commands, assets: Res<AssetServer>) {
                         TextColor(Color::srgba(0.82, 0.92, 1.0, 0.92)),
                     ));
                 });
+            });
+            // Multiplayer tab.
+            p.spawn((TabBody(MenuView::Multiplayer), Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(12.0), ..default() }, Visibility::Hidden)).with_children(|t| {
+                text(t, "Ghost multiplayer (LAN)", 22.0, INK);
+                t.spawn(Node { column_gap: Val::Px(12.0), align_items: AlignItems::Center, ..default() }).with_children(|r| {
+                    button(r, "Connect", MenuAction::ConnectServer, false);
+                    button(r, "Disconnect", MenuAction::DisconnectServer, false);
+                });
+                t.spawn((NetStatusText, Text::new("Disconnected"), TextFont { font_size: FontSize::Px(16.0), ..default() }, TextColor(ORANGE)));
+                text(t, "Server: use --server <host:port> (default 127.0.0.1:7777) and --name <name>.", 14.0, DIM);
+                text(t, "Run `earthdrop-server [port]` on one machine, then connect others.", 14.0, DIM);
             });
         });
 }
@@ -1091,7 +1108,7 @@ fn pad_focus(
 }
 
 /// Tab order for LB / RB. Home has no tabs, so bumpers do nothing there.
-const TAB_ORDER: [MenuView; 6] = [MenuView::Map, MenuView::Settings, MenuView::Audio, MenuView::Character, MenuView::Controls, MenuView::Debug];
+const TAB_ORDER: [MenuView; 7] = [MenuView::Map, MenuView::Settings, MenuView::Audio, MenuView::Character, MenuView::Controls, MenuView::Debug, MenuView::Multiplayer];
 /// The active tab's button. Orange like the Play and Resume accents, but translucent.
 const TAB_ON: Color = Color::srgba(0.98, 0.45, 0.12, 0.55);
 
@@ -1273,6 +1290,7 @@ fn menu_buttons(
             MenuAction::ToggleBackpack => cosmetics.backpack = !cosmetics.backpack,
             MenuAction::ToggleMute => audio.muted = !audio.muted,
             MenuAction::ToggleCalm => audio.calm = !audio.calm,
+            _ => {}
         }
     }
 }

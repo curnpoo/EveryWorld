@@ -1,0 +1,12 @@
+[package]
+name = "ed_server"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "earthdrop-server"
+path = "src/main.rs"
+
+[dependencies]
+ed_net = { path = "../ed_net" }
+serde_json = { workspace = true }

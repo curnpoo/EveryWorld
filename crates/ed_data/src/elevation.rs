@@ -121,7 +121,7 @@ pub fn fetch(cache: &DiskCache, id: TileId) -> anyhow::Result<HeightTile> {
         }
         return Ok(HeightTile { id, size, heights });
     }
-    let mt_key = format!("mapterhorn/{}.webp", id.path());
+    let mt_key = format!("mapterhorn/{}/{}.webp", crate::DATA_VERSION, id.path());
     let mt = cache.get_or_fetch(&mt_key, None, || {
         Ok(crate::http::get_bytes_opt(&format!("{MAPTERHORN_URL}/{}.webp", id.path()))?.unwrap_or_default())
     });
@@ -133,7 +133,7 @@ pub fn fetch(cache: &DiskCache, id: TileId) -> anyhow::Result<HeightTile> {
         Ok(_) => {}
         Err(e) => log::warn!("mapterhorn {} failed, falling back: {e}", id.path()),
     }
-    let key = format!("terrarium/{}.png", id.path());
+    let key = format!("terrarium/{}/{}.png", crate::DATA_VERSION, id.path());
     let bytes = cache.get_or_fetch(&key, None, || crate::http::get_bytes(&format!("{AWS_URL}/{}.png", id.path())))?;
     HeightTile::decode_terrarium(id, &bytes)
 }
@@ -143,14 +143,14 @@ pub fn fetch(cache: &DiskCache, id: TileId) -> anyhow::Result<HeightTile> {
 /// [`fetch`]'s source order (Mapterhorn, then AWS Terrarium).
 pub fn prefetch(cache: &DiskCache, id: TileId) -> anyhow::Result<()> {
     let id = if id.z > MAX_ZOOM { id.ancestor(MAX_ZOOM).0 } else { id };
-    let mt_key = format!("mapterhorn/{}.webp", id.path());
+    let mt_key = format!("mapterhorn/{}/{}.webp", crate::DATA_VERSION, id.path());
     let mt = cache.get_or_fetch(&mt_key, None, || {
         Ok(crate::http::get_bytes_opt(&format!("{MAPTERHORN_URL}/{}.webp", id.path()))?.unwrap_or_default())
     });
     if matches!(&mt, Ok(b) if !b.is_empty()) {
         return Ok(());
     }
-    let key = format!("terrarium/{}.png", id.path());
+    let key = format!("terrarium/{}/{}.png", crate::DATA_VERSION, id.path());
     cache.get_or_fetch(&key, None, || crate::http::get_bytes(&format!("{AWS_URL}/{}.png", id.path())))?;
     Ok(())
 }

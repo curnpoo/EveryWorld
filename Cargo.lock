@@ -2832,6 +2832,7 @@ dependencies = [
  "ed_flight",
  "ed_geo",
  "ed_metal",
+ "ed_net",
  "ed_runtime",
  "ed_space",
  "ed_world",
@@ -2876,6 +2877,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ed_net"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "ed_runtime"
 version = "0.1.0"
 dependencies = [
@@ -2883,6 +2892,14 @@ dependencies = [
  "ed_geo",
  "glam 0.33.12",
  "log",
+]
+
+[[package]]
+name = "ed_server"
+version = "0.1.0"
+dependencies = [
+ "ed_net",
+ "serde_json",
 ]
 
 [[package]]
