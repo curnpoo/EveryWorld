@@ -39,6 +39,7 @@ impl Plugin for MenuPlugin {
         embedded_asset!(app, "menu_assets/menu_bg.png");
         app.init_state::<GameState>()
             .init_resource::<MenuView>()
+            .init_resource::<JoinForm>()
             .init_resource::<MenuFocus>()
             .init_resource::<GraphicsSettings>()
             .init_resource::<DebugSettings>()
@@ -483,6 +484,25 @@ struct TabBody(MenuView);
 #[derive(Component)]
 pub(crate) struct NetStatusText;
 
+#[derive(Component)]
+pub(crate) struct ServerField;
+#[derive(Component)]
+pub(crate) struct ServerFieldText;
+#[derive(Component)]
+pub(crate) struct NameField;
+#[derive(Component)]
+pub(crate) struct NameFieldText;
+
+#[derive(Resource)]
+pub struct JoinForm {
+    pub server: String,
+    pub name: String,
+    pub focus: u8, // 0 none, 1 server, 2 name
+}
+impl Default for JoinForm {
+    fn default() -> Self { Self { server: "127.0.0.1:7777".to_string(), name: "player".to_string(), focus: 0 } }
+}
+
 /// The pause screen's heading ("Paused" in game, the game name from the main menu).
 #[derive(Component)]
 struct PauseTitle;
@@ -888,14 +908,28 @@ fn build_menus(mut commands: Commands, assets: Res<AssetServer>) {
             });
             // Multiplayer tab.
             p.spawn((TabBody(MenuView::Multiplayer), Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(12.0), ..default() }, Visibility::Hidden)).with_children(|t| {
-                text(t, "Ghost multiplayer (LAN)", 22.0, INK);
+                text(t, "Ghost multiplayer", 22.0, INK);
+                // Server address field
                 t.spawn(Node { column_gap: Val::Px(12.0), align_items: AlignItems::Center, ..default() }).with_children(|r| {
-                    button(r, "Connect", MenuAction::ConnectServer, false);
+                    r.spawn(Node { width: Val::Px(140.0), ..default() }).with_children(|c| text(c, "Server", 17.0, INK));
+                    r.spawn((ServerField, Interaction::None, Node { width: Val::Px(340.0), height: Val::Px(38.0), padding: UiRect::axes(Val::Px(12.0), Val::Px(0.0)), align_items: AlignItems::Center, overflow: Overflow::clip(), border: UiRect::all(Val::Px(1.5)), border_radius: BorderRadius::all(Val::Px(10.0)), ..default() }, BorderColor::all(Color::srgba(1.0,1.0,1.0,0.22)), BackgroundColor(BTN))).with_children(|f| {
+                        f.spawn((ServerFieldText, Text::new("127.0.0.1:7777"), TextFont { font_size: FontSize::Px(15.0), ..default() }, TextColor(INK)));
+                    });
+                });
+                // Name field
+                t.spawn(Node { column_gap: Val::Px(12.0), align_items: AlignItems::Center, ..default() }).with_children(|r| {
+                    r.spawn(Node { width: Val::Px(140.0), ..default() }).with_children(|c| text(c, "Your name", 17.0, INK));
+                    r.spawn((NameField, Interaction::None, Node { width: Val::Px(340.0), height: Val::Px(38.0), padding: UiRect::axes(Val::Px(12.0), Val::Px(0.0)), align_items: AlignItems::Center, overflow: Overflow::clip(), border: UiRect::all(Val::Px(1.5)), border_radius: BorderRadius::all(Val::Px(10.0)), ..default() }, BorderColor::all(Color::srgba(1.0,1.0,1.0,0.22)), BackgroundColor(BTN))).with_children(|f| {
+                        f.spawn((NameFieldText, Text::new("player"), TextFont { font_size: FontSize::Px(15.0), ..default() }, TextColor(INK)));
+                    });
+                });
+                t.spawn(Node { column_gap: Val::Px(12.0), align_items: AlignItems::Center, ..default() }).with_children(|r| {
+                    button(r, "Connect", MenuAction::ConnectServer, true);
                     button(r, "Disconnect", MenuAction::DisconnectServer, false);
                 });
                 t.spawn((NetStatusText, Text::new("Disconnected"), TextFont { font_size: FontSize::Px(16.0), ..default() }, TextColor(ORANGE)));
-                text(t, "Server: use --server <host:port> (default 127.0.0.1:7777) and --name <name>.", 14.0, DIM);
-                text(t, "Run `earthdrop-server [port]` on one machine, then connect others.", 14.0, DIM);
+                text(t, "Click a field, type, press Enter or Connect. Or launch with --server <host:port>.", 14.0, DIM);
+                text(t, "Run `everyworld-server [port]` on one machine, then connect others.", 14.0, DIM);
             });
         });
 }

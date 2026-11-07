@@ -2,10 +2,10 @@
 name = "ed_game"
 version.workspace = true
 edition.workspace = true
-default-run = "earthdrop"
+default-run = "everyworld"
 
 [[bin]]
-name = "earthdrop"
+name = "everyworld"
 path = "src/main.rs"
 
 [features]

@@ -93,13 +93,13 @@ cargo build --release -p ed_game
 
 On the host machine (the one acting as server):
 ```
-./target/release/earthdrop-server 7777
+./target/release/everyworld-server 7777
 ```
-(Windows: `target\release\earthdrop-server.exe 7777`)
+(Windows: `target\release\everyworld-server.exe 7777`)
 
 On each client (LAN):
 ```
-./target/release/earthdrop --server <host-ip>:7777 --name alice
+./target/release/everyworld --server <host-ip>:7777 --name alice
 ```
 Open the pause menu → **Multiplayer** tab → **Connect**. Drop in anywhere; the first time a remote player's state arrives you are teleported to stand next to them. Other players show as a blue capsule with a "player" nametag; beyond ~200 m only a ground ring marks their spot. They are not yet drawn on the minimap/worldmap (follow-up).
 
