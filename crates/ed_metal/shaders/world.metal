@@ -240,10 +240,7 @@ float2 fbm_grad(float2 p) { const float e = 0.06; float h = fbm3(p); return floa
 
 // Updates `n` (world normal) and `base.rgb` (satellite albedo) for a terrain pixel.
 void terrain_surf(thread float3& n, thread float4& base, float3 wpos, float dist, float4 det) {
-    float ny = max(n.y, 0.08);
-    float wall = 1.0 - smoothstep(0.55, 0.8, 1.0 - n.y);
-    float2 dg = float2(detail_dec(det.r), detail_dec(det.g)) * wall;
-    n = normalize(n / ny + float3(-dg.x, 0.0, -dg.y));
+    n = normalize(n); // baked detail normal delta disabled
     float slope = 1.0 - clamp(n.y, 0.0, 1.0);
     float curv = clamp(detail_dec(det.b), -3.0, 3.0); // + gully, - ridge
     float3 a = base.rgb;
@@ -269,8 +266,8 @@ void terrain_surf(thread float3& n, thread float4& base, float3 wpos, float dist
     a *= mix(1.0, max(1.0, 0.8 / lum_now), snow_p * 0.9);
     a = mix(a, float3(dot(a, lw)) * float3(0.97, 0.99, 1.03), snow_p * 0.35);
     // Micro relief: planar on flat ground, projected on faces; rock is rougher than snow.
-    float amp = (0.15 + rock_f * 1.0 + (1.0 - snow_p) * 0.2) * (1.0 - smoothstep(40.0, 500.0, dist));
-    float amp2 = (0.2 + rock_f * 0.8) * (1.0 - smoothstep(300.0, 3000.0, dist));
+    float amp = 0.0; // analytic fBm micro-relief disabled
+    float amp2 = 0.0;
     float wf = 1.0 - smoothstep(0.22, 0.5, slope);
     float2 q = float2(wpos.x + wpos.z, wpos.y);
     float2 g1f = fbm_grad(wpos.xz * 0.9), g1w = fbm_grad(q * 0.9);
@@ -456,10 +453,7 @@ fragment GOut terrain_fs(TOut in [[stage_in]], bool front [[front_facing]],
         GOut o; o.c = float4(col, 1.0); o.n = float4(N * 0.5 + 0.5, D.mat.x); return o;
     }
     {
-        float ny = max(n.y, 0.08);
-        float wall = 1.0 - smoothstep(0.55, 0.8, 1.0 - n.y);
-        float2 dg = float2(detail_dec(det.r), detail_dec(det.g)) * wall;
-        n = normalize(n / ny + float3(-dg.x, 0.0, -dg.y));
+        n = normalize(n); // baked detail normal delta disabled
     }
     GT g = {gal, gnr, mtex};
     float3 p3 = wp; float2 p2 = p3.xz;
@@ -565,9 +559,7 @@ fragment GOut terrain_fs(TOut in [[stage_in]], bool front [[front_facing]],
     albedo *= (1.0 + fb2 * float3(0.16, 0.03, -0.14) * mid_fade * keepk);
     albedo *= mix(float3(1.0), 1.0 + cell * float3(0.30, 0.16, 0.34), living * mid_fade);
     albedo = max(albedo, float3(0.0));
-    float gx = mac(mtex, p2 + float2(1.5, 0.0), 23.0, 1.27, float2(0.31, 0.17)).g - m_d.g;
-    float gz = mac(mtex, p2 + float2(0.0, 1.5), 23.0, 1.27, float2(0.31, 0.17)).g - m_d.g;
-    nd = normalize(nd + float3(-gx, 0.0, -gz) * 1.6 * mid_fade * (1.0 - 0.7 * snow_w) * (1.0 - smoothstep(0.7, 0.95, slope)));
+    nd = normalize(nd); // mid-scale normal perturbation disabled
     {
         float rock_w = clamp(w[8] + w[7] * 0.5, 0.0, 1.0) * (1.0 - snow_w);
         float hy = p3.y + (m_b.r - 0.5) * 30.0 + (m_a.g - 0.5) * 8.0;

@@ -434,15 +434,9 @@ fn fragment(in: TerrainVertexOutput, @builtin(front_facing) is_front: bool) -> F
     // DEM detail finer than the mesh: add the baked slope delta to the vertex
     // normal in heightfield form (x east, z south), so far ridges, gullies and
     // couloirs light correctly even where a quad spans hundreds of metres.
+    // (disabled: baked detail normal delta)
     let det = sample_detail(in.uv, in.sat_tag);
     var n = normalize(in.world_normal);
-    {
-        let ny = max(n.y, 0.08);
-        // Top-down baked data smears down near-vertical walls: fade it there.
-        let wall = 1.0 - smoothstep(0.55, 0.8, 1.0 - n.y);
-        let dg = vec2<f32>(detail_dec(det.r), detail_dec(det.g)) * wall;
-        n = normalize(n / ny + vec3<f32>(-dg.x, 0.0, -dg.y));
-    }
     // Texture space: world meters plus the rebase-stable offset.
     let p3 = wp + vec3<f32>(ground.offset.x, 0.0, ground.offset.y);
     let p2 = p3.xz;
@@ -640,9 +634,8 @@ fn fragment(in: TerrainVertexOutput, @builtin(front_facing) is_front: bool) -> F
 
     // Mid-scale relief: finite-difference normal from the same noise, so
     // slopes and hummocks catch the sun at 300 m where layer bump has faded.
-    let gx = mac(p2 + vec2<f32>(1.5, 0.0), 23.0, 1.27, vec2<f32>(0.31, 0.17)).g - m_d.g;
-    let gz = mac(p2 + vec2<f32>(0.0, 1.5), 23.0, 1.27, vec2<f32>(0.31, 0.17)).g - m_d.g;
-    nd = normalize(nd + vec3<f32>(-gx, 0.0, -gz) * 1.6 * mid_fade * (1.0 - 0.7 * snow_w) * (1.0 - smoothstep(0.7, 0.95, slope)));
+    // (disabled: mid-scale normal perturbation)
+    nd = normalize(nd);
 
     // Bedrock strata and cavities. Strata: warped horizontal bands on rock,
     // light/dark by world height, so faces read as layered limestone/gneiss
