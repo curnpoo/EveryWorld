@@ -103,6 +103,24 @@ cargo run --release -- --screenshot out.png --frames 60
 
 ---
 
+## Multiplayer (ghost / testing phase)
+
+Run a relay server on one machine, then connect clients on the LAN.
+
+**Server (host machine):**
+```bash
+cargo run --release -p ed_server -- 7777
+```
+
+**Clients (each machine):**
+```bash
+cargo run --release -p ed_game -- --server <host-lan-ip>:7777 --name <your-name>
+```
+
+Then in the game: `Esc` → **Multiplayer** tab → **Connect**. The first remote player's state teleports you next to them; others show as a blue capsule with a nametag (or a ground ring when far).
+
+---
+
 ## Docs
 
 - [docs/ROADMAP.md](docs/ROADMAP.md) — stages, status, what’s next

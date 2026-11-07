@@ -30,3 +30,9 @@ pub mod weather;
 pub mod worldcover;
 
 pub use cache::DiskCache;
+
+/// Pinned data snapshot version. Every cache key and generated tile is stamped
+/// with this so all clients (and save files) agree on one world. Bump it when
+/// a data source or its parsing changes; old caches simply miss and refetch.
+/// Multiplayer relies on this being identical across machines.
+pub const DATA_VERSION: &str = "2026-11-06";

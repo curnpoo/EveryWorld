@@ -46,7 +46,7 @@ fn fetch_bytes(cache: &DiskCache, template: &str, id: TileId) -> anyhow::Result<
     anyhow::ensure!(id.z <= MAX_ZOOM, "vector tiles stop at z{MAX_ZOOM}");
     // Key by template so a new planet build doesn't serve stale tiles.
     let build = template.split('/').rev().nth(3).unwrap_or("planet");
-    let key = format!("openfreemap/{build}/{}.pbf", id.path());
+    let key = format!("openfreemap/{}/{}/{}.pbf", crate::DATA_VERSION, build, id.path());
     let url = template
         .replace("{z}", &id.z.to_string())
         .replace("{x}", &id.x.to_string())

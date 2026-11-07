@@ -30,6 +30,7 @@ mod menu;
 mod menu_music;
 mod meshconv;
 mod minimap;
+mod net;
 mod origin;
 mod perf;
 mod render_scale;
@@ -106,7 +107,7 @@ fn main() {
         app.insert_resource(lookdev::Lookdev { out_dir: dir.clone(), only: cfg.lookdev_only.clone() })
             .add_plugins((lookdev::LookdevPlugin, body::BodyPlugin));
     } else {
-        app.add_plugins((streaming::StreamingPlugin, capture::CapturePlugin, hud::HudPlugin, minimap::MinimapPlugin, probe_gi::ProbeGiPlugin, spawn::SpawnPlugin, mapview::MapViewPlugin, globe::GlobePlugin, settings::SettingsPlugin, menu::MenuPlugin, gamepad::GamepadPlugin));
+        app.add_plugins((streaming::StreamingPlugin, capture::CapturePlugin, hud::HudPlugin, minimap::MinimapPlugin, probe_gi::ProbeGiPlugin, spawn::SpawnPlugin, mapview::MapViewPlugin, globe::GlobePlugin, settings::SettingsPlugin, menu::MenuPlugin, gamepad::GamepadPlugin, net::NetPlugin));
         if !cfg.headless {
             app.add_plugins((soundscape::SoundscapePlugin, menu_music::MenuMusicPlugin));
         }

@@ -1,6 +1,6 @@
 # Roadmap
 
-Rewritten 2026-11-05. What's done, what's next, in what order, and why. Recent changes and open checks: `CHANGES.md`. Open bugs: `BUGS.md`. Plans: `plans/` (engine, assets and agents, buildings, world sim, space visuals, shadows, flora, sound, voxel proxies and navara). How it works: `ARCHITECTURE.md`.
+Rewritten 2026-11-05. What's done, what's next, in what order, and why. Recent changes and open checks: `CHANGES.md`. Open bugs: `BUGS.md`. Plans: `plans/` (engine, assets and agents, buildings, world sim, space visuals, shadows, flora, sound, voxel proxies and navara, multiplayer). How it works: `ARCHITECTURE.md`.
 
 ## Where we are
 
