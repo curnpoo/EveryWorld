@@ -851,6 +851,7 @@ fn build_menus(mut commands: Commands, assets: Res<AssetServer>) {
             .with_children(|t| {
                 t.spawn(Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(9.0), width: Val::Px(580.0), ..default() }).with_children(|c| {
                     text(c, "Live renderer controls", 22.0, INK);
+                    text(c, &format!("Renderer: {}", crate::native::renderer_name()), 17.0, INK);
                     for (label, action_label, a) in [
                         ("Probe GI (20 km)", "Toggle", MenuAction::ToggleProbes),
                         ("Probe spheres", "Next", MenuAction::CycleProbeView),
