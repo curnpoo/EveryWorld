@@ -677,7 +677,7 @@ fn net_update_nametags(
                 Vec2::ONE
             };
             node.left = Val::Px(screen.x * scale.x - 40.0);
-            node.top = Val::Px(screen.y * scale.y - 60.0);
+            node.top = Val::Px(screen.y * scale.y - 110.0);
             *vis = Visibility::Visible;
         } else {
             *vis = Visibility::Hidden;
