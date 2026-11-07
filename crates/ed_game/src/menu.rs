@@ -670,8 +670,8 @@ fn map_canvas(p: &mut ChildSpawnerCommands) {
 }
 
 fn build_menus(mut commands: Commands, assets: Res<AssetServer>) {
-    let font: Handle<Font> = assets.load("embedded://earthdrop/menu_assets/Chewy-Regular.ttf");
-    let bg: Handle<Image> = assets.load("embedded://earthdrop/menu_assets/menu_bg.png");
+    let font: Handle<Font> = assets.load("embedded://everyworld/menu_assets/Chewy-Regular.ttf");
+    let bg: Handle<Image> = assets.load("embedded://everyworld/menu_assets/menu_bg.png");
     let fill = Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() };
     // ---- Home: blurred Matterhorn sunset, big bubbly title ----
     commands

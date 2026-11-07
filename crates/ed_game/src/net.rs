@@ -672,9 +672,9 @@ fn net_update_avatars(
     remote: Res<RemotePlayers>,
     time: Res<Time>,
     mut phase: ResMut<RemotePhase>,
-    mut q: Query<(&mut Transform, &RemoteAvatar)>,
-    mut parts: Query<(&RPart, &mut Transform, &mut Visibility)>,
-    mut wings: Query<(&RWing, &Mesh3d, &mut Visibility), Without<RPart>>,
+    mut q: Query<(&mut Transform, &RemoteAvatar), Without<RPart>>,
+    mut parts: Query<(&RPart, &mut Transform, &mut Visibility), Without<RemoteAvatar>>,
+    mut wings: Query<(&RWing, &Mesh3d, &mut Visibility), (Without<RPart>, Without<RemoteAvatar>)>,
     mut meshes: ResMut<Assets<bevy::mesh::Mesh>>,
 ) {
     let dt = time.delta_secs().clamp(1e-4, 0.05);

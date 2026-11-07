@@ -132,7 +132,7 @@ fn init_pipelines(mut commands: Commands, assets: Res<AssetServer>, fullscreen: 
         layout: vec![view_layout.clone(), cloud_layout.clone()],
         vertex: fullscreen.to_vertex_state(),
         fragment: Some(FragmentState {
-            shader: assets.load("embedded://earthdrop/clouds.wesl"),
+            shader: assets.load("embedded://everyworld/clouds.wesl"),
             shader_defs: vec!["CLOUD_HALF".into()],
             entry_point: Some("fragment_half".into()),
             constants: default(),
@@ -148,7 +148,7 @@ fn init_pipelines(mut commands: Commands, assets: Res<AssetServer>, fullscreen: 
         layout: vec![up_layout.clone()],
         vertex: fullscreen.to_vertex_state(),
         fragment: Some(FragmentState {
-            shader: assets.load("embedded://earthdrop/clouds_up.wesl"),
+            shader: assets.load("embedded://everyworld/clouds_up.wesl"),
             targets: vec![Some(ColorTargetState {
                 format: HDR_FORMAT,
                 blend: Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING),

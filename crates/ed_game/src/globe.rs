@@ -156,10 +156,10 @@ struct AtmoMaterial {
 
 impl Material for AtmoMaterial {
     fn vertex_shader() -> ShaderRef {
-        "embedded://earthdrop/globe_atmo.wesl".into()
+        "embedded://everyworld/globe_atmo.wesl".into()
     }
     fn fragment_shader() -> ShaderRef {
-        "embedded://earthdrop/globe_atmo.wesl".into()
+        "embedded://everyworld/globe_atmo.wesl".into()
     }
     fn alpha_mode(&self) -> AlphaMode {
         AlphaMode::Add

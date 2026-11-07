@@ -35,7 +35,7 @@ pub struct FsrMaterial {
 
 impl UiMaterial for FsrMaterial {
     fn fragment_shader() -> ShaderRef {
-        "embedded://earthdrop/shaders/fsr_easu.wesl".into()
+        "embedded://everyworld/shaders/fsr_easu.wesl".into()
     }
 }
 

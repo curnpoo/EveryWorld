@@ -217,13 +217,13 @@ impl From<&CloudMaterial> for CloudKey {
 
 impl Material for CloudMaterial {
     fn vertex_shader() -> ShaderRef {
-        "embedded://earthdrop/clouds.wesl".into()
+        "embedded://everyworld/clouds.wesl".into()
     }
     fn fragment_shader() -> ShaderRef {
-        "embedded://earthdrop/clouds.wesl".into()
+        "embedded://everyworld/clouds.wesl".into()
     }
     fn prepass_fragment_shader() -> ShaderRef {
-        "embedded://earthdrop/clouds.wesl".into()
+        "embedded://everyworld/clouds.wesl".into()
     }
     fn alpha_mode(&self) -> AlphaMode {
         if self.shadow_caster { AlphaMode::Mask(0.5) } else { AlphaMode::Premultiplied }

@@ -25,7 +25,7 @@ use ed_world::trees::{
 };
 use std::sync::{Arc, Mutex};
 
-const SHADER: &str = "embedded://earthdrop/shaders/impostor.wesl";
+const SHADER: &str = "embedded://everyworld/shaders/impostor.wesl";
 
 /// Every tree shows up to this distance (m); beyond it the share falls as
 /// (FULL_M / d)^2 while the kept ones grow.
