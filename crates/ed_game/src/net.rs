@@ -714,9 +714,6 @@ fn net_update_avatars(
     mut meshes: ResMut<Assets<bevy::mesh::Mesh>>,
 ) {
     let dt = time.delta_secs().clamp(1e-4, 0.05);
-    if !remote.players.is_empty() {
-        bevy::log::info!("net_update_avatars: {} remotes, {} avatars", remote.players.len(), q.iter().count());
-    }
     // Collect avatar transforms by id
     let mut avatars: HashMap<u64, (Vec3, Quat, f32, u8, f32, bool, f32)> = HashMap::new(); // pos, rot, pitch, boot, throttle, wingsuit, speed
     for (mut t, av) in q.iter_mut() {
@@ -756,12 +753,12 @@ fn net_update_avatars(
         // speed from span
         let delta = (rp.pos[0]-rp.prev_pos[0]).powi(2)+(rp.pos[1]-rp.prev_pos[1]).powi(2)+(rp.pos[2]-rp.prev_pos[2]).powi(2);
         let speed = (delta.sqrt() / span.max(1e-4)) as f32;
-        t.translation = render + Vec3::Y * (time.elapsed_secs() * 3.0).sin() * 0.15;
+        t.translation = render;
         t.rotation = Quat::from_rotation_y(yaw);
         avatars.insert(av.id, (render, t.rotation, pitch, boot, throttle, wingsuit, speed));
         // phase for walk swing
         let ph = phase.map.entry(av.id).or_insert(0.0);
-        *ph += dt * 4.0;
+        *ph += (speed.max(0.3)) * dt * 2.4;
     }
     // Animate parts per avatar: need joints in world space
     for (part, mut tf, mut vis) in parts.iter_mut() {
@@ -782,8 +779,9 @@ fn net_update_avatars(
         // mode: 0 Walk,1 Fall,2 Rocket,3 Skydive,4 Parachute
         let (ankle_l, ankle_r, elbow_l, elbow_r, wrist_l, wrist_r) = match boot {
             0 => { // Walk
-                let s = (ph).sin() * 0.45;
-                let s2 = (ph + std::f32::consts::PI).sin() * 0.45;
+                let amp = (speed.min(6.0) / 3.0).clamp(0.25, 1.0);
+                let s = (ph).sin() * 0.35 * amp;
+                let s2 = (ph + std::f32::consts::PI).sin() * 0.35 * amp;
                 (hip_l + Vec3::new(0.0,-0.84,s), hip_r + Vec3::new(0.0,-0.84,s2),
                  Vec3::new(-0.35,-0.05,-s*0.5), Vec3::new(0.35,-0.05,-s2*0.5),
                  Vec3::new(-0.38,-0.30,s*0.5), Vec3::new(0.38,-0.30,s2*0.5))
