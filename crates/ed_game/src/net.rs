@@ -509,6 +509,8 @@ fn join_input(
     mut keys: MessageReader<bevy::input::keyboard::KeyboardInput>,
     mut form: ResMut<crate::menu::JoinForm>,
     mut net: ResMut<NetClient>,
+    mut clipboard: ResMut<bevy_clipboard::prelude::Clipboard>,
+    keys_pressed: Res<ButtonInput<bevy::input::keyboard::KeyCode>>,
     mut server_q: Query<&Interaction, With<crate::menu::ServerField>>,
     mut name_q: Query<&Interaction, With<crate::menu::NameField>>,
 ) {
@@ -518,6 +520,22 @@ fn join_input(
     }
     for i in &name_q {
         if *i == Interaction::Pressed { form.focus = 2; }
+    }
+    // Paste via Cmd+V (Mac) / Ctrl+V (Windows/Linux)
+    let paste = keys_pressed.just_pressed(bevy::input::keyboard::KeyCode::KeyV)
+        && (keys_pressed.pressed(bevy::input::keyboard::KeyCode::SuperLeft)
+            || keys_pressed.pressed(bevy::input::keyboard::KeyCode::SuperRight)
+            || keys_pressed.pressed(bevy::input::keyboard::KeyCode::ControlLeft)
+            || keys_pressed.pressed(bevy::input::keyboard::KeyCode::ControlRight));
+    if paste && form.focus != 0 {
+        if let bevy_clipboard::prelude::ClipboardRead::Ready(Ok(text)) = clipboard.fetch_text() {
+            let text = text.trim().to_string();
+            if form.focus == 1 {
+                if form.server.len() + text.len() <= 64 { form.server.push_str(&text); }
+            } else if form.name.len() + text.len() <= 32 {
+                form.name.push_str(&text);
+            }
+        }
     }
     if form.focus == 0 { return; }
     for key in keys.read() {
@@ -540,6 +558,11 @@ fn join_input(
             }
             bevy::input::keyboard::KeyCode::Tab => { form.focus = if form.focus == 1 { 2 } else { 1 }; }
             _ => {
+                let mod_held = keys_pressed.pressed(bevy::input::keyboard::KeyCode::SuperLeft)
+                    || keys_pressed.pressed(bevy::input::keyboard::KeyCode::SuperRight)
+                    || keys_pressed.pressed(bevy::input::keyboard::KeyCode::ControlLeft)
+                    || keys_pressed.pressed(bevy::input::keyboard::KeyCode::ControlRight);
+                if mod_held { continue; }
                 if let Some(s) = &key.text {
                     for c in s.chars() {
                         if c.is_ascii_graphic() || c == ' ' {

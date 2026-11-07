@@ -30,6 +30,7 @@ serde_json = { workspace = true }
 ed_runtime = { path = "../ed_runtime" }
 ed_net = { path = "../ed_net" }
 bevy = { version = "0.20", features = ["system_font_discovery"] }
+bevy_clipboard = { version = "0.20", features = ["system_clipboard"] }
 avian3d = "0.8"
 glam = { workspace = true }
 crossbeam-channel = "0.5"
