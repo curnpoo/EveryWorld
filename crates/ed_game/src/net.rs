@@ -6,6 +6,7 @@ use crate::player::Player;
 use bevy::prelude::*;
 use crossbeam_channel::{Receiver, Sender};
 use ed_net::{decode_s2c, encode, C2S, S2C, Vec3d, PROTOCOL_VERSION};
+use glam::DVec3;
 use std::collections::HashMap;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::{Arc, Mutex};

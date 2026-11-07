@@ -9,7 +9,6 @@ use crate::config::Config;
 use crate::menu::GameState;
 use crate::net::RemotePlayers;
 use crate::origin::WorldOrigin;
-use glam::DVec3;
 use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
@@ -450,7 +449,6 @@ mod tests {
 fn update_minimap_remote_dots(
     mut commands: Commands,
     st: Res<MinimapState>,
-    origin: Res<WorldOrigin>,
     remote: Res<RemotePlayers>,
     rotators: Query<Entity, With<MinimapRotator>>,
     mut dots: ResMut<MinimapRemoteDots>,
