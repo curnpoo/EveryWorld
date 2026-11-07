@@ -220,7 +220,10 @@ fn update_text(
     let enu = ed_geo::render_to_enu(fwd.as_dvec3());
     let heading = (enu.x.atan2(enu.y).to_degrees() as f32).rem_euclid(360.0);
     if let Ok(mut t) = compass.single_mut() {
-        t.0 = compass_strip(heading);
+        let s = compass_strip(heading);
+        if t.0 != s {
+            t.0 = s;
+        }
     }
     let (pos, vel, mode, agl, boost, wing_on) = match players.single() {
         Ok((t, v, p)) => (t.translation, v.0, p.mode, p.agl, p.boost_stage, p.wingsuit_on),
@@ -246,7 +249,9 @@ fn update_text(
         if mach > 0.8 {
             s.push_str(&format!("   MACH {mach:.2}"));
         }
-        t.0 = s;
+        if t.0 != s {
+            t.0 = s;
+        }
     }
     let Ok(mut t) = stats.single_mut() else { return };
     if !gfx.show_stats {
@@ -267,7 +272,7 @@ fn update_text(
     let (win_w, win_h, win_scale) = windows.single().map_or((0, 0, 1.0), |w| (w.physical_width(), w.physical_height(), w.scale_factor()));
     let fps = 1.0 / time.delta_secs().max(1e-4);
     let ms = time.delta_secs_f64() * 1000.0;
-    t.0 = format!(
+    let s = format!(
         "EveryWorld — debug stats\n\
          pos {:.5}, {:.5}   alt {:.0} m   AGL {:.0} m\n\
          tile {}/{}/{}   hdg {:.0}°   solar {:02}:{:02}\n\
@@ -315,6 +320,9 @@ fn update_text(
         vs,
         wtxt,
     );
+    if t.0 != s {
+        t.0 = s;
+    }
 }
 
 

@@ -1,3 +1,14 @@
+## 2026-11-07: Windows/Bevy GPU OOM fixed (HUD text was leaking font atlases)
+- On the Bevy/wgpu path (Windows) a long session climbed VRAM until `Out of Memory`
+  on a mesh slab and quit. Measured: ~256 MB steps to 7.4 GB and still rising. The
+  leak was `Assets<Image>`: continuously rewriting the HUD `Text` every frame (compass,
+  mode pill, stats) made Bevy allocate a new 512×512 font-atlas `Image` per update.
+- Fix: `hud::update_text` now only writes a `Text` component when the string actually
+  changes. After: `image_assets` stays flat (151, ~28 MB) through a full cruise and no
+  OOM. Verified on the RTX 2070 SUPER (Vulkan) with a 200 km cruise over 5+ minutes.
+- The rest of the Windows path already had: origin-jump tile retirement, over-cap
+  retire unthrottled, resident cap 48, TAA motion-vector prepass, and native-res clear.
+
 ## 2026-11-06: loading screen copy + local-only player freeze
 - The overlay is a centred stack: a large **Welcome to** line, the place name under it,
   then **Loading the world**, the progress bar and the "Streaming the world / Finishing
