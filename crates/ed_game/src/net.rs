@@ -866,12 +866,24 @@ pub struct RemoteAvatar {
     pub id: u64,
 }
 
+/// Root anchor of a remote player's name label. Positioned directly above head in screen space.
+/// Children: distance label (above pill), name pill, and vertical leader line (below pill to head).
 #[derive(Component)]
 pub struct RemoteNametag {
     pub id: u64,
 }
+
+/// The distance label right above the nametag pill; shown when player is >= 500 m away.
 #[derive(Component)]
-pub struct NametagLine;
+pub struct NametagDistText {
+    pub id: u64,
+}
+
+/// The connector line extending from the middle of the pill down to the head; shown when player is >= 500 m away.
+#[derive(Component)]
+pub struct NametagLine {
+    pub id: u64,
+}
 
 #[derive(Resource, Default)]
 pub struct RemoteNametagEntities {
@@ -943,44 +955,58 @@ pub fn net_spawn_avatars(
             &Cosmetics { backpack: false },
         );
 
-        // screen-space nametag with box
+        // Screen-space nametag: distance label (above pill, >=500m), name pill, and connector line (>=500m).
         let nametag = commands
             .spawn((
                 RemoteNametag { id: *id },
                 Node {
                     position_type: PositionType::Absolute,
-                    left: Val::Px(-1000.0),
-                    top: Val::Px(-1000.0),
-                    padding: UiRect::all(Val::Px(6.0)),
-                    border: UiRect::all(Val::Px(2.0)),
-                    border_radius: BorderRadius::all(Val::Px(4.0)),
+                    left: Val::Px(-2000.0),
+                    top: Val::Px(-2000.0),
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Center,
+                    row_gap: Val::Px(3.0),
                     ..default()
                 },
-                BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.65)),
-                BorderColor::all(Color::srgb(1.0, 0.9, 0.2)),
                 ZIndex(20),
+                Visibility::Hidden,
             ))
-            .with_children(|p| {
-                p.spawn((
-                    Text::new(rp.name.clone()),
-                    TextFont {
-                        font_size: bevy::text::FontSize::Px(18.0),
+            .with_children(|root| {
+                // 1. Distance label right ABOVE the name pill (visible only when >= 500 m)
+                root.spawn((
+                    NametagDistText { id: *id },
+                    Text::new(""),
+                    TextFont { font_size: bevy::text::FontSize::Px(11.0), ..default() },
+                    TextColor(Color::srgb(0.35, 0.82, 0.98)),
+                    Visibility::Hidden,
+                ));
+                // 2. Name pill: sleek frosted glass pill
+                root.spawn((
+                    Node {
+                        padding: UiRect::axes(Val::Px(10.0), Val::Px(4.0)),
+                        border: UiRect::all(Val::Px(1.0)),
+                        border_radius: BorderRadius::all(Val::Px(12.0)),
                         ..default()
                     },
-                    TextColor(Color::srgb(1.0, 0.9, 0.2)),
-                ));
-                // vertical line down to the player's head when far away
-                p.spawn((
-                    NametagLine,
+                    BackgroundColor(crate::hud::GLASS_BG),
+                    BorderColor::all(crate::hud::GLASS_BORDER),
+                ))
+                .with_children(|pill| {
+                    pill.spawn((
+                        Text::new(rp.name.clone()),
+                        TextFont { font_size: bevy::text::FontSize::Px(13.0), ..default() },
+                        TextColor(Color::WHITE),
+                    ));
+                });
+                // 3. Thin connector line extending from middle of tag down to head (visible only when >= 500 m)
+                root.spawn((
+                    NametagLine { id: *id },
                     Node {
-                        position_type: PositionType::Absolute,
-                        left: Val::Px(40.0),
-                        top: Val::Px(30.0),
-                        width: Val::Px(1.0),
+                        width: Val::Px(1.5),
                         height: Val::Px(0.0),
                         ..default()
                     },
-                    BackgroundColor(Color::srgba(1.0, 0.9, 0.2, 0.7)),
+                    BackgroundColor(Color::srgba(0.35, 0.82, 0.98, 0.65)),
                     Visibility::Hidden,
                 ));
             })
@@ -1136,93 +1162,96 @@ pub fn net_menu_actions(
 
 fn net_update_nametags(
     remote: Res<RemotePlayers>,
+    origin: Res<WorldOrigin>,
     camera: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<crate::globe::GlobeCamera>)>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     avatars: Query<(&Transform, &RemoteAvatar)>,
-    mut q: Query<(Entity, &mut Node, &RemoteNametag, &mut Visibility)>,
-    mut lines: Query<(&mut Node, &NametagLine, &ChildOf, &mut Visibility), Without<RemoteNametag>>,
+    mut anchors: Query<(&mut Node, &ComputedNode, &RemoteNametag, &mut Visibility, &mut ZIndex)>,
+    mut dist_texts: Query<(&NametagDistText, &mut Text, &mut Visibility), (Without<RemoteNametag>, Without<NametagLine>)>,
+    mut lines: Query<(&NametagLine, &mut Node, &mut Visibility), (Without<RemoteNametag>, Without<NametagDistText>)>,
 ) {
     let cam = camera.iter().next();
     let pos_by_id: HashMap<u64, Vec3> = avatars.iter().map(|(t, a)| (a.id, t.translation)).collect();
-    // Scale factor between the (possibly downscaled) 3D render target and the
-    // native window so nametags stay aligned with the world at any resolution.
     let win_logical = windows.single().ok().map(|w| w.resolution.size()).unwrap_or(Vec2::ZERO);
-    for (nametag_entity, mut node, nt, mut vis) in q.iter_mut() {
+
+    for (mut node, computed, nt, mut vis, mut z_index) in anchors.iter_mut() {
         if !remote.players.contains_key(&nt.id) {
             *vis = Visibility::Hidden;
-            for (_, _, childof, mut lvis) in lines.iter_mut() {
-                if childof.parent() == nametag_entity { *lvis = Visibility::Hidden; }
-            }
             continue;
         }
-        let Some((cam_t, cam_c)) = cam else {
-            *vis = Visibility::Hidden;
-            for (_, _, childof, mut lvis) in lines.iter_mut() {
-                if childof.parent() == nametag_entity { *lvis = Visibility::Hidden; }
-            }
-            continue;
-        };
-        let Some(base) = pos_by_id.get(&nt.id).copied() else {
-            *vis = Visibility::Hidden;
-            for (_, _, childof, mut lvis) in lines.iter_mut() {
-                if childof.parent() == nametag_entity { *lvis = Visibility::Hidden; }
-            }
-            continue;
-        };
-        let dist = (base - cam_t.translation()).length();
-        // Tag rises with distance so it stays visible above terrain/occlusion when far.
-        let lift = 2.3 + (dist / 30.0).min(6.0) * 1.2;
-        let world = base + Vec3::Y * lift;
-        // distance check (100 km)
-        if dist > 100_000.0 {
-            *vis = Visibility::Hidden;
-            for (_, _, childof, mut lvis) in lines.iter_mut() {
-                if childof.parent() == nametag_entity { *lvis = Visibility::Hidden; }
-            }
-            continue;
-        }
-        if let Ok(screen) = cam_c.world_to_viewport(cam_t, world) {
-            let scale = if let Some(cam_size) = cam_c.logical_viewport_size() {
-                if cam_size.x > 0.0 && cam_size.y > 0.0 && win_logical.x > 0.0 {
-                    win_logical / cam_size
+        let Some((cam_gt, cam_c)) = cam else { *vis = Visibility::Hidden; continue; };
+        let Some(pelvis) = pos_by_id.get(&nt.id).copied() else { *vis = Visibility::Hidden; continue; };
+
+        let to_player = pelvis - cam_gt.translation();
+        let dist = to_player.length();
+        if dist > 100_000.0 { *vis = Visibility::Hidden; continue; }
+
+        // Head position is ~1.1 m above the avatar root (top of CRT head)
+        let up = origin.up_at(pelvis).normalize();
+        let head_world = pelvis + up * 1.1;
+
+        let in_front = (head_world - cam_gt.translation()).dot(cam_gt.forward().as_vec3()) > 0.0;
+        let show_dist_and_line = dist >= 500.0;
+
+        // Depth sort: closer players draw on top of farther players
+        let z = ((100_000.0 - dist) * 0.1).clamp(1.0, 9999.0) as i32;
+        *z_index = ZIndex(z);
+
+        // Update distance text right above the name pill
+        for (dt, mut txt, mut dvis) in dist_texts.iter_mut() {
+            if dt.id != nt.id { continue; }
+            if show_dist_and_line {
+                let dist_str = if dist < 1_000.0 {
+                    format!("{:.0} m", dist)
                 } else {
-                    Vec2::ONE
-                }
+                    format!("{:.1} km", dist / 1_000.0)
+                };
+                if txt.0 != dist_str { txt.0 = dist_str; }
+                *dvis = Visibility::Inherited;
             } else {
-                Vec2::ONE
-            };
-            let sx = screen.x * scale.x;
-            let sy = screen.y * scale.y;
-            node.left = Val::Px(sx + 10.0);
-            node.top = Val::Px(sy - 20.0);
-            *vis = Visibility::Visible;
-            // Update the vertical line to the player's head when far away.
-            let show_line = dist > 30.0;
-            let head_screen = cam_c.world_to_viewport(cam_t, base + Vec3::Y * 1.7).ok();
-            for (mut lnode, _line, childof, mut lvis) in lines.iter_mut() {
-                if childof.parent() != nametag_entity { continue; }
-                if !show_line {
-                    lnode.height = Val::Px(0.0);
-                    *lvis = Visibility::Hidden;
-                    continue;
-                }
-                if let Some(hs) = head_screen {
-                    let hsy = hs.y * scale.y;
-                    let tag_bottom = sy + 30.0;
-                    let h = (hsy - tag_bottom).abs().max(0.0);
-                    lnode.height = Val::Px(h);
-                    lnode.top = Val::Px(30.0);
-                    *lvis = Visibility::Visible;
+                *dvis = Visibility::Hidden;
+            }
+        }
+
+        // Update connector line (visible only when >= 500m)
+        for (line_comp, mut line_node, mut lvis) in lines.iter_mut() {
+            if line_comp.id != nt.id { continue; }
+            if show_dist_and_line {
+                line_node.height = Val::Px(28.0);
+                *lvis = Visibility::Inherited;
+            } else {
+                line_node.height = Val::Px(0.0);
+                *lvis = Visibility::Hidden;
+            }
+        }
+
+        match cam_c.world_to_viewport(cam_gt, head_world) {
+            Ok(screen) if in_front => {
+                let scale = cam_c
+                    .logical_viewport_size()
+                    .filter(|s| s.x > 0.0 && win_logical.x > 0.0)
+                    .map(|s| win_logical / s)
+                    .unwrap_or(Vec2::ONE);
+                let sx = screen.x * scale.x;
+                let sy = screen.y * scale.y;
+
+                let size = computed.size();
+                let w = if size.x > 0.0 { size.x } else { 70.0 };
+                let h = if size.y > 0.0 {
+                    size.y
+                } else if show_dist_and_line {
+                    65.0
                 } else {
-                    lnode.height = Val::Px(0.0);
-                    *lvis = Visibility::Hidden;
-                }
+                    24.0
+                };
+
+                // Centered horizontally directly above the head (line comes from middle of tag)
+                node.left = Val::Px(sx - w * 0.5);
+                // Bottom of the stack (bottom of line if >=500m, or bottom of pill if <500m) sits 4px above head
+                node.top = Val::Px(sy - h - 4.0);
+                *vis = Visibility::Inherited;
             }
-        } else {
-            *vis = Visibility::Hidden;
-            for (_, _, childof, mut lvis) in lines.iter_mut() {
-                if childof.parent() == nametag_entity { *lvis = Visibility::Hidden; }
-            }
+            _ => { *vis = Visibility::Hidden; }
         }
     }
 }
