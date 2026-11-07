@@ -665,7 +665,7 @@ fn net_update_nametags(
                 Vec2::ONE
             };
             node.left = Val::Px(screen.x * scale.x - 40.0);
-            node.top = Val::Px(screen.y * scale.y - 110.0);
+            node.top = Val::Px(screen.y * scale.y - 170.0);
             *vis = Visibility::Visible;
         } else {
             *vis = Visibility::Hidden;
@@ -764,7 +764,8 @@ fn net_update_avatars(
     for (part, mut tf, mut vis) in parts.iter_mut() {
         let Some((_root_pos, root_rot, pitch, boot, throttle, wingsuit, speed)) = avatars.get(&part.id).copied() else { *vis = Visibility::Hidden; continue };
         let _ = (pitch, wingsuit);
-        let base = root_rot * Quat::from_rotation_x(pitch * 0.6);
+        let lean = (speed / 6.0).clamp(0.0, 0.35);
+        let base = root_rot * Quat::from_rotation_x(pitch * 0.6 + lean);
         let up = Vec3::Y;
         let ph = phase.map.get(&part.id).copied().unwrap_or(0.0);
         // Local joints
