@@ -2829,6 +2829,7 @@ dependencies = [
  "arboard",
  "avian3d",
  "bevy",
+ "bevy_clipboard",
  "crossbeam-channel",
  "ed_audio",
  "ed_data",

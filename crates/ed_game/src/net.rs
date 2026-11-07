@@ -1,11 +1,12 @@
 //! Ghost multiplayer client.
 
+use crate::body::{spawn_body_parts, BodyAssets, BodyOwner, Cosmetics, GaitStore, RigState};
 use crate::config::Config;
 use crate::origin::WorldOrigin;
-use crate::player::Player;
+use crate::player::{MoveMode, Player};
 use bevy::prelude::*;
 use crossbeam_channel::{Receiver, Sender};
-use ed_net::{decode_s2c, encode_c2s, C2S, S2C, Vec3d, PROTOCOL_VERSION};
+use ed_net::{decode_s2c, encode_c2s, PosePart, Vec3d, C2S, PROTOCOL_VERSION, S2C};
 use glam::DVec3;
 use std::collections::HashMap;
 use std::net::{SocketAddr, UdpSocket};
@@ -17,25 +18,210 @@ pub struct RemotePlayers {
     pub players: HashMap<u64, RemotePlayer>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum PoseMode {
+    Procedural = 0,
+    Replicated = 1,
+}
+
+impl PoseMode {
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => PoseMode::Replicated,
+            _ => PoseMode::Procedural,
+        }
+    }
+}
+
+/// Remote avatar proxy component. Stores replicated state and controls whether the rig
+/// is procedural or driven by replicated part poses (ragdoll).
+#[derive(Component)]
+pub struct RemoteProxy {
+    pub id: u64,
+    pub state: RigState,
+    pub quat: Quat,
+    pub pose_mode: PoseMode,
+    pub replicated_parts: HashMap<u16, (Vec3, Quat)>,
+}
+
 #[derive(Clone, Debug)]
 pub struct RemotePlayer {
     pub id: u64,
     pub name: String,
     pub pos: [f64; 3],
+    pub orient: [f32; 4],
     pub yaw: f32,
-    pub pitch: f32,
+    pub cam_pitch: f32,
     pub boot: u8,
     pub throttle: f32,
-    pub wingsuit: bool,
+    pub flags: u8,
+    pub wing_arch: f32,
+    pub wing_turn: f32,
+    pub fall_spread: f32,
+    pub fall_tuck: f32,
+    pub strafe: f32,
+    pub fwd_in: f32,
+    pub jump_charge: f32,
+    pub jump_push_timer: f32,
+    pub landing_recovery: f32,
+    pub rot_err: [f32; 3],
+    pub intent_dir: [f32; 3],
+    pub accel_smooth: [f32; 3],
+    pub leg_steer: [f32; 3],
+    pub pose_mode: u8,
     pub last: f64,
     // interpolation buffer
     pub prev_pos: [f64; 3],
+    pub prev_orient: [f32; 4],
     pub prev_yaw: f32,
-    pub prev_pitch: f32,
+    pub prev_cam_pitch: f32,
     pub prev_boot: u8,
     pub prev_throttle: f32,
-    pub prev_wingsuit: bool,
+    pub prev_flags: u8,
+    pub prev_wing_arch: f32,
+    pub prev_wing_turn: f32,
+    pub prev_fall_spread: f32,
+    pub prev_fall_tuck: f32,
+    pub prev_strafe: f32,
+    pub prev_fwd_in: f32,
+    pub prev_jump_charge: f32,
+    pub prev_jump_push_timer: f32,
+    pub prev_landing_recovery: f32,
+    pub prev_rot_err: [f32; 3],
+    pub prev_intent_dir: [f32; 3],
+    pub prev_accel_smooth: [f32; 3],
+    pub prev_leg_steer: [f32; 3],
+    pub prev_pose_mode: u8,
     pub prev_t: f64,
+}
+
+impl RemotePlayer {
+    pub fn empty(id: u64, name: String) -> Self {
+        Self {
+            id,
+            name,
+            pos: [0.0; 3],
+            orient: [0.0, 0.0, 0.0, 1.0],
+            yaw: 0.0,
+            cam_pitch: 0.0,
+            boot: 0,
+            throttle: 0.0,
+            flags: 0,
+            wing_arch: 0.0,
+            wing_turn: 0.0,
+            fall_spread: 0.0,
+            fall_tuck: 0.0,
+            strafe: 0.0,
+            fwd_in: 0.0,
+            jump_charge: 0.0,
+            jump_push_timer: 0.0,
+            landing_recovery: 0.0,
+            rot_err: [0.0; 3],
+            intent_dir: [0.0; 3],
+            accel_smooth: [0.0; 3],
+            leg_steer: [0.0; 3],
+            pose_mode: 0,
+            last: 0.0,
+            prev_pos: [0.0; 3],
+            prev_orient: [0.0, 0.0, 0.0, 1.0],
+            prev_yaw: 0.0,
+            prev_cam_pitch: 0.0,
+            prev_boot: 0,
+            prev_throttle: 0.0,
+            prev_flags: 0,
+            prev_wing_arch: 0.0,
+            prev_wing_turn: 0.0,
+            prev_fall_spread: 0.0,
+            prev_fall_tuck: 0.0,
+            prev_strafe: 0.0,
+            prev_fwd_in: 0.0,
+            prev_jump_charge: 0.0,
+            prev_jump_push_timer: 0.0,
+            prev_landing_recovery: 0.0,
+            prev_rot_err: [0.0; 3],
+            prev_intent_dir: [0.0; 3],
+            prev_accel_smooth: [0.0; 3],
+            prev_leg_steer: [0.0; 3],
+            prev_pose_mode: 0,
+            prev_t: 0.0,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_state(
+        &mut self,
+        name: String,
+        pos: [f64; 3],
+        orient: [f32; 4],
+        yaw: f32,
+        cam_pitch: f32,
+        boot: u8,
+        throttle: f32,
+        flags: u8,
+        wing_arch: f32,
+        wing_turn: f32,
+        fall_spread: f32,
+        fall_tuck: f32,
+        strafe: f32,
+        fwd_in: f32,
+        jump_charge: f32,
+        jump_push_timer: f32,
+        landing_recovery: f32,
+        rot_err: [f32; 3],
+        intent_dir: [f32; 3],
+        accel_smooth: [f32; 3],
+        leg_steer: [f32; 3],
+        pose_mode: u8,
+        t: f64,
+    ) {
+        self.prev_pos = self.pos;
+        self.prev_orient = self.orient;
+        self.prev_yaw = self.yaw;
+        self.prev_cam_pitch = self.cam_pitch;
+        self.prev_boot = self.boot;
+        self.prev_throttle = self.throttle;
+        self.prev_flags = self.flags;
+        self.prev_wing_arch = self.wing_arch;
+        self.prev_wing_turn = self.wing_turn;
+        self.prev_fall_spread = self.fall_spread;
+        self.prev_fall_tuck = self.fall_tuck;
+        self.prev_strafe = self.strafe;
+        self.prev_fwd_in = self.fwd_in;
+        self.prev_jump_charge = self.jump_charge;
+        self.prev_jump_push_timer = self.jump_push_timer;
+        self.prev_landing_recovery = self.landing_recovery;
+        self.prev_rot_err = self.rot_err;
+        self.prev_intent_dir = self.intent_dir;
+        self.prev_accel_smooth = self.accel_smooth;
+        self.prev_leg_steer = self.leg_steer;
+        self.prev_pose_mode = self.pose_mode;
+        self.prev_t = self.last;
+
+        self.name = name;
+        self.pos = pos;
+        self.orient = orient;
+        self.yaw = yaw;
+        self.cam_pitch = cam_pitch;
+        self.boot = boot;
+        self.throttle = throttle;
+        self.flags = flags;
+        self.wing_arch = wing_arch;
+        self.wing_turn = wing_turn;
+        self.fall_spread = fall_spread;
+        self.fall_tuck = fall_tuck;
+        self.strafe = strafe;
+        self.fwd_in = fwd_in;
+        self.jump_charge = jump_charge;
+        self.jump_push_timer = jump_push_timer;
+        self.landing_recovery = landing_recovery;
+        self.rot_err = rot_err;
+        self.intent_dir = intent_dir;
+        self.accel_smooth = accel_smooth;
+        self.leg_steer = leg_steer;
+        self.pose_mode = pose_mode;
+        self.last = t;
+    }
 }
 
 #[derive(Resource)]
@@ -61,20 +247,98 @@ pub enum NetStatus {
 }
 
 pub enum NetCmd {
-    Connect { addr: SocketAddr, name: String },
+    Connect {
+        addr: SocketAddr,
+        name: String,
+    },
     Disconnect,
-    State { pos: [f64; 3], yaw: f32, pitch: f32, boot: u8, throttle: f32, wingsuit: bool, t: f64 },
-    AdminTime { unix_s: f64 },
-    AdminWeather { preset: String },
+    State {
+        pos: [f64; 3],
+        orient: [f32; 4],
+        yaw: f32,
+        cam_pitch: f32,
+        boot: u8,
+        throttle: f32,
+        flags: u8,
+        wing_arch: f32,
+        wing_turn: f32,
+        fall_spread: f32,
+        fall_tuck: f32,
+        strafe: f32,
+        fwd_in: f32,
+        jump_charge: f32,
+        jump_push_timer: f32,
+        landing_recovery: f32,
+        rot_err: [f32; 3],
+        intent_dir: [f32; 3],
+        accel_smooth: [f32; 3],
+        leg_steer: [f32; 3],
+        pose_mode: u8,
+        t: f64,
+    },
+    #[allow(dead_code)]
+    Pose {
+        seq: u32,
+        parts: Vec<PosePart>,
+    },
+    AdminTime {
+        unix_s: f64,
+    },
+    AdminWeather {
+        preset: String,
+    },
 }
 
 pub enum NetEvt {
-    Connected { id: u64, players: Vec<(u64, String)> },
-    Join { id: u64, name: String },
-    State { id: u64, name: String, pos: [f64; 3], yaw: f32, pitch: f32, boot: u8, throttle: f32, wingsuit: bool, t: f64 },
-    Leave { id: u64 },
-    Time { unix_s: f64, rate: f64 },
-    Weather { preset: String },
+    Connected {
+        id: u64,
+        players: Vec<(u64, String)>,
+    },
+    Join {
+        id: u64,
+        name: String,
+    },
+    State {
+        id: u64,
+        name: String,
+        pos: [f64; 3],
+        orient: [f32; 4],
+        yaw: f32,
+        cam_pitch: f32,
+        boot: u8,
+        throttle: f32,
+        flags: u8,
+        wing_arch: f32,
+        wing_turn: f32,
+        fall_spread: f32,
+        fall_tuck: f32,
+        strafe: f32,
+        fwd_in: f32,
+        jump_charge: f32,
+        jump_push_timer: f32,
+        landing_recovery: f32,
+        rot_err: [f32; 3],
+        intent_dir: [f32; 3],
+        accel_smooth: [f32; 3],
+        leg_steer: [f32; 3],
+        pose_mode: u8,
+        t: f64,
+    },
+    Pose {
+        id: u64,
+        seq: u32,
+        parts: Vec<PosePart>,
+    },
+    Leave {
+        id: u64,
+    },
+    Time {
+        unix_s: f64,
+        rate: f64,
+    },
+    Weather {
+        preset: String,
+    },
     Disconnected,
 }
 
@@ -116,7 +380,6 @@ impl Plugin for NetPlugin {
         .insert_resource(RemoteAvatarEntities::default())
         .insert_resource(RemoteNametagEntities::default())
         .insert_resource(SendAccum::default())
-        .insert_resource(RemotePhase::default())
         .add_systems(Update, (join_input, join_paint, net_drain_events, net_send_state, net_spawn_avatars, net_update_avatars, net_update_nametags, net_update_status_text, net_menu_actions).chain());
     }
 }
@@ -148,9 +411,61 @@ fn net_thread(cmd_rx: Receiver<NetCmd>, evt_tx: Sender<NetEvt>, players: Arc<Mut
                     let _ = evt_tx.send(NetEvt::Disconnected);
                     players.lock().unwrap().clear();
                 }
-                NetCmd::State { pos, yaw, pitch, boot, throttle, wingsuit, t } => {
+                NetCmd::State {
+                    pos,
+                    orient,
+                    yaw,
+                    cam_pitch,
+                    boot,
+                    throttle,
+                    flags,
+                    wing_arch,
+                    wing_turn,
+                    fall_spread,
+                    fall_tuck,
+                    strafe,
+                    fwd_in,
+                    jump_charge,
+                    jump_push_timer,
+                    landing_recovery,
+                    rot_err,
+                    intent_dir,
+                    accel_smooth,
+                    leg_steer,
+                    pose_mode,
+                    t,
+                } => {
                     if let (Some(s), Some(a)) = (&socket, server) {
-                        let msg = encode_c2s(&C2S::State { pos: Vec3d::from(pos), yaw, pitch, boot, throttle, wingsuit, t });
+                        let msg = encode_c2s(&C2S::State {
+                            pos: Vec3d::from(pos),
+                            orient,
+                            yaw,
+                            cam_pitch,
+                            boot,
+                            throttle,
+                            flags,
+                            wing_arch,
+                            wing_turn,
+                            fall_spread,
+                            fall_tuck,
+                            strafe,
+                            fwd_in,
+                            jump_charge,
+                            jump_push_timer,
+                            landing_recovery,
+                            rot_err,
+                            intent_dir,
+                            accel_smooth,
+                            leg_steer,
+                            pose_mode,
+                            t,
+                        });
+                        let _ = s.send_to(&msg, a);
+                    }
+                }
+                NetCmd::Pose { seq, parts } => {
+                    if let (Some(s), Some(a)) = (&socket, server) {
+                        let msg = encode_c2s(&C2S::Pose { seq, parts });
                         let _ = s.send_to(&msg, a);
                     }
                 }
@@ -178,21 +493,88 @@ fn net_thread(cmd_rx: Receiver<NetCmd>, evt_tx: Sender<NetEvt>, players: Arc<Mut
                                     let _ = evt_tx.send(NetEvt::Connected { id, players: roster.into_iter().map(|p| (p.id, p.name)).collect() });
                                 }
                                 S2C::Join { id, name } => { let _ = evt_tx.send(NetEvt::Join { id, name }); }
-                                S2C::State { id, name, pos, yaw, pitch, boot, throttle, wingsuit, t } => {
+                                S2C::State {
+                                    id,
+                                    name,
+                                    pos,
+                                    orient,
+                                    yaw,
+                                    cam_pitch,
+                                    boot,
+                                    throttle,
+                                    flags,
+                                    wing_arch,
+                                    wing_turn,
+                                    fall_spread,
+                                    fall_tuck,
+                                    strafe,
+                                    fwd_in,
+                                    jump_charge,
+                                    jump_push_timer,
+                                    landing_recovery,
+                                    rot_err,
+                                    intent_dir,
+                                    accel_smooth,
+                                    leg_steer,
+                                    pose_mode,
+                                    t,
+                                } => {
                                     let mut p = players.lock().unwrap();
-                                    let prev = p.get(&id).cloned();
-                                    let rp = RemotePlayer {
-                                        id, name: name.clone(), pos: pos.into(), yaw, pitch, boot, throttle, wingsuit, last: t,
-                                        prev_pos: prev.as_ref().map(|r| r.pos).unwrap_or(pos.into()),
-                                        prev_yaw: prev.as_ref().map(|r| r.yaw).unwrap_or(yaw),
-                                        prev_pitch: prev.as_ref().map(|r| r.pitch).unwrap_or(pitch),
-                                        prev_boot: prev.as_ref().map(|r| r.boot).unwrap_or(boot),
-                                        prev_throttle: prev.as_ref().map(|r| r.throttle).unwrap_or(throttle),
-                                        prev_wingsuit: prev.as_ref().map(|r| r.wingsuit).unwrap_or(wingsuit),
-                                        prev_t: prev.as_ref().map(|r| r.last).unwrap_or(t),
-                                    };
-                                    p.insert(id, rp);
-                                    let _ = evt_tx.send(NetEvt::State { id, name, pos: pos.into(), yaw, pitch, boot, throttle, wingsuit, t });
+                                    let rp = p.entry(id).or_insert_with(|| RemotePlayer::empty(id, name.clone()));
+                                    rp.update_state(
+                                        name.clone(),
+                                        pos.into(),
+                                        orient,
+                                        yaw,
+                                        cam_pitch,
+                                        boot,
+                                        throttle,
+                                        flags,
+                                        wing_arch,
+                                        wing_turn,
+                                        fall_spread,
+                                        fall_tuck,
+                                        strafe,
+                                        fwd_in,
+                                        jump_charge,
+                                        jump_push_timer,
+                                        landing_recovery,
+                                        rot_err,
+                                        intent_dir,
+                                        accel_smooth,
+                                        leg_steer,
+                                        pose_mode,
+                                        t,
+                                    );
+                                    let _ = evt_tx.send(NetEvt::State {
+                                        id,
+                                        name,
+                                        pos: pos.into(),
+                                        orient,
+                                        yaw,
+                                        cam_pitch,
+                                        boot,
+                                        throttle,
+                                        flags,
+                                        wing_arch,
+                                        wing_turn,
+                                        fall_spread,
+                                        fall_tuck,
+                                        strafe,
+                                        fwd_in,
+                                        jump_charge,
+                                        jump_push_timer,
+                                        landing_recovery,
+                                        rot_err,
+                                        intent_dir,
+                                        accel_smooth,
+                                        leg_steer,
+                                        pose_mode,
+                                        t,
+                                    });
+                                }
+                                S2C::Pose { id, seq, parts } => {
+                                    let _ = evt_tx.send(NetEvt::Pose { id, seq, parts });
                                 }
                                 S2C::Leave { id } => {
                                     players.lock().unwrap().remove(&id);
@@ -219,6 +601,7 @@ fn net_thread(cmd_rx: Receiver<NetCmd>, evt_tx: Sender<NetEvt>, players: Arc<Mut
 fn net_drain_events(
     mut client: ResMut<NetClient>,
     mut remote: ResMut<RemotePlayers>,
+    mut proxies: Query<&mut RemoteProxy>,
     mut clock: ResMut<crate::sky::Clock>,
     mut weather: ResMut<crate::sky::CurrentWeather>,
     mut over: ResMut<crate::clouds::CloudOverride>,
@@ -226,7 +609,8 @@ fn net_drain_events(
     let mut roster: Vec<(u64, String)> = vec![];
     let mut joins: Vec<(u64, String)> = vec![];
     let mut leaves: Vec<u64> = vec![];
-    let mut states: Vec<(u64, String, [f64; 3], f32, f32, u8, f32, bool, f64)> = vec![];
+    let mut states = vec![];
+    let mut poses = vec![];
     let mut connected_now = false;
     let mut disconnected = false;
 
@@ -240,33 +624,150 @@ fn net_drain_events(
                 connected_now = true;
             }
             NetEvt::Join { id, name } => joins.push((id, name)),
-            NetEvt::State { id, name, pos, yaw, pitch, boot, throttle, wingsuit, t } => states.push((id, name, pos, yaw, pitch, boot, throttle, wingsuit, t)),
+            NetEvt::State {
+                id,
+                name,
+                pos,
+                orient,
+                yaw,
+                cam_pitch,
+                boot,
+                throttle,
+                flags,
+                wing_arch,
+                wing_turn,
+                fall_spread,
+                fall_tuck,
+                strafe,
+                fwd_in,
+                jump_charge,
+                jump_push_timer,
+                landing_recovery,
+                rot_err,
+                intent_dir,
+                accel_smooth,
+                leg_steer,
+                pose_mode,
+                t,
+            } => states.push((
+                id,
+                name,
+                pos,
+                orient,
+                yaw,
+                cam_pitch,
+                boot,
+                throttle,
+                flags,
+                wing_arch,
+                wing_turn,
+                fall_spread,
+                fall_tuck,
+                strafe,
+                fwd_in,
+                jump_charge,
+                jump_push_timer,
+                landing_recovery,
+                rot_err,
+                intent_dir,
+                accel_smooth,
+                leg_steer,
+                pose_mode,
+                t,
+            )),
+            NetEvt::Pose { id, seq, parts } => poses.push((id, seq, parts)),
             NetEvt::Leave { id } => leaves.push(id),
-            NetEvt::Time { unix_s, rate } => { clock.unix_s = unix_s; clock.rate = rate; }
+            NetEvt::Time { unix_s, rate } => {
+                clock.unix_s = unix_s;
+                clock.rate = rate;
+            }
             NetEvt::Weather { preset } => {
                 if let Some(w) = ed_world::clouds::weather_preset(&preset) {
                     weather.0 = Some(w);
                     over.set_changed();
                 }
             }
-            NetEvt::Disconnected => { disconnected = true; }
+            NetEvt::Disconnected => {
+                disconnected = true;
+            }
         }
     }
 
     if connected_now {
         for (id, name) in roster {
-            remote.players.insert(id, RemotePlayer { id, name, pos: [0.0; 3], yaw: 0.0, pitch: 0.0, boot: 0, throttle: 0.0, wingsuit: false, last: 0.0, prev_pos: [0.0;3], prev_yaw: 0.0, prev_pitch: 0.0, prev_boot: 0, prev_throttle: 0.0, prev_wingsuit: false, prev_t: 0.0 });
+            remote.players.insert(id, RemotePlayer::empty(id, name));
         }
     }
     for (id, name) in joins {
-        remote.players.insert(id, RemotePlayer { id, name, pos: [0.0; 3], yaw: 0.0, pitch: 0.0, boot: 0, throttle: 0.0, wingsuit: false, last: 0.0, prev_pos: [0.0;3], prev_yaw: 0.0, prev_pitch: 0.0, prev_boot: 0, prev_throttle: 0.0, prev_wingsuit: false, prev_t: 0.0 });
+        remote.players.insert(id, RemotePlayer::empty(id, name));
     }
-    for (id, name, pos, yaw, pitch, boot, throttle, wingsuit, t) in states {
-        if let Some(rp) = remote.players.get_mut(&id) {
-            rp.prev_pos = rp.pos; rp.prev_yaw = rp.yaw; rp.prev_pitch = rp.pitch; rp.prev_boot = rp.boot; rp.prev_throttle = rp.throttle; rp.prev_wingsuit = rp.wingsuit; rp.prev_t = rp.last;
-            rp.name = name; rp.pos = pos; rp.yaw = yaw; rp.pitch = pitch; rp.boot = boot; rp.throttle = throttle; rp.wingsuit = wingsuit; rp.last = t;
-        } else {
-            remote.players.insert(id, RemotePlayer { id, name, pos, yaw, pitch, boot, throttle, wingsuit, last: t, prev_pos: pos, prev_yaw: yaw, prev_pitch: pitch, prev_boot: boot, prev_throttle: throttle, prev_wingsuit: wingsuit, prev_t: t });
+    for (
+        id,
+        name,
+        pos,
+        orient,
+        yaw,
+        cam_pitch,
+        boot,
+        throttle,
+        flags,
+        wing_arch,
+        wing_turn,
+        fall_spread,
+        fall_tuck,
+        strafe,
+        fwd_in,
+        jump_charge,
+        jump_push_timer,
+        landing_recovery,
+        rot_err,
+        intent_dir,
+        accel_smooth,
+        leg_steer,
+        pose_mode,
+        t,
+    ) in states
+    {
+        let rp = remote.players.entry(id).or_insert_with(|| RemotePlayer::empty(id, name.clone()));
+        rp.update_state(
+            name,
+            pos,
+            orient,
+            yaw,
+            cam_pitch,
+            boot,
+            throttle,
+            flags,
+            wing_arch,
+            wing_turn,
+            fall_spread,
+            fall_tuck,
+            strafe,
+            fwd_in,
+            jump_charge,
+            jump_push_timer,
+            landing_recovery,
+            rot_err,
+            intent_dir,
+            accel_smooth,
+            leg_steer,
+            pose_mode,
+            t,
+        );
+    }
+    for (id, _seq, parts) in poses {
+        for mut proxy in &mut proxies {
+            if proxy.id == id {
+                proxy.pose_mode = PoseMode::Replicated;
+                proxy.replicated_parts.clear();
+                for p in parts {
+                    proxy.replicated_parts.insert(
+                        p.index,
+                        (Vec3::from(p.pos), Quat::from_array(p.rot)),
+                    );
+                }
+                break;
+            }
         }
     }
     for id in leaves {
@@ -301,14 +802,61 @@ fn net_send_state(
     if let Ok((t, p)) = q.single() {
         let render = t.translation.as_dvec3();
         let ecef = origin.frame.render_to_ecef().transform_point3(render);
+        let orient = origin.frame.quat_render_to_ecef(t.rotation).to_array();
+        let rot_err = origin
+            .frame
+            .dir_render_to_ecef(p.rot_err.as_dvec3())
+            .as_vec3()
+            .to_array();
+        let intent_dir = origin
+            .frame
+            .dir_render_to_ecef(p.intent_dir.as_dvec3())
+            .as_vec3()
+            .to_array();
+        let accel_smooth = origin
+            .frame
+            .dir_render_to_ecef(p.accel_smooth.as_dvec3())
+            .as_vec3()
+            .to_array();
+        let leg_steer = p.leg_steer.to_array();
+
+        let mut flags = 0u8;
+        if p.wingsuit_on {
+            flags |= 1;
+        }
+        if p.afterburner {
+            flags |= 2;
+        }
+        if p.crouch {
+            flags |= 4;
+        }
+
         let _ = client.cmd_tx.send(NetCmd::State {
             pos: [ecef.x, ecef.y, ecef.z],
+            orient,
             yaw: p.yaw,
-            pitch: p.cam_pitch,
+            cam_pitch: p.cam_pitch,
             boot: p.mode as u8,
             throttle: p.throttle,
-            wingsuit: p.wingsuit_on,
-            t: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0),
+            flags,
+            wing_arch: p.wing_arch,
+            wing_turn: p.wing_turn,
+            fall_spread: p.fall_spread,
+            fall_tuck: p.fall_tuck,
+            strafe: p.strafe,
+            fwd_in: p.fwd_in,
+            jump_charge: p.jump_charge,
+            jump_push_timer: p.jump_push_timer,
+            landing_recovery: p.landing_recovery,
+            rot_err,
+            intent_dir,
+            accel_smooth,
+            leg_steer,
+            pose_mode: 0,
+            t: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs_f64())
+                .unwrap_or(0.0),
         });
     }
 }
@@ -316,46 +864,6 @@ fn net_send_state(
 #[derive(Component)]
 pub struct RemoteAvatar {
     pub id: u64,
-}
-
-#[derive(Resource, Default)]
-struct RemotePhase {
-    map: HashMap<u64, f32>,
-}
-
-// Robot part tags for remote avatars (pose computed on the viewer).
-#[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
-enum RJ { Pelvis, Chest, Neck, Head, HipL, HipR, KneeL, KneeR, AnkleL, AnkleR, ShoulderL, ShoulderR, ElbowL, ElbowR, WristL, WristR }
-#[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
-enum RF { Pelvis, Chest, Head, FootL, FootR, HandL, HandR }
-#[derive(Component, Clone, Debug)]
-enum RSpec {
-    Limb { a: RJ, b: RJ, r: f32 },
-    Ball { j: RJ, r: f32 },
-    Rigid { f: RF, off: Vec3, rot: Quat, scale: Vec3 },
-    Eye { off: Vec3 },
-    Jet { foot: usize, inner: bool },
-    Canopy,
-}
-#[derive(Component)]
-struct RPart { id: u64, spec: RSpec }
-#[derive(Component)]
-struct RWing { id: u64, k: usize }
-
-fn r_limb(a: Vec3, b: Vec3, r: f32) -> Transform {
-    let d = b - a;
-    let len = d.length().max(0.001);
-    Transform { translation: (a+b)*0.5, rotation: Quat::from_rotation_arc(Vec3::Y, d/len), scale: Vec3::new(r*2.0, len, r*2.0) }
-}
-fn r_wing_blank() -> bevy::mesh::Mesh {
-    use bevy::mesh::{Indices, PrimitiveTopology};
-    let mut idx = Vec::new();
-    for k in 0..7u32 { idx.extend_from_slice(&[7,k,(k+1)%7]); }
-    bevy::mesh::Mesh::new(PrimitiveTopology::TriangleList, bevy::asset::RenderAssetUsages::default())
-        .with_inserted_attribute(bevy::mesh::Mesh::ATTRIBUTE_POSITION, vec![[0.0f32;3];8])
-        .with_inserted_attribute(bevy::mesh::Mesh::ATTRIBUTE_NORMAL, vec![[0.0f32,1.0,0.0];8])
-        .with_inserted_attribute(bevy::mesh::Mesh::ATTRIBUTE_UV_0, vec![[0.0f32;2];8])
-        .with_inserted_indices(Indices::U32(idx))
 }
 
 #[derive(Component)]
@@ -370,133 +878,114 @@ pub struct RemoteNametagEntities {
 
 pub fn net_spawn_avatars(
     mut commands: Commands,
-    mut meshes: ResMut<Assets<bevy::mesh::Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    body_assets: Res<BodyAssets>,
+    mut meshes: ResMut<Assets<Mesh>>,
     remote: Res<RemotePlayers>,
     mut ents: ResMut<RemoteAvatarEntities>,
     mut nametag_entities: ResMut<RemoteNametagEntities>,
+    parts_query: Query<(Entity, &BodyOwner)>,
+    mut gait_store: ResMut<GaitStore>,
 ) {
     for (id, rp) in remote.players.iter() {
         if ents.map.contains_key(id) {
             continue;
         }
-        // materials (viewer-local)
-        let mk = |mats: &mut Assets<StandardMaterial>, rgb: (f32,f32,f32), rough: f32, metal: f32| mats.add(StandardMaterial { base_color: Color::srgb(rgb.0,rgb.1,rgb.2), perceptual_roughness: rough, metallic: metal, ..default() });
-        let shell = mk(&mut materials, (0.92,0.89,0.82), 0.4, 0.0);
-        let shell_dark = mk(&mut materials, (0.78,0.74,0.66), 0.45, 0.0);
-        let joint = mk(&mut materials, (0.22,0.23,0.26), 0.45, 0.6);
-        let jacket = mk(&mut materials, (0.96,0.42,0.09), 0.85, 0.0);
-        let jacket_dark = mk(&mut materials, (0.72,0.28,0.05), 0.85, 0.0);
-        let shoe = mk(&mut materials, (0.24,0.25,0.28), 0.7, 0.0);
-        let sole = mk(&mut materials, (0.95,0.95,0.93), 0.6, 0.0);
-        let brass = mk(&mut materials, (0.85,0.66,0.32), 0.3, 0.9);
-        let screen = materials.add(StandardMaterial { base_color: Color::srgb(0.03,0.06,0.07), perceptual_roughness: 0.06, reflectance: 0.9, ..default() });
-        let eye = materials.add(StandardMaterial { base_color: Color::BLACK, emissive: LinearRgba::rgb(0.6,3.0,3.2)*2000.0, ..default() });
-        let flame_outer = materials.add(StandardMaterial { base_color: Color::srgb(1.0,0.35,0.05), emissive: LinearRgba::rgb(4.5,1.4,0.15)*3500.0, unlit: true, ..default() });
-        let flame_core = materials.add(StandardMaterial { base_color: Color::srgb(0.85,0.95,1.0), emissive: LinearRgba::rgb(2.5,4.0,6.0)*5500.0, unlit: true, ..default() });
-        let canopy = materials.add(StandardMaterial { base_color: Color::srgb(0.96,0.42,0.09), perceptual_roughness: 0.9, double_sided: true, cull_mode: None, ..default() });
-        let wing_mat = materials.add(StandardMaterial { base_color: Color::srgb(0.10,0.16,0.34), perceptual_roughness: 0.6, double_sided: true, cull_mode: None, ..default() });
+        let initial_state = RigState {
+            mode: MoveMode::from_u8(rp.boot),
+            yaw: rp.yaw,
+            cam_pitch: rp.cam_pitch,
+            throttle: rp.throttle,
+            wingsuit_on: (rp.flags & 1) != 0,
+            afterburner: (rp.flags & 2) != 0,
+            fwd_in: rp.fwd_in,
+            strafe: rp.strafe,
+            wing_arch: rp.wing_arch,
+            wing_turn: rp.wing_turn,
+            fall_spread: rp.fall_spread,
+            fall_tuck: rp.fall_tuck,
+            jump_charge: rp.jump_charge,
+            jump_push_timer: rp.jump_push_timer,
+            crouch: (rp.flags & 4) != 0,
+            landing_recovery: rp.landing_recovery,
+            leg_steer: Vec3::from(rp.leg_steer),
+            intent_dir: Vec3::from(rp.intent_dir),
+            rot_err: Vec3::from(rp.rot_err),
+            accel_smooth: Vec3::from(rp.accel_smooth),
+            ground_normal: Vec3::Y,
+            foot_ground_hit: [None, None],
+            first_person: false,
+            vel: Vec3::ZERO,
+        };
 
-        let cyl = meshes.add(Cylinder::new(0.5,1.0).mesh().resolution(20));
-        let ball = meshes.add(Sphere::new(0.5).mesh().uv(20,12));
-        let cube = meshes.add(Cuboid::new(1.0,1.0,1.0));
-        let dome = meshes.add(Sphere::new(1.0).mesh().uv(24,8));
-        let cone = meshes.add(Cone::new(0.5,1.0).mesh().resolution(16));
+        let entity = commands
+            .spawn((
+                Transform::default(),
+                RemoteAvatar { id: *id },
+                RemoteProxy {
+                    id: *id,
+                    state: initial_state,
+                    quat: Quat::IDENTITY,
+                    pose_mode: PoseMode::from_u8(rp.pose_mode),
+                    replicated_parts: HashMap::new(),
+                },
+                crate::origin::Rebased,
+                Name::new(format!("remote_{}", rp.name)),
+            ))
+            .id();
 
-        let q0 = Quat::IDENTITY;
-        let qx = Quat::from_rotation_x(std::f32::consts::FRAC_PI_2);
-        let qz = Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
-        let v = Vec3::new;
-        use RJ::*;
-        let parts: Vec<(RSpec, &bevy::asset::Handle<bevy::mesh::Mesh>, &bevy::asset::Handle<StandardMaterial>)> = vec![
-            (RSpec::Limb{a:HipL,b:KneeL,r:0.075}, &cyl, &shell),
-            (RSpec::Limb{a:HipR,b:KneeR,r:0.075}, &cyl, &shell),
-            (RSpec::Limb{a:KneeL,b:AnkleL,r:0.065}, &cyl, &shell),
-            (RSpec::Limb{a:KneeR,b:AnkleR,r:0.065}, &cyl, &shell),
-            (RSpec::Ball{j:HipL,r:0.1}, &ball, &joint),
-            (RSpec::Ball{j:HipR,r:0.1}, &ball, &joint),
-            (RSpec::Ball{j:KneeL,r:0.088}, &ball, &joint),
-            (RSpec::Ball{j:KneeR,r:0.088}, &ball, &joint),
-            (RSpec::Ball{j:AnkleL,r:0.07}, &ball, &joint),
-            (RSpec::Ball{j:AnkleR,r:0.07}, &ball, &joint),
-            (RSpec::Rigid{f:RF::FootL, off:v(0.0,-0.025,-0.05), rot:q0, scale:v(0.13,0.08,0.27)}, &cube, &shoe),
-            (RSpec::Rigid{f:RF::FootR, off:v(0.0,-0.025,-0.05), rot:q0, scale:v(0.13,0.08,0.27)}, &cube, &shoe),
-            (RSpec::Rigid{f:RF::FootL, off:v(0.0,-0.075,-0.05), rot:q0, scale:v(0.14,0.03,0.29)}, &cube, &sole),
-            (RSpec::Rigid{f:RF::FootR, off:v(0.0,-0.075,-0.05), rot:q0, scale:v(0.14,0.03,0.29)}, &cube, &sole),
-            (RSpec::Rigid{f:RF::FootL, off:v(0.0,-0.035,-0.17), rot:qz, scale:v(0.08,0.13,0.08)}, &cyl, &shoe),
-            (RSpec::Rigid{f:RF::FootR, off:v(0.0,-0.035,-0.17), rot:qz, scale:v(0.08,0.13,0.08)}, &cyl, &shoe),
-            (RSpec::Rigid{f:RF::FootL, off:v(0.0,-0.095,-0.03), rot:q0, scale:v(0.09,0.025,0.09)}, &cyl, &joint),
-            (RSpec::Rigid{f:RF::FootR, off:v(0.0,-0.095,-0.03), rot:q0, scale:v(0.09,0.025,0.09)}, &cyl, &joint),
-            (RSpec::Jet{foot:0,inner:false}, &cone, &flame_outer),
-            (RSpec::Jet{foot:0,inner:true}, &cone, &flame_core),
-            (RSpec::Jet{foot:1,inner:false}, &cone, &flame_outer),
-            (RSpec::Jet{foot:1,inner:true}, &cone, &flame_core),
-            (RSpec::Rigid{f:RF::Pelvis, off:v(0.0,0.0,0.0), rot:q0, scale:v(0.34,0.16,0.22)}, &cube, &joint),
-            (RSpec::Limb{a:Pelvis,b:Chest,r:0.08}, &cyl, &joint),
-            (RSpec::Rigid{f:RF::Chest, off:v(0.0,-0.2,0.0), rot:q0, scale:v(0.46,0.4,0.28)}, &cube, &jacket),
-            (RSpec::Rigid{f:RF::Chest, off:v(0.0,-0.41,0.0), rot:q0, scale:v(0.44,0.06,0.26)}, &cube, &jacket_dark),
-            (RSpec::Rigid{f:RF::Chest, off:v(0.0,0.02,0.0), rot:q0, scale:v(0.3,0.07,0.22)}, &cube, &jacket_dark),
-            (RSpec::Rigid{f:RF::Chest, off:v(0.0,-0.2,-0.142), rot:q0, scale:v(0.025,0.36,0.01)}, &cube, &brass),
-            (RSpec::Limb{a:Chest,b:Neck,r:0.055}, &cyl, &joint),
-            (RSpec::Limb{a:ShoulderL,b:ElbowL,r:0.07}, &cyl, &jacket),
-            (RSpec::Limb{a:ShoulderR,b:ElbowR,r:0.07}, &cyl, &jacket),
-            (RSpec::Limb{a:ElbowL,b:WristL,r:0.05}, &cyl, &shell),
-            (RSpec::Limb{a:ElbowR,b:WristR,r:0.05}, &cyl, &shell),
-            (RSpec::Ball{j:ShoulderL,r:0.11}, &ball, &jacket),
-            (RSpec::Ball{j:ShoulderR,r:0.11}, &ball, &jacket),
-            (RSpec::Ball{j:ElbowL,r:0.07}, &ball, &joint),
-            (RSpec::Ball{j:ElbowR,r:0.07}, &ball, &joint),
-            (RSpec::Ball{j:WristL,r:0.05}, &ball, &joint),
-            (RSpec::Ball{j:WristR,r:0.05}, &ball, &joint),
-            (RSpec::Rigid{f:RF::HandL, off:v(0.0,-0.06,0.0), rot:q0, scale:v(0.07,0.11,0.09)}, &cube, &shell),
-            (RSpec::Rigid{f:RF::HandR, off:v(0.0,-0.06,0.0), rot:q0, scale:v(0.07,0.11,0.09)}, &cube, &shell),
-            (RSpec::Rigid{f:RF::Head, off:v(0.0,0.0,0.0), rot:q0, scale:v(0.42,0.34,0.3)}, &cube, &shell),
-            (RSpec::Rigid{f:RF::Head, off:v(0.0,0.0,-0.152), rot:q0, scale:v(0.38,0.3,0.01)}, &cube, &shell_dark),
-            (RSpec::Rigid{f:RF::Head, off:v(-0.03,0.005,-0.155), rot:q0, scale:v(0.29,0.24,0.05)}, &ball, &screen),
-            (RSpec::Rigid{f:RF::Head, off:v(0.0,-0.01,0.2), rot:q0, scale:v(0.3,0.24,0.14)}, &cube, &shell_dark),
-            (RSpec::Rigid{f:RF::Head, off:v(0.155,0.06,-0.155), rot:qx, scale:v(0.045,0.03,0.045)}, &cyl, &joint),
-            (RSpec::Rigid{f:RF::Head, off:v(0.09,0.27,0.0), rot:Quat::from_rotation_z(-0.35), scale:v(0.012,0.22,0.012)}, &cyl, &joint),
-            (RSpec::Eye{off:v(-0.085,0.02,-0.18)}, &ball, &eye),
-            (RSpec::Eye{off:v(0.035,0.02,-0.18)}, &ball, &eye),
-            (RSpec::Canopy, &dome, &canopy),
-        ];
-        let entity = commands.spawn((
-            Transform::default(),
-            RemoteAvatar { id: *id },
-            crate::origin::Rebased,
-            Name::new(format!("remote_{}", rp.name)),
-        )).with_children(|p| {
-            for (spec, mesh, m) in &parts {
-                p.spawn((RPart { id: *id, spec: spec.clone() }, Mesh3d((*mesh).clone()), MeshMaterial3d((*m).clone()), Transform::default(), Visibility::Visible));
-            }
-            for k in 0..3 {
-                p.spawn((RWing { id: *id, k }, Mesh3d(meshes.add(r_wing_blank())), MeshMaterial3d(wing_mat.clone()), Transform::default(), Visibility::Hidden, bevy::camera::visibility::NoFrustumCulling));
-            }
-        }).id();
+        spawn_body_parts(
+            &mut commands,
+            &body_assets,
+            &mut meshes,
+            entity,
+            &Cosmetics { backpack: false },
+        );
+
         // screen-space nametag with box
-        let nametag = commands.spawn((
-            RemoteNametag { id: *id },
-            Node {
-                position_type: PositionType::Absolute,
-                left: Val::Px(-1000.0),
-                top: Val::Px(-1000.0),
-                padding: UiRect::all(Val::Px(6.0)),
-                border: UiRect::all(Val::Px(2.0)),
-                border_radius: BorderRadius::all(Val::Px(4.0)),
-                ..default()
-            },
-            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.65)),
-            BorderColor::all(Color::srgb(1.0, 0.9, 0.2)),
-            ZIndex(20),
-        )).with_children(|p| {
-            p.spawn((Text::new(rp.name.clone()), TextFont { font_size: bevy::text::FontSize::Px(18.0), ..default() }, TextColor(Color::srgb(1.0, 0.9, 0.2))));
-        }).id();
+        let nametag = commands
+            .spawn((
+                RemoteNametag { id: *id },
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(-1000.0),
+                    top: Val::Px(-1000.0),
+                    padding: UiRect::all(Val::Px(6.0)),
+                    border: UiRect::all(Val::Px(2.0)),
+                    border_radius: BorderRadius::all(Val::Px(4.0)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.65)),
+                BorderColor::all(Color::srgb(1.0, 0.9, 0.2)),
+                ZIndex(20),
+            ))
+            .with_children(|p| {
+                p.spawn((
+                    Text::new(rp.name.clone()),
+                    TextFont {
+                        font_size: bevy::text::FontSize::Px(18.0),
+                        ..default()
+                    },
+                    TextColor(Color::srgb(1.0, 0.9, 0.2)),
+                ));
+            })
+            .id();
         ents.map.insert(*id, entity);
         nametag_entities.map.insert(*id, nametag);
     }
-    let to_remove: Vec<u64> = ents.map.keys().copied().filter(|id| !remote.players.contains_key(id)).collect();
+    let to_remove: Vec<u64> = ents
+        .map
+        .keys()
+        .copied()
+        .filter(|id| !remote.players.contains_key(id))
+        .collect();
     for id in to_remove {
         if let Some(e) = ents.map.remove(&id) {
+            for (part_ent, owner) in &parts_query {
+                if owner.0 == e {
+                    commands.entity(part_ent).despawn();
+                }
+            }
+            gait_store.0.remove(&e);
             commands.entity(e).despawn();
         }
         if let Some(e) = nametag_entities.map.remove(&id) {
@@ -510,8 +999,8 @@ fn join_input(
     pressed: Res<bevy::input::ButtonInput<bevy::input::keyboard::KeyCode>>,
     mut form: ResMut<crate::menu::JoinForm>,
     mut net: ResMut<NetClient>,
-    mut server_q: Query<&Interaction, With<crate::menu::ServerField>>,
-    mut name_q: Query<&Interaction, With<crate::menu::NameField>>,
+    server_q: Query<&Interaction, With<crate::menu::ServerField>>,
+    name_q: Query<&Interaction, With<crate::menu::NameField>>,
 ) {
     // click to focus
     for i in &server_q {
@@ -588,14 +1077,8 @@ fn join_paint(
     mut name_t: Query<&mut Text, (With<crate::menu::NameFieldText>, Without<crate::menu::ServerFieldText>)>,
 ) {
     let caret = |f: u8, my: u8| if f == my { "│" } else { "" };
-    for mut t in &mut server_t {
-        let s = format!("{}{}", form.server, caret(form.focus, 1));
-        if t.0 != s { t.0 = s; }
-    }
-    for mut t in &mut name_t {
-        let s = format!("{}{}", form.name, caret(form.focus, 2));
-        if t.0 != s { t.0 = s; }
-    }
+    for mut t in &mut server_t { t.0 = format!("{}{}", form.server, caret(form.focus, 1)); }
+    for mut t in &mut name_t { t.0 = format!("{}{}", form.name, caret(form.focus, 2)); }
 }
 
 pub fn net_menu_actions(
@@ -718,22 +1201,15 @@ fn lerp_angle(a: f32, b: f32, t: f32) -> f32 {
 fn net_update_avatars(
     origin: Res<WorldOrigin>,
     remote: Res<RemotePlayers>,
-    time: Res<Time>,
-    mut phase: ResMut<RemotePhase>,
-    mut q: Query<(&mut Transform, &RemoteAvatar), Without<RPart>>,
-    mut parts: Query<(&RPart, &mut Transform, &mut Visibility), Without<RemoteAvatar>>,
-    mut wings: Query<(&RWing, &Mesh3d, &mut Visibility), (Without<RPart>, Without<RemoteAvatar>)>,
-    mut meshes: ResMut<Assets<bevy::mesh::Mesh>>,
+    mut q: Query<(&mut Transform, &mut RemoteProxy, &RemoteAvatar)>,
 ) {
-    let dt = time.delta_secs().clamp(1e-4, 0.05);
-    // Collect avatar transforms by id
-    let mut avatars: HashMap<u64, (Vec3, Quat, f32, u8, f32, bool, f32)> = HashMap::new(); // pos, rot, pitch, boot, throttle, wingsuit, speed
-    for (mut t, av) in q.iter_mut() {
-        let Some(rp) = remote.players.get(&av.id) else { continue };
+    for (mut t, mut proxy, av) in q.iter_mut() {
+        let Some(rp) = remote.players.get(&av.id) else {
+            continue;
+        };
         // interpolation + dead reckoning + jitter-adaptive buffer
         let span = (rp.last - rp.prev_t).max(1e-4);
-        // jitter estimate from span vs 60Hz expected (EWMA stored in prev_t? use span deviation)
-        let jitter = ((span - 1.0/60.0).abs()).min(0.05);
+        let jitter = ((span - 1.0 / 60.0).abs()).min(0.05);
         let buf = (0.03 + jitter * 2.0).clamp(0.016, 0.1);
         let render_t = rp.last - buf;
         let alpha_raw = (render_t - rp.prev_t) / span;
@@ -746,161 +1222,105 @@ fn net_update_avatars(
             (alpha_raw.clamp(0.0, 1.0) as f32, 0.0)
         };
         let vel = [
-            (rp.pos[0]-rp.prev_pos[0])/span,
-            (rp.pos[1]-rp.prev_pos[1])/span,
-            (rp.pos[2]-rp.prev_pos[2])/span,
+            (rp.pos[0] - rp.prev_pos[0]) / span,
+            (rp.pos[1] - rp.prev_pos[1]) / span,
+            (rp.pos[2] - rp.prev_pos[2]) / span,
         ];
         let pos = [
-            rp.prev_pos[0] + (rp.pos[0] - rp.prev_pos[0]) * alpha as f64 + vel[0]*extrapolate,
-            rp.prev_pos[1] + (rp.pos[1] - rp.prev_pos[1]) * alpha as f64 + vel[1]*extrapolate,
-            rp.prev_pos[2] + (rp.pos[2] - rp.prev_pos[2]) * alpha as f64 + vel[2]*extrapolate,
+            rp.prev_pos[0] + (rp.pos[0] - rp.prev_pos[0]) * alpha as f64 + vel[0] * extrapolate,
+            rp.prev_pos[1] + (rp.pos[1] - rp.prev_pos[1]) * alpha as f64 + vel[1] * extrapolate,
+            rp.prev_pos[2] + (rp.pos[2] - rp.prev_pos[2]) * alpha as f64 + vel[2] * extrapolate,
         ];
-        let yaw = lerp_angle(rp.prev_yaw, rp.yaw, alpha);
-        let pitch = rp.prev_pitch + (rp.pitch - rp.prev_pitch) * alpha;
-        let boot = if alpha > 0.5 { rp.boot } else { rp.prev_boot };
-        let throttle = rp.prev_throttle + (rp.throttle - rp.prev_throttle) * alpha;
-        let wingsuit = if alpha > 0.5 { rp.wingsuit } else { rp.prev_wingsuit };
         let ecef = DVec3::new(pos[0], pos[1], pos[2]);
         let render = origin.frame.ecef_to_render().transform_point3(ecef).as_vec3();
-        // speed from span
-        let delta = (rp.pos[0]-rp.prev_pos[0]).powi(2)+(rp.pos[1]-rp.prev_pos[1]).powi(2)+(rp.pos[2]-rp.prev_pos[2]).powi(2);
-        let speed = (delta.sqrt() / span.max(1e-4)) as f32;
+
+        let q_prev = Quat::from_array(rp.prev_orient);
+        let q_curr = Quat::from_array(rp.orient);
+        let q_ecef = if q_prev.length_squared() > 0.5 && q_curr.length_squared() > 0.5 {
+            q_prev.slerp(q_curr, alpha).normalize()
+        } else {
+            Quat::from_rotation_y(lerp_angle(rp.prev_yaw, rp.yaw, alpha))
+        };
+        let quat_render = origin.frame.quat_ecef_to_render(q_ecef);
+
+        let vel_render = origin
+            .frame
+            .dir_ecef_to_render(DVec3::new(vel[0], vel[1], vel[2]))
+            .as_vec3();
+
+        let rot_err_ecef = DVec3::new(
+            (rp.prev_rot_err[0] + (rp.rot_err[0] - rp.prev_rot_err[0]) * alpha) as f64,
+            (rp.prev_rot_err[1] + (rp.rot_err[1] - rp.prev_rot_err[1]) * alpha) as f64,
+            (rp.prev_rot_err[2] + (rp.rot_err[2] - rp.prev_rot_err[2]) * alpha) as f64,
+        );
+        let rot_err = origin.frame.dir_ecef_to_render(rot_err_ecef).as_vec3();
+
+        let intent_dir_ecef = DVec3::new(
+            (rp.prev_intent_dir[0] + (rp.intent_dir[0] - rp.prev_intent_dir[0]) * alpha) as f64,
+            (rp.prev_intent_dir[1] + (rp.intent_dir[1] - rp.prev_intent_dir[1]) * alpha) as f64,
+            (rp.prev_intent_dir[2] + (rp.intent_dir[2] - rp.prev_intent_dir[2]) * alpha) as f64,
+        );
+        let intent_dir = origin.frame.dir_ecef_to_render(intent_dir_ecef).as_vec3();
+
+        let accel_smooth_ecef = DVec3::new(
+            (rp.prev_accel_smooth[0] + (rp.accel_smooth[0] - rp.prev_accel_smooth[0]) * alpha) as f64,
+            (rp.prev_accel_smooth[1] + (rp.accel_smooth[1] - rp.prev_accel_smooth[1]) * alpha) as f64,
+            (rp.prev_accel_smooth[2] + (rp.accel_smooth[2] - rp.prev_accel_smooth[2]) * alpha) as f64,
+        );
+        let accel_smooth = origin.frame.dir_ecef_to_render(accel_smooth_ecef).as_vec3();
+
+        let leg_steer = Vec3::new(
+            rp.prev_leg_steer[0] + (rp.leg_steer[0] - rp.prev_leg_steer[0]) * alpha,
+            rp.prev_leg_steer[1] + (rp.leg_steer[1] - rp.prev_leg_steer[1]) * alpha,
+            rp.prev_leg_steer[2] + (rp.leg_steer[2] - rp.prev_leg_steer[2]) * alpha,
+        );
+
+        let yaw = lerp_angle(rp.prev_yaw, rp.yaw, alpha);
+        let cam_pitch = rp.prev_cam_pitch + (rp.cam_pitch - rp.prev_cam_pitch) * alpha;
+        let boot = if alpha > 0.5 { rp.boot } else { rp.prev_boot };
+        let flags = if alpha > 0.5 { rp.flags } else { rp.prev_flags };
+        let pose_mode = if alpha > 0.5 { rp.pose_mode } else { rp.prev_pose_mode };
+        let throttle = rp.prev_throttle + (rp.throttle - rp.prev_throttle) * alpha;
+        let wing_arch = rp.prev_wing_arch + (rp.wing_arch - rp.prev_wing_arch) * alpha;
+        let wing_turn = rp.prev_wing_turn + (rp.wing_turn - rp.prev_wing_turn) * alpha;
+        let fall_spread = rp.prev_fall_spread + (rp.fall_spread - rp.prev_fall_spread) * alpha;
+        let fall_tuck = rp.prev_fall_tuck + (rp.fall_tuck - rp.prev_fall_tuck) * alpha;
+        let strafe = rp.prev_strafe + (rp.strafe - rp.prev_strafe) * alpha;
+        let fwd_in = rp.prev_fwd_in + (rp.fwd_in - rp.prev_fwd_in) * alpha;
+        let jump_charge = rp.prev_jump_charge + (rp.jump_charge - rp.prev_jump_charge) * alpha;
+        let jump_push_timer = rp.prev_jump_push_timer + (rp.jump_push_timer - rp.prev_jump_push_timer) * alpha;
+        let landing_recovery = rp.prev_landing_recovery + (rp.landing_recovery - rp.prev_landing_recovery) * alpha;
+
         t.translation = render;
-        t.rotation = Quat::from_rotation_y(yaw);
-        avatars.insert(av.id, (render, t.rotation, pitch, boot, throttle, wingsuit, speed));
-        // phase for walk swing
-        let ph = phase.map.entry(av.id).or_insert(0.0);
-        *ph += (speed.max(0.3)) * dt * 2.4;
-    }
-    // Animate parts per avatar: need joints in world space
-    for (part, mut tf, mut vis) in parts.iter_mut() {
-        let Some((_root_pos, root_rot, pitch, boot, throttle, wingsuit, speed)) = avatars.get(&part.id).copied() else { *vis = Visibility::Hidden; continue };
-        let _ = (pitch, wingsuit);
-        let lean = (speed / 6.0).clamp(0.0, 0.35);
-        let base = Quat::from_rotation_x(pitch * 0.6 + lean);
-        let up = Vec3::Y;
-        let ph = phase.map.get(&part.id).copied().unwrap_or(0.0);
-        // Local joints
-        let breath = (time.elapsed_secs() * 2.2).sin() * 0.025;
-        let pelvis = Vec3::new(0.0, breath, 0.0);
-        let chest = Vec3::new(0.0, 0.42, 0.0);
-        let neck = Vec3::new(0.0, 0.65, 0.0);
-        let head = Vec3::new(0.0, 0.85, 0.0);
-        let hip_l = Vec3::new(-0.13, -0.04, 0.0);
-        let hip_r = Vec3::new(0.13, -0.04, 0.0);
-        // mode: 0 Walk,1 Fall,2 Rocket,3 Skydive,4 Parachute
-        let (ankle_l, ankle_r, elbow_l, elbow_r, wrist_l, wrist_r) = match boot {
-            0 => { // Walk
-                let amp = if speed < 0.5 { 0.0 } else { (speed.min(6.0) / 3.0).clamp(0.0, 1.0) };
-                let s = (ph).sin() * 0.32 * amp;
-                let s2 = (ph + std::f32::consts::PI).sin() * 0.32 * amp;
-                (hip_l + Vec3::new(0.0,-0.84,s), hip_r + Vec3::new(0.0,-0.84,s2),
-                 Vec3::new(-0.35,-0.05,-s*0.5), Vec3::new(0.35,-0.05,-s2*0.5),
-                 Vec3::new(-0.38,-0.30,s*0.5), Vec3::new(0.38,-0.30,s2*0.5))
-            }
-            2 => { // Rocket
-                (hip_l+Vec3::new(0.0,-0.92,0.02), hip_r+Vec3::new(0.0,-0.92,0.02),
-                 Vec3::new(-0.38,0.05,0.0), Vec3::new(0.38,0.05,0.0),
-                 Vec3::new(-0.42,-0.10,0.0), Vec3::new(0.42,-0.10,0.0))
-            }
-            3 => { // Skydive
-                (hip_l+Vec3::new(-0.1,-0.75,0.15), hip_r+Vec3::new(0.1,-0.75,0.15),
-                 Vec3::new(-0.57,0.18,0.0), Vec3::new(0.57,0.18,0.0),
-                 Vec3::new(-0.85,0.18,0.0), Vec3::new(0.85,0.18,0.0))
-            }
-            4 => { // Parachute
-                (hip_l+Vec3::new(0.0,-0.86,0.05), hip_r+Vec3::new(0.0,-0.86,0.05),
-                 Vec3::new(-0.35,0.45,0.0), Vec3::new(0.35,0.45,0.0),
-                 Vec3::new(-0.30,0.70,0.0), Vec3::new(0.30,0.70,0.0))
-            }
-            _ => { // Fall
-                (hip_l+Vec3::new(-0.05,-0.80,0.08), hip_r+Vec3::new(0.05,-0.80,0.08),
-                 Vec3::new(-0.50,0.10,0.0), Vec3::new(0.50,0.10,0.0),
-                 Vec3::new(-0.65,-0.05,0.0), Vec3::new(0.65,-0.05,0.0))
-            }
+        t.rotation = quat_render;
+
+        proxy.quat = quat_render;
+        proxy.pose_mode = PoseMode::from_u8(pose_mode);
+        proxy.state = RigState {
+            mode: MoveMode::from_u8(boot),
+            yaw,
+            cam_pitch,
+            throttle,
+            wingsuit_on: (flags & 1) != 0,
+            afterburner: (flags & 2) != 0,
+            fwd_in,
+            strafe,
+            wing_arch,
+            wing_turn,
+            fall_spread,
+            fall_tuck,
+            jump_charge,
+            jump_push_timer,
+            crouch: (flags & 4) != 0,
+            landing_recovery,
+            leg_steer,
+            intent_dir,
+            rot_err,
+            accel_smooth,
+            ground_normal: Vec3::Y,
+            foot_ground_hit: [None, None],
+            first_person: false,
+            vel: vel_render,
         };
-        let shoulder_l = chest + Vec3::new(-0.27,0.18,0.0);
-        let shoulder_r = chest + Vec3::new(0.27,0.18,0.0);
-        let knee_l = (hip_l+ankle_l)*0.5 + Vec3::new(0.0,0.0,-0.08);
-        let knee_r = (hip_r+ankle_r)*0.5 + Vec3::new(0.0,0.0,-0.08);
-        let joint_pos = |j: RJ| -> Vec3 {
-            let local = match j {
-                RJ::Pelvis=>pelvis, RJ::Chest=>chest, RJ::Neck=>neck, RJ::Head=>head,
-                RJ::HipL=>hip_l, RJ::HipR=>hip_r, RJ::KneeL=>knee_l, RJ::KneeR=>knee_r,
-                RJ::AnkleL=>ankle_l, RJ::AnkleR=>ankle_r, RJ::ShoulderL=>shoulder_l, RJ::ShoulderR=>shoulder_r,
-                RJ::ElbowL=>elbow_l, RJ::ElbowR=>elbow_r, RJ::WristL=>wrist_l, RJ::WristR=>wrist_r,
-            };
-            base * local
-        };
-        let frame = |f: RF| -> (Vec3, Quat) {
-            match f {
-                RF::Pelvis=>(Vec3::ZERO, base),
-                RF::Chest=>(joint_pos(RJ::Chest), base),
-                RF::Head=>(joint_pos(RJ::Head), base),
-                RF::FootL=>(joint_pos(RJ::AnkleL), base),
-                RF::FootR=>(joint_pos(RJ::AnkleR), base),
-                RF::HandL=>(joint_pos(RJ::WristL), base),
-                RF::HandR=>(joint_pos(RJ::WristR), base),
-            }
-        };
-        *vis = Visibility::Visible;
-        match &part.spec {
-            RSpec::Limb{a,b,r} => { *tf = r_limb(joint_pos(*a), joint_pos(*b), *r); }
-            RSpec::Ball{j,r} => { *tf = Transform::from_translation(joint_pos(*j)).with_scale(Vec3::splat(r*2.0)); }
-            RSpec::Rigid{f,off,rot,scale} => { let (p0,q)=frame(*f); *tf = Transform{ translation: p0+q*off, rotation: q*rot, scale: *scale }; }
-            RSpec::Eye{off} => { let (p0,q)=frame(RF::Head); *tf = Transform{ translation: p0+q*off, rotation: q, scale: Vec3::new(0.055,0.075,0.02) }; }
-            RSpec::Jet{foot,inner} => {
-                if throttle <= 0.01 { *vis = Visibility::Hidden; continue; }
-                let f = if *foot==0 { RF::FootL } else { RF::FootR };
-                let (p0,q) = frame(f);
-                let tsec = time.elapsed_secs();
-                let phase2 = tsec*62.0 + (*foot as f32)*1.9;
-                let flicker = 0.88 + 0.24*phase2.sin()*(phase2*1.7).cos();
-                let len = (0.28 + throttle*0.34)*flicker*if *inner {0.62} else {1.0};
-                let width = (0.09 + throttle.min(2.5)*0.035)*if *inner {0.58} else {1.0};
-                let flip = Quat::from_rotation_x(std::f32::consts::PI);
-                *tf = Transform{ translation: p0+q*Vec3::new(0.0,-0.10-len*0.5,-0.03), rotation: q*flip, scale: Vec3::new(width,len,width) };
-            }
-            RSpec::Canopy => {
-                if boot==4 { *tf = Transform::from_translation(base*Vec3::Y*6.5).with_rotation(base).with_scale(Vec3::new(4.5,1.6,2.6)); } else { *vis = Visibility::Hidden; }
-            }
-        }
-    }
-    // Wings
-    for (w, m3, mut vis) in wings.iter_mut() {
-        let Some((_root_pos, root_rot, pitch, boot, _, wingsuit, _)) = avatars.get(&w.id).copied() else { *vis = Visibility::Hidden; continue };
-        let flying = wingsuit && matches!(boot, 1|2|3);
-        if !flying { *vis = Visibility::Hidden; continue; }
-        *vis = Visibility::Visible;
-        let base = Quat::from_rotation_x(pitch*0.6);
-        let back = base * Vec3::Z;
-        // recompute joints quickly (approx)
-        let chest = base*Vec3::new(0.0,0.42,0.0);
-        let shoulder_l = chest + base*Vec3::new(-0.27,0.18,0.0);
-        let shoulder_r = chest + base*Vec3::new(0.27,0.18,0.0);
-        let elbow_l = chest + base*Vec3::new(-0.57,0.18,0.0);
-        let elbow_r = chest + base*Vec3::new(0.57,0.18,0.0);
-        let wrist_l = chest + base*Vec3::new(-0.85,0.18,0.0);
-        let wrist_r = chest + base*Vec3::new(0.85,0.18,0.0);
-        let hip_l = base*Vec3::new(-0.13,-0.04,0.0);
-        let hip_r = base*Vec3::new(0.13,-0.04,0.0);
-        let ankle_l = base*Vec3::new(-0.23,-0.79,0.15);
-        let ankle_r = base*Vec3::new(0.23,-0.79,0.15);
-        let knee_l = (hip_l+ankle_l)*0.5 + base*Vec3::new(0.0,0.0,-0.08);
-        let knee_r = (hip_r+ankle_r)*0.5 + base*Vec3::new(0.0,0.0,-0.08);
-        let (poly, lift) = match w.k {
-            0 => ([shoulder_l, elbow_l, wrist_l, (wrist_l+ankle_l)*0.5+back*0.03, ankle_l, knee_l, hip_l], back*0.05),
-            1 => ([shoulder_r, elbow_r, wrist_r, (wrist_r+ankle_r)*0.5+back*0.03, ankle_r, knee_r, hip_r], back*0.05),
-            _ => { let c=(hip_l+hip_r)*0.5 - base*Vec3::Y*0.04; ([hip_l,knee_l,ankle_l,ankle_r,knee_r,hip_r,c], back*0.035) }
-        };
-        let centroid = poly.iter().copied().sum::<Vec3>()/7.0 + lift;
-        let n = (poly[2]-poly[0]).cross(poly[6]-poly[0]).normalize_or(back);
-        let n = if n.dot(back)<0.0 {-n} else {n};
-        if let Some(mut mesh) = meshes.get_mut(&m3.0) {
-            let mut pos: Vec<[f32;3]> = poly.iter().map(|v| v.to_array()).collect();
-            pos.push(centroid.to_array());
-            mesh.insert_attribute(bevy::mesh::Mesh::ATTRIBUTE_POSITION, pos);
-            mesh.insert_attribute(bevy::mesh::Mesh::ATTRIBUTE_NORMAL, vec![n.to_array();8]);
-        }
     }
 }

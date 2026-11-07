@@ -155,6 +155,17 @@ pub enum MoveMode {
 }
 
 impl MoveMode {
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            0 => MoveMode::Walk,
+            1 => MoveMode::Fall,
+            2 => MoveMode::RocketShoes,
+            3 => MoveMode::Skydive,
+            4 => MoveMode::Parachute,
+            _ => MoveMode::Walk,
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             MoveMode::Walk => "WALK",
@@ -322,7 +333,14 @@ impl Player {
     }
 }
 
-fn spawn_player(mut commands: Commands, cfg: Res<Config>, origin: Res<WorldOrigin>) {
+fn spawn_player(
+    mut commands: Commands,
+    cfg: Res<Config>,
+    origin: Res<WorldOrigin>,
+    body_assets: Res<crate::body::BodyAssets>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    cosmetics: Res<crate::body::Cosmetics>,
+) {
     let pos = origin.to_render(ed_geo::Geodetic {
         alt_m: cfg.start.alt_m.max(0.0) + cfg.start_agl.max(3.0),
         ..cfg.start
@@ -344,7 +362,7 @@ fn spawn_player(mut commands: Commands, cfg: Res<Config>, origin: Res<WorldOrigi
     ];
     p.foot_up_dir = [up; 2];
 
-    commands.spawn((
+    let player_entity = commands.spawn((
         p,
         RigidBody::Dynamic,
         Collider::capsule(CAPSULE_RADIUS, CAPSULE_LEN),
@@ -365,7 +383,15 @@ fn spawn_player(mut commands: Commands, cfg: Res<Config>, origin: Res<WorldOrigi
         Rebased,
         Focus,
         Name::new("player"),
-    ));
+    )).id();
+
+    crate::body::spawn_body_parts(
+        &mut commands,
+        &body_assets,
+        &mut meshes,
+        player_entity,
+        &cosmetics,
+    );
 }
 
 /// Probes ground beneath left/right hips (fixed hip offsets, eliminating foot-position feedback jitter!).

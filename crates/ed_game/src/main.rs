@@ -107,12 +107,12 @@ fn main() {
         app.insert_resource(lookdev::Lookdev { out_dir: dir.clone(), only: cfg.lookdev_only.clone() })
             .add_plugins((lookdev::LookdevPlugin, body::BodyPlugin));
     } else {
-        app.add_plugins((streaming::StreamingPlugin, capture::CapturePlugin, hud::HudPlugin, minimap::MinimapPlugin, probe_gi::ProbeGiPlugin, spawn::SpawnPlugin, mapview::MapViewPlugin, globe::GlobePlugin, settings::SettingsPlugin, menu::MenuPlugin, gamepad::GamepadPlugin, net::NetPlugin));
+        app.add_plugins((streaming::StreamingPlugin, capture::CapturePlugin, hud::HudPlugin, minimap::MinimapPlugin, probe_gi::ProbeGiPlugin, spawn::SpawnPlugin, mapview::MapViewPlugin, globe::GlobePlugin, settings::SettingsPlugin, menu::MenuPlugin, gamepad::GamepadPlugin, net::NetPlugin, body::BodyPlugin));
         if !cfg.headless {
             app.add_plugins((soundscape::SoundscapePlugin, menu_music::MenuMusicPlugin));
         }
         if !cfg.fly {
-            app.add_plugins((player::PlayerPlugin, body::BodyPlugin, boot_plume::BootPlumePlugin, vehicles::VehiclesPlugin, engine_audio::EngineAudioPlugin, sonic_boom::SonicBoomPlugin));
+            app.add_plugins((player::PlayerPlugin, boot_plume::BootPlumePlugin, vehicles::VehiclesPlugin, engine_audio::EngineAudioPlugin, sonic_boom::SonicBoomPlugin));
         }
     }
     app.run();

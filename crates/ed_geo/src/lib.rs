@@ -184,6 +184,32 @@ impl EnuFrame {
         self.render_to_ecef().inverse()
     }
 
+    /// Rotate a direction vector (not a point) from render space (x=E, y=U, z=-N) into ECEF.
+    pub fn dir_render_to_ecef(&self, d: DVec3) -> DVec3 {
+        let render_to_enu = DMat3::from_cols(DVec3::X, DVec3::new(0.0, 0.0, 1.0), DVec3::new(0.0, -1.0, 0.0));
+        let m = self.ecef_to_enu.transpose() * render_to_enu;
+        m * d
+    }
+
+    /// Rotate a direction vector (not a point) from ECEF into render space (x=E, y=U, z=-N).
+    pub fn dir_ecef_to_render(&self, d: DVec3) -> DVec3 {
+        let render_to_enu = DMat3::from_cols(DVec3::X, DVec3::new(0.0, 0.0, 1.0), DVec3::new(0.0, -1.0, 0.0));
+        let m = self.ecef_to_enu.transpose() * render_to_enu;
+        m.transpose() * d
+    }
+
+    /// Convert an orientation quaternion from render space into ECEF.
+    pub fn quat_render_to_ecef(&self, q: glam::Quat) -> glam::Quat {
+        let (_, frame_rot, _) = self.render_to_ecef().to_scale_rotation_translation();
+        (frame_rot.as_quat() * q).normalize()
+    }
+
+    /// Convert an orientation quaternion from ECEF into render space.
+    pub fn quat_ecef_to_render(&self, q: glam::Quat) -> glam::Quat {
+        let (_, frame_rot, _) = self.render_to_ecef().to_scale_rotation_translation();
+        (frame_rot.as_quat().inverse() * q).normalize()
+    }
+
     /// Local "up" (away from Earth's center along the ellipsoid normal) at a
     /// render-space point. Far from the origin this tilts: that's the curvature.
     pub fn up_at_render(&self, r: DVec3) -> DVec3 {
@@ -279,5 +305,19 @@ mod tests {
     fn wraps() {
         assert!(close(wrap_lon(190.0), -170.0, 1e-9));
         assert!(close(wrap_lon(-190.0), 170.0, 1e-9));
+    }
+
+    #[test]
+    fn quat_and_dir_frame_roundtrip() {
+        let f = EnuFrame::new(Geodetic::new(43.53, 5.45, 300.0));
+        let q = glam::Quat::from_euler(glam::EulerRot::XYZ, 0.4, -0.6, 1.2);
+        let q_ecef = f.quat_render_to_ecef(q);
+        let q_back = f.quat_ecef_to_render(q_ecef);
+        assert!((q.dot(q_back).abs() - 1.0).abs() < 1e-5);
+
+        let d = DVec3::new(1.0, 2.5, -3.2).normalize();
+        let d_ecef = f.dir_render_to_ecef(d);
+        let d_back = f.dir_ecef_to_render(d_ecef);
+        assert!((d - d_back).length() < 1e-6);
     }
 }
