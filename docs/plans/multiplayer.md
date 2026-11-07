@@ -109,3 +109,30 @@ Open the pause menu → **Multiplayer** tab → **Connect**. Drop in anywhere; t
 - Client networking, avatars, nametag, far ring, spawn-next-to, menu tab: done (`crates/ed_game/src/net.rs`, menu Multiplayer tab).
 - Minimap/worldmap dots for remote players: TODO (follow-up).
 - Determinism foundations (golden-hash CI, sim/render split, clouds.rs wall-clock): partially done (data version pinning).
+## Update 2026-11-06 (netcode v3)
+
+- Binary wire format (no JSON, ~40B/state), protocol v3.
+- Server interest management: <1km 60Hz, <10km 15Hz, far 5Hz (ECEF distance).
+- Client dead reckoning: extrapolate up to 0.5s on packet loss using velocity.
+- Jitter-adaptive interpolation buffer: 50-300ms based on inter-arrival deviation.
+- Time sync: server broadcasts shared unix_s at 1Hz; clients set Clock. Time now moves in sync for all players.
+- Player list (item 5) shown in Multiplayer tab status. Chat explicitly deferred.
+
+## Procedural world sim (research)
+
+Goal: deterministic weather/climate so all clients see identical sky without Open-Meteo.
+
+Plan from docs/plans/world-sim.md:
+1. ed_climate crate (engine-free): climate base (WorldClim normals already embedded), synoptic grid (~1-2deg, advected heat/moisture), storm records (hurricane/tornado/sandstorm/tsunami as pure functions of seed+UTC).
+2. WeatherSample API consumed by clouds.rs, sky, foliage, vehicles.
+3. Determinism: fixed-point or strictly ordered f64, spin-up from cached climatology + checkpoint fast-forward, golden-hash CI.
+
+Steps:
+- Milestone 1: layer 1 + WeatherSample + tests (Sahara dry, Amazon wet, rain shadow).
+- Milestone 2: layer 2 grid with deterministic spin-up.
+- Milestone 3: storm generator.
+- Milestone 4: map overlay + satellite base.
+- Milestone 5: local realization (wind/rain/funnel).
+- Milestone 6: hook into clouds/sky/ground/vehicles.
+
+Open: grid resolution vs CPU, precomputed spin-up shipped vs computed at launch.
