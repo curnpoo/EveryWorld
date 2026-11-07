@@ -117,7 +117,11 @@ fn main() {
             app.add_plugins((soundscape::SoundscapePlugin, menu_music::MenuMusicPlugin));
         }
         if !cfg.fly {
-            app.add_plugins((player::PlayerPlugin, boot_plume::BootPlumePlugin, vehicles::VehiclesPlugin, engine_audio::EngineAudioPlugin, sonic_boom::SonicBoomPlugin));
+            if cfg!(target_os = "windows") {
+                app.add_plugins((player::PlayerPlugin, vehicles::VehiclesPlugin, engine_audio::EngineAudioPlugin, sonic_boom::SonicBoomPlugin));
+            } else {
+                app.add_plugins((player::PlayerPlugin, boot_plume::BootPlumePlugin, vehicles::VehiclesPlugin, engine_audio::EngineAudioPlugin, sonic_boom::SonicBoomPlugin));
+            }
         }
     }
     app.run();
