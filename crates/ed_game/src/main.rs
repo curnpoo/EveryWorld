@@ -92,10 +92,11 @@ fn main() {
         app.add_plugins(bevy::app::ScheduleRunnerPlugin::run_loop(std::time::Duration::ZERO));
     }
     app.add_plugins(plugins)
-    .add_plugins(bevy::pbr::experimental::meshlet::MeshletPlugin { cluster_buffer_slots: 1 << 22 })
+    .add_plugins(bevy::pbr::experimental::meshlet::MeshletPlugin { cluster_buffer_slots: if cfg!(target_os = "windows") { 1 << 18 } else { 1 << 22 } })
     .add_plugins(PhysicsPlugins::default())
     .insert_resource(Gravity(Vec3::NEG_Y * 9.81))
     .insert_resource(cfg.clone())
+    .insert_resource(bevy::light::DirectionalLightShadowMap { size: if cfg!(target_os = "windows") { 1024 } else { 2048 } })
     .add_plugins((origin::OriginPlugin, assets::AssetsPlugin, building_materials::BuildingMaterialsPlugin, sky::SkyPlugin, shadows::ShadowsPlugin, far_shadows::FarShadowsPlugin, camera::CameraPlugin, foliage::FoliagePlugin))
     .add_plugins((clouds::CloudsPlugin, cloud_half::CloudHalfPlugin, perf::PerfPlugin, render_scale::RenderScalePlugin, library::LibraryPlugin, native::NativePlugin, loading::LoadingPlugin))
     .add_systems(Update, headless::quit_after);

@@ -238,6 +238,11 @@ fn array_image(layers: &[&[u8]], size: u32, format: TextureFormat, srgb: bool) -
 /// hole-free swaps; if a class runs out, the tile simply renders without
 /// satellite colour. The 1024 class exists so coarse tiles stay sharp from high
 /// altitude. Memory is fixed: ~135 MB + 85 MB + 85 MB plus mips.
+/// Windows uses a much smaller pool (~6 MB total) because the draw distance
+/// caps resident tiles to ~24; `EW_MAX_DIST_M` controls the trade-off.
+#[cfg(target_os = "windows")]
+pub const SAT_CLASSES: [(u32, u32); 3] = [(1024, 6), (512, 16), (256, 24)];
+#[cfg(not(target_os = "windows"))]
 pub const SAT_CLASSES: [(u32, u32); 3] = [(1024, 32), (512, 80), (256, 320)];
 
 /// Tag bit: the satellite layer also has baked DEM detail.

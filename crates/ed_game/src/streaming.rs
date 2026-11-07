@@ -78,7 +78,7 @@ const APPLY_UNITS: u32 = 250;
 /// the units above are the real limiter; this only stops a runaway frame.
 const APPLY_MS: u64 = 4;
 /// Loaded tiles kept resident while out of view, at most (`EW_RESIDENT_TILES`).
-const RESIDENT_CAP: usize = if cfg!(target_os = "windows") { 6 } else { 48 };
+const RESIDENT_CAP: usize = if cfg!(target_os = "windows") { 24 } else { 48 };
 /// Off-screen wanted tiles closer than this many tile widths are still built
 /// (at low priority): the ground you could turn and look at right away.
 const OFFSCREEN_PREBUILD: f64 = 1.5;
@@ -517,9 +517,10 @@ const DETAIL_IN_FLIGHT: usize = 2;
 const NEAR_IN_M: f32 = 70.0;
 const NEAR_OUT_M: f32 = 100.0;
 /// Tiles with a building chunk this close explode into per-chunk LOD so their
-/// buildings cast shadows (the far cascade ends at 700 m, `sky.rs`).
+/// buildings cast shadows (the far cascade ends at 700 m, `sky.rs`; on Windows
+/// shadows cap at 300 m so the explode radius is tighter).
 /// Bevy renderer only: on native the merged tile LOD casts, so no explode.
-const SHADOW_EXPLODE_M: f32 = 750.0;
+const SHADOW_EXPLODE_M: f32 = if cfg!(target_os = "windows") { 320.0 } else { 750.0 };
 /// Rock chunks are entities only within this distance of the camera.
 const ROCK_RANGE_M: f32 = 500.0;
 
@@ -649,9 +650,9 @@ fn select_tiles(
     let params = LodParams {
         root_zoom,
         max_zoom,
-        root_radius: if win_lite { 0 } else { 2 },
-        fine_range_m: env_num("EW_FINE_RANGE_M", if win_lite { 400.0 } else { 16_000.0 }),
-        max_distance_m: if win_lite { 400.0 } else { f64::INFINITY },
+        root_radius: if win_lite { 1 } else { 2 },
+        fine_range_m: env_num("EW_FINE_RANGE_M", if win_lite { 1600.0 } else { 16_000.0 }),
+        max_distance_m: if win_lite { env_num("EW_MAX_DIST_M", 2000.0) } else { f64::INFINITY },
         ..default()
     };
     let wanted: HashSet<TileId> = lod::select(cam, mgr.ground_estimate, &params).into_iter().collect();
@@ -729,7 +730,7 @@ fn select_tiles(
         // Off-screen wanted tiles beyond the prebuild ring wait: at street level `wanted` is
         // ~354 tiles (z14 out to 16 km) while the view holds ~137, so building them all is far
         // too expensive. Rotating into them is a known build storm (see CHANGES 2026-11-06).
-        if std::env::var_os("EW_KEEP_TILES").is_none() && !visible && d > if cfg!(target_os = "windows") { 0.0 } else { OFFSCREEN_PREBUILD } {
+        if std::env::var_os("EW_KEEP_TILES").is_none() && !visible && d > if cfg!(target_os = "windows") { 0.5 } else { OFFSCREEN_PREBUILD } {
             continue;
         }
         // 0 (or negative) disables the far massing LOD entirely; it must not mean "every tile is far".
@@ -859,8 +860,8 @@ fn apply_tiles(
 ) {
     let t0 = std::time::Instant::now();
     let (sat_pool, far_pool) = (&mut *pools.0, &mut *pools.1);
-    let apply_units = if cfg!(target_os = "windows") { 50 } else { APPLY_UNITS };
-let mut budget = FrameBudget::new(env_num("EW_APPLY_BUDGET", apply_units), Some(std::time::Duration::from_millis(APPLY_MS)));
+    let apply_units = if cfg!(target_os = "windows") { 120 } else { APPLY_UNITS };
+    let mut budget = FrameBudget::new(env_num("EW_APPLY_BUDGET", apply_units), Some(std::time::Duration::from_millis(APPLY_MS)));
     let focus_pos = focus.iter().next().map(|t| t.translation());
     let mgr = &mut *mgr;
     while !budget.exhausted() {
