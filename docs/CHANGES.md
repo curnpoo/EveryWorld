@@ -1014,12 +1014,56 @@ builds them but never uses them.
 - Each remote avatar now has a spatial soundscape driven from its interpolated
   movement state: alternating footsteps, launch/landing cues, boost ignition and
   stage kicks, falling and wingsuit wind, parachute opening, and sustained boot
-  exhaust. Emitters fade out by 900 m, grow louder with speed, pan as they pass,
-  and apply a bounded radial-velocity pitch shift.
+  exhaust. Emitters use linear distance falloff (1.6 km for rockets, 350 m for
+  body sounds), grow louder with speed, pan as they pass, and apply a bounded
+  radial-velocity pitch shift. A later listen found Rodio's spatial sink also
+  applies inverse-square attenuation; the emitter scale is now tuned for the
+  game's much larger world distances.
 - Remote boot exhaust particles join the existing camera-facing plume batch,
   with per-player emission accumulators and trails that inherit the avatar's
   velocity. Remote flame cones remain part of the shared body rig.
 - Needs Mac and Windows checks: use two clients, compare walking, boost, freefall,
   wingsuit, parachute and fast flybys at close, medium and out-of-range distances;
   confirm no audio on the menu and no local-player plume regression.
+
+## 2026-11-07: raise remote rocket audio level
+- Remote thrust now drives the boot synth at a stronger level, with a larger
+  boost for afterburner and close-range emitter gain. Non-rocket remote sounds
+  keep their prior level. Local-only tuning; needs an in-game two-client listen.
+
+## 2026-11-07: extend remote audio range and body audibility
+- Remote rocket audio now stays audible to 1.6 km, while body sounds such as
+  footsteps use a 350 m range. Both use linear distance falloff instead of the
+  previous squared curve, with a 2.5x base emitter gain and higher rocket gains.
+- `RocketShoes` mode supplies a minimum thrust level if a state packet briefly
+  reports zero throttle, so the remote rocket bed does not drop out on that edge.
+- Needs an in-game two-client listen at 10 ft and 300 ft on native Metal.
+
+## 2026-11-07: compensate remote voices for spatial distance attenuation
+- Root cause of the short hearing distance: Rodio's spatial source attenuates
+  each ear by inverse-square distance. At 40 ft this reduced the signal to under
+  1% before the game's range gain; at 500 ft it was effectively silent.
+- Remote emitters now use a 0.01 spatial scale, preserving stereo direction
+  while making the 1.6 km rocket / 350 m body ranges audible. A distance-driven
+  low-pass filter rolls remote audio down toward 1.8 kHz by 500 ft, so distant
+  afterburner remains audible but sounds muffled.
+- Needs an in-game two-client listen on native Metal, especially at 500 ft.
+
+## 2026-11-07: reduce remote rocket loudness
+- Lowered remote emitter gain and synth master level after listening feedback
+  found the spatial attenuation compensation made nearby rockets too loud.
+- Distance scaling and the muffled far sound remain in place.
+
+## 2026-11-07: restore near distance cues for remote voices
+- Remote sounds now share one distance curve: full near 10 ft, fading gradually
+  while remaining audible far away. Rodio's inverse-square attenuation is
+  compensated before that curve, avoiding the sudden drop after 40 ft.
+- Muffle reaches its distant tone by 500 ft. Doppler remains tied to radial speed
+  and changes pitch more clearly as the avatar approaches or recedes.
+- Footsteps, falls and parachute sounds now use a stronger distance falloff than
+  rocket exhaust, so they do not sound close when the avatar is far away.
+- Needs a two-client listen at 10, 50, 100 and 500 ft on native Metal.
+- Remote exhaust particles now carry their own nearby ground plane. This avoids
+  incorrectly clamping a valley player's smoke to the local player's mountain
+  elevation; the remote emitter gets a terrain raycast for ground contact.
 

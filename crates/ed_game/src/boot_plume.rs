@@ -63,6 +63,7 @@ pub struct RemoteNozzles {
     pub fwd: [Vec3; 2],
     pub throttle: f32,
     pub velocity: Vec3,
+    pub ground: Option<(Vec3, Vec3)>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -77,6 +78,7 @@ struct Particle {
     rot: f32,
     spin: f32,
     side: Vec3,
+    ground: Option<(Vec3, Vec3)>,
 }
 
 #[derive(Component)]
@@ -245,7 +247,7 @@ fn update_plume(
             p.vel *= cool_drag;
         }
         // Hitting the ground: flatten onto it and splash outwards, a little rebound.
-        if let Some((g, n)) = ground {
+        if let Some((g, n)) = p.ground {
             let h = (p.pos - g).dot(n);
             if h < 0.08 {
                 p.pos += n * (0.08 - h);
@@ -303,6 +305,7 @@ fn update_plume(
                     rot,
                     spin,
                     side,
+                    ground,
                 });
             }
         }
@@ -461,6 +464,7 @@ fn emit_remote_particles(s: &mut State, acc: &mut [f32; 2], n: &RemoteNozzles, d
             s.parts.push(Particle {
                 pos: n.pos[k] + (vel - n.velocity) * jitter,
                 vel, age: jitter, life, size0, size1, boost, rot, spin, side,
+                ground: n.ground,
             });
         }
     }

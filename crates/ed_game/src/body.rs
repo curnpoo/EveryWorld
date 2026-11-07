@@ -1469,6 +1469,19 @@ fn animate_body(
             t_sec,
         );
 
+        let remote_ground = pose.nozzle_pos.iter().find_map(|nozzle| {
+            let ray = Dir3::new(-up).ok()?;
+            spatial
+                .cast_ray(
+                    *nozzle + up * 0.9,
+                    ray,
+                    2.5,
+                    true,
+                    &avian3d::prelude::SpatialQueryFilter::default(),
+                )
+                .map(|hit| (*nozzle + up * (0.9 - hit.distance), up))
+        });
+
         if let Some(n) = nozzles.as_deref_mut() {
             n.remote.push(crate::boot_plume::RemoteNozzles {
                 id: proxy.id,
@@ -1477,6 +1490,7 @@ fn animate_body(
                 fwd: pose.nozzle_fwd,
                 throttle: pose.throttle,
                 velocity: proxy.state.vel,
+                ground: remote_ground,
             });
         }
 
