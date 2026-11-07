@@ -770,7 +770,7 @@ fn net_update_avatars(
         avatars.insert(av.id, (render, t.rotation, pitch, boot, throttle, wingsuit, speed));
         // phase for walk swing
         let ph = phase.map.entry(av.id).or_insert(0.0);
-        *ph += speed * dt * 2.2;
+        *ph += speed.max(0.6) * dt * 2.6;
     }
     // Animate parts per avatar: need joints in world space
     for (part, mut tf, mut vis) in parts.iter_mut() {
@@ -781,7 +781,8 @@ fn net_update_avatars(
         let up = Vec3::Y;
         let ph = phase.map.get(&part.id).copied().unwrap_or(0.0);
         // Local joints
-        let pelvis = Vec3::ZERO;
+        let breath = (time.elapsed_secs() * 2.2).sin() * 0.025;
+        let pelvis = Vec3::new(0.0, breath, 0.0);
         let chest = Vec3::new(0.0, 0.42, 0.0);
         let neck = Vec3::new(0.0, 0.65, 0.0);
         let head = Vec3::new(0.0, 0.85, 0.0);
@@ -790,8 +791,9 @@ fn net_update_avatars(
         // mode: 0 Walk,1 Fall,2 Rocket,3 Skydive,4 Parachute
         let (ankle_l, ankle_r, elbow_l, elbow_r, wrist_l, wrist_r) = match boot {
             0 => { // Walk
-                let s = (ph).sin() * 0.28 * (speed.min(6.0)/4.0).clamp(0.0,1.0);
-                let s2 = (ph + std::f32::consts::PI).sin() * 0.28 * (speed.min(6.0)/4.0).clamp(0.0,1.0);
+                let amp = (speed.min(8.0)/3.0).clamp(0.0,1.0);
+                let s = (ph).sin() * 0.5 * amp;
+                let s2 = (ph + std::f32::consts::PI).sin() * 0.5 * amp;
                 (hip_l + Vec3::new(0.0,-0.84,s), hip_r + Vec3::new(0.0,-0.84,s2),
                  Vec3::new(-0.35,-0.05,-s*0.5), Vec3::new(0.35,-0.05,-s2*0.5),
                  Vec3::new(-0.38,-0.30,s*0.5), Vec3::new(0.38,-0.30,s2*0.5))
