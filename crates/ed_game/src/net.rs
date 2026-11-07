@@ -5,7 +5,7 @@ use crate::origin::WorldOrigin;
 use crate::player::Player;
 use bevy::prelude::*;
 use crossbeam_channel::{Receiver, Sender};
-use ed_net::{decode_s2c, encode, C2S, S2C, Vec3d, PROTOCOL_VERSION};
+use ed_net::{decode_s2c, encode_c2s, C2S, S2C, Vec3d, PROTOCOL_VERSION};
 use glam::DVec3;
 use std::collections::HashMap;
 use std::net::{SocketAddr, UdpSocket};
@@ -70,6 +70,7 @@ pub enum NetEvt {
     Join { id: u64, name: String },
     State { id: u64, name: String, pos: [f64; 3], yaw: f32, pitch: f32, boot: u8, throttle: f32, wingsuit: bool, t: f64 },
     Leave { id: u64 },
+    Time { unix_s: f64, rate: f64 },
     Disconnected,
 }
 
@@ -123,7 +124,7 @@ fn net_thread(cmd_rx: Receiver<NetCmd>, evt_tx: Sender<NetEvt>, players: Arc<Mut
                     let s = UdpSocket::bind("0.0.0.0:0").ok();
                     if let Some(s) = &s {
                         s.set_nonblocking(true).ok();
-                        let hello = encode(&C2S::Hello { name: "player".to_string(), protocol: PROTOCOL_VERSION });
+                        let hello = encode_c2s(&C2S::Hello { name: "player".to_string(), protocol: PROTOCOL_VERSION });
                         let _ = s.send_to(&hello, addr);
                     }
                     socket = s;
@@ -131,7 +132,7 @@ fn net_thread(cmd_rx: Receiver<NetCmd>, evt_tx: Sender<NetEvt>, players: Arc<Mut
                 }
                 NetCmd::Disconnect => {
                     if let (Some(s), Some(a)) = (&socket, server) {
-                        let _ = s.send_to(&encode(&C2S::Bye), a);
+                        let _ = s.send_to(&encode_c2s(&C2S::Bye), a);
                     }
                     socket = None;
                     server = None;
@@ -140,7 +141,7 @@ fn net_thread(cmd_rx: Receiver<NetCmd>, evt_tx: Sender<NetEvt>, players: Arc<Mut
                 }
                 NetCmd::State { pos, yaw, pitch, boot, throttle, wingsuit, t } => {
                     if let (Some(s), Some(a)) = (&socket, server) {
-                        let msg = encode(&C2S::State { pos: Vec3d::from(pos), yaw, pitch, boot, throttle, wingsuit, t });
+                        let msg = encode_c2s(&C2S::State { pos: Vec3d::from(pos), yaw, pitch, boot, throttle, wingsuit, t });
                         let _ = s.send_to(&msg, a);
                     }
                 }
@@ -176,6 +177,9 @@ fn net_thread(cmd_rx: Receiver<NetCmd>, evt_tx: Sender<NetEvt>, players: Arc<Mut
                                     players.lock().unwrap().remove(&id);
                                     let _ = evt_tx.send(NetEvt::Leave { id });
                                 }
+                                S2C::Time { unix_s, rate } => {
+                                    let _ = evt_tx.send(NetEvt::Time { unix_s, rate });
+                                }
                             }
                         }
                     }
@@ -191,6 +195,7 @@ fn net_thread(cmd_rx: Receiver<NetCmd>, evt_tx: Sender<NetEvt>, players: Arc<Mut
 fn net_drain_events(
     mut client: ResMut<NetClient>,
     mut remote: ResMut<RemotePlayers>,
+    mut clock: ResMut<crate::sky::Clock>,
 ) {
     let mut roster: Vec<(u64, String)> = vec![];
     let mut joins: Vec<(u64, String)> = vec![];
@@ -211,6 +216,7 @@ fn net_drain_events(
             NetEvt::Join { id, name } => joins.push((id, name)),
             NetEvt::State { id, name, pos, yaw, pitch, boot, throttle, wingsuit, t } => states.push((id, name, pos, yaw, pitch, boot, throttle, wingsuit, t)),
             NetEvt::Leave { id } => leaves.push(id),
+            NetEvt::Time { unix_s, rate } => { clock.unix_s = unix_s; clock.rate = rate; }
             NetEvt::Disconnected => { disconnected = true; }
         }
     }
@@ -530,12 +536,20 @@ fn net_update_nametags(
 
 fn net_update_status_text(
     client: Res<NetClient>,
+    remote: Res<RemotePlayers>,
     mut q: Query<&mut Text, With<crate::menu::NetStatusText>>,
 ) {
     let s = match client.status {
         NetStatus::Disconnected => format!("Disconnected (target {})", client.target),
         NetStatus::Connecting => format!("Connecting to {}...", client.target),
-        NetStatus::Connected => format!("Connected as {} (id {:?})", client.name, client.id),
+        NetStatus::Connected => {
+            let names: Vec<String> = remote.players.values().map(|p| p.name.clone()).collect();
+            if names.is_empty() {
+                format!("Connected as {} (id {:?}) — solo", client.name, client.id)
+            } else {
+                format!("Connected as {} (id {:?}) — {}: {}", client.name, client.id, names.len(), names.join(", "))
+            }
+        }
     };
     for mut t in q.iter_mut() {
         t.0 = s.clone();
@@ -564,14 +578,30 @@ fn net_update_avatars(
     let mut avatars: HashMap<u64, (Vec3, Quat, f32, u8, f32, bool, f32)> = HashMap::new(); // pos, rot, pitch, boot, throttle, wingsuit, speed
     for (mut t, av) in q.iter_mut() {
         let Some(rp) = remote.players.get(&av.id) else { continue };
-        // interpolation: render at curr_t - 0.1s
+        // interpolation + dead reckoning + jitter-adaptive buffer
         let span = (rp.last - rp.prev_t).max(1e-4);
-        let alpha = ((rp.last - 0.1) - rp.prev_t) / span;
-        let alpha = alpha.clamp(0.0, 1.0);
+        // jitter estimate from span vs 60Hz expected (EWMA stored in prev_t? use span deviation)
+        let jitter = ((span - 1.0/60.0).abs()).min(0.1);
+        let buf = (0.1 + jitter * 2.0).clamp(0.05, 0.3);
+        let render_t = rp.last - buf;
+        let alpha_raw = (render_t - rp.prev_t) / span;
+        let (alpha, extrapolate) = if alpha_raw > 1.0 {
+            // packet loss: dead-reckon past curr using velocity
+            let over = (alpha_raw - 1.0) * span; // seconds beyond curr
+            let over_capped = over.min(0.5);
+            (1.0, over_capped)
+        } else {
+            (alpha_raw.clamp(0.0, 1.0), 0.0)
+        };
+        let vel = [
+            (rp.pos[0]-rp.prev_pos[0])/span,
+            (rp.pos[1]-rp.prev_pos[1])/span,
+            (rp.pos[2]-rp.prev_pos[2])/span,
+        ];
         let pos = [
-            rp.prev_pos[0] + (rp.pos[0] - rp.prev_pos[0]) * alpha as f64,
-            rp.prev_pos[1] + (rp.pos[1] - rp.prev_pos[1]) * alpha as f64,
-            rp.prev_pos[2] + (rp.pos[2] - rp.prev_pos[2]) * alpha as f64,
+            rp.prev_pos[0] + (rp.pos[0] - rp.prev_pos[0]) * alpha as f64 + vel[0]*extrapolate,
+            rp.prev_pos[1] + (rp.pos[1] - rp.prev_pos[1]) * alpha as f64 + vel[1]*extrapolate,
+            rp.prev_pos[2] + (rp.pos[2] - rp.prev_pos[2]) * alpha as f64 + vel[2]*extrapolate,
         ];
         let yaw = lerp_angle(rp.prev_yaw, rp.yaw, alpha);
         let pitch = rp.prev_pitch + (rp.pitch - rp.prev_pitch) * alpha;

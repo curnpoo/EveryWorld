@@ -9,4 +9,3 @@ path = "src/main.rs"
 
 [dependencies]
 ed_net = { path = "../ed_net" }
-serde_json = { workspace = true }
