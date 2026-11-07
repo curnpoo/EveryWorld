@@ -66,7 +66,7 @@ fn main() {
                             }
                             println!("+ {name} ({addr}) id={id}; {} clients", cs.len());
                         }
-                        C2S::State { pos, yaw, pitch, boot, t } => {
+                        C2S::State { pos, yaw, pitch, boot, throttle, wingsuit, t } => {
                             // find client by addr
                             let mut cs = clients.lock().unwrap();
                             let mut found = None;
@@ -85,6 +85,8 @@ fn main() {
                                     yaw,
                                     pitch,
                                     boot,
+                                    throttle,
+                                    wingsuit,
                                     t,
                                 });
                                 // broadcast to everyone else
