@@ -78,7 +78,7 @@ const APPLY_UNITS: u32 = 250;
 /// the units above are the real limiter; this only stops a runaway frame.
 const APPLY_MS: u64 = 4;
 /// Loaded tiles kept resident while out of view, at most (`EW_RESIDENT_TILES`).
-const RESIDENT_CAP: usize = 48;
+const RESIDENT_CAP: usize = 24;
 /// Off-screen wanted tiles closer than this many tile widths are still built
 /// (at low priority): the ground you could turn and look at right away.
 const OFFSCREEN_PREBUILD: f64 = 1.5;
@@ -1113,7 +1113,7 @@ fn retire_tiles(mut commands: Commands, mut mgr: ResMut<TileManager>, mut dm: Re
             // despawn hitch here.
             r
         } else {
-            r.truncate(env_num("EW_RETIRE_PER_FRAME", 16));
+            r.truncate(env_num("EW_RETIRE_PER_FRAME", 32));
             r
         }
     };

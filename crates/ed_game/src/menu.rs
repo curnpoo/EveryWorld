@@ -351,7 +351,14 @@ pub const DEFAULT_SOLAR_HOUR: f64 = 15.0;
 impl Default for GraphicsSettings {
     fn default() -> Self {
         let post = !std::env::args().any(|a| a == "--no-post");
-        let mut g = Self { shadows: !std::env::args().any(|a| a == "--no-shadows"), ambient_occlusion: post, bloom: post, render_pct: 67, aa: post, aa_mode: if post { AaMode::Upscale } else { AaMode::Off }, show_stats: false, time_live: false, hour_offset: 0.0, hour_offset_applied: 0.0, solar_hour: DEFAULT_SOLAR_HOUR };
+        // On non-native (Windows/Linux) the Bevy renderer is heavier; default to a lite preset.
+        let lite = !crate::native::enabled();
+        let (render_pct, aa, aa_mode) = if lite {
+            (50u32, false, AaMode::Off)
+        } else {
+            (67u32, post, if post { AaMode::Upscale } else { AaMode::Off })
+        };
+        let mut g = Self { shadows: !std::env::args().any(|a| a == "--no-shadows"), ambient_occlusion: post && !lite, bloom: post && !lite, render_pct, aa, aa_mode, show_stats: false, time_live: false, hour_offset: 0.0, hour_offset_applied: 0.0, solar_hour: DEFAULT_SOLAR_HOUR };
         // Perf bisecting: `EW_GFX=ao=0,bloom=0,aa=0,shadows=0,res=50,stats=1`.
         if let Ok(spec) = std::env::var("EW_GFX") {
             for kv in spec.split(',') {
