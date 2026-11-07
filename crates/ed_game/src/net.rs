@@ -870,6 +870,8 @@ pub struct RemoteAvatar {
 pub struct RemoteNametag {
     pub id: u64,
 }
+#[derive(Component)]
+pub struct NametagLine;
 
 #[derive(Resource, Default)]
 pub struct RemoteNametagEntities {
@@ -966,6 +968,20 @@ pub fn net_spawn_avatars(
                         ..default()
                     },
                     TextColor(Color::srgb(1.0, 0.9, 0.2)),
+                ));
+                // vertical line down to the player's head when far away
+                p.spawn((
+                    NametagLine,
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(40.0),
+                        top: Val::Px(30.0),
+                        width: Val::Px(1.0),
+                        height: Val::Px(0.0),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(1.0, 0.9, 0.2, 0.7)),
+                    Visibility::Hidden,
                 ));
             })
             .id();
@@ -1123,32 +1139,46 @@ fn net_update_nametags(
     camera: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<crate::globe::GlobeCamera>)>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     avatars: Query<(&Transform, &RemoteAvatar)>,
-    mut q: Query<(&mut Node, &RemoteNametag, &mut Visibility)>,
+    mut q: Query<(Entity, &mut Node, &RemoteNametag, &mut Visibility)>,
+    mut lines: Query<(&mut Node, &NametagLine, &ChildOf, &mut Visibility), Without<RemoteNametag>>,
 ) {
     let cam = camera.iter().next();
     let pos_by_id: HashMap<u64, Vec3> = avatars.iter().map(|(t, a)| (a.id, t.translation)).collect();
     // Scale factor between the (possibly downscaled) 3D render target and the
     // native window so nametags stay aligned with the world at any resolution.
     let win_logical = windows.single().ok().map(|w| w.resolution.size()).unwrap_or(Vec2::ZERO);
-    for (mut node, nt, mut vis) in q.iter_mut() {
+    for (nametag_entity, mut node, nt, mut vis) in q.iter_mut() {
         if !remote.players.contains_key(&nt.id) {
             *vis = Visibility::Hidden;
+            for (_, _, childof, mut lvis) in lines.iter_mut() {
+                if childof.parent() == nametag_entity { *lvis = Visibility::Hidden; }
+            }
             continue;
         }
         let Some((cam_t, cam_c)) = cam else {
             *vis = Visibility::Hidden;
+            for (_, _, childof, mut lvis) in lines.iter_mut() {
+                if childof.parent() == nametag_entity { *lvis = Visibility::Hidden; }
+            }
             continue;
         };
         let Some(base) = pos_by_id.get(&nt.id).copied() else {
             *vis = Visibility::Hidden;
+            for (_, _, childof, mut lvis) in lines.iter_mut() {
+                if childof.parent() == nametag_entity { *lvis = Visibility::Hidden; }
+            }
             continue;
         };
-        // 3 ft (~0.9 m) above the character's head: head is ~1.7 m up, plus ~0.9 m.
-        let world = base + Vec3::Y * 2.3;
+        let dist = (base - cam_t.translation()).length();
+        // Tag rises with distance so it stays visible above terrain/occlusion when far.
+        let lift = 2.3 + (dist / 30.0).min(6.0) * 1.2;
+        let world = base + Vec3::Y * lift;
         // distance check (100 km)
-        let dist = (world - cam_t.translation()).length();
         if dist > 100_000.0 {
             *vis = Visibility::Hidden;
+            for (_, _, childof, mut lvis) in lines.iter_mut() {
+                if childof.parent() == nametag_entity { *lvis = Visibility::Hidden; }
+            }
             continue;
         }
         if let Ok(screen) = cam_c.world_to_viewport(cam_t, world) {
@@ -1161,11 +1191,38 @@ fn net_update_nametags(
             } else {
                 Vec2::ONE
             };
-            node.left = Val::Px(screen.x * scale.x - 40.0);
-            node.top = Val::Px(screen.y * scale.y - 20.0);
+            let sx = screen.x * scale.x;
+            let sy = screen.y * scale.y;
+            node.left = Val::Px(sx + 10.0);
+            node.top = Val::Px(sy - 20.0);
             *vis = Visibility::Visible;
+            // Update the vertical line to the player's head when far away.
+            let show_line = dist > 30.0;
+            let head_screen = cam_c.world_to_viewport(cam_t, base + Vec3::Y * 1.7).ok();
+            for (mut lnode, _line, childof, mut lvis) in lines.iter_mut() {
+                if childof.parent() != nametag_entity { continue; }
+                if !show_line {
+                    lnode.height = Val::Px(0.0);
+                    *lvis = Visibility::Hidden;
+                    continue;
+                }
+                if let Some(hs) = head_screen {
+                    let hsy = hs.y * scale.y;
+                    let tag_bottom = sy + 30.0;
+                    let h = (hsy - tag_bottom).abs().max(0.0);
+                    lnode.height = Val::Px(h);
+                    lnode.top = Val::Px(30.0);
+                    *lvis = Visibility::Visible;
+                } else {
+                    lnode.height = Val::Px(0.0);
+                    *lvis = Visibility::Hidden;
+                }
+            }
         } else {
             *vis = Visibility::Hidden;
+            for (_, _, childof, mut lvis) in lines.iter_mut() {
+                if childof.parent() == nametag_entity { *lvis = Visibility::Hidden; }
+            }
         }
     }
 }
