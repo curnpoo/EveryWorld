@@ -1,3 +1,41 @@
+## 2026-11-07: body-parity — remote players use unified body.rs procedural rig (protocol v5)
+- Remote players now use the exact same 62-part procedural IK rig as the local
+  player (`ed_game::body`), replacing the old simplified hand-coded avatar in
+  `ed_game::net`.
+- Remote avatars share identical meshes, PBR materials, capture-point stepping
+  IK, arm swing, wrist/ankle clamping, breathing/lean, dynamic wingsuit fabric
+  mesh deformation, and thruster flame geometry (`FlameMode::Cone`).
+- Refactored `body.rs`:
+  - `RigState` extracts all kinematics, movement mode, and input parameters
+    needed by the rig solver, decoupling it from the local `Player` component.
+  - `solve_rig(state, ...)` produces a headless `Pose` (`[Transform; 62]`, wing
+    vertices, and visibility mask).
+  - `apply_pose_to_parts` and `apply_pose_to_wings` apply calculated poses to
+    the Bevy entity transforms and per-actor mesh vertices.
+- Added `RemoteProxy` component to represent remote actors. The local `Player`
+  component is never added to remote proxies, preserving the 15 single-player
+  `.single()` queries across game systems.
+- Wire protocol upgraded to v5 (`ed_net`):
+  - `C2S::State` and `S2C::State` carry full kinematics and animation drivers:
+    ECEF position (f64×3), ECEF orientation quaternion (f32×4), yaw, cam_pitch,
+    movement flags (wingsuit/afterburner/crouch), wing deformation controls
+    (arch, turn), fall posture (spread, tuck), strafe, forward input, jump
+    charge/recovery, rotation error, intent dir, smooth acceleration, leg steer,
+    and pose mode.
+  - All spatial vector and quaternion fields travel over the wire in world ECEF
+    and are converted to local ENU render space on the receiver via new
+    `EnuFrame` helpers in `ed_geo` (`dir_render_to_ecef`, `dir_ecef_to_render`,
+    `quat_render_to_ecef`, `quat_ecef_to_render`).
+  - Added `C2S::Pose` and `S2C::Pose` packets for future replicated bone poses.
+- `ed_server` updated to store and broadcast protocol v5 states and relay pose packets.
+- Added regression unit tests: `remote_proxy_never_carries_player`,
+  `part_index_stability_and_count`, `rig_state_from_player_matches`, and
+  `quat_and_dir_frame_roundtrip`.
+- Merged to `windows` branch, preserving the Windows-specific `arboard` clipboard
+  implementation in `join_input`.
+- Needs Mac check: visual inspection with two clients on localhost or lookdev
+  stage to confirm remote animations and local player regression-free.
+
 ## 2026-11-06: loading screen copy + local-only player freeze
 - The overlay is a centred stack: a large **Welcome to** line, the place name under it,
   then **Loading the world**, the progress bar and the "Streaming the world / Finishing

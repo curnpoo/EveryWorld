@@ -80,7 +80,7 @@ Goal: 60 fps steady on an M3 Pro for the world as it looks today. Engine design:
 Goal: players share the same world. Design: `plans/engine.md` section 9.
 
 - **Principle:** terrain, buildings, trees and weather are *never sent*. Every client generates them from the same inputs (world seed, pinned data version, UTC time). Only deltas (edits) and entity state (players, vehicles, NPCs) travel.
-- **Ghost multiplayer first:** a thin relay sends player position, pose and boot state at 20-30 Hz; each client generates the world. The test: two clients at the same coordinates see the same buildings, trees, clouds and sun, and see each other.
+- **Ghost multiplayer first:** a thin relay sends player position, pose and boot state at 20-30 Hz; each client generates the world. The test: two clients at the same coordinates see the same buildings, trees, clouds and sun, and see each other. *(Body parity landed: protocol v5 shares the full 62-part procedural IK rig, wing deformation, and flame cones between local and remote players).*
 - **`ed_store`:** persistent world deltas (save files and multiplayer share the format). Reliable delivery.
 - **Procedural climate** (`ed_climate` milestones 1-3, `plans/world-sim.md`): weather is a pure function of (seed, UTC), replacing Open-Meteo. Deterministic spin-up and fast-forward from checkpoints so all clients reach the same state.
 - **Netcode:** authoritative server per region shard, interest management by speed (walking small, jet large, orbit coarse), prediction and reconciliation for owned players and vehicles, interpolation for others. Candidates: `lightyear` or `renet` over QUIC (`quinn`).
