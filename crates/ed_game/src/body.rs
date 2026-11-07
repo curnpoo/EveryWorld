@@ -1353,6 +1353,9 @@ fn animate_body(
 ) {
     let dt = time.delta_secs().clamp(1e-4, 0.05);
     let t_sec = time.elapsed_secs();
+    if let Some(n) = nozzles.as_deref_mut() {
+        n.remote.clear();
+    }
 
     // Group part queries by owner
     let mut parts_by_owner: HashMap<
@@ -1466,6 +1469,17 @@ fn animate_body(
             t_sec,
         );
 
+        if let Some(n) = nozzles.as_deref_mut() {
+            n.remote.push(crate::boot_plume::RemoteNozzles {
+                id: proxy.id,
+                pos: pose.nozzle_pos,
+                dir: pose.nozzle_dir,
+                fwd: pose.nozzle_fwd,
+                throttle: pose.throttle,
+                velocity: proxy.state.vel,
+            });
+        }
+
         let remote_cosmetics = Cosmetics { backpack: false };
         if let Some(my_parts) = parts_by_owner.get_mut(&re) {
             apply_pose_to_parts(
@@ -1484,6 +1498,9 @@ fn animate_body(
         if let Some(my_wings) = wings_by_owner.get_mut(&re) {
             apply_pose_to_wings(re, &pose, my_wings.as_mut_slice(), &mut meshes);
         }
+    }
+    if let Some(n) = nozzles.as_deref_mut() {
+        n.remote.sort_by_key(|r| r.id);
     }
 }
 
