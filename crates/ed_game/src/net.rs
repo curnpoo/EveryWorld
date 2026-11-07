@@ -92,6 +92,10 @@ impl Plugin for NetPlugin {
         let cfg = app.world().get_resource::<Config>().cloned();
         let target = cfg.as_ref().and_then(|c| c.server.clone()).unwrap_or_else(|| "127.0.0.1:7777".to_string());
         let name = cfg.as_ref().and_then(|c| c.player_name.clone()).unwrap_or_else(|| "player".to_string());
+        if let Some(mut form) = app.world().get_resource_mut::<crate::menu::JoinForm>() {
+            form.server = target.clone();
+            form.name = name.clone();
+        }
 
         app.insert_resource(NetClient {
             status: NetStatus::Disconnected,
@@ -109,7 +113,7 @@ impl Plugin for NetPlugin {
         .insert_resource(RemoteNametagEntities::default())
         .insert_resource(SendAccum::default())
         .insert_resource(RemotePhase::default())
-        .add_systems(Update, (net_drain_events, net_send_state, net_spawn_avatars, net_update_avatars, net_update_nametags, net_update_status_text, net_menu_actions).chain());
+        .add_systems(Update, (join_input, join_paint, net_drain_events, net_send_state, net_spawn_avatars, net_update_avatars, net_update_nametags, net_update_status_text, net_menu_actions).chain());
     }
 }
 
@@ -473,9 +477,66 @@ pub fn net_spawn_avatars(
     }
 }
 
+fn join_input(
+    mut keys: MessageReader<bevy::input::keyboard::KeyboardInput>,
+    mut form: ResMut<crate::menu::JoinForm>,
+    mut net: ResMut<NetClient>,
+    mut server_q: Query<&Interaction, With<crate::menu::ServerField>>,
+    mut name_q: Query<&Interaction, With<crate::menu::NameField>>,
+) {
+    // click to focus
+    for i in &server_q {
+        if *i == Interaction::Pressed { form.focus = 1; }
+    }
+    for i in &name_q {
+        if *i == Interaction::Pressed { form.focus = 2; }
+    }
+    if form.focus == 0 { return; }
+    for key in keys.read() {
+        if key.state != bevy::input::ButtonState::Pressed { continue; }
+        match key.key_code {
+            bevy::input::keyboard::KeyCode::Escape => form.focus = 0,
+            bevy::input::keyboard::KeyCode::Backspace => {
+                if form.focus == 1 { form.server.pop(); } else { form.name.pop(); }
+            }
+            bevy::input::keyboard::KeyCode::Enter => {
+                form.focus = 0;
+                net.target = form.server.clone();
+                net.name = form.name.clone();
+                if let Ok(addr) = net.target.parse() {
+                    net.cmd_tx.send(NetCmd::Connect { addr, name: net.name.clone() }).ok();
+                    net.status = NetStatus::Connecting;
+                }
+            }
+            bevy::input::keyboard::KeyCode::Tab => { form.focus = if form.focus == 1 { 2 } else { 1 }; }
+            _ => {
+                if let Some(s) = &key.text {
+                    for c in s.chars() {
+                        if c.is_ascii_graphic() || c == ' ' {
+                            if form.focus == 1 { if form.server.len() < 64 { form.server.push(c); } }
+                            else if form.name.len() < 32 { form.name.push(c); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn join_paint(
+    form: Res<crate::menu::JoinForm>,
+    mut server_t: Query<&mut Text, (With<crate::menu::ServerFieldText>, Without<crate::menu::NameFieldText>)>,
+    mut name_t: Query<&mut Text, (With<crate::menu::NameFieldText>, Without<crate::menu::ServerFieldText>)>,
+) {
+    let caret = |f: u8, my: u8| if f == my { "│" } else { "" };
+    for mut t in &mut server_t { t.0 = format!("{}{}", form.server, caret(form.focus, 1)); }
+    for mut t in &mut name_t { t.0 = format!("{}{}", form.name, caret(form.focus, 2)); }
+}
+
 pub fn net_menu_actions(
     q: Query<(&Interaction, &crate::menu::MenuAction), Changed<Interaction>>,
     mut net: ResMut<NetClient>,
+    form: Res<crate::menu::JoinForm>,
 ) {
     for (i, a) in q.iter() {
         if *i != Interaction::Pressed {
@@ -483,6 +544,8 @@ pub fn net_menu_actions(
         }
         match a {
             crate::menu::MenuAction::ConnectServer => {
+                net.target = form.server.clone();
+                net.name = form.name.clone();
                 if let Ok(addr) = net.target.parse() {
                     net.cmd_tx.send(NetCmd::Connect { addr, name: net.name.clone() }).ok();
                     net.status = NetStatus::Connecting;

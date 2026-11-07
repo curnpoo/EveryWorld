@@ -6,9 +6,9 @@ set -euo pipefail
 
 REPO="${1:-https://github.com/curnpoo/EveryWorld.git}"
 PORT="${2:-7777}"
-INSTALL_DIR="/opt/earthdrop"
-BIN="/usr/local/bin/earthdrop-server"
-SERVICE="/etc/systemd/system/earthdrop-server.service"
+INSTALL_DIR="/opt/everyworld"
+BIN="/usr/local/bin/everyworld-server"
+SERVICE="/etc/systemd/system/everyworld-server.service"
 
 echo "==> Installing build deps"
 apt-get update -qq
@@ -32,7 +32,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 
 echo "==> Building server (release)"
 cargo build --release -p ed_server
-install -m 0755 target/release/earthdrop-server "$BIN"
+install -m 0755 target/release/everyworld-server "$BIN"
 
 echo "==> Installing systemd service"
 cat > "$SERVICE" << EOF
@@ -51,8 +51,8 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now earthdrop-server
-systemctl is-active --quiet earthdrop-server && echo "service: active" || (echo "service failed:"; systemctl status earthdrop-server --no-pager; exit 1)
+systemctl enable --now everyworld-server
+systemctl is-active --quiet everyworld-server && echo "service: active" || (echo "service failed:"; systemctl status everyworld-server --no-pager; exit 1)
 
 echo "==> Firewall (ufw if present)"
 if command -v ufw >/dev/null 2>&1; then
@@ -73,11 +73,11 @@ fi
 echo
 echo "==> DONE. Server is listening on UDP $PORT."
 echo "    Local test:  ss -u -l -n | grep $PORT"
-ss -u -l -n | grep "$PORT" || netstat -u -l -n 2>/dev/null | grep "$PORT" || echo "    (could not verify listener, check: systemctl status earthdrop-server)"
+ss -u -l -n | grep "$PORT" || netstat -u -l -n 2>/dev/null | grep "$PORT" || echo "    (could not verify listener, check: systemctl status everyworld-server)"
 echo
 echo "    Public IP:   curl -s https://ifconfig.me ; echo"
 echo "    Friends connect with:"
-echo "      earthdrop --server <PUBLIC_IP>:$PORT --name <name>"
+echo "      everyworld --server <PUBLIC_IP>:$PORT --name <name>"
 echo
 echo "    NOTE: Tailscale Funnel / ngrok / Cloudflare Tunnel do NOT support UDP."
 echo "    This server needs a real public UDP path:"

@@ -5,8 +5,8 @@ cargo build --release -p ed_game -p ed_server
 APP="target/release/EveryWorld.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
-cp target/release/earthdrop "$APP/Contents/MacOS/earthdrop"
-cp target/release/earthdrop-server "$APP/Contents/MacOS/earthdrop-server"
+cp target/release/everyworld "$APP/Contents/MacOS/everyworld"
+cp target/release/everyworld-server "$APP/Contents/MacOS/everyworld-server"
 cp packaging/Info.plist "$APP/Contents/Info.plist"
 # ad-hoc sign so Gatekeeper doesn't block it as hard
 codesign --force --deep --sign - "$APP" 2>/dev/null || true
