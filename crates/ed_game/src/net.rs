@@ -1139,10 +1139,12 @@ fn net_update_nametags(
             *vis = Visibility::Hidden;
             continue;
         };
-        let Some(world) = pos_by_id.get(&nt.id).copied() else {
+        let Some(base) = pos_by_id.get(&nt.id).copied() else {
             *vis = Visibility::Hidden;
             continue;
         };
+        // 3 ft (~0.9 m) above the character's head: head is ~1.7 m up, plus ~0.9 m.
+        let world = base + Vec3::Y * 2.3;
         // distance check (100 km)
         let dist = (world - cam_t.translation()).length();
         if dist > 100_000.0 {
@@ -1160,7 +1162,7 @@ fn net_update_nametags(
                 Vec2::ONE
             };
             node.left = Val::Px(screen.x * scale.x - 40.0);
-            node.top = Val::Px(screen.y * scale.y - 170.0);
+            node.top = Val::Px(screen.y * scale.y - 20.0);
             *vis = Visibility::Visible;
         } else {
             *vis = Visibility::Hidden;
