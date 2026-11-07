@@ -350,12 +350,17 @@ fn net_update_status_text(
 fn net_update_avatars(
     origin: Res<WorldOrigin>,
     remote: Res<RemotePlayers>,
-    camera: Query<&Transform, With<Camera3d>>,
-    mut q: Query<(&mut Transform, &RemoteAvatar, &Children)>,
-    mut ring_q: Query<&mut Visibility, With<RemoteAvatarRing>>,
+    mut params: bevy::ecs::system::ParamSet<(
+        Query<&Transform, With<Camera3d>>,
+        Query<(&mut Transform, &RemoteAvatar, &Children), Without<RemoteAvatarRing>>,
+        Query<&mut Visibility, (With<RemoteAvatarRing>, Without<RemoteAvatar>)>,
+    )>,
 ) {
-    let cam_pos = camera.iter().next().map(|t| t.translation).unwrap_or(Vec3::ZERO);
-    for (mut t, av, children) in q.iter_mut() {
+    let cam_pos = params.p0().iter().next().map(|t| t.translation).unwrap_or(Vec3::ZERO);
+    let mut toggles: Vec<(Entity, bool)> = Vec::new();
+    {
+        let mut q = params.p1();
+        for (mut t, av, children) in q.iter_mut() {
         if let Some(rp) = remote.players.get(&av.id) {
             let ecef = DVec3::new(rp.pos[0], rp.pos[1], rp.pos[2]);
             let render = origin.frame.ecef_to_render().transform_point3(ecef);
@@ -364,11 +369,18 @@ fn net_update_avatars(
             let dist = (render.as_vec3() - cam_pos).length();
             let far = dist > 200.0;
             for c in children.iter() {
-                if let Ok(mut v) = ring_q.get_mut(c) {
-                    *v = if far { Visibility::Visible } else { Visibility::Hidden };
-                }
+                toggles.push((*c, far));
             }
             // hide avatar mesh when far? We'll keep avatar; ring shows location. Could hide avatar when very far.
+        }
+    }
+    }
+    {
+        let mut ring_q = params.p2();
+        for (e, far) in toggles {
+            if let Ok(mut v) = ring_q.get_mut(e) {
+                *v = if far { Visibility::Visible } else { Visibility::Hidden };
+            }
         }
     }
 }
