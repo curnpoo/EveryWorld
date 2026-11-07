@@ -1010,3 +1010,16 @@ builds them but never uses them.
   overrides). At the Grand Canyon that halves the baked tree geometry: 49 M -> 32 M resident,
   and the user reports the game feels better with no visible loss.
 
+## 2026-11-07: spatial audio and exhaust for remote players
+- Each remote avatar now has a spatial soundscape driven from its interpolated
+  movement state: alternating footsteps, launch/landing cues, boost ignition and
+  stage kicks, falling and wingsuit wind, parachute opening, and sustained boot
+  exhaust. Emitters fade out by 900 m, grow louder with speed, pan as they pass,
+  and apply a bounded radial-velocity pitch shift.
+- Remote boot exhaust particles join the existing camera-facing plume batch,
+  with per-player emission accumulators and trails that inherit the avatar's
+  velocity. Remote flame cones remain part of the shared body rig.
+- Needs Mac and Windows checks: use two clients, compare walking, boost, freefall,
+  wingsuit, parachute and fast flybys at close, medium and out-of-range distances;
+  confirm no audio on the menu and no local-player plume regression.
+

@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use avian3d::prelude::{AngularVelocity, LinearVelocity};
-use bevy::audio::{AddAudioSource, AudioSink, AudioSinkPlayback, ChannelCount, Decodable, SampleRate, Source};
+use bevy::audio::{AddAudioSource, AudioSink, AudioSinkPlayback, ChannelCount, Decodable, SampleRate, Source, SpatialAudioSink, SpatialListener, Volume};
 use bevy::prelude::*;
 use ed_audio::params::{self as ap, blast, fauna, rain_on, tyre, veg};
 use ed_audio::{Event as Ev, FaunaCtx, Params, Scape, ScapeHandle, Surface};
@@ -26,6 +26,8 @@ use crate::origin::WorldOrigin;
 use crate::player::{MoveMode, Player};
 use crate::sky::{Clock, CurrentWeather};
 use crate::vehicles::{Car, Driving, Plane};
+use crate::net::{RemoteAvatar, RemotePlayers, RemoteProxy};
+use std::collections::HashMap;
 
 /// A fine tile's sound map, on the tile entity next to its `GroundCover`.
 #[derive(Component)]
@@ -39,9 +41,10 @@ impl Plugin for SoundscapePlugin {
         app.add_audio_source::<ScapeAudio>()
             .insert_resource(Soundscape { handle })
             .insert_resource(PendingScape(Mutex::new(Some(scape))))
+            .insert_resource(RemoteSoundscapes::default())
             .add_systems(Startup, start_output)
             .add_systems(Update, gate_soundscape)
-            .add_systems(PostUpdate, drive_soundscape);
+            .add_systems(PostUpdate, (drive_soundscape, drive_remote_soundscapes));
     }
 }
 
@@ -52,6 +55,20 @@ pub struct Soundscape {
 
 #[derive(Resource)]
 struct PendingScape(Mutex<Option<Scape>>);
+
+#[derive(Resource, Default)]
+struct RemoteSoundscapes(HashMap<u64, RemoteSoundscape>);
+
+struct RemoteSoundscape {
+    handle: ScapeHandle,
+    entity: Entity,
+    mode: Option<MoveMode>,
+    boots_on: bool,
+    wingsuit: bool,
+    step_clock: f32,
+    step_left: bool,
+    boost_stage: u8,
+}
 
 #[derive(Asset, TypePath)]
 struct ScapeAudio {
@@ -102,6 +119,126 @@ fn start_output(mut commands: Commands, pending: Res<PendingScape>, mut assets: 
 
 #[derive(Component)]
 struct WorldSound;
+
+#[derive(Component)]
+struct RemoteWorldSound;
+
+/// Each avatar gets a small, independently driven soundscape. Bevy positions
+/// each emitter in 3D; we apply the game's explicit hearing range and flyby
+/// loudness so distant clients remain silent and fast passes read clearly.
+fn drive_remote_soundscapes(
+    mut commands: Commands,
+    remote: Res<RemotePlayers>,
+    mut voices: ResMut<RemoteSoundscapes>,
+    mut assets: ResMut<Assets<ScapeAudio>>,
+    avatars: Query<(&Transform, &RemoteProxy, &RemoteAvatar)>,
+    cameras: Query<(Entity, &GlobalTransform), (With<Camera3d>, Without<crate::globe::GlobeCamera>)>,
+    mut sinks: Query<&mut SpatialAudioSink, With<RemoteWorldSound>>,
+    mix: Option<Res<crate::settings::AudioSettings>>,
+    game_state: Res<State<crate::menu::GameState>>,
+    time: Res<Time>,
+) {
+    let dt = time.delta_secs().clamp(0.0, 0.1);
+    let listener = cameras.iter().next();
+    if let Some((camera, _)) = listener {
+        commands.entity(camera).insert(SpatialListener::default());
+    }
+    let listener_pos = listener.map(|(_, t)| t.translation()).unwrap_or(Vec3::ZERO);
+    let sound_level = mix.as_ref().map(|m| m.level() * m.air.max(m.body).clamp(0.0, 1.0)).unwrap_or(1.0);
+    let quiet = crate::menu_music::music_playing(game_state.get());
+
+    for (transform, proxy, avatar) in &avatars {
+        let id = avatar.id;
+        let entry = voices.0.entry(id).or_insert_with(|| {
+            let (handle, scape) = ed_audio::channel();
+            let asset = assets.add(ScapeAudio { scape: Mutex::new(Some(scape)) });
+            let entity = commands.spawn((
+                AudioPlayer(asset),
+                PlaybackSettings { mode: bevy::audio::PlaybackMode::Loop, spatial: true, ..PlaybackSettings::default() },
+                Transform::from_translation(transform.translation),
+                RemoteWorldSound,
+                Name::new(format!("remote audio {id}")),
+            )).id();
+            RemoteSoundscape { handle, entity, mode: None, boots_on: false, wingsuit: false, step_clock: 0.0, step_left: true, boost_stage: 0 }
+        });
+
+        let state = &proxy.state;
+        let speed = state.vel.length();
+        let distance = transform.translation.distance(listener_pos);
+        let range = (1.0 - distance / 900.0).clamp(0.0, 1.0);
+        let flyby = (speed / 90.0).clamp(0.0, 1.0);
+        let gain = sound_level * range * range * (0.72 + 0.8 * flyby);
+        commands.entity(entry.entity).insert(Transform::from_translation(transform.translation));
+        if let Ok(mut sink) = sinks.get_mut(entry.entity) {
+            sink.set_volume(Volume::Linear(gain));
+            let toward_listener = (listener_pos - transform.translation).normalize_or_zero();
+            let radial = state.vel.dot(toward_listener).clamp(-100.0, 100.0);
+            sink.set_speed((343.0 / (343.0 - radial)).clamp(0.8, 1.25));
+            if quiet { sink.pause(); } else { sink.play(); }
+        }
+
+        let mode = state.mode;
+        let falling = matches!(mode, MoveMode::Fall | MoveMode::Skydive);
+        let boots = state.throttle > 0.01 && !matches!(mode, MoveMode::Walk | MoveMode::Parachute);
+        let mut params = Params::default();
+        params.master = 0.8;
+        params.mix = mix.as_ref().map(|m| m.scape_mix()).unwrap_or([1.0; 4]);
+        params.wingsuit = (falling && state.wingsuit_on) as u8 as f32;
+        params.freefall = (falling && !state.wingsuit_on) as u8 as f32;
+        params.canopy = (mode == MoveMode::Parachute) as u8 as f32;
+        params.wind = (speed / 70.0).clamp(0.0, 1.0);
+        params.gust = (flyby * 0.55).clamp(0.0, 1.0);
+        if boots {
+            params.boots = [state.throttle, state.throttle];
+            params.afterburner = if state.afterburner { 1.0 } else { 0.0 };
+        }
+        entry.handle.set(params);
+
+        if entry.mode != Some(mode) {
+            if entry.mode == Some(MoveMode::Walk) && mode != MoveMode::Walk {
+                entry.handle.event(Ev::Launch { surface: Surface::Paving, charge: state.jump_charge.max(0.3) });
+            } else if entry.mode.is_some_and(|m| m != MoveMode::Walk) && mode == MoveMode::Walk {
+                entry.handle.event(Ev::Land { surface: Surface::Paving, impact: speed.min(24.0) });
+            }
+            if mode == MoveMode::Parachute {
+                entry.handle.event(Ev::ChuteOpen);
+            }
+            let chirp = match mode { MoveMode::RocketShoes => Some(1), MoveMode::Skydive => Some(2), MoveMode::Parachute => Some(3), _ => None };
+            if let Some(mode) = chirp { entry.handle.event(Ev::ModeChirp { mode }); }
+            entry.mode = Some(mode);
+        }
+        if state.wingsuit_on != entry.wingsuit {
+            entry.handle.event(if state.wingsuit_on { Ev::SuitOpen } else { Ev::SuitClose });
+            entry.wingsuit = state.wingsuit_on;
+        }
+        if boots && !entry.boots_on {
+            entry.handle.event(Ev::Ignite { boot: 0 });
+            entry.handle.event(Ev::Ignite { boot: 1 });
+        }
+        if boots && state.afterburner {
+            let stage = (1.0 + speed / 30.0).floor().clamp(1.0, 3.0) as u8;
+            if stage > entry.boost_stage { entry.handle.event(Ev::BoostKick { stage }); }
+            entry.boost_stage = stage;
+        }
+        if !boots && entry.boots_on {
+            entry.handle.event(Ev::Cutoff { burn_s: 0.5 });
+            entry.boost_stage = 0;
+        }
+        entry.boots_on = boots;
+
+        entry.step_clock -= dt;
+        if mode == MoveMode::Walk && speed > 0.8 && entry.step_clock <= 0.0 {
+            entry.handle.event(Ev::Footstep { surface: Surface::Paving, force: (speed / 4.0).clamp(0.2, 0.9), pan: if entry.step_left { -0.3 } else { 0.3 }, sprint: speed > 4.0 });
+            entry.step_left = !entry.step_left;
+            entry.step_clock = (0.52 - speed * 0.045).clamp(0.27, 0.52);
+        }
+    }
+
+    let stale: Vec<u64> = voices.0.keys().copied().filter(|id| !remote.players.contains_key(id)).collect();
+    for id in stale {
+        if let Some(voice) = voices.0.remove(&id) { commands.entity(voice.entity).despawn(); }
+    }
+}
 
 /// Nothing from the world plays on the main menu (the menu music has the speakers).
 fn gate_soundscape(state: Res<State<crate::menu::GameState>>, mut sinks: Query<&mut AudioSink, With<WorldSound>>) {

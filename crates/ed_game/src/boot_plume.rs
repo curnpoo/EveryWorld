@@ -22,6 +22,7 @@ use bevy::camera::visibility::NoFrustumCulling;
 use bevy::image::{ImageSampler, ImageSamplerDescriptor};
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
+use std::collections::HashMap;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
 use crate::origin::WorldOrigin;
@@ -51,6 +52,17 @@ pub struct BootNozzles {
     pub dir: [Vec3; 2],
     pub fwd: [Vec3; 2],
     pub throttle: f32,
+    pub remote: Vec<RemoteNozzles>,
+}
+
+#[derive(Clone)]
+pub struct RemoteNozzles {
+    pub id: u64,
+    pub pos: [Vec3; 2],
+    pub dir: [Vec3; 2],
+    pub fwd: [Vec3; 2],
+    pub throttle: f32,
+    pub velocity: Vec3,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -77,6 +89,7 @@ struct PlumeLight;
 struct State {
     parts: Vec<Particle>,
     acc: [f32; 2],
+    remote_acc: HashMap<u64, [f32; 2]>,
     boost: f32,
     generation: u64,
     rng: u32,
@@ -297,6 +310,15 @@ fn update_plume(
         s.acc = [0.0; 2];
     }
 
+    // Remote avatars share this billboard batch, but keep independent emission
+    // accumulators so packet jitter does not make their trails pulse together.
+    for emitter in &noz.remote {
+        let mut acc = s.remote_acc.remove(&emitter.id).unwrap_or_default();
+        emit_remote_particles(&mut s, &mut acc, emitter, dt);
+        s.remote_acc.insert(emitter.id, acc);
+    }
+    s.remote_acc.retain(|id, _| noz.remote.iter().any(|r| r.id == *id));
+
     // ---- light
     if let Ok((mut l, mut lt)) = light_q.single_mut() {
         let k = if firing { (i + b * 0.6).min(1.6) } else { 0.0 };
@@ -409,6 +431,39 @@ fn update_plume(
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, col);
     mesh.insert_indices(Indices::U32(idx));
+}
+
+fn emit_remote_particles(s: &mut State, acc: &mut [f32; 2], n: &RemoteNozzles, dt: f32) {
+    let thr = n.throttle;
+    let intensity = ((thr - 0.2) / 1.6).clamp(0.0, 1.0);
+    let boost = (thr > 0.9) as u8 as f32;
+    if thr <= 0.01 || intensity <= 0.0 { *acc = [0.0; 2]; return; }
+    for k in 0..2 {
+        let dir = n.dir[k].normalize_or(-Vec3::Y);
+        let fwd = n.fwd[k].reject_from(dir).normalize_or(Vec3::X);
+        let side = dir.cross(fwd).normalize_or(Vec3::Z);
+        acc[k] += (72.0 + intensity * 104.0 + boost * 54.0) * dt;
+        while acc[k] >= 1.0 {
+            *acc.get_mut(k).unwrap() -= 1.0;
+            if s.parts.len() >= CAP * 2 { return; }
+            let lateral = (s.rand() * 2.0 - 1.0) * (0.035 + intensity * 0.03 + boost * 0.02);
+            let vertical = (s.rand() * 2.0 - 1.0) * (0.03 + intensity * 0.02 + boost * 0.015);
+            let life = 1.4 + s.rand() * 0.8 + intensity * 0.6 + boost * 0.5;
+            let size0 = (0.3 + intensity * 0.15 + boost * 0.08) * SIZE_K;
+            let size1 = size0 * (3.5 + s.rand() * 2.0 + boost * 1.5);
+            let spin = (s.rand() - 0.5) * (1.8 + intensity * 0.8);
+            let rot = s.rand() * std::f32::consts::TAU;
+            let jitter = s.rand() * dt;
+            let vel = dir * (14.0 + intensity * 16.0 + boost * 12.0) * SPEED_K
+                + side * lateral * (10.0 + boost * 4.0)
+                + fwd * vertical * (6.0 + boost * 2.0)
+                + n.velocity;
+            s.parts.push(Particle {
+                pos: n.pos[k] + (vel - n.velocity) * jitter,
+                vel, age: jitter, life, size0, size1, boost, rot, spin, side,
+            });
+        }
+    }
 }
 
 /// With no particles the plume mesh is empty, and Bevy extracts (and warns about) it every
