@@ -13,6 +13,9 @@
 use crate::body::Cosmetics;
 use crate::config::Config;
 use crate::menu::GraphicsSettings;
+use crate::menu::JoinForm;
+use crate::net::NetClient;
+use crate::net::NetCmd;
 use crate::player::ControlSettings;
 use bevy::app::AppExit;
 use bevy::prelude::*;
@@ -80,6 +83,8 @@ struct Saved {
     mouse_sensitivity: Option<f32>,
     invert_y: Option<bool>,
     backpack: Option<bool>,
+    server: Option<String>,
+    player_name: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
@@ -172,6 +177,8 @@ fn load(
     mut gfx: ResMut<GraphicsSettings>,
     mut controls: ResMut<ControlSettings>,
     mut cosmetics: ResMut<Cosmetics>,
+    mut net: ResMut<NetClient>,
+    mut form: ResMut<JoinForm>,
 ) {
     let path = settings_path();
     let saved = path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).map(|t| parse(&t)).unwrap_or_default();
@@ -195,27 +202,47 @@ fn load(
     if let Some(b) = saved.backpack {
         cosmetics.backpack = b;
     }
+    let saved_server = saved.server.clone();
+    if let Some(s) = &saved_server {
+        if !s.is_empty() {
+            net.target = s.clone();
+            form.server = s.clone();
+        }
+    }
+    if let Some(n) = saved.player_name {
+        if !n.is_empty() {
+            net.name = n.clone();
+            form.name = n.clone();
+        }
+    }
+    // Auto-connect on startup if a server was saved (and not an automated run).
+    if !auto && saved_server.as_ref().map(|s| !s.is_empty()).unwrap_or(false) {
+        if let Ok(addr) = net.target.parse() {
+            net.cmd_tx.send(NetCmd::Connect { addr, name: net.name.clone() }).ok();
+            net.status = crate::net::NetStatus::Connecting;
+        }
+    }
     if let Some(p) = &path {
         info!("settings: {} ({})", p.display(), if auto { "read-only, automated run" } else { "saved on change" });
     }
     commands.insert_resource(Store { path, persist: !auto, cli_graphics: cli_gfx, file_graphics: saved.graphics, dirty_since: None });
 }
 
-fn mark_dirty(time: Res<Time<Real>>, mut store: ResMut<Store>, audio: Res<AudioSettings>, gfx: Res<GraphicsSettings>, controls: Res<ControlSettings>, cosmetics: Res<Cosmetics>) {
+fn mark_dirty(time: Res<Time<Real>>, mut store: ResMut<Store>, audio: Res<AudioSettings>, gfx: Res<GraphicsSettings>, controls: Res<ControlSettings>, cosmetics: Res<Cosmetics>, form: Res<JoinForm>) {
     // `is_changed` is also true on the first frame (resources were just added).
-    let changed = audio.is_changed() || gfx.is_changed() || controls.is_changed() || cosmetics.is_changed();
+    let changed = audio.is_changed() || gfx.is_changed() || controls.is_changed() || cosmetics.is_changed() || form.is_changed();
     if changed && !audio.is_added() {
         store.dirty_since = Some(time.elapsed_secs_f64());
     }
 }
 
-fn snapshot(store: &Store, audio: &AudioSettings, gfx: &GraphicsSettings, controls: &ControlSettings, cosmetics: &Cosmetics) -> Saved {
+fn snapshot(store: &Store, audio: &AudioSettings, gfx: &GraphicsSettings, controls: &ControlSettings, cosmetics: &Cosmetics, form: &JoinForm) -> Saved {
     let graphics = if store.cli_graphics {
         store.file_graphics
     } else {
         Some(SavedGraphics { shadows: gfx.shadows, ambient_occlusion: gfx.ambient_occlusion, bloom: gfx.bloom, aa: gfx.aa, render_pct: gfx.render_pct, show_stats: gfx.show_stats })
     };
-    Saved { audio: *audio, graphics, mouse_sensitivity: Some(controls.mouse_sensitivity), invert_y: Some(controls.invert_y), backpack: Some(cosmetics.backpack) }
+    Saved { audio: *audio, graphics, mouse_sensitivity: Some(controls.mouse_sensitivity), invert_y: Some(controls.invert_y), backpack: Some(cosmetics.backpack), server: Some(form.server.clone()), player_name: Some(form.name.clone()) }
 }
 
 fn save_when_quiet(
@@ -226,6 +253,7 @@ fn save_when_quiet(
     gfx: Res<GraphicsSettings>,
     controls: Res<ControlSettings>,
     cosmetics: Res<Cosmetics>,
+    form: Res<JoinForm>,
 ) {
     let exiting = exits.read().count() > 0;
     let Some(t) = store.dirty_since else { return };
@@ -235,7 +263,7 @@ fn save_when_quiet(
     }
     store.dirty_since = None;
     let (true, Some(path)) = (store.persist, store.path.clone()) else { return };
-    let text = serde_json::to_string_pretty(&snapshot(&store, &audio, &gfx, &controls, &cosmetics)).unwrap_or_default();
+    let text = serde_json::to_string_pretty(&snapshot(&store, &audio, &gfx, &controls, &cosmetics, &form)).unwrap_or_default();
     if let Err(e) = write_atomic(&path, &text) {
         warn!("settings: could not save {}: {e}", path.display());
     }
@@ -253,6 +281,8 @@ mod tests {
             mouse_sensitivity: Some(1.3),
             invert_y: Some(true),
             backpack: Some(true),
+            server: None,
+            player_name: None,
         };
         assert_eq!(parse(&serde_json::to_string(&s).unwrap()), s);
     }
