@@ -648,7 +648,7 @@ fn select_tiles(
     let params = LodParams {
         root_zoom,
         max_zoom,
-        fine_range_m: env_num("EW_FINE_RANGE_M", 16_000.0),
+        fine_range_m: env_num("EW_FINE_RANGE_M", if cfg!(target_os = "windows") { 1_600.0 } else { 16_000.0 }),
         ..default()
     };
     let wanted: HashSet<TileId> = lod::select(cam, mgr.ground_estimate, &params).into_iter().collect();
