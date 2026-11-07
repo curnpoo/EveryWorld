@@ -638,11 +638,15 @@ pub fn net_menu_actions(
 fn net_update_nametags(
     remote: Res<RemotePlayers>,
     camera: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<crate::globe::GlobeCamera>)>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     avatars: Query<(&Transform, &RemoteAvatar)>,
     mut q: Query<(&mut Node, &RemoteNametag, &mut Visibility)>,
 ) {
     let cam = camera.iter().next();
     let pos_by_id: HashMap<u64, Vec3> = avatars.iter().map(|(t, a)| (a.id, t.translation)).collect();
+    // Scale factor between the (possibly downscaled) 3D render target and the
+    // native window so nametags stay aligned with the world at any resolution.
+    let win_logical = windows.single().ok().map(|w| w.resolution.size()).unwrap_or(Vec2::ZERO);
     for (mut node, nt, mut vis) in q.iter_mut() {
         if !remote.players.contains_key(&nt.id) {
             *vis = Visibility::Hidden;
@@ -663,8 +667,17 @@ fn net_update_nametags(
             continue;
         }
         if let Ok(screen) = cam_c.world_to_viewport(cam_t, world) {
-            node.left = Val::Px(screen.x - 40.0);
-            node.top = Val::Px(screen.y - 60.0);
+            let scale = if let Some(cam_size) = cam_c.logical_viewport_size() {
+                if cam_size.x > 0.0 && cam_size.y > 0.0 && win_logical.x > 0.0 {
+                    win_logical / cam_size
+                } else {
+                    Vec2::ONE
+                }
+            } else {
+                Vec2::ONE
+            };
+            node.left = Val::Px(screen.x * scale.x - 40.0);
+            node.top = Val::Px(screen.y * scale.y - 60.0);
             *vis = Visibility::Visible;
         } else {
             *vis = Visibility::Hidden;
@@ -761,7 +774,7 @@ fn net_update_avatars(
     }
     // Animate parts per avatar: need joints in world space
     for (part, mut tf, mut vis) in parts.iter_mut() {
-        let Some((root_pos, root_rot, pitch, boot, throttle, wingsuit, speed)) = avatars.get(&part.id).copied() else { *vis = Visibility::Hidden; continue };
+        let Some((_root_pos, root_rot, pitch, boot, throttle, wingsuit, speed)) = avatars.get(&part.id).copied() else { *vis = Visibility::Hidden; continue };
         let _ = (pitch, wingsuit);
         let base = root_rot * Quat::from_rotation_x(pitch * 0.6);
         let up = Vec3::Y;
@@ -814,11 +827,11 @@ fn net_update_avatars(
                 RJ::AnkleL=>ankle_l, RJ::AnkleR=>ankle_r, RJ::ShoulderL=>shoulder_l, RJ::ShoulderR=>shoulder_r,
                 RJ::ElbowL=>elbow_l, RJ::ElbowR=>elbow_r, RJ::WristL=>wrist_l, RJ::WristR=>wrist_r,
             };
-            root_pos + base * local
+            base * local
         };
         let frame = |f: RF| -> (Vec3, Quat) {
             match f {
-                RF::Pelvis=>(root_pos, base),
+                RF::Pelvis=>(Vec3::ZERO, base),
                 RF::Chest=>(joint_pos(RJ::Chest), base),
                 RF::Head=>(joint_pos(RJ::Head), base),
                 RF::FootL=>(joint_pos(RJ::AnkleL), base),
@@ -846,30 +859,30 @@ fn net_update_avatars(
                 *tf = Transform{ translation: p0+q*Vec3::new(0.0,-0.10-len*0.5,-0.03), rotation: q*flip, scale: Vec3::new(width,len,width) };
             }
             RSpec::Canopy => {
-                if boot==4 { *tf = Transform::from_translation(root_pos + base*Vec3::Y*6.5).with_rotation(base).with_scale(Vec3::new(4.5,1.6,2.6)); } else { *vis = Visibility::Hidden; }
+                if boot==4 { *tf = Transform::from_translation(base*Vec3::Y*6.5).with_rotation(base).with_scale(Vec3::new(4.5,1.6,2.6)); } else { *vis = Visibility::Hidden; }
             }
         }
     }
     // Wings
     for (w, m3, mut vis) in wings.iter_mut() {
-        let Some((root_pos, root_rot, pitch, boot, _, wingsuit, _)) = avatars.get(&w.id).copied() else { *vis = Visibility::Hidden; continue };
+        let Some((_root_pos, root_rot, pitch, boot, _, wingsuit, _)) = avatars.get(&w.id).copied() else { *vis = Visibility::Hidden; continue };
         let flying = wingsuit && matches!(boot, 1|2|3);
         if !flying { *vis = Visibility::Hidden; continue; }
         *vis = Visibility::Visible;
         let base = root_rot * Quat::from_rotation_x(pitch*0.6);
         let back = base * Vec3::Z;
         // recompute joints quickly (approx)
-        let chest = root_pos + base*Vec3::new(0.0,0.42,0.0);
+        let chest = base*Vec3::new(0.0,0.42,0.0);
         let shoulder_l = chest + base*Vec3::new(-0.27,0.18,0.0);
         let shoulder_r = chest + base*Vec3::new(0.27,0.18,0.0);
         let elbow_l = chest + base*Vec3::new(-0.57,0.18,0.0);
         let elbow_r = chest + base*Vec3::new(0.57,0.18,0.0);
         let wrist_l = chest + base*Vec3::new(-0.85,0.18,0.0);
         let wrist_r = chest + base*Vec3::new(0.85,0.18,0.0);
-        let hip_l = root_pos + base*Vec3::new(-0.13,-0.04,0.0);
-        let hip_r = root_pos + base*Vec3::new(0.13,-0.04,0.0);
-        let ankle_l = root_pos + base*Vec3::new(-0.23,-0.79,0.15);
-        let ankle_r = root_pos + base*Vec3::new(0.23,-0.79,0.15);
+        let hip_l = base*Vec3::new(-0.13,-0.04,0.0);
+        let hip_r = base*Vec3::new(0.13,-0.04,0.0);
+        let ankle_l = base*Vec3::new(-0.23,-0.79,0.15);
+        let ankle_r = base*Vec3::new(0.23,-0.79,0.15);
         let knee_l = (hip_l+ankle_l)*0.5 + base*Vec3::new(0.0,0.0,-0.08);
         let knee_r = (hip_r+ankle_r)*0.5 + base*Vec3::new(0.0,0.0,-0.08);
         let (poly, lift) = match w.k {
