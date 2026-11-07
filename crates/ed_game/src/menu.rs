@@ -415,6 +415,10 @@ pub enum MenuAction {
     ToggleCalm,
     ConnectServer,
     DisconnectServer,
+    AdminTimeMinus,
+    AdminTimePlus,
+    AdminTimeNow,
+    AdminWeather(&'static str),
 }
 
 /// One audio mix slider; the track carries it, the knob and readout are children of the row.
@@ -935,6 +939,22 @@ fn build_menus(mut commands: Commands, assets: Res<AssetServer>) {
                     button(r, "Disconnect", MenuAction::DisconnectServer, false);
                 });
                 t.spawn((NetStatusText, Text::new("Disconnected"), TextFont { font_size: FontSize::Px(16.0), ..default() }, TextColor(ORANGE)));
+                text(t, "Admin (broadcasts to everyone)", 18.0, INK);
+                t.spawn(Node { column_gap: Val::Px(10.0), align_items: AlignItems::Center, ..default() }).with_children(|r| {
+                    text(r, "Time", 17.0, INK);
+                    button(r, "-1h", MenuAction::AdminTimeMinus, false);
+                    button(r, "+1h", MenuAction::AdminTimePlus, false);
+                    button(r, "Now", MenuAction::AdminTimeNow, false);
+                });
+                t.spawn(Node { column_gap: Val::Px(10.0), align_items: AlignItems::Center, ..default() }).with_children(|r| {
+                    text(r, "Weather", 17.0, INK);
+                    for (label, preset) in [("Clear","clear"),("Fair","fair"),("Cloudy","cloudy"),("Rain","rain"),("Storm","storm"),("Fog","fog")] {
+                        // leak to get 'static str
+                        let p: &'static str = Box::leak(preset.to_string().into_boxed_str());
+                        let _ = label;
+                        button(r, label, MenuAction::AdminWeather(p), false);
+                    }
+                });
                 text(t, "Click a field, type, press Enter or Connect. Or launch with --server <host:port>.", 14.0, DIM);
                 text(t, "Run `everyworld-server [port]` on one machine, then connect others.", 14.0, DIM);
             });
