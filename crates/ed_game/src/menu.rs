@@ -112,7 +112,7 @@ impl AaMode {
     }
     pub fn label(self) -> &'static str {
         match self {
-            Self::Upscale => "MetalFX upscaler",
+            Self::Upscale => "Upscaler",
             Self::Aa => "Anti-aliasing",
             Self::Off => "Off",
         }
@@ -1337,7 +1337,7 @@ fn refresh_menu(
             MenuAction::ToggleAo => on(gfx.ambient_occlusion),
             MenuAction::ToggleBloom => on(gfx.bloom),
             MenuAction::ToggleAa => gfx.aa_mode.label().to_string(),
-            MenuAction::CycleResolution => if gfx.aa_mode == AaMode::Upscale { format!("{}%", gfx.render_pct) } else { "native".to_string() },
+            MenuAction::CycleResolution => format!("{}%", gfx.render_pct),
             MenuAction::ToggleStats => on(gfx.show_stats),
             MenuAction::ToggleProbes => on(dbg.probe_gi),
             MenuAction::CycleProbeView => dbg.probe_view.label().to_string(),
@@ -1588,6 +1588,7 @@ pub fn apply_graphics(
         match (gfx.aa, has_aa) {
             (true, false) => {
                 commands.entity(e).insert(TemporalAntiAliasing::default());
+                commands.entity(e).insert((bevy::core_pipeline::prepass::DepthPrepass, bevy::core_pipeline::prepass::MotionVectorPrepass));
             }
             (false, true) => {
                 commands.entity(e).remove::<TemporalAntiAliasing>();

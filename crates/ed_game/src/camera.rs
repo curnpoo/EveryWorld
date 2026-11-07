@@ -79,9 +79,11 @@ fn spawn_camera(mut commands: Commands, cfg: Res<Config>, origin: Res<WorldOrigi
         let only = std::env::var("EW_POST").ok();
         let on = |k: &str| only.as_deref().map_or(true, |v| v.split(',').any(|x| x == k));
         if on("bloom") { cam.insert(Bloom::NATURAL); }
-        if on("taa") { cam.insert(TemporalAntiAliasing::default()); }
+        if on("taa") {
+            cam.insert(TemporalAntiAliasing::default());
+            cam.insert((bevy::core_pipeline::prepass::DepthPrepass, bevy::core_pipeline::prepass::MotionVectorPrepass));
+        }
         if on("ssao") { cam.insert(ScreenSpaceAmbientOcclusion::default()); }
-        if only.as_deref().is_some_and(|v| v.contains("mv")) { cam.insert((bevy::core_pipeline::prepass::DepthPrepass, bevy::core_pipeline::prepass::MotionVectorPrepass)); }
     }
     // The camera drives streaming in spectator/lookdev modes; otherwise the player does.
     if cfg.fly || cfg.lookdev.is_some() {

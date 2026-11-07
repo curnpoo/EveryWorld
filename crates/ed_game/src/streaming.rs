@@ -78,7 +78,7 @@ const APPLY_UNITS: u32 = 250;
 /// the units above are the real limiter; this only stops a runaway frame.
 const APPLY_MS: u64 = 4;
 /// Loaded tiles kept resident while out of view, at most (`EW_RESIDENT_TILES`).
-const RESIDENT_CAP: usize = 192;
+const RESIDENT_CAP: usize = 48;
 /// Off-screen wanted tiles closer than this many tile widths are still built
 /// (at low priority): the ground you could turn and look at right away.
 const OFFSCREEN_PREBUILD: f64 = 1.5;
@@ -1086,23 +1086,40 @@ fn dump_sat(t: TileId, n: u32, data: &[u8]) {
 fn retire_tiles(mut commands: Commands, mut mgr: ResMut<TileManager>, mut dm: ResMut<DetailManager>, mut sat_pool: ResMut<crate::ground_material::SatPool>, mut far_pool: ResMut<crate::far_shadows::FarPool>) {
     let t0 = std::time::Instant::now();
     let mgr = &mut *mgr;
-    let mut retire = scheduler::retire(mgr.loaded.keys().copied(), &mgr.wanted, |t| mgr.loaded.contains_key(t), |t| mgr.in_view.contains(t));
-    // Over the cap: oldest unseen first. `over_cap` never returns tiles seen
-    // this tick, and in-view tiles are touched every select.
-    if mgr.loaded.len() > mgr.resident_cap {
-        retire.extend(mgr.seen.over_cap(mgr.resident_cap).into_iter().filter(|t| !mgr.in_view.contains(t)));
-    }
+    let jumped = std::mem::take(&mut mgr.jumped);
+    // After an origin jump the wanted set is an entirely new region: every loaded
+    // tile that is no longer wanted is stale and must go now (not a few per
+    // frame). Relying on `scheduler::retire` here is too conservative - its
+    // blocking/ancestor holding keeps almost all of them alive, so the mesh slab
+    // grows until the GPU runs out of memory.
+    let retire = if jumped {
+        let r: Vec<TileId> = mgr
+            .loaded
+            .keys()
+            .copied()
+            .filter(|t| !mgr.wanted.contains(t))
+            .collect();
+        info!("origin jump: retiring {} stale tiles at once", r.len());
+        r
+    } else {
+        let mut r = scheduler::retire(mgr.loaded.keys().copied(), &mgr.wanted, |t| mgr.loaded.contains_key(t), |t| mgr.in_view.contains(t));
+        // Over the cap: oldest unseen first. `over_cap` never returns tiles seen
+        // this tick, and in-view tiles are touched every select.
+        let over_cap = mgr.loaded.len() > mgr.resident_cap;
+        if over_cap {
+            r.extend(mgr.seen.over_cap(mgr.resident_cap).into_iter().filter(|t| !mgr.in_view.contains(t)));
+            // Do not throttle retirement while over the residency cap: dropping
+            // tiles fast enough to avoid GPU OOM matters more than avoiding a
+            // despawn hitch here.
+            r
+        } else {
+            r.truncate(env_num("EW_RETIRE_PER_FRAME", 16));
+            r
+        }
+    };
     if retire.is_empty() {
         crate::probes::add_retire(t0.elapsed());
         return;
-    }
-    // Despawn storms are a hitch, so spread them over frames (`EW_RETIRE_PER_FRAME`) - except
-    // after an origin jump: those tiles are off-screen, and leaving them alive means the rebase
-    // re-anchors (and physics re-syncs) colliders that are about to be thrown away.
-    if std::mem::take(&mut mgr.jumped) {
-        info!("origin jump: retiring {} stale tiles at once", retire.len());
-    } else {
-        retire.truncate(env_num("EW_RETIRE_PER_FRAME", 3));
     }
     for t in retire {
         let Some(e) = mgr.loaded.remove(&t) else { continue };

@@ -96,7 +96,7 @@ fn sync_cameras(
         if c.is_active != two_cam {
             c.is_active = two_cam;
         }
-        c.clear_color = if menu || gfx.render_pct < 100 { ClearColorConfig::Default } else { ClearColorConfig::None };
+        c.clear_color = ClearColorConfig::Default;
         if two_cam != is_ui {
             if two_cam { commands.entity(e).insert(IsDefaultUiCamera); } else { commands.entity(e).remove::<IsDefaultUiCamera>(); }
         }
