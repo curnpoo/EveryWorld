@@ -50,6 +50,11 @@ use bevy::prelude::*;
 use bevy::window::WindowResolution;
 
 fn main() {
+    // gilrs has no SDL mapping for many controllers on Windows; provide the
+    // standard Xbox mapping so the sticks/triggers work out of the box.
+    if cfg!(target_os = "windows") {
+        unsafe { std::env::set_var("SDL_GAMECONTROLLERCONFIG", "030000005e040000ea02000000000000,Xbox One Controller,a:b0,b:b1,x:b2,y:b3,back:b6,guide:b10,start:b7,leftstick:b8,rightstick:b9,leftshoulder:b4,rightshoulder:b5,dpup:h0.1,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,leftx:a0,lefty:a1,rightx:a2,righty:a3,lefttrigger:a4,righttrigger:a5,"); }
+    }
     let cfg = config::Config::from_args();
     let title = format!("EveryWorld - {}", cfg.place_name);
     let mut resolution = WindowResolution::new(cfg.width, cfg.height);

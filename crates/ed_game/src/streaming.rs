@@ -729,7 +729,7 @@ fn select_tiles(
         // Off-screen wanted tiles beyond the prebuild ring wait: at street level `wanted` is
         // ~354 tiles (z14 out to 16 km) while the view holds ~137, so building them all is far
         // too expensive. Rotating into them is a known build storm (see CHANGES 2026-11-06).
-        if std::env::var_os("EW_KEEP_TILES").is_none() && !visible && d > OFFSCREEN_PREBUILD {
+        if std::env::var_os("EW_KEEP_TILES").is_none() && !visible && d > if cfg!(target_os = "windows") { 0.0 } else { OFFSCREEN_PREBUILD } {
             continue;
         }
         // 0 (or negative) disables the far massing LOD entirely; it must not mean "every tile is far".
@@ -859,7 +859,8 @@ fn apply_tiles(
 ) {
     let t0 = std::time::Instant::now();
     let (sat_pool, far_pool) = (&mut *pools.0, &mut *pools.1);
-    let mut budget = FrameBudget::new(env_num("EW_APPLY_BUDGET", APPLY_UNITS), Some(std::time::Duration::from_millis(APPLY_MS)));
+    let apply_units = if cfg!(target_os = "windows") { 50 } else { APPLY_UNITS };
+let mut budget = FrameBudget::new(env_num("EW_APPLY_BUDGET", apply_units), Some(std::time::Duration::from_millis(APPLY_MS)));
     let focus_pos = focus.iter().next().map(|t| t.translation());
     let mgr = &mut *mgr;
     while !budget.exhausted() {
