@@ -1,3 +1,57 @@
+## 2026-11-07: native-metal-city-perf — front-to-back sorting, shadow caster bounds, far massing LOD
+- **Front-to-back opaque draw order (`ed_metal::world::WorldRenderer::encode`):**
+  - Opaque mesh draws are now sorted front-to-back by camera distance before rasterization.
+  - Apple Silicon's TBDR Early-Z / HSR now eliminates occluded geometry before evaluating the
+    expensive PBR + PCF shadow + 3D probe GI fragment shader, wiping out 5–10× overdraw in dense cities.
+  - Sub-mesh spatial clusters within each clustered mesh are also sorted front-to-back so front-facing
+    bays and facades write reverse-Z depth before interior courtyards.
+- **Shadow cascade caster optimization (`ed_metal::world::WorldRenderer::encode`):**
+  - Cascades 4 (mid, 4 km) and 5 (far, 20 km) are now strictly terrain-only by default (`EW_MID_BUILDING_SHADOWS=1`
+    to opt in). Buildings and non-terrain casters now cast in cascades 0–3 (out to 700 m, matching `shadow_far`).
+  - In cities, this drops shadow draw counts from ~1,639 draws to ~2–26 draws, keeps cascade 4 & 5 cache
+    valid during streaming, and drops shadow pass GPU time from >4 ms to ~0.5 ms.
+- **Far building massing LOD enabled (`ed_game::streaming` & `ed_metal::world::prep_flat`):**
+  - `far_lod_m()` enabled with default 3,500 m (`EW_FAR_LOD_M`).
+  - `prep_flat` now builds Level-0 spatial clusters for far massing meshes without running expensive
+    meshopt decimation passes, enabling view frustum cluster culling on far massing geometry.
+  - `ready_tile` preps LOD buckets on background worker threads (`merge_lod(chunks, true)`), eliminating
+    the main-thread attribute copy hitch during tile upgrades.
+  - Far tiles default to `cheap_far`, skipping near tree/rock scatter past 3.5 km and slashing worker build times.
+- Verified in headless Shibuya run: triangles dropped from 15.6M–23.4M to 3.78M–9.18M, shadow draws dropped
+  from 1,639 to 2–26, and GPU wait time dropped dramatically.
+
+## 2026-11-07: ui-redesign-phase-1 — modern aero-glass HUD & design system
+- Modern Aero-Glass design system established for EveryWorld (`docs/ui/`):
+  - Design concept mockups preserved in git: `docs/ui/everyworld_hud_concept.jpg`
+    (in-game flight/skydive HUD) and `docs/ui/everyworld_menu_concept.jpg` (main
+    menu / globe navigation screen).
+  - Comprehensive design specification written in `docs/ui/README.md`, defining
+    the color palette, glassmorphism tokens, spatial sightlines, typography
+    rules, and implementation roadmap.
+- In-game HUD redesigned in `crates/ed_game/src/hud.rs`:
+  - Top compass: Replaced high-contrast white paper box with frosted dark glass
+    tape and a dedicated numeric heading badge (`142° SE`) in cyan.
+  - Bottom-left airspeed cluster: Clean card showing category (`AIRSPEED`),
+    large tabular MPH readout, and secondary Mach / m/s telemetry.
+  - Bottom-right altitude cluster: Positioned above the minimap, displaying
+    MSL altitude in large figures and vertical rate / terrain clearance (AGL).
+  - Bottom-center: Slim, low-profile mode and contextual flight pill
+    (`SKYDIVING • WINGSUIT READY [F]`, `ROCKET SHOES • BOOST III`, etc.).
+  - Spaceflight body tracking reticles refined with cyan hairline markers and
+    formatted target labels (`MOON • 384,400 KM`).
+  - Arrival notice toast updated to match the frosted glass aesthetic.
+- Minimap updated in `crates/ed_game/src/minimap.rs`:
+  - Form factor transitioned to a circular radar / instrument dial
+    (`BorderRadius::MAX`) with a hairline glass border (`Color::srgba(1.0, 1.0, 1.0, 0.20)`)
+    and dark translucent backing (`Color::srgba(0.04, 0.06, 0.09, 0.85)`).
+- Remote player nametags overhauled (`crates/ed_game/src/net.rs`):
+  - Converted the legacy yellow box into a sleek Aero-Glass name pill (`GLASS_BG`, `GLASS_BORDER`, white text).
+  - Centered horizontally directly above the player's head (`sx - w * 0.5`) using measured `ComputedNode` dimensions.
+  - Added distance label (`NametagDistText`) positioned cleanly right above the name pill, active only when distance >= 500 m.
+  - Added thin vertical leader line (`NametagLine`, 1.5 px wide, 28 px tall) extending straight down from the middle of the name pill to the head, active only when distance >= 500 m. Below 500 m, the tag floats cleanly 4 px above the head without a leader line or distance text.
+  - Closer nametags depth-sort in front of farther players via inverted-distance `ZIndex`.
+- Needs Mac check: In-game visual check during walking, skydiving, and spaceflight.
+
 ## 2026-11-07: body-parity — remote players use unified body.rs procedural rig (protocol v5)
 - Remote players now use the exact same 62-part procedural IK rig as the local
   player (`ed_game::body`), replacing the old simplified hand-coded avatar in

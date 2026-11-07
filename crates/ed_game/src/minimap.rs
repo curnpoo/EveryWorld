@@ -32,7 +32,7 @@ impl Plugin for MinimapPlugin {
     }
 }
 
-const SIZE_PX: f32 = 220.0;
+pub const SIZE_PX: f32 = 220.0;
 /// Displayed size of one Web-Mercator tile. Matches `maprender::SIZE`, so the
 /// minimap is at native texel density.
 const TILE_PX: f32 = maprender::SIZE as f32;
@@ -136,13 +136,13 @@ fn spawn_minimap(mut commands: Commands) {
                 bottom: Val::Px(18.0),
                 width: Val::Px(SIZE_PX),
                 height: Val::Px(SIZE_PX),
-                border: UiRect::all(Val::Px(2.0)),
-                border_radius: BorderRadius::all(Val::Px(18.0)),
+                border: UiRect::all(Val::Px(1.5)),
+                border_radius: BorderRadius::MAX,
                 overflow: Overflow::clip(),
                 ..default()
             },
-            BackgroundColor(Color::srgb(0.61, 0.79, 0.88)),
-            BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.55)),
+            BackgroundColor(Color::srgba(0.04, 0.06, 0.09, 0.85)),
+            BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.20)),
             Visibility::Hidden,
             ZIndex(5),
         ))
