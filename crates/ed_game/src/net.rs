@@ -369,7 +369,7 @@ fn net_update_avatars(
             let dist = (render.as_vec3() - cam_pos).length();
             let far = dist > 200.0;
             for c in children.iter() {
-                toggles.push((*c, far));
+                toggles.push((c, far));
             }
             // hide avatar mesh when far? We'll keep avatar; ring shows location. Could hide avatar when very far.
         }
