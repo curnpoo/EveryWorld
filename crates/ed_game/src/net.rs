@@ -57,6 +57,7 @@ pub enum NetStatus {
     Disconnected,
     Connecting,
     Connected,
+    BadTarget,
 }
 
 pub enum NetCmd {
@@ -128,7 +129,8 @@ fn net_thread(cmd_rx: Receiver<NetCmd>, evt_tx: Sender<NetEvt>, players: Arc<Mut
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
                 NetCmd::Connect { addr, name: _ } => {
-                    let s = UdpSocket::bind("0.0.0.0:0").ok();
+                    let bind_addr = if addr.is_ipv6() { "[::]:0" } else { "0.0.0.0:0" };
+                    let s = UdpSocket::bind(bind_addr).ok();
                     if let Some(s) = &s {
                         s.set_nonblocking(true).ok();
                         let hello = encode_c2s(&C2S::Hello { name: "player".to_string(), protocol: PROTOCOL_VERSION });
@@ -532,6 +534,8 @@ fn join_input(
                 if let Ok(addr) = net.target.parse() {
                     net.cmd_tx.send(NetCmd::Connect { addr, name: net.name.clone() }).ok();
                     net.status = NetStatus::Connecting;
+                } else {
+                    net.status = NetStatus::BadTarget;
                 }
             }
             bevy::input::keyboard::KeyCode::Tab => { form.focus = if form.focus == 1 { 2 } else { 1 }; }
@@ -576,6 +580,8 @@ pub fn net_menu_actions(
                 if let Ok(addr) = net.target.parse() {
                     net.cmd_tx.send(NetCmd::Connect { addr, name: net.name.clone() }).ok();
                     net.status = NetStatus::Connecting;
+                } else {
+                    net.status = NetStatus::BadTarget;
                 }
             }
             crate::menu::MenuAction::DisconnectServer => {
@@ -647,6 +653,7 @@ fn net_update_status_text(
                 format!("Connected as {} (id {:?}) — {}: {}", client.name, client.id, names.len(), names.join(", "))
             }
         }
+        NetStatus::BadTarget => format!("Bad address '{}' — use host:port (IPv6 needs brackets: [2001:db8::1]:7777)", client.target),
     };
     for mut t in q.iter_mut() {
         t.0 = s.clone();
