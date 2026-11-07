@@ -69,6 +69,7 @@ fn main() {
     println!("everyworld-server listening on [::]:{port} (protocol {PROTOCOL_VERSION})");
     let start_unix = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
     let start_instant = Instant::now();
+    let mut world_time = start_unix;
 
     let clients: Arc<Mutex<HashMap<u64, Client>>> = Arc::new(Mutex::new(HashMap::new()));
     let mut buf = [0u8; 4096];
@@ -209,9 +210,10 @@ fn main() {
                             }
                         }
                         C2S::AdminTime { unix_s } => {
+                            world_time = unix_s;
                             let cs = clients.lock().unwrap();
                             let tm = ed_net::encode_s2c(&S2C::Time {
-                                unix_s,
+                                unix_s: world_time,
                                 rate: 1.0,
                             });
                             for (_, c) in cs.iter() {
@@ -323,10 +325,11 @@ fn main() {
 
         // time broadcast 1Hz
         if last_time_bcast.elapsed() >= Duration::from_secs(1) {
+            let dt = last_time_bcast.elapsed().as_secs_f64();
             last_time_bcast = Instant::now();
-            let now = start_unix + start_instant.elapsed().as_secs_f64();
+            world_time += dt;
             let tm = ed_net::encode_s2c(&S2C::Time {
-                unix_s: now,
+                unix_s: world_time,
                 rate: 1.0,
             });
             let cs = clients.lock().unwrap();

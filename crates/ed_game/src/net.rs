@@ -391,12 +391,12 @@ fn net_thread(cmd_rx: Receiver<NetCmd>, evt_tx: Sender<NetEvt>, players: Arc<Mut
     loop {
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
-                NetCmd::Connect { addr, name: _ } => {
+                NetCmd::Connect { addr, name } => {
                     let bind_addr = if addr.is_ipv6() { "[::]:0" } else { "0.0.0.0:0" };
                     let s = UdpSocket::bind(bind_addr).ok();
                     if let Some(s) = &s {
                         s.set_nonblocking(true).ok();
-                        let hello = encode_c2s(&C2S::Hello { name: "player".to_string(), protocol: PROTOCOL_VERSION });
+                        let hello = encode_c2s(&C2S::Hello { name: name.clone(), protocol: PROTOCOL_VERSION });
                         let _ = s.send_to(&hello, addr);
                     }
                     socket = s;
