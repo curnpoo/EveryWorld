@@ -129,9 +129,8 @@ Adding "Kyoto machiya" or "Lagos compound" is one table entry. These tables move
 ## Running on Mac
 
 ```bash
-cargo run --release -- --place "Zermatt"
-cargo run --release -- --lat 43.53 --lon 5.45 --alt 3000
-cargo run --release -- --place "Shibuya" --hour 18.5
+cargo run --release
+cargo run --release -- --lat 43.53 --lon 5.45 --alt 3000   # optional: skydive into specific coords
 ```
 
 ## Testing

@@ -55,7 +55,7 @@ Rules for every agent and session:
 ## Quick start
 
 ```bash
-cargo run --release -- --place "Zermatt"                 # play (auto-geocode)
+cargo run --release                                      # play (choose drop-in from the UI)
 cargo run --release -- --lat 43.53 --lon 5.45 --alt 3000 # skydive in
 cargo run --release -- --fly --lat .. --lon .. --alt ..  # spectator camera
 cargo run --release -- --perf                            # writes perf.csv
@@ -77,7 +77,7 @@ Windows (PowerShell; one-time setup, batteries and the agent checklist are in
 ```powershell
 cargo test --workspace          # same suite; CI runs it on macOS + Windows
 cargo build --release           # -> target\release\earthdrop.exe
-cargo run --release -- --place "Zermatt"
+cargo run --release
 ```
 
 Cache: `~/Library/Caches/earthdrop` on macOS, `%LOCALAPPDATA%\earthdrop` on

@@ -25,11 +25,11 @@ GPU driver where present.
 ```powershell
 cargo test --workspace            # fast, offline unit tests
 cargo build --release             # -> target\release\earthdrop.exe
-cargo run --release -- --place "Zermatt"
+cargo run --release
 ```
 
-First run needs network: `cargo test` fetches crates, the game streams map
-data into its cache, and `--place` geocodes online. Paths:
+First run needs network: `cargo test` fetches crates and the game streams map
+data into its cache. Location selection happens in the UI. Paths:
 
 | What | Windows | macOS |
 |---|---|---|
@@ -130,7 +130,7 @@ Run these in PowerShell from the repo root, in order, and **paste all output**
 3. GPU adapter probe above — paste the full `GPU adapter: ...` line.
 4. Screenshot smoke above — report the PNG size and any `panicked`/`ERROR`.
 5. Six-scene perf battery above — paste the per-scene fps lines.
-6. Optional windowed play: `cargo run --release -- --place "Zermatt"` —
+6. Optional windowed play: `cargo run --release` —
    confirm menu, world streaming, movement and audio.
 
 CI (`.github/workflows/ci.yml`) runs `cargo test --workspace` on

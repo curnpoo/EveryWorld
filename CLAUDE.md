@@ -22,7 +22,7 @@ Goal: a fast, beautiful, shared real-Earth world. Roadmap = Stages A-H in `docs/
 
 ## Commands
 ```bash
-cargo run --release -- --place "Zermatt"                  # play
+cargo run --release                                      # play (choose drop-in from the UI)
 cargo run --release -- --lat 43.53 --lon 5.45 --alt 3000  # coords
 cargo run --release -- --fly --lat .. --lon .. --alt .. --heading .. --pitch .. --hour 15 --width 1280 --height 720 --frames 60 --screenshot out.png   # headless-ish shot
 cargo run --release -- --lookdev out_dir [--lookdev-only name]   # art-direction boards
