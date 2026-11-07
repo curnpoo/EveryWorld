@@ -35,7 +35,7 @@ fn main() {
     let port: u16 = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_PORT);
     let sock = UdpSocket::bind(("::", port)).expect("bind");
     sock.set_nonblocking(true).expect("nonblocking");
-    println!("earthdrop-server listening on 0.0.0.0:{port} (protocol {PROTOCOL_VERSION})");
+    println!("everyworld-server listening on [::]:{port} (protocol {PROTOCOL_VERSION})");
     let start_unix = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
     let start_instant = Instant::now();
 
