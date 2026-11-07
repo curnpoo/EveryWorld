@@ -1,3 +1,14 @@
+## 2026-11-07: Windows/Bevy GPU OOM fixed (HUD text was leaking font atlases)
+- On the Bevy/wgpu path (Windows) a long session climbed VRAM until `Out of Memory`
+  on a mesh slab and quit. Measured: ~256 MB steps to 7.4 GB and still rising. The
+  leak was `Assets<Image>`: continuously rewriting the HUD `Text` every frame (compass,
+  mode pill, stats) made Bevy allocate a new 512×512 font-atlas `Image` per update.
+- Fix: `hud::update_text` now only writes a `Text` component when the string actually
+  changes. After: `image_assets` stays flat (151, ~28 MB) through a full cruise and no
+  OOM. Verified on the RTX 2070 SUPER (Vulkan) with a 200 km cruise over 5+ minutes.
+- The rest of the Windows path already had: origin-jump tile retirement, over-cap
+  retire unthrottled, resident cap 48, TAA motion-vector prepass, and native-res clear.
+
 ## 2026-11-07: body-parity — remote players use unified body.rs procedural rig (protocol v5)
 - Remote players now use the exact same 62-part procedural IK rig as the local
   player (`ed_game::body`), replacing the old simplified hand-coded avatar in
@@ -1009,4 +1020,17 @@ builds them but never uses them.
 - **Tree/shrub scatter cap is now 8k per tile** (was 16k for z14, 10k for z12/13; `EW_SCATTER_MAX`
   overrides). At the Grand Canyon that halves the baked tree geometry: 49 M -> 32 M resident,
   and the user reports the game feels better with no visible loss.
+
+## 2026-11-07: spatial audio and exhaust for remote players
+- Each remote avatar now has a spatial soundscape driven from its interpolated
+  movement state: alternating footsteps, launch/landing cues, boost ignition and
+  stage kicks, falling and wingsuit wind, parachute opening, and sustained boot
+  exhaust. Emitters fade out by 900 m, grow louder with speed, pan as they pass,
+  and apply a bounded radial-velocity pitch shift.
+- Remote boot exhaust particles join the existing camera-facing plume batch,
+  with per-player emission accumulators and trails that inherit the avatar's
+  velocity. Remote flame cones remain part of the shared body rig.
+- Needs Mac and Windows checks: use two clients, compare walking, boost, freefall,
+  wingsuit, parachute and fast flybys at close, medium and out-of-range distances;
+  confirm no audio on the menu and no local-player plume regression.
 
