@@ -362,7 +362,7 @@ fn net_update_nametags(
         let ecef = DVec3::new(rp.pos[0], rp.pos[1], rp.pos[2]);
         let world = origin.frame.ecef_to_render().transform_point3(ecef).as_vec3();
         // distance check (100 km)
-        let dist = (world - cam_t.translation).length();
+        let dist = (world - cam_t.translation()).length();
         if dist > 100_000.0 {
             *vis = Visibility::Hidden;
             continue;
