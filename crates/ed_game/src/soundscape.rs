@@ -8,11 +8,12 @@
 //! audio thread; nothing here allocates per frame beyond tiny Vecs.
 
 use std::num::NonZero;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use avian3d::prelude::{AngularVelocity, LinearVelocity};
-use bevy::audio::{AddAudioSource, AudioSink, AudioSinkPlayback, ChannelCount, Decodable, SampleRate, Source, SpatialAudioSink, SpatialListener, Volume};
+use bevy::audio::{AddAudioSource, AudioSink, AudioSinkPlayback, ChannelCount, Decodable, SampleRate, Source, SpatialAudioSink, SpatialListener, SpatialScale, Volume};
 use bevy::prelude::*;
 use ed_audio::params::{self as ap, blast, fauna, rain_on, tyre, veg};
 use ed_audio::{Event as Ev, FaunaCtx, Params, Scape, ScapeHandle, Surface};
@@ -68,22 +69,36 @@ struct RemoteSoundscape {
     step_clock: f32,
     step_left: bool,
     boost_stage: u8,
+    cutoff_hz: Arc<AtomicU32>,
 }
 
 #[derive(Asset, TypePath)]
 struct ScapeAudio {
     scape: Mutex<Option<Scape>>,
+    cutoff_hz: Option<Arc<AtomicU32>>,
 }
 
 struct ScapeSource {
     scape: Scape,
+    cutoff_hz: Option<Arc<AtomicU32>>,
+    lowpass: [f32; 2],
+    channel: usize,
 }
 
 impl Iterator for ScapeSource {
     type Item = f32;
     #[inline]
     fn next(&mut self) -> Option<f32> {
-        Some(self.scape.next_sample())
+        let sample = self.scape.next_sample();
+        let Some(cutoff) = &self.cutoff_hz else {
+            return Some(sample);
+        };
+        let hz = f32::from_bits(cutoff.load(Ordering::Relaxed)).clamp(300.0, 20_000.0);
+        let alpha = 1.0 - (-std::f32::consts::TAU * hz / ed_audio::dsp::SR).exp();
+        let channel = self.channel;
+        self.channel ^= 1;
+        self.lowpass[channel] += alpha * (sample - self.lowpass[channel]);
+        Some(self.lowpass[channel])
     }
 }
 
@@ -107,13 +122,18 @@ impl Decodable for ScapeAudio {
     fn decoder(&self) -> ScapeSource {
         // A second decoder gets a silent, disconnected scape.
         let scape = self.scape.lock().ok().and_then(|mut s| s.take()).unwrap_or_else(|| ed_audio::channel().1);
-        ScapeSource { scape }
+        ScapeSource {
+            scape,
+            cutoff_hz: self.cutoff_hz.clone(),
+            lowpass: [0.0; 2],
+            channel: 0,
+        }
     }
 }
 
 fn start_output(mut commands: Commands, pending: Res<PendingScape>, mut assets: ResMut<Assets<ScapeAudio>>) {
     let Some(scape) = pending.0.lock().ok().and_then(|mut s| s.take()) else { return };
-    let h = assets.add(ScapeAudio { scape: Mutex::new(Some(scape)) });
+    let h = assets.add(ScapeAudio { scape: Mutex::new(Some(scape)), cutoff_hz: None });
     commands.spawn((AudioPlayer(h), PlaybackSettings::ONCE.paused(), WorldSound, Name::new("soundscape")));
 }
 
@@ -151,37 +171,73 @@ fn drive_remote_soundscapes(
         let id = avatar.id;
         let entry = voices.0.entry(id).or_insert_with(|| {
             let (handle, scape) = ed_audio::channel();
-            let asset = assets.add(ScapeAudio { scape: Mutex::new(Some(scape)) });
+            let cutoff_hz = Arc::new(AtomicU32::new(18_000.0f32.to_bits()));
+            let asset = assets.add(ScapeAudio {
+                scape: Mutex::new(Some(scape)),
+                cutoff_hz: Some(cutoff_hz.clone()),
+            });
             let entity = commands.spawn((
                 AudioPlayer(asset),
-                PlaybackSettings { mode: bevy::audio::PlaybackMode::Loop, spatial: true, ..PlaybackSettings::default() },
+                PlaybackSettings {
+                    mode: bevy::audio::PlaybackMode::Loop,
+                    spatial: true,
+                    // Compress Rodio's inverse-square curve; the game applies
+                    // its own shared falloff to every remote sound below.
+                    spatial_scale: Some(SpatialScale::new(0.1)),
+                    ..PlaybackSettings::default()
+                },
                 Transform::from_translation(transform.translation),
                 RemoteWorldSound,
                 Name::new(format!("remote audio {id}")),
             )).id();
-            RemoteSoundscape { handle, entity, mode: None, boots_on: false, wingsuit: false, step_clock: 0.0, step_left: true, boost_stage: 0 }
+            RemoteSoundscape {
+                handle, entity, mode: None, boots_on: false, wingsuit: false,
+                step_clock: 0.0, step_left: true, boost_stage: 0, cutoff_hz,
+            }
         });
 
         let state = &proxy.state;
         let speed = state.vel.length();
         let distance = transform.translation.distance(listener_pos);
-        let range = (1.0 - distance / 900.0).clamp(0.0, 1.0);
         let flyby = (speed / 90.0).clamp(0.0, 1.0);
-        let gain = sound_level * range * range * (0.72 + 0.8 * flyby);
+        let thrust = state.throttle.max(if state.afterburner {
+            1.5
+        } else if state.mode == MoveMode::RocketShoes {
+            0.8
+        } else {
+            0.0
+        });
+        let boots = thrust > 0.01 && !matches!(state.mode, MoveMode::Walk | MoveMode::Parachute);
+        // Counter Rodio's 1/r² sink loss, then apply one shared game curve to
+        // all remote sounds: full near 10 ft, quieter with distance, still
+        // audible for rockets and movement far away.
+        let scaled_distance = distance * 0.1;
+        let rodio_compensation = (scaled_distance * scaled_distance).max(1.0);
+        let distance_gain = if boots {
+            0.35 + 0.65 * (-distance / 40.0).exp()
+        } else {
+            0.02 + 0.98 * (-distance / 30.0).exp()
+        };
+        let range = (1.0 - distance / 3_000.0).clamp(0.0, 1.0);
+        let gain = sound_level * range * distance_gain * rodio_compensation * (1.0 + 0.3 * flyby);
+        let muffle = ((distance - 10.0) / 140.0).clamp(0.0, 1.0);
+        let cutoff = 18_000.0 + (1_800.0 - 18_000.0) * muffle * muffle * (3.0 - 2.0 * muffle);
+        entry.cutoff_hz.store(cutoff.to_bits(), Ordering::Relaxed);
         commands.entity(entry.entity).insert(Transform::from_translation(transform.translation));
         if let Ok(mut sink) = sinks.get_mut(entry.entity) {
             sink.set_volume(Volume::Linear(gain));
             let toward_listener = (listener_pos - transform.translation).normalize_or_zero();
             let radial = state.vel.dot(toward_listener).clamp(-100.0, 100.0);
-            sink.set_speed((343.0 / (343.0 - radial)).clamp(0.8, 1.25));
+            // Use the true radial speed and a wider pitch span so an approach
+            // and pass-by are audible at game scale.
+            sink.set_speed((343.0 / (343.0 - radial)).clamp(0.7, 1.4));
             if quiet { sink.pause(); } else { sink.play(); }
         }
 
         let mode = state.mode;
         let falling = matches!(mode, MoveMode::Fall | MoveMode::Skydive);
-        let boots = state.throttle > 0.01 && !matches!(mode, MoveMode::Walk | MoveMode::Parachute);
         let mut params = Params::default();
-        params.master = 0.8;
+        params.master = 0.55;
         params.mix = mix.as_ref().map(|m| m.scape_mix()).unwrap_or([1.0; 4]);
         params.wingsuit = (falling && state.wingsuit_on) as u8 as f32;
         params.freefall = (falling && !state.wingsuit_on) as u8 as f32;
@@ -189,8 +245,9 @@ fn drive_remote_soundscapes(
         params.wind = (speed / 70.0).clamp(0.0, 1.0);
         params.gust = (flyby * 0.55).clamp(0.0, 1.0);
         if boots {
-            params.boots = [state.throttle, state.throttle];
-            params.afterburner = if state.afterburner { 1.0 } else { 0.0 };
+            let exhaust = (thrust * 1.1).clamp(0.8, 4.0);
+            params.boots = [exhaust; 2];
+            params.afterburner = if state.afterburner { 1.2 } else { 0.0 };
         }
         entry.handle.set(params);
 
