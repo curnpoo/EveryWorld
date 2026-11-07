@@ -779,9 +779,9 @@ fn net_update_avatars(
         // mode: 0 Walk,1 Fall,2 Rocket,3 Skydive,4 Parachute
         let (ankle_l, ankle_r, elbow_l, elbow_r, wrist_l, wrist_r) = match boot {
             0 => { // Walk
-                let amp = (speed.min(6.0) / 3.0).clamp(0.25, 1.0);
-                let s = (ph).sin() * 0.35 * amp;
-                let s2 = (ph + std::f32::consts::PI).sin() * 0.35 * amp;
+                let amp = if speed < 0.5 { 0.0 } else { (speed.min(6.0) / 3.0).clamp(0.0, 1.0) };
+                let s = (ph).sin() * 0.32 * amp;
+                let s2 = (ph + std::f32::consts::PI).sin() * 0.32 * amp;
                 (hip_l + Vec3::new(0.0,-0.84,s), hip_r + Vec3::new(0.0,-0.84,s2),
                  Vec3::new(-0.35,-0.05,-s*0.5), Vec3::new(0.35,-0.05,-s2*0.5),
                  Vec3::new(-0.38,-0.30,s*0.5), Vec3::new(0.38,-0.30,s2*0.5))
