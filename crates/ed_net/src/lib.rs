@@ -2,7 +2,7 @@
 //!
 //! Engine-free. Compact binary encoding (no JSON): ~40 bytes per State.
 
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 pub const DEFAULT_PORT: u16 = 7777;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -14,6 +14,8 @@ impl From<Vec3d> for [f64;3] { fn from(v:Vec3d)->Self{[v.x,v.y,v.z]} }
 pub enum C2S {
     Hello { name: String, protocol: u32 },
     State { pos: Vec3d, yaw: f32, pitch: f32, boot: u8, throttle: f32, wingsuit: bool, t: f64 },
+    AdminTime { unix_s: f64 },
+    AdminWeather { preset: String },
     Bye,
 }
 
@@ -24,6 +26,7 @@ pub enum S2C {
     State { id: u64, name: String, pos: Vec3d, yaw: f32, pitch: f32, boot: u8, throttle: f32, wingsuit: bool, t: f64 },
     Leave { id: u64 },
     Time { unix_s: f64, rate: f64 },
+    Weather { preset: String },
 }
 
 #[derive(Debug, Clone)]
@@ -53,6 +56,8 @@ pub fn encode_c2s(m:&C2S)->Vec<u8>{
     match m{
         C2S::Hello{name,protocol}=>{w_u8(&mut v,0);w_str(&mut v,name);w_u32(&mut v,*protocol)}
         C2S::State{pos,yaw,pitch,boot,throttle,wingsuit,t}=>{w_u8(&mut v,1);w_vec3d(&mut v,*pos);w_f32(&mut v,*yaw);w_f32(&mut v,*pitch);w_u8(&mut v,*boot);w_f32(&mut v,*throttle);w_u8(&mut v,if *wingsuit{1}else{0});w_f64(&mut v,*t)}
+        C2S::AdminTime{unix_s}=>{w_u8(&mut v,3);w_f64(&mut v,*unix_s)}
+        C2S::AdminWeather{preset}=>{w_u8(&mut v,4);w_str(&mut v,preset)}
         C2S::Bye=>{w_u8(&mut v,2)}
     }
     v
@@ -62,6 +67,8 @@ pub fn decode_c2s(b:&[u8])->Option<C2S>{
     match r.u8()?{
         0=>Some(C2S::Hello{name:r.str()?,protocol:r.u32()?}),
         1=>Some(C2S::State{pos:r.vec3d()?,yaw:r.f32()?,pitch:r.f32()?,boot:r.u8()?,throttle:r.f32()?,wingsuit:r.u8()?!=0,t:r.f64()?}),
+        3=>Some(C2S::AdminTime{unix_s:r.f64()?}),
+        4=>Some(C2S::AdminWeather{preset:r.str()?}),
         2=>Some(C2S::Bye),
         _=>None,
     }
@@ -74,6 +81,7 @@ pub fn encode_s2c(m:&S2C)->Vec<u8>{
         S2C::State{id,name,pos,yaw,pitch,boot,throttle,wingsuit,t}=>{w_u8(&mut v,2);w_u64(&mut v,*id);w_str(&mut v,name);w_vec3d(&mut v,*pos);w_f32(&mut v,*yaw);w_f32(&mut v,*pitch);w_u8(&mut v,*boot);w_f32(&mut v,*throttle);w_u8(&mut v,if *wingsuit{1}else{0});w_f64(&mut v,*t)}
         S2C::Leave{id}=>{w_u8(&mut v,3);w_u64(&mut v,*id)}
         S2C::Time{unix_s,rate}=>{w_u8(&mut v,4);w_f64(&mut v,*unix_s);w_f64(&mut v,*rate)}
+        S2C::Weather{preset}=>{w_u8(&mut v,5);w_str(&mut v,preset)}
     }
     v
 }
@@ -85,6 +93,7 @@ pub fn decode_s2c(b:&[u8])->Option<S2C>{
         2=>Some(S2C::State{id:r.u64()?,name:r.str()?,pos:r.vec3d()?,yaw:r.f32()?,pitch:r.f32()?,boot:r.u8()?,throttle:r.f32()?,wingsuit:r.u8()?!=0,t:r.f64()?}),
         3=>Some(S2C::Leave{id:r.u64()?}),
         4=>Some(S2C::Time{unix_s:r.f64()?,rate:r.f64()?}),
+        5=>Some(S2C::Weather{preset:r.str()?}),
         _=>None,
     }
 }

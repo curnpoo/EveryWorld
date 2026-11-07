@@ -63,6 +63,8 @@ pub enum NetCmd {
     Connect { addr: SocketAddr, name: String },
     Disconnect,
     State { pos: [f64; 3], yaw: f32, pitch: f32, boot: u8, throttle: f32, wingsuit: bool, t: f64 },
+    AdminTime { unix_s: f64 },
+    AdminWeather { preset: String },
 }
 
 pub enum NetEvt {
@@ -71,6 +73,7 @@ pub enum NetEvt {
     State { id: u64, name: String, pos: [f64; 3], yaw: f32, pitch: f32, boot: u8, throttle: f32, wingsuit: bool, t: f64 },
     Leave { id: u64 },
     Time { unix_s: f64, rate: f64 },
+    Weather { preset: String },
     Disconnected,
 }
 
@@ -149,6 +152,18 @@ fn net_thread(cmd_rx: Receiver<NetCmd>, evt_tx: Sender<NetEvt>, players: Arc<Mut
                         let _ = s.send_to(&msg, a);
                     }
                 }
+                NetCmd::AdminTime { unix_s } => {
+                    if let (Some(s), Some(a)) = (&socket, server) {
+                        let msg = encode_c2s(&C2S::AdminTime { unix_s });
+                        let _ = s.send_to(&msg, a);
+                    }
+                }
+                NetCmd::AdminWeather { preset } => {
+                    if let (Some(s), Some(a)) = (&socket, server) {
+                        let msg = encode_c2s(&C2S::AdminWeather { preset });
+                        let _ = s.send_to(&msg, a);
+                    }
+                }
             }
         }
         if let Some(s) = &socket {
@@ -184,6 +199,9 @@ fn net_thread(cmd_rx: Receiver<NetCmd>, evt_tx: Sender<NetEvt>, players: Arc<Mut
                                 S2C::Time { unix_s, rate } => {
                                     let _ = evt_tx.send(NetEvt::Time { unix_s, rate });
                                 }
+                                S2C::Weather { preset } => {
+                                    let _ = evt_tx.send(NetEvt::Weather { preset });
+                                }
                             }
                         }
                     }
@@ -200,6 +218,8 @@ fn net_drain_events(
     mut client: ResMut<NetClient>,
     mut remote: ResMut<RemotePlayers>,
     mut clock: ResMut<crate::sky::Clock>,
+    mut weather: ResMut<crate::sky::CurrentWeather>,
+    mut over: ResMut<crate::clouds::CloudOverride>,
 ) {
     let mut roster: Vec<(u64, String)> = vec![];
     let mut joins: Vec<(u64, String)> = vec![];
@@ -221,6 +241,12 @@ fn net_drain_events(
             NetEvt::State { id, name, pos, yaw, pitch, boot, throttle, wingsuit, t } => states.push((id, name, pos, yaw, pitch, boot, throttle, wingsuit, t)),
             NetEvt::Leave { id } => leaves.push(id),
             NetEvt::Time { unix_s, rate } => { clock.unix_s = unix_s; clock.rate = rate; }
+            NetEvt::Weather { preset } => {
+                if let Some(w) = ed_world::clouds::weather_preset(&preset) {
+                    weather.0 = Some(w);
+                    over.set_changed();
+                }
+            }
             NetEvt::Disconnected => { disconnected = true; }
         }
     }
@@ -537,6 +563,7 @@ pub fn net_menu_actions(
     q: Query<(&Interaction, &crate::menu::MenuAction), Changed<Interaction>>,
     mut net: ResMut<NetClient>,
     form: Res<crate::menu::JoinForm>,
+    clock: Res<crate::sky::Clock>,
 ) {
     for (i, a) in q.iter() {
         if *i != Interaction::Pressed {
@@ -555,6 +582,13 @@ pub fn net_menu_actions(
                 net.cmd_tx.send(NetCmd::Disconnect).ok();
                 net.status = NetStatus::Disconnected;
             }
+            crate::menu::MenuAction::AdminTimeMinus => { net.cmd_tx.send(NetCmd::AdminTime { unix_s: clock.unix_s - 3600.0 }).ok(); }
+            crate::menu::MenuAction::AdminTimePlus => { net.cmd_tx.send(NetCmd::AdminTime { unix_s: clock.unix_s + 3600.0 }).ok(); }
+            crate::menu::MenuAction::AdminTimeNow => {
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(clock.unix_s);
+                net.cmd_tx.send(NetCmd::AdminTime { unix_s: now }).ok();
+            }
+            crate::menu::MenuAction::AdminWeather(preset) => { net.cmd_tx.send(NetCmd::AdminWeather { preset: preset.to_string() }).ok(); }
             _ => {}
         }
     }

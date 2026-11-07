@@ -75,6 +75,16 @@ fn main() {
                             }
                             // interest-managed broadcast: store, then dispatch below in tick
                         }
+                        C2S::AdminTime { unix_s } => {
+                            let cs = clients.lock().unwrap();
+                            let tm = ed_net::encode_s2c(&S2C::Time{unix_s, rate: 1.0});
+                            for (_,c) in cs.iter() { let _ = sock.send_to(&tm, c.addr); }
+                        }
+                        C2S::AdminWeather { preset } => {
+                            let cs = clients.lock().unwrap();
+                            let wm = ed_net::encode_s2c(&S2C::Weather{preset});
+                            for (_,c) in cs.iter() { let _ = sock.send_to(&wm, c.addr); }
+                        }
                         C2S::Bye => {
                             let mut cs = clients.lock().unwrap();
                             let mut to_remove=None;
