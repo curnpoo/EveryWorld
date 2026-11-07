@@ -56,13 +56,13 @@ pub struct WindExt {
 
 impl MaterialExtension for WindExt {
     fn vertex_shader() -> ShaderRef {
-        "embedded://earthdrop/shaders/foliage.wesl".into()
+        "embedded://everyworld/shaders/foliage.wesl".into()
     }
     fn prepass_vertex_shader() -> ShaderRef {
-        "embedded://earthdrop/shaders/foliage_prepass.wesl".into()
+        "embedded://everyworld/shaders/foliage_prepass.wesl".into()
     }
     fn deferred_vertex_shader() -> ShaderRef {
-        "embedded://earthdrop/shaders/foliage_prepass.wesl".into()
+        "embedded://everyworld/shaders/foliage_prepass.wesl".into()
     }
 }
 

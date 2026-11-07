@@ -39,8 +39,8 @@ pub const ATTRIBUTE_SPLAT_PAD: MeshVertexAttribute = MeshVertexAttribute::new("G
 /// Scatter instance pivot (xyz, mesh space) + reach.floor() + rank.
 pub const ATTRIBUTE_PIVOT: MeshVertexAttribute = MeshVertexAttribute::new("ScatterPivot", 0x6E57_0004, VertexFormat::Float32x4);
 
-const TERRAIN_SHADER: &str = "embedded://earthdrop/shaders/terrain.wesl";
-const SCATTER_SHADER: &str = "embedded://earthdrop/shaders/ground_scatter.wesl";
+const TERRAIN_SHADER: &str = "embedded://everyworld/shaders/terrain.wesl";
+const SCATTER_SHADER: &str = "embedded://everyworld/shaders/ground_scatter.wesl";
 
 /// Texture resolution per ground layer.
 const TEX_SIZE: u32 = 512;
