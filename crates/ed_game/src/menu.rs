@@ -354,7 +354,7 @@ impl Default for GraphicsSettings {
         // On non-native (Windows/Linux) the Bevy renderer is heavier; default to a lite preset.
         let lite = !crate::native::enabled();
         let (render_pct, aa, aa_mode) = if lite {
-            (50u32, false, AaMode::Off)
+            (40u32, false, AaMode::Off)
         } else {
             (67u32, post, if post { AaMode::Upscale } else { AaMode::Off })
         };

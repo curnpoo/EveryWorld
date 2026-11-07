@@ -10,6 +10,7 @@
 
 use crate::mapview::{MapCanvas, MapState, Marker, Popup, PopupTitle, SearchBar, SearchPin, SearchRing, build_overlays, scroll_notches};
 use crate::menu::GameState;
+use crate::net::RemotePlayers;
 use crate::sky::Clock;
 use bevy::asset::{RenderAssetUsages, embedded_asset};
 use bevy::camera::visibility::{NoFrustumCulling, RenderLayers};
@@ -84,6 +85,7 @@ impl Plugin for GlobePlugin {
         embedded_asset!(app, "globe_atmo.wesl");
         app.add_plugins(MaterialPlugin::<AtmoMaterial>::default())
             .init_resource::<PlayerPin>()
+            .init_resource::<RemoteGlobeDots>()
             .add_systems(Startup, setup_globe)
             .add_systems(
                 Update,
@@ -99,6 +101,7 @@ impl Plugin for GlobePlugin {
                     receive_tiles,
                     apply_tiles,
                     update_overlays,
+                    update_remote_pins,
                     update_labels,
                 )
                     .chain(),
@@ -586,6 +589,16 @@ fn attach_canvas(mut commands: Commands, canvases: Query<Entity, Added<MapCanvas
             ChildOf(c),
         ));
     }
+}
+
+#[derive(Component)]
+struct RemoteGlobeDot {
+    id: u64,
+}
+
+#[derive(Resource, Default)]
+struct RemoteGlobeDots {
+    map: HashMap<u64, Entity>,
 }
 
 /// The visible canvas, if any: its logical size and cursor state.
@@ -1321,6 +1334,78 @@ fn update_overlays(
             if lon >= 0.0 { 'E' } else { 'W' },
             if alt_km >= 10.0 { format!("{:.0} km", alt_km) } else { format!("{:.1} km", alt_km) }
         ));
+    }
+}
+
+fn update_remote_pins(
+    g: Res<GlobeState>,
+    remote: Res<RemotePlayers>,
+    canvases: Query<(Entity, &RelativeCursorPosition, &ComputedNode, &InheritedVisibility), With<MapCanvas>>,
+    mut dots: ResMut<RemoteGlobeDots>,
+    mut commands: Commands,
+    mut dot_q: Query<(&mut Node, &mut Visibility, &RemoteGlobeDot)>,
+) {
+    let canvas_info = canvases.iter().find(|(_, _, n, v)| v.get() && n.size().x > 8.0).map(|(e, _, n, _)| (e, n.size() * n.inverse_scale_factor()));
+    let Some((canvas, size)) = canvas_info else {
+        // No visible canvas: hide all
+        for (_, mut v, _) in &mut dot_q {
+            *v = Visibility::Hidden;
+        }
+        return;
+    };
+    // Remove stale
+    let ids: std::collections::HashSet<u64> = remote.players.keys().copied().collect();
+    let to_remove: Vec<u64> = dots.map.keys().copied().filter(|id| !ids.contains(id)).collect();
+    for id in to_remove {
+        if let Some(e) = dots.map.remove(&id) {
+            commands.entity(e).despawn();
+        }
+    }
+    // Spawn missing
+    for (id, rp) in remote.players.iter() {
+        if !dots.map.contains_key(id) {
+            let e = commands
+                .spawn((
+                    RemoteGlobeDot { id: *id },
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(-100.0),
+                        top: Val::Px(-100.0),
+                        width: Val::Px(12.0),
+                        height: Val::Px(12.0),
+                        border: UiRect::all(Val::Px(2.0)),
+                        border_radius: BorderRadius::MAX,
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.2, 0.6, 1.0)),
+                    BorderColor::all(Color::WHITE),
+                    ZIndex(4),
+                    ChildOf(canvas),
+                ))
+                .id();
+            dots.map.insert(*id, e);
+        }
+    }
+    // Position
+    for (mut n, mut v, dot) in &mut dot_q {
+        let Some(rp) = remote.players.get(&dot.id) else {
+            *v = Visibility::Hidden;
+            continue;
+        };
+        let geo = Geodetic::from_ecef(glam::DVec3::new(rp.pos[0], rp.pos[1], rp.pos[2]));
+        let p = gl::unit_from_latlon(geo.lat_deg, geo.lon_deg);
+        if !g.facing(p) {
+            *v = Visibility::Hidden;
+            continue;
+        }
+        if let Some(frac) = g.project(p) {
+            let px = frac * size;
+            n.left = Val::Px(px.x - 6.0);
+            n.top = Val::Px(px.y - 6.0);
+            *v = Visibility::Inherited;
+        } else {
+            *v = Visibility::Hidden;
+        }
     }
 }
 
