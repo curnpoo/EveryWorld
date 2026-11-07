@@ -19,7 +19,6 @@ use crate::settings::AudioSettings;
 use crate::spawn::{Arrived, Spawner};
 use avian3d::prelude::{Physics, PhysicsTime};
 use bevy::asset::embedded_asset;
-use bevy_clipboard::prelude::ClipboardPlugin;
 use bevy::ecs::hierarchy::ChildSpawnerCommands;
 use bevy::light::DirectionalLight;
 use bevy::pbr::ScreenSpaceAmbientOcclusion;
@@ -50,7 +49,6 @@ impl Plugin for MenuPlugin {
             .init_resource::<ControlSettings>()
             .init_resource::<Cosmetics>()
             .add_systems(Startup, (build_menus, skip_menu_from_cli).chain())
-            .add_plugins(ClipboardPlugin)
             .add_systems(
                 Update,
                 (
