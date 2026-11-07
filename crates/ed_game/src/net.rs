@@ -507,6 +507,7 @@ pub fn net_spawn_avatars(
 
 fn join_input(
     mut keys: MessageReader<bevy::input::keyboard::KeyboardInput>,
+    pressed: Res<bevy::input::ButtonInput<bevy::input::keyboard::KeyCode>>,
     mut form: ResMut<crate::menu::JoinForm>,
     mut net: ResMut<NetClient>,
     mut server_q: Query<&Interaction, With<crate::menu::ServerField>>,
@@ -539,6 +540,34 @@ fn join_input(
                 }
             }
             bevy::input::keyboard::KeyCode::Tab => { form.focus = if form.focus == 1 { 2 } else { 1 }; }
+            bevy::input::keyboard::KeyCode::KeyV => {
+                let ctrl = pressed.pressed(bevy::input::keyboard::KeyCode::ControlLeft)
+                    || pressed.pressed(bevy::input::keyboard::KeyCode::ControlRight);
+                if ctrl {
+                    if let Ok(mut cb) = arboard::Clipboard::new() {
+                        if let Ok(text) = cb.get_text() {
+                            let text = text.trim().to_string();
+                            if form.focus == 1 {
+                                if form.server.len() + text.len() <= 64 { form.server.push_str(&text); }
+                            } else {
+                                if form.name.len() + text.len() <= 32 { form.name.push_str(&text); }
+                            }
+                        }
+                    }
+                }
+            }
+            bevy::input::keyboard::KeyCode::Paste => {
+                if let Ok(mut cb) = arboard::Clipboard::new() {
+                    if let Ok(text) = cb.get_text() {
+                        let text = text.trim().to_string();
+                        if form.focus == 1 {
+                            if form.server.len() + text.len() <= 64 { form.server.push_str(&text); }
+                        } else {
+                            if form.name.len() + text.len() <= 32 { form.name.push_str(&text); }
+                        }
+                    }
+                }
+            }
             _ => {
                 if let Some(s) = &key.text {
                     for c in s.chars() {

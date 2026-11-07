@@ -126,7 +126,9 @@ fn apply_render_scale(
             for e in state.extras.drain(..) {
                 commands.entity(e).despawn();
             }
-            state.image = None;
+            if let Some(old) = state.image.take() {
+                images.remove(old.id());
+            }
             state.size = UVec2::ZERO;
         }
         return;
@@ -134,6 +136,9 @@ fn apply_render_scale(
     let want = (phys.as_vec2() * gfx.render_pct as f32 / 100.0).as_uvec2().max(UVec2::splat(64));
     if state.image.is_some() && state.size == want {
         return;
+    }
+    if let Some(old) = state.image.take() {
+        images.remove(old.id());
     }
     for e in state.extras.drain(..) {
         commands.entity(e).despawn();
