@@ -96,7 +96,7 @@ impl Plugin for NetPlugin {
         let cfg = app.world().get_resource::<Config>().cloned();
         let target = cfg.as_ref().and_then(|c| c.server.clone()).unwrap_or_else(|| "127.0.0.1:7777".to_string());
         let name = cfg.as_ref().and_then(|c| c.player_name.clone()).unwrap_or_else(|| "player".to_string());
-        if let Some(mut form) = app.world().get_resource_mut::<crate::menu::JoinForm>() {
+        if let Some(mut form) = app.world_mut().get_resource_mut::<crate::menu::JoinForm>() {
             form.server = target.clone();
             form.name = name.clone();
         }
@@ -407,7 +407,7 @@ pub fn net_spawn_avatars(
         let qx = Quat::from_rotation_x(std::f32::consts::FRAC_PI_2);
         let qz = Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
         let v = Vec3::new;
-        use RJ::*; use RF::*;
+        use RJ::*;
         let parts: Vec<(RSpec, &bevy::asset::Handle<bevy::mesh::Mesh>, &bevy::asset::Handle<StandardMaterial>)> = vec![
             (RSpec::Limb{a:HipL,b:KneeL,r:0.075}, &cyl, &shell),
             (RSpec::Limb{a:HipR,b:KneeR,r:0.075}, &cyl, &shell),
@@ -419,24 +419,24 @@ pub fn net_spawn_avatars(
             (RSpec::Ball{j:KneeR,r:0.088}, &ball, &joint),
             (RSpec::Ball{j:AnkleL,r:0.07}, &ball, &joint),
             (RSpec::Ball{j:AnkleR,r:0.07}, &ball, &joint),
-            (RSpec::Rigid{f:FootL, off:v(0.0,-0.025,-0.05), rot:q0, scale:v(0.13,0.08,0.27)}, &cube, &shoe),
-            (RSpec::Rigid{f:FootR, off:v(0.0,-0.025,-0.05), rot:q0, scale:v(0.13,0.08,0.27)}, &cube, &shoe),
-            (RSpec::Rigid{f:FootL, off:v(0.0,-0.075,-0.05), rot:q0, scale:v(0.14,0.03,0.29)}, &cube, &sole),
-            (RSpec::Rigid{f:FootR, off:v(0.0,-0.075,-0.05), rot:q0, scale:v(0.14,0.03,0.29)}, &cube, &sole),
-            (RSpec::Rigid{f:FootL, off:v(0.0,-0.035,-0.17), rot:qz, scale:v(0.08,0.13,0.08)}, &cyl, &shoe),
-            (RSpec::Rigid{f:FootR, off:v(0.0,-0.035,-0.17), rot:qz, scale:v(0.08,0.13,0.08)}, &cyl, &shoe),
-            (RSpec::Rigid{f:FootL, off:v(0.0,-0.095,-0.03), rot:q0, scale:v(0.09,0.025,0.09)}, &cyl, &joint),
-            (RSpec::Rigid{f:FootR, off:v(0.0,-0.095,-0.03), rot:q0, scale:v(0.09,0.025,0.09)}, &cyl, &joint),
+            (RSpec::Rigid{f:RF::FootL, off:v(0.0,-0.025,-0.05), rot:q0, scale:v(0.13,0.08,0.27)}, &cube, &shoe),
+            (RSpec::Rigid{f:RF::FootR, off:v(0.0,-0.025,-0.05), rot:q0, scale:v(0.13,0.08,0.27)}, &cube, &shoe),
+            (RSpec::Rigid{f:RF::FootL, off:v(0.0,-0.075,-0.05), rot:q0, scale:v(0.14,0.03,0.29)}, &cube, &sole),
+            (RSpec::Rigid{f:RF::FootR, off:v(0.0,-0.075,-0.05), rot:q0, scale:v(0.14,0.03,0.29)}, &cube, &sole),
+            (RSpec::Rigid{f:RF::FootL, off:v(0.0,-0.035,-0.17), rot:qz, scale:v(0.08,0.13,0.08)}, &cyl, &shoe),
+            (RSpec::Rigid{f:RF::FootR, off:v(0.0,-0.035,-0.17), rot:qz, scale:v(0.08,0.13,0.08)}, &cyl, &shoe),
+            (RSpec::Rigid{f:RF::FootL, off:v(0.0,-0.095,-0.03), rot:q0, scale:v(0.09,0.025,0.09)}, &cyl, &joint),
+            (RSpec::Rigid{f:RF::FootR, off:v(0.0,-0.095,-0.03), rot:q0, scale:v(0.09,0.025,0.09)}, &cyl, &joint),
             (RSpec::Jet{foot:0,inner:false}, &cone, &flame_outer),
             (RSpec::Jet{foot:0,inner:true}, &cone, &flame_core),
             (RSpec::Jet{foot:1,inner:false}, &cone, &flame_outer),
             (RSpec::Jet{foot:1,inner:true}, &cone, &flame_core),
-            (RSpec::Rigid{f:Pelvis, off:v(0.0,0.0,0.0), rot:q0, scale:v(0.34,0.16,0.22)}, &cube, &joint),
+            (RSpec::Rigid{f:RF::Pelvis, off:v(0.0,0.0,0.0), rot:q0, scale:v(0.34,0.16,0.22)}, &cube, &joint),
             (RSpec::Limb{a:Pelvis,b:Chest,r:0.08}, &cyl, &joint),
-            (RSpec::Rigid{f:Chest, off:v(0.0,-0.2,0.0), rot:q0, scale:v(0.46,0.4,0.28)}, &cube, &jacket),
-            (RSpec::Rigid{f:Chest, off:v(0.0,-0.41,0.0), rot:q0, scale:v(0.44,0.06,0.26)}, &cube, &jacket_dark),
-            (RSpec::Rigid{f:Chest, off:v(0.0,0.02,0.0), rot:q0, scale:v(0.3,0.07,0.22)}, &cube, &jacket_dark),
-            (RSpec::Rigid{f:Chest, off:v(0.0,-0.2,-0.142), rot:q0, scale:v(0.025,0.36,0.01)}, &cube, &brass),
+            (RSpec::Rigid{f:RF::Chest, off:v(0.0,-0.2,0.0), rot:q0, scale:v(0.46,0.4,0.28)}, &cube, &jacket),
+            (RSpec::Rigid{f:RF::Chest, off:v(0.0,-0.41,0.0), rot:q0, scale:v(0.44,0.06,0.26)}, &cube, &jacket_dark),
+            (RSpec::Rigid{f:RF::Chest, off:v(0.0,0.02,0.0), rot:q0, scale:v(0.3,0.07,0.22)}, &cube, &jacket_dark),
+            (RSpec::Rigid{f:RF::Chest, off:v(0.0,-0.2,-0.142), rot:q0, scale:v(0.025,0.36,0.01)}, &cube, &brass),
             (RSpec::Limb{a:Chest,b:Neck,r:0.055}, &cyl, &joint),
             (RSpec::Limb{a:ShoulderL,b:ElbowL,r:0.07}, &cyl, &jacket),
             (RSpec::Limb{a:ShoulderR,b:ElbowR,r:0.07}, &cyl, &jacket),
@@ -448,14 +448,14 @@ pub fn net_spawn_avatars(
             (RSpec::Ball{j:ElbowR,r:0.07}, &ball, &joint),
             (RSpec::Ball{j:WristL,r:0.05}, &ball, &joint),
             (RSpec::Ball{j:WristR,r:0.05}, &ball, &joint),
-            (RSpec::Rigid{f:HandL, off:v(0.0,-0.06,0.0), rot:q0, scale:v(0.07,0.11,0.09)}, &cube, &shell),
-            (RSpec::Rigid{f:HandR, off:v(0.0,-0.06,0.0), rot:q0, scale:v(0.07,0.11,0.09)}, &cube, &shell),
-            (RSpec::Rigid{f:Head, off:v(0.0,0.0,0.0), rot:q0, scale:v(0.42,0.34,0.3)}, &cube, &shell),
-            (RSpec::Rigid{f:Head, off:v(0.0,0.0,-0.152), rot:q0, scale:v(0.38,0.3,0.01)}, &cube, &shell_dark),
-            (RSpec::Rigid{f:Head, off:v(-0.03,0.005,-0.155), rot:q0, scale:v(0.29,0.24,0.05)}, &ball, &screen),
-            (RSpec::Rigid{f:Head, off:v(0.0,-0.01,0.2), rot:q0, scale:v(0.3,0.24,0.14)}, &cube, &shell_dark),
-            (RSpec::Rigid{f:Head, off:v(0.155,0.06,-0.155), rot:qx, scale:v(0.045,0.03,0.045)}, &cyl, &joint),
-            (RSpec::Rigid{f:Head, off:v(0.09,0.27,0.0), rot:Quat::from_rotation_z(-0.35), scale:v(0.012,0.22,0.012)}, &cyl, &joint),
+            (RSpec::Rigid{f:RF::HandL, off:v(0.0,-0.06,0.0), rot:q0, scale:v(0.07,0.11,0.09)}, &cube, &shell),
+            (RSpec::Rigid{f:RF::HandR, off:v(0.0,-0.06,0.0), rot:q0, scale:v(0.07,0.11,0.09)}, &cube, &shell),
+            (RSpec::Rigid{f:RF::Head, off:v(0.0,0.0,0.0), rot:q0, scale:v(0.42,0.34,0.3)}, &cube, &shell),
+            (RSpec::Rigid{f:RF::Head, off:v(0.0,0.0,-0.152), rot:q0, scale:v(0.38,0.3,0.01)}, &cube, &shell_dark),
+            (RSpec::Rigid{f:RF::Head, off:v(-0.03,0.005,-0.155), rot:q0, scale:v(0.29,0.24,0.05)}, &ball, &screen),
+            (RSpec::Rigid{f:RF::Head, off:v(0.0,-0.01,0.2), rot:q0, scale:v(0.3,0.24,0.14)}, &cube, &shell_dark),
+            (RSpec::Rigid{f:RF::Head, off:v(0.155,0.06,-0.155), rot:qx, scale:v(0.045,0.03,0.045)}, &cyl, &joint),
+            (RSpec::Rigid{f:RF::Head, off:v(0.09,0.27,0.0), rot:Quat::from_rotation_z(-0.35), scale:v(0.012,0.22,0.012)}, &cyl, &joint),
             (RSpec::Eye{off:v(-0.085,0.02,-0.18)}, &ball, &eye),
             (RSpec::Eye{off:v(0.035,0.02,-0.18)}, &ball, &eye),
             (RSpec::Canopy, &dome, &canopy),
@@ -467,7 +467,7 @@ pub fn net_spawn_avatars(
             Name::new(format!("remote_{}", rp.name)),
         )).with_children(|p| {
             for (spec, mesh, m) in &parts {
-                p.spawn((RPart { id: *id, spec: spec.clone() }, Mesh3d(mesh.clone()), MeshMaterial3d(m.clone()), Transform::default(), Visibility::Visible));
+                p.spawn((RPart { id: *id, spec: spec.clone() }, Mesh3d((*mesh).clone()), MeshMaterial3d((*m).clone()), Transform::default(), Visibility::Visible));
             }
             for k in 0..3 {
                 p.spawn((RWing { id: *id, k }, Mesh3d(meshes.add(r_wing_blank())), MeshMaterial3d(wing_mat.clone()), Transform::default(), Visibility::Hidden, bevy::camera::visibility::NoFrustumCulling));
@@ -689,13 +689,13 @@ fn net_update_avatars(
         let buf = (0.1 + jitter * 2.0).clamp(0.05, 0.3);
         let render_t = rp.last - buf;
         let alpha_raw = (render_t - rp.prev_t) / span;
-        let (alpha, extrapolate) = if alpha_raw > 1.0 {
+        let (alpha, extrapolate): (f32, f64) = if alpha_raw > 1.0 {
             // packet loss: dead-reckon past curr using velocity
             let over = (alpha_raw - 1.0) * span; // seconds beyond curr
             let over_capped = over.min(0.5);
             (1.0, over_capped)
         } else {
-            (alpha_raw.clamp(0.0, 1.0), 0.0)
+            (alpha_raw.clamp(0.0, 1.0) as f32, 0.0)
         };
         let vel = [
             (rp.pos[0]-rp.prev_pos[0])/span,
