@@ -721,8 +721,8 @@ fn net_update_avatars(
         // interpolation + dead reckoning + jitter-adaptive buffer
         let span = (rp.last - rp.prev_t).max(1e-4);
         // jitter estimate from span vs 60Hz expected (EWMA stored in prev_t? use span deviation)
-        let jitter = ((span - 1.0/60.0).abs()).min(0.1);
-        let buf = (0.1 + jitter * 2.0).clamp(0.05, 0.3);
+        let jitter = ((span - 1.0/60.0).abs()).min(0.05);
+        let buf = (0.03 + jitter * 2.0).clamp(0.016, 0.1);
         let render_t = rp.last - buf;
         let alpha_raw = (render_t - rp.prev_t) / span;
         let (alpha, extrapolate): (f32, f64) = if alpha_raw > 1.0 {
