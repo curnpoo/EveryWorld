@@ -11,6 +11,14 @@ pub fn enabled() -> bool {
     cfg!(target_os = "macos") && std::env::var_os("EW_NATIVE").is_none_or(|v| v != "0")
 }
 
+pub fn renderer_name() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Native Metal (Bevy if EW_NATIVE=0)"
+    } else {
+        "Bevy (wgpu)"
+    }
+}
+
 /// Keep CPU copies of meshes in the main world only when the native renderer needs them.
 pub fn mesh_usage() -> bevy::asset::RenderAssetUsages {
     if enabled() {

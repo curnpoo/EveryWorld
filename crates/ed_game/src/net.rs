@@ -3,12 +3,9 @@
 use crate::config::Config;
 use crate::origin::WorldOrigin;
 use crate::player::Player;
-use crate::spawn::SpawnRequest;
 use bevy::prelude::*;
 use crossbeam_channel::{Receiver, Sender};
-use ed_geo::Geodetic;
 use ed_net::{decode_s2c, encode, C2S, S2C, Vec3d, PROTOCOL_VERSION};
-use glam::DVec3;
 use std::collections::HashMap;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::{Arc, Mutex};
@@ -169,7 +166,6 @@ fn net_thread(cmd_rx: Receiver<NetCmd>, evt_tx: Sender<NetEvt>, players: Arc<Mut
 fn net_drain_events(
     mut client: ResMut<NetClient>,
     mut remote: ResMut<RemotePlayers>,
-    mut spawn_writer: MessageWriter<SpawnRequest>,
 ) {
     let mut roster: Vec<(u64, String)> = vec![];
     let mut joins: Vec<(u64, String)> = vec![];
@@ -202,11 +198,9 @@ fn net_drain_events(
     for (id, name) in joins {
         remote.players.insert(id, RemotePlayer { id, name, pos: [0.0; 3], yaw: 0.0, pitch: 0.0, boot: 0, last: 0.0 });
     }
-    let mut first_state_pos: Option<[f64; 3]> = None;
     for (id, name, pos, yaw, pitch, boot, t) in states {
         let rp = remote.players.entry(id).or_insert(RemotePlayer { id, name: name.clone(), pos, yaw, pitch, boot, last: t });
         rp.name = name; rp.pos = pos; rp.yaw = yaw; rp.pitch = pitch; rp.boot = boot; rp.last = t;
-        if first_state_pos.is_none() { first_state_pos = Some(pos); }
     }
     for id in leaves {
         remote.players.remove(&id);
@@ -216,15 +210,6 @@ fn net_drain_events(
         client.id = None;
         client.server = None;
         remote.players.clear();
-    }
-
-    // Spawn next to a remote player the first time we receive their state.
-    if client.status == NetStatus::Connected && !client.spawned_near {
-        if let Some(pos) = first_state_pos {
-            client.spawned_near = true;
-            let geo = Geodetic::from_ecef(DVec3::new(pos[0], pos[1], pos[2]));
-            spawn_writer.write(SpawnRequest::At { pos: geo, name: "remote".to_string(), height: crate::spawn::SpawnHeight::Ground });
-        }
     }
 }
 

@@ -7,7 +7,9 @@
 
 use crate::config::Config;
 use crate::menu::GameState;
+use crate::net::RemotePlayers;
 use crate::origin::WorldOrigin;
+use glam::DVec3;
 use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
@@ -25,8 +27,9 @@ impl Plugin for MinimapPlugin {
     fn build(&self, app: &mut App) {
         let (tx, rx) = crossbeam_channel::unbounded();
         app.insert_resource(MinimapState::new(tx, rx))
+            .insert_resource(MinimapRemoteDots::default())
             .add_systems(Startup, spawn_minimap)
-            .add_systems(Update, (update_minimap, receive_tiles, layout_tiles, minimap_visibility).chain());
+            .add_systems(Update, (update_minimap, receive_tiles, layout_tiles, minimap_visibility, update_minimap_remote_dots).chain());
     }
 }
 
@@ -68,6 +71,16 @@ struct MinimapTile(TileId);
 
 #[derive(Component)]
 struct MinimapNorth;
+
+#[derive(Component)]
+struct MinimapRemoteDot {
+    id: u64,
+}
+
+#[derive(Resource, Default)]
+struct MinimapRemoteDots {
+    map: HashMap<u64, Entity>,
+}
 
 #[derive(Resource)]
 struct MinimapState {
@@ -430,5 +443,62 @@ mod tests {
         let w = to_world(g);
         assert!(w.0 > 0.0 && w.0 < 1.0);
         assert!(w.1 > 0.0 && w.1 < 1.0);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn update_minimap_remote_dots(
+    mut commands: Commands,
+    st: Res<MinimapState>,
+    origin: Res<WorldOrigin>,
+    remote: Res<RemotePlayers>,
+    rotators: Query<Entity, With<MinimapRotator>>,
+    mut dots: ResMut<MinimapRemoteDots>,
+) {
+    let Ok(rotator) = rotators.single() else { return };
+    let to_remove: Vec<u64> = dots.map.keys().copied().filter(|id| !remote.players.contains_key(id)).collect();
+    for id in to_remove {
+        if let Some(e) = dots.map.remove(&id) {
+            commands.entity(e).despawn();
+        }
+    }
+    let cx = st.center.0;
+    let cy = st.center.1;
+    let scale = TILE_PX * 2.0f32.powf(st.view_zoom);
+    let half = SIZE_PX * 0.5;
+    for (id, rp) in remote.players.iter() {
+        let geo = ed_geo::Geodetic::from_ecef(glam::DVec3::new(rp.pos[0], rp.pos[1], rp.pos[2]));
+        let (wx, wy) = to_world(geo);
+        let ox = (wx - cx) * scale as f64;
+        let oy = (wy - cy) * scale as f64;
+        if let Some(&e) = dots.map.get(id) {
+            commands.entity(e).insert(Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px((half + ox as f32 - 4.0).clamp(-16.0, SIZE_PX + 16.0)),
+                top: Val::Px((half + oy as f32 - 4.0).clamp(-16.0, SIZE_PX + 16.0)),
+                width: Val::Px(8.0),
+                height: Val::Px(8.0),
+                border_radius: BorderRadius::MAX,
+                ..default()
+            });
+        } else {
+            let e = commands.spawn((
+                MinimapRemoteDot { id: *id },
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(half + ox as f32 - 4.0),
+                    top: Val::Px(half + oy as f32 - 4.0),
+                    width: Val::Px(8.0),
+                    height: Val::Px(8.0),
+                    border_radius: BorderRadius::MAX,
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.2, 0.6, 1.0)),
+                BorderColor::all(Color::WHITE),
+                ChildOf(rotator),
+                ZIndex(2),
+            )).id();
+            dots.map.insert(*id, e);
+        }
     }
 }
