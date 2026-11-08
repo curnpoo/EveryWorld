@@ -141,14 +141,9 @@ fn vertex(v: ImpostorVertex) -> ImpostorOut {
     // grow to cover thinned neighbours, but shrink with distance instead of
     // staying the same size out to the cap.
     var grow = 1.0;
-    if !no_thin {
-        grow = pow(min(inverseSqrt(max(min(f, kept), 1e-6)), imp.tune.y), 0.75);
-    }
     // Fine tiles meet the leaf cards at `near`: match their size there, grow
     // to full canopy cover further out.
-    if near > 0.0 {
-        grow = mix(1.0, grow, smoothstep(near + 300.0, near + 1500.0, d));
-    }
+
     if near > 0.0 {
         s = s * smoothstep(near - 20.0, near + 20.0, d);
     }

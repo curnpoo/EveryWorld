@@ -52,7 +52,9 @@ enum HudField {
     CompassDeg,
     SpeedVal,
     SpeedSub,
+    SpeedUnit,
     AltVal,
+    AltUnit,
     AltSub,
     Mode,
     Stats,
@@ -241,7 +243,8 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
                             TextColor(TEXT_PRIMARY),
                         ));
                         r.spawn((
-                            Text::new("MPH"),
+                            HudField::SpeedUnit,
+                            Text::new("KM/H"),
                             TextFont {
                                 font_size: FontSize::Px(11.0),
                                 ..default()
@@ -330,7 +333,8 @@ fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
                     TextColor(TEXT_PRIMARY),
                 ));
                 r.spawn((
-                    Text::new("FT"),
+                    HudField::AltUnit,
+                    Text::new("M"),
                     TextFont {
                         font_size: FontSize::Px(11.0),
                         ..default()
@@ -582,9 +586,12 @@ fn update_text(
     };
     let g = origin.to_geodetic(pos);
     let up_p = origin.up_at(pos);
+    let kmh = vel.length() * 3.6;
     let mph = vel.length() * 2.236_94;
-    let vs = vel.dot(up_p) * 2.236_94;
-    let ft = g.alt_m * 3.280_84;
+    let vs_ms = vel.dot(up_p);
+    let vs_mph = vs_ms * 2.236_94;
+    let alt_m = g.alt_m;
+    let alt_ft = g.alt_m * 3.280_84;
     let mach = vel.length() as f64 / ed_flight::atmosphere(g.alt_m).speed_of_sound;
 
     let deg_str = format!(
@@ -592,13 +599,29 @@ fn update_text(
         heading.rem_euclid(360.0),
         cardinal_label(heading)
     );
-    let speed_val_str = format!("{:.0}", mph);
-    let speed_sub_str = format!("{mach:.2}");
-    let alt_val_str = thousands(ft as i64);
-    let alt_sub_str = if vs.abs() > 2.5 {
-        format!("{} {:.0} MPH", if vs < 0.0 { "↓" } else { "↑" }, vs.abs())
+    let speed_val_str = if gfx.units_metric {
+        format!("{:.0}", kmh)
     } else {
-        String::new()
+        format!("{:.0}", mph)
+    };
+    let speed_sub_str = format!("{mach:.2}");
+    let alt_val_str = if gfx.units_metric {
+        thousands(alt_m as i64)
+    } else {
+        thousands(alt_ft as i64)
+    };
+    let alt_sub_str = if gfx.units_metric {
+        if vs_ms.abs() > 1.0 {
+            format!("{} {:.0} m/s", if vs_ms < 0.0 { "↓" } else { "↑" }, vs_ms.abs())
+        } else {
+            String::new()
+        }
+    } else {
+        if vs_mph.abs() > 2.5 {
+            format!("{} {:.0} MPH", if vs_mph < 0.0 { "↓" } else { "↑" }, vs_mph.abs())
+        } else {
+            String::new()
+        }
     };
     let mode_str = {
         let mut s = mode.label().to_uppercase();
@@ -654,7 +677,7 @@ fn update_text(
              satellite layers free {} / {} / {}\n\
              buildings {}   trees {}   tris {:.1}M\n\
              detail chunks {} loaded / {} in flight\n\
-             mode {}   speed {:.0} mph   vertical {:+.0} mph\n\
+             mode {}   speed {:.0} km/h   vertical {:+.0} m/s\n\
              {}",
             g.lat_deg,
             g.lon_deg,
@@ -689,8 +712,8 @@ fn update_text(
             detail_loaded,
             detail_flight,
             mode.label(),
-            mph,
-            vs,
+            kmh,
+            vs_ms,
             wtxt,
         );
     }
@@ -710,6 +733,18 @@ fn update_text(
             HudField::SpeedSub => {
                 if t.0 != speed_sub_str {
                     t.0 = speed_sub_str.clone();
+                }
+            }
+            HudField::SpeedUnit => {
+                let u = if gfx.units_metric { "KM/H" } else { "MPH" };
+                if t.0 != u {
+                    t.0 = u.to_string();
+                }
+            }
+            HudField::AltUnit => {
+                let u = if gfx.units_metric { "M" } else { "FT" };
+                if t.0 != u {
+                    t.0 = u.to_string();
                 }
             }
             HudField::AltVal => {

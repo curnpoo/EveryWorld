@@ -22,7 +22,7 @@ type Buf = Retained<ProtocolObject<dyn MTLBuffer>>;
 type Tex = Retained<ProtocolObject<dyn MTLTexture>>;
 type Pso = Retained<ProtocolObject<dyn MTLRenderPipelineState>>;
 
-const SHADOW_RES: usize = 2048;
+const SHADOW_RES: usize = 4096;
 const NCASC: usize = 6; // 0-3 near cascades (everything), 4 = mid (everything, to MID_SHADOW m), 5 = far terrain-only
 const MID_SHADOW: f32 = 4000.0;
 const HDR: MTLPixelFormat = MTLPixelFormat::RGBA16Float;
@@ -214,6 +214,8 @@ pub struct DrawItem {
     pub terrain: bool,
     /// Far-tree impostor quads (needs `upload_extra` + the atlas).
     pub impostor: bool,
+    /// Foliage (leaf cards / trees): casts shadows in far cascades.
+    pub foliage: bool,
     /// Ocean / inland water surface: drawn in the water pass with scene-depth-aware shading.
     pub water: bool,
     /// The global ocean surface (as opposed to a lake or river): its water is deep even where the

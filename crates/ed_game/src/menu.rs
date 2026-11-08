@@ -246,6 +246,8 @@ pub struct GraphicsSettings {
     pub window_mode: WindowModeSetting,
     /// How many streamed tiles stay resident when out of view (live-applied).
     pub tile_retention: TileRetentionSetting,
+    /// HUD units: true = metric, false = imperial.
+    pub units_metric: bool,
     /// The clock was last set to real current time by the "Now" button.
     pub time_live: bool,
     pub hour_offset: f64,
@@ -506,6 +508,7 @@ impl Default for GraphicsSettings {
             show_stats: false,
             window_mode,
             tile_retention: TileRetentionSetting::default(),
+            units_metric: true,
             time_live: false,
             hour_offset: 0.0,
             hour_offset_applied: 0.0,
@@ -560,6 +563,7 @@ pub enum MenuAction {
     ToggleStats,
     CycleWindowMode,
     CycleTileRetention,
+    ToggleUnits,
     ToggleProbes,
     CycleProbeView,
     CycleNativeView,
@@ -1008,6 +1012,7 @@ fn build_menus(mut commands: Commands, assets: Res<AssetServer>) {
                 ] {
                     setting_row(t, label, &[("Toggle", a)], a);
                 }
+                setting_row(t, "Units", &[("Toggle", MenuAction::ToggleUnits)], MenuAction::ToggleUnits);
                 setting_row(t, "Upscaler render scale", &[("Change", MenuAction::CycleResolution)], MenuAction::CycleResolution);
                 setting_row(t, "Time of day", &[("-1 h", MenuAction::TimeMinus), ("+1 h", MenuAction::TimePlus), ("Now", MenuAction::TimeNow)], MenuAction::TimePlus);
                 t.spawn(Node { column_gap: Val::Px(12.0), align_items: AlignItems::Center, ..default() }).with_children(|r| {
@@ -1639,6 +1644,7 @@ fn menu_buttons(
             MenuAction::ToggleStats => gfx.show_stats = !gfx.show_stats,
             MenuAction::CycleWindowMode => gfx.window_mode = gfx.window_mode.next(),
             MenuAction::CycleTileRetention => gfx.tile_retention = gfx.tile_retention.next(),
+            MenuAction::ToggleUnits => gfx.units_metric = !gfx.units_metric,
             MenuAction::ToggleProbes => dbg.probe_gi = !dbg.probe_gi,
             MenuAction::CycleProbeView => dbg.probe_view = dbg.probe_view.next(),
             MenuAction::CycleNativeView => dbg.native_view = dbg.native_view.next(),
@@ -1805,6 +1811,7 @@ fn refresh_menu(
             MenuAction::ToggleStats => on(gfx.show_stats),
             MenuAction::CycleWindowMode => gfx.window_mode.label().to_string(),
             MenuAction::CycleTileRetention => gfx.tile_retention.label().to_string(),
+            MenuAction::ToggleUnits => if gfx.units_metric { "Metric".to_string() } else { "Imperial".to_string() },
             MenuAction::ToggleProbes => on(dbg.probe_gi),
             MenuAction::CycleProbeView => dbg.probe_view.label().to_string(),
             MenuAction::CycleNativeView => dbg.native_view.label().to_string(),

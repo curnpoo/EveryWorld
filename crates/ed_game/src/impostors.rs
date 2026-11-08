@@ -10,10 +10,10 @@
 use bevy::asset::{RenderAssetUsages, embedded_asset};
 use bevy::camera::primitives::Aabb;
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
-use bevy::light::NotShadowCaster;
 use bevy::mesh::{Indices, MeshVertexAttribute, MeshVertexBufferLayoutRef, PrimitiveTopology};
 use bevy::pbr::{ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline};
 use bevy::prelude::*;
+use bevy::light::NotShadowCaster;
 use bevy::render::render_resource::{
     AsBindGroup, Extent3d, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError, TextureDimension,
     TextureFormat, TextureViewDescriptor, TextureViewDimension, VertexFormat,

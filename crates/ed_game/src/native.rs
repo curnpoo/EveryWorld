@@ -594,9 +594,10 @@ mod imp {
                 // Sun-only meshes (layer 7: shadow stand-ins) never draw for the camera;
                 // camera-only meshes (layer 6: full-detail stand-ins) never cast.
                 visible: visible && !is_sun_only,
-                cast_shadow: !no_cast && !is_cam_only,
+                cast_shadow: !no_cast,
                 terrain: is_terrain || is_tproxy,
                 impostor: is_imp,
+                foliage: fol.is_some(),
                 water,
                 ocean,
             });
@@ -637,7 +638,7 @@ mod imp {
                 sun: [to_sun.x, to_sun.y, to_sun.z, day],
                 sky: sky.to_array(),
                 fog_density: 1.0 / 200_000.0,
-                shadow_far: 700.0,
+                shadow_far: 3000.0,
                 terrain_shadow_far: 20_000.0,
                 shadows: gfx.shadows && std::env::var_os("EW_NATIVE_NOSHADOW").is_none(),
                 exposure: 1.7,

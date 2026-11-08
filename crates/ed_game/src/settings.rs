@@ -113,6 +113,7 @@ struct SavedGraphics {
     window_mode: Option<u8>,
     /// 0 Low, 1 Normal, 2 High, 3 KeepAll.
     tile_retention: Option<u8>,
+    units_metric: Option<bool>,
 }
 
 fn settings_path() -> Option<PathBuf> {
@@ -233,6 +234,9 @@ fn load(
         if let Some(m) = g.tile_retention {
             gfx.tile_retention = crate::menu::TileRetentionSetting::from_code(m);
         }
+        if let Some(v) = g.units_metric {
+            gfx.units_metric = v;
+        }
     }
     if let Some(s) = saved.mouse_sensitivity {
         controls.mouse_sensitivity = s.clamp(0.2, 3.0);
@@ -333,6 +337,7 @@ fn snapshot(
             show_stats: gfx.show_stats,
             window_mode: Some(gfx.window_mode as u8),
             tile_retention: Some(gfx.tile_retention.to_code()),
+            units_metric: Some(gfx.units_metric),
         })
     };
     Saved {
@@ -398,6 +403,7 @@ mod tests {
                 show_stats: true,
                 window_mode: Some(1),
                 tile_retention: Some(2),
+                units_metric: Some(true),
             }),
             mouse_sensitivity: Some(1.3),
             invert_y: Some(true),
