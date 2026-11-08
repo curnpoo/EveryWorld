@@ -418,7 +418,8 @@ pub fn stream_tree_chunks(
         }
         if let Some(imp) = set.impostor {
             let has_near = set.chunks.iter().any(|c| !c.near.is_empty());
-            if has_near {
+            let tile_dist = gt.translation().distance(cam);
+            if has_near || tile_dist < 500.0 {
                 commands.entity(imp).insert(Visibility::Hidden);
             } else {
                 commands.entity(imp).insert(Visibility::Inherited);
