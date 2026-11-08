@@ -419,9 +419,9 @@ pub fn stream_tree_chunks(
         if let Some(imp) = set.impostor {
             let has_near = set.chunks.iter().any(|c| !c.near.is_empty());
             if has_near {
-                commands.entity(imp).insert(Visibility::Hidden);
+                commands.entity(imp).insert(Transform::from_scale(Vec3::ZERO));
             } else {
-                commands.entity(imp).insert(Visibility::Inherited);
+                commands.entity(imp).insert(Transform::default());
             }
         }
     }
