@@ -96,7 +96,7 @@ fn sync_cameras(
         if c.is_active != two_cam {
             c.is_active = two_cam;
         }
-        c.clear_color = if menu || gfx.render_pct < 100 { ClearColorConfig::Default } else { ClearColorConfig::None };
+        c.clear_color = ClearColorConfig::Default;
         if two_cam != is_ui {
             if two_cam { commands.entity(e).insert(IsDefaultUiCamera); } else { commands.entity(e).remove::<IsDefaultUiCamera>(); }
         }
@@ -126,7 +126,9 @@ fn apply_render_scale(
             for e in state.extras.drain(..) {
                 commands.entity(e).despawn();
             }
-            state.image = None;
+            if let Some(old) = state.image.take() {
+                images.remove(old.id());
+            }
             state.size = UVec2::ZERO;
         }
         return;
@@ -134,6 +136,9 @@ fn apply_render_scale(
     let want = (phys.as_vec2() * gfx.render_pct as f32 / 100.0).as_uvec2().max(UVec2::splat(64));
     if state.image.is_some() && state.size == want {
         return;
+    }
+    if let Some(old) = state.image.take() {
+        images.remove(old.id());
     }
     for e in state.extras.drain(..) {
         commands.entity(e).despawn();

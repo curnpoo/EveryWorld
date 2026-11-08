@@ -95,26 +95,36 @@ impl CloudQuality {
     pub const HIGH: Self = Self { steps: 160, light_steps: 6, max_distance_m: 300_000.0, step_scale: 0.8, explicit: false, enabled: true };
 
     fn from_args() -> Self {
+        let explicit_quality = arg("--cloud-quality").is_some();
         let mut q = match arg("--cloud-quality").as_deref() {
             Some("low") => Self { explicit: true, ..Self::LOW },
             Some("medium") => Self { explicit: true, ..Self::MEDIUM },
             Some("high") => Self { explicit: true, ..Self::HIGH },
-            _ => Self::HIGH,
+            _ => if cfg!(target_os = "windows") { Self::LOW } else { Self::HIGH },
         };
         q.enabled = !std::env::args().any(|a| a == "--no-clouds");
+        // On Windows default to LOW quality to spare GPU budget; override with --cloud-quality.
+        if cfg!(target_os = "windows") && !explicit_quality {
+            q.explicit = false;
+        }
         q
     }
 }
 
-/// Software rasterizers (lavapipe in CI) get the cheap settings.
+/// Software rasterizers (lavapipe in CI) get the cheap settings; on Windows
+/// integrated GPUs also drop to low.
 fn pick_quality(mut q: ResMut<CloudQuality>, info: Option<Res<bevy::render::renderer::RenderAdapterInfo>>, mut done: Local<bool>) {
     if *done {
         return;
     }
     let Some(info) = info else { return };
     *done = true;
-    if !q.explicit && format!("{:?}", info.device_type) == "Cpu" {
+    let device_type = format!("{:?}", info.device_type);
+    if !q.explicit && device_type == "Cpu" {
         info!("clouds: software renderer ({}), using low quality", info.name);
+        *q = CloudQuality { enabled: q.enabled, ..CloudQuality::LOW };
+    } else if cfg!(target_os = "windows") && !q.explicit && device_type == "IntegratedGpu" {
+        info!("clouds: integrated GPU ({}), using low quality", info.name);
         *q = CloudQuality { enabled: q.enabled, ..CloudQuality::LOW };
     }
 }

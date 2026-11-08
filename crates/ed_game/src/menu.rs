@@ -119,7 +119,7 @@ impl AaMode {
     }
     pub fn label(self) -> &'static str {
         match self {
-            Self::Upscale => "MetalFX upscaler",
+            Self::Upscale => "Upscaler",
             Self::Aa => "Anti-aliasing",
             Self::Off => "Off",
         }
@@ -418,13 +418,20 @@ impl Default for GraphicsSettings {
             _ if args.iter().any(|a| a == "--borderless") => WindowModeSetting::Borderless,
             _ => WindowModeSetting::Windowed,
         };
+        // On non-native (Windows/Linux) the Bevy renderer is heavier; default to a lite preset.
+        let lite = !crate::native::enabled();
+        let (render_pct, aa, aa_mode) = if lite {
+            (40u32, false, AaMode::Off)
+        } else {
+            (67u32, post, if post { AaMode::Upscale } else { AaMode::Off })
+        };
         let mut g = Self {
             shadows: !std::env::args().any(|a| a == "--no-shadows"),
-            ambient_occlusion: post,
-            bloom: post,
-            render_pct: 67,
-            aa: post,
-            aa_mode: if post { AaMode::Upscale } else { AaMode::Off },
+            ambient_occlusion: post && !lite,
+            bloom: post && !lite,
+            render_pct,
+            aa,
+            aa_mode,
             show_stats: false,
             window_mode,
             time_live: false,
@@ -1719,13 +1726,7 @@ fn refresh_menu(
             MenuAction::ToggleAo => on(gfx.ambient_occlusion),
             MenuAction::ToggleBloom => on(gfx.bloom),
             MenuAction::ToggleAa => gfx.aa_mode.label().to_string(),
-            MenuAction::CycleResolution => {
-                if gfx.aa_mode == AaMode::Upscale {
-                    format!("{}%", gfx.render_pct)
-                } else {
-                    "native".to_string()
-                }
-            }
+            MenuAction::CycleResolution => format!("{}%", gfx.render_pct),
             MenuAction::ToggleStats => on(gfx.show_stats),
             MenuAction::CycleWindowMode => gfx.window_mode.label().to_string(),
             MenuAction::ToggleProbes => on(dbg.probe_gi),
@@ -2048,6 +2049,7 @@ pub fn apply_graphics(
         match (gfx.aa, has_aa) {
             (true, false) => {
                 commands.entity(e).insert(TemporalAntiAliasing::default());
+                commands.entity(e).insert((bevy::core_pipeline::prepass::DepthPrepass, bevy::core_pipeline::prepass::MotionVectorPrepass));
             }
             (false, true) => {
                 commands.entity(e).remove::<TemporalAntiAliasing>();

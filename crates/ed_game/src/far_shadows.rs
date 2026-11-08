@@ -27,7 +27,7 @@ pub struct FarShadowsPlugin;
 
 impl Plugin for FarShadowsPlugin {
     fn build(&self, app: &mut App) {
-        let v = std::env::var("EW_FAR_SHADOWS").unwrap_or_default();
+        let v = std::env::var("EW_FAR_SHADOWS").unwrap_or_else(|_| if cfg!(target_os = "windows") { "0".to_string() } else { String::new() });
         let on = v != "0";
         farshadow::set_enabled(on);
         DEBUG.store(v == "debug", std::sync::atomic::Ordering::Relaxed);

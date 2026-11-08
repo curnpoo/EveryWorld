@@ -209,8 +209,10 @@ impl<K, T> Drop for JobPool<K, T> {
 /// sockets, so there are more of them.
 pub fn default_threads() -> (usize, usize) {
     let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
-    let cpu = cores.saturating_sub(3).clamp(1, 8);
-    (8, cpu)
+    let cpu_max = if cfg!(target_os = "windows") { 4 } else { 8 };
+    let io_max = if cfg!(target_os = "windows") { 4 } else { 8 };
+    let cpu = cores.saturating_sub(3).clamp(1, cpu_max);
+    (io_max, cpu)
 }
 
 #[cfg(test)]

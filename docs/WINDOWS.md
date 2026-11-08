@@ -137,6 +137,41 @@ CI (`.github/workflows/ci.yml`) runs `cargo test --workspace` on
 `macos-latest` and `windows-latest` for every push — check that first if the
 machine is remote.
 
+## Windows-specific performance defaults
+
+To fit GPU VRAM on a typical Windows gaming PC the following defaults differ
+from the macOS build. All are overridable with environment variables.
+
+| What | Windows default | Mac default | Override |
+|---|---|---|---|
+| Draw distance | 2 km | 16 km | `EW_MAX_DIST_M=4000` |
+| Building detail range | 1.6 km | 16 km | `EW_FINE_RANGE_M=3200` |
+| Resident tile cap | 24 | 48 | `EW_RESIDENT_TILES=48` |
+| Shadow cascades | 2, up to 300 m | 4, up to 2.5 km | — (env `EW_SHADOWS=legacy` for Mac config) |
+| Cloud quality | Low | High | `--cloud-quality medium` |
+| Far-shadow pool | off (EW_FAR_SHADOWS=0) | on | `EW_FAR_SHADOWS=1` |
+| Full 3D tree radius | 100 m | 230 m | — |
+| Sat texture pool | ~8 MB | ~576 MB | — (scales with draw distance) |
+| Tile-build threads | 4 | up to 8 | `EW_TILE_THREADS=6` |
+| Meshlet buffer | 256 K slots | 4 M slots | — |
+
+**High-VRAM config (8+ GB VRAM):** add these to your launch command or PowerShell
+profile to push quality closer to the Mac experience:
+```powershell
+$env:EW_MAX_DIST_M    = "4000"   # 4 km draw distance
+$env:EW_FINE_RANGE_M  = "3200"   # building detail to 3.2 km
+$env:EW_RESIDENT_TILES = "48"    # keep more tiles on rotation
+$env:EW_FAR_SHADOWS   = "1"      # horizon shadow maps
+cargo run --release -- --cloud-quality medium
+```
+
+**Low-VRAM / integrated GPU config (4 GB or less):**
+```powershell
+$env:EW_MAX_DIST_M    = "800"    # tight draw distance
+$env:EW_RESIDENT_TILES = "12"
+cargo run --release -- --cloud-quality low
+```
+
 ## What differs from macOS
 
 - **Renderer:** Bevy/wgpu instead of native Metal. Screenshots are close but

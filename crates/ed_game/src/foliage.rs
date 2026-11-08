@@ -22,8 +22,14 @@ use ed_world::trees::{self, BarkStyle, TileTrees, WindMesh, impostor, textures::
 use std::collections::HashMap;
 
 /// Full-detail trees within this distance of a chunk's center...
+#[cfg(target_os = "windows")]
+const NEAR_IN: f32 = 100.0;
+#[cfg(not(target_os = "windows"))]
 const NEAR_IN: f32 = 230.0;
 /// ...and back to the far cards beyond this one (hysteresis).
+#[cfg(target_os = "windows")]
+const NEAR_OUT: f32 = 130.0;
+#[cfg(not(target_os = "windows"))]
 const NEAR_OUT: f32 = 270.0;
 /// Chunks switched per frame (spreads spawn cost).
 const SWAPS_PER_FRAME: usize = 6;

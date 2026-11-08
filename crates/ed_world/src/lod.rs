@@ -17,11 +17,14 @@ pub struct LodParams {
     pub root_radius: i64,
     /// Split to the finest zoom within this ground distance (the z14 building floor, metres).
     pub fine_range_m: f64,
+    /// Hard cap on ground distance: tiles farther than this are not rendered at all.
+    /// `f64::INFINITY` disables the cap.
+    pub max_distance_m: f64,
 }
 
 impl Default for LodParams {
     fn default() -> Self {
-        Self { root_zoom: 6, max_zoom: 14, split: 1.0, root_radius: 2, fine_range_m: 16_000.0 }
+        Self { root_zoom: 6, max_zoom: 14, split: 1.0, root_radius: 2, fine_range_m: 16_000.0, max_distance_m: f64::INFINITY }
     }
 }
 
@@ -48,6 +51,9 @@ pub fn select(cam: Geodetic, ground_m: f64, p: &LodParams) -> Vec<TileId> {
         let w = t.width_m();
         let d_ground = distance_to_tile(cam, t);
         if d_ground > horizon + w {
+            continue;
+        }
+        if d_ground > p.max_distance_m {
             continue;
         }
         let d = (d_ground * d_ground + agl * agl).sqrt();

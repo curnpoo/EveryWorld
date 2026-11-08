@@ -86,7 +86,7 @@ const APPLY_UNITS: u32 = 250;
 /// the units above are the real limiter; this only stops a runaway frame.
 const APPLY_MS: u64 = 4;
 /// Loaded tiles kept resident while out of view, at most (`EW_RESIDENT_TILES`).
-const RESIDENT_CAP: usize = 192;
+const RESIDENT_CAP: usize = if cfg!(target_os = "windows") { 24 } else { 48 };
 /// Off-screen wanted tiles closer than this many tile widths are still built
 /// (at low priority): the ground you could turn and look at right away.
 const OFFSCREEN_PREBUILD: f64 = 1.5;
@@ -626,9 +626,10 @@ const DETAIL_IN_FLIGHT: usize = 2;
 const NEAR_IN_M: f32 = 70.0;
 const NEAR_OUT_M: f32 = 100.0;
 /// Tiles with a building chunk this close explode into per-chunk LOD so their
-/// buildings cast shadows (the far cascade ends at 700 m, `sky.rs`).
+/// buildings cast shadows (the far cascade ends at 700 m, `sky.rs`; on Windows
+/// shadows cap at 300 m so the explode radius is tighter).
 /// Bevy renderer only: on native the merged tile LOD casts, so no explode.
-const SHADOW_EXPLODE_M: f32 = 750.0;
+const SHADOW_EXPLODE_M: f32 = if cfg!(target_os = "windows") { 320.0 } else { 750.0 };
 /// Rock chunks are entities only within this distance of the camera.
 const ROCK_RANGE_M: f32 = 500.0;
 
@@ -786,6 +787,7 @@ fn select_tiles(
     // finest zoom so altitude doesn't split into hundreds of tiny tiles (which can't
     // all build in time and leave the sea globe showing through). At 100 km this
     // yields a few dozen ~500 km tiles that cover the visible disc almost at once.
+    let win_lite = cfg!(target_os = "windows");
     let (root_zoom, max_zoom) = if cam.alt_m > 200_000.0 {
         (2u8, 4u8)
     } else if cam.alt_m > 100_000.0 {
@@ -800,7 +802,9 @@ fn select_tiles(
     let params = LodParams {
         root_zoom,
         max_zoom,
-        fine_range_m: env_num("EW_FINE_RANGE_M", 16_000.0),
+        root_radius: if win_lite { 1 } else { 2 },
+        fine_range_m: env_num("EW_FINE_RANGE_M", if win_lite { 1600.0 } else { 16_000.0 }),
+        max_distance_m: if win_lite { env_num("EW_MAX_DIST_M", 2000.0) } else { f64::INFINITY },
         ..default()
     };
     let wanted: HashSet<TileId> = lod::select(cam, mgr.ground_estimate, &params)
@@ -900,7 +904,7 @@ fn select_tiles(
         // Off-screen wanted tiles beyond the prebuild ring wait: at street level `wanted` is
         // ~354 tiles (z14 out to 16 km) while the view holds ~137, so building them all is far
         // too expensive. Rotating into them is a known build storm (see CHANGES 2026-11-06).
-        if std::env::var_os("EW_KEEP_TILES").is_none() && !visible && d > OFFSCREEN_PREBUILD {
+        if std::env::var_os("EW_KEEP_TILES").is_none() && !visible && d > if cfg!(target_os = "windows") { 0.5 } else { OFFSCREEN_PREBUILD } {
             continue;
         }
         // 0 (or negative) disables the far massing LOD entirely; it must not mean "every tile is far".
@@ -1058,8 +1062,13 @@ fn apply_tiles(
 ) {
     let t0 = std::time::Instant::now();
     let (sat_pool, far_pool) = (&mut *pools.0, &mut *pools.1);
+    let apply_units = if cfg!(target_os = "windows") {
+        120
+    } else {
+        APPLY_UNITS
+    };
     let mut budget = FrameBudget::new(
-        env_num("EW_APPLY_BUDGET", APPLY_UNITS),
+        env_num("EW_APPLY_BUDGET", apply_units),
         Some(std::time::Duration::from_millis(APPLY_MS)),
     );
     let focus_pos = focus.iter().next().map(|t| t.translation());
@@ -1457,33 +1466,50 @@ fn retire_tiles(
 ) {
     let t0 = std::time::Instant::now();
     let mgr = &mut *mgr;
-    let mut retire = scheduler::retire(
-        mgr.loaded.keys().copied(),
-        &mgr.wanted,
-        |t| mgr.loaded.contains_key(t),
-        |t| mgr.in_view.contains(t),
-    );
-    // Over the cap: oldest unseen first. `over_cap` never returns tiles seen
-    // this tick, and in-view tiles are touched every select.
-    if mgr.loaded.len() > mgr.resident_cap {
-        retire.extend(
-            mgr.seen
-                .over_cap(mgr.resident_cap)
-                .into_iter()
-                .filter(|t| !mgr.in_view.contains(t)),
+    let jumped = std::mem::take(&mut mgr.jumped);
+    // After an origin jump the wanted set is an entirely new region: every loaded
+    // tile that is no longer wanted is stale and must go now (not a few per
+    // frame). Relying on `scheduler::retire` here is too conservative - its
+    // blocking/ancestor holding keeps almost all of them alive, so the mesh slab
+    // grows until the GPU runs out of memory.
+    let retire = if jumped {
+        let r: Vec<TileId> = mgr
+            .loaded
+            .keys()
+            .copied()
+            .filter(|t| !mgr.wanted.contains(t))
+            .collect();
+        info!("origin jump: retiring {} stale tiles at once", r.len());
+        r
+    } else {
+        let mut r = scheduler::retire(
+            mgr.loaded.keys().copied(),
+            &mgr.wanted,
+            |t| mgr.loaded.contains_key(t),
+            |t| mgr.in_view.contains(t),
         );
-    }
+        // Over the cap: oldest unseen first. `over_cap` never returns tiles seen
+        // this tick, and in-view tiles are touched every select.
+        let over_cap = mgr.loaded.len() > mgr.resident_cap;
+        if over_cap {
+            r.extend(
+                mgr.seen
+                    .over_cap(mgr.resident_cap)
+                    .into_iter()
+                    .filter(|t| !mgr.in_view.contains(t)),
+            );
+            // Do not throttle retirement while over the residency cap: dropping
+            // tiles fast enough to avoid GPU OOM matters more than avoiding a
+            // despawn hitch here.
+            r
+        } else {
+            r.truncate(env_num("EW_RETIRE_PER_FRAME", 64));
+            r
+        }
+    };
     if retire.is_empty() {
         crate::probes::add_retire(t0.elapsed());
         return;
-    }
-    // Despawn storms are a hitch, so spread them over frames (`EW_RETIRE_PER_FRAME`) - except
-    // after an origin jump: those tiles are off-screen, and leaving them alive means the rebase
-    // re-anchors (and physics re-syncs) colliders that are about to be thrown away.
-    if std::mem::take(&mut mgr.jumped) {
-        info!("origin jump: retiring {} stale tiles at once", retire.len());
-    } else {
-        retire.truncate(env_num("EW_RETIRE_PER_FRAME", 3));
     }
     for t in retire {
         let Some(e) = mgr.loaded.remove(&t) else {

@@ -52,6 +52,45 @@
   - Closer nametags depth-sort in front of farther players via inverted-distance `ZIndex`.
 - Needs Mac check: In-game visual check during walking, skydiving, and spaceflight.
 
+## 2026-11-07: Windows — GPU pool right-sizing, draw distance, shadow and thread tuning
+- **Root cause of OOM:** `SatPool` and `FarPool` pre-allocate fixed GPU texture arrays at
+  startup sized for the full 16 km Mac draw distance (~714 MB total), regardless of Windows'
+  400 m cap. With RESIDENT_CAP=6 the pool slots were also too few, causing thrashing.
+- **Fixes across 7 files:**
+  - `ground_material.rs`: `SAT_CLASSES` shrunk on Windows: `[(1024,6),(512,16),(256,24)]`
+    instead of `[(1024,32),(512,80),(256,320)]`. GPU pool drops from ~576 MB to ~8 MB.
+  - `far_shadows.rs`: far-shadow pool already defaults off on Windows (EW_FAR_SHADOWS=0);
+    pool size capped at 32 layers (was 328) so the disabled pool uses <1 MB not 138 MB.
+  - `streaming.rs`: draw distance raised from 400 m to 2000 m default (env `EW_MAX_DIST_M`);
+    `fine_range_m` from 400 m to 1600 m; `root_radius` 0→1 (adjacent tiles preload);
+    `RESIDENT_CAP` 6→24 (stops constant rebuild storms); apply budget 50→120 (faster load);
+    offscreen prebuild threshold 0.0→0.5 (a half-tile ring prebuilds off-screen);
+    `SHADOW_EXPLODE_M` 750→320 m (matches the 300 m shadow cap).
+  - `shadows.rs`: cap cascades at 2 and max shadow distance at 300 m on Windows (saves
+    two 2048×2048 shadow maps and all the tile-explode overhead beyond 300 m).
+  - `ed_runtime/jobs.rs`: IO and CPU tile-build thread cap 8→4 on Windows (fewer in-flight
+    tile builds = less peak RAM/VRAM during streaming).
+  - `foliage.rs`: full 3D tree mesh radius 230/270 m → 100/130 m on Windows (impostors cover
+    the rest; saves mesh memory and draw calls per frame).
+  - `main.rs`: meshlet cluster buffer 4M → 256K slots on Windows (saves ~32 MB GPU buffer).
+  - `clouds.rs`: cloud quality defaults to LOW on Windows; integrated GPUs also auto-downgrade.
+- **Needs Windows check:** build with `cargo build --release`, run any city scene, confirm
+  no OOM at 40% render scale. Target: stable at 2 km draw distance, 70% render scale.
+- **Env vars to increase quality:** `EW_MAX_DIST_M=4000`, `EW_FINE_RANGE_M=3200`,
+  `EW_RESIDENT_TILES=48`, `--cloud-quality medium`, `EW_FAR_SHADOWS=1`.
+
+## 2026-11-07: Windows/Bevy GPU OOM fixed (HUD text was leaking font atlases)
+- On the Bevy/wgpu path (Windows) a long session climbed VRAM until `Out of Memory`
+  on a mesh slab and quit. Measured: ~256 MB steps to 7.4 GB and still rising. The
+  leak was `Assets<Image>`: continuously rewriting the HUD `Text` every frame (compass,
+  mode pill, stats) made Bevy allocate a new 512×512 font-atlas `Image` per update.
+- Fix: `hud::update_text` now only writes a `Text` component when the string actually
+  changes. After: `image_assets` stays flat (151, ~28 MB) through a full cruise and no
+  OOM. Verified on the RTX 2070 SUPER (Vulkan) with a 200 km cruise over 5+ minutes.
+- The rest of the Windows path already had: origin-jump tile retirement, over-cap
+  retire unthrottled, resident cap 48, TAA motion-vector prepass, and native-res clear.
+
+
 ## 2026-11-07: body-parity — remote players use unified body.rs procedural rig (protocol v5)
 - Remote players now use the exact same 62-part procedural IK rig as the local
   player (`ed_game::body`), replacing the old simplified hand-coded avatar in

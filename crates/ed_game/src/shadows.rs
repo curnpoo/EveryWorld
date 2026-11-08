@@ -33,10 +33,15 @@ pub fn cascade_config(agl_m: f32) -> CascadeShadowConfig {
 }
 
 fn builder(p: &CascadePlan) -> CascadeShadowConfigBuilder {
+    let (num_cascades, maximum_distance) = if cfg!(target_os = "windows") {
+        (p.num.min(2), p.max.min(300.0))
+    } else {
+        (p.num, p.max)
+    };
     CascadeShadowConfigBuilder {
-        num_cascades: p.num,
+        num_cascades,
         first_cascade_far_bound: p.first_far,
-        maximum_distance: p.max,
+        maximum_distance,
         overlap_proportion: p.overlap,
         ..default()
     }
