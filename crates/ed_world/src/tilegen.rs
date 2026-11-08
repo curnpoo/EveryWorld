@@ -593,7 +593,8 @@ pub fn build(job: &TileJob) -> TileBuild {
             // the cards. Coarse tiles: impostors only.
             let fine = tile.z >= 14;
             let near_cut = if fine { trees::impostor::CARD_RANGE_M - 210.0 } else { 0.0 };
-            let impostors = trees::impostor::build_mesh(&trees, up, Vec3::ZERO, kept, near_cut, Some(&proj.uv_map()));
+            // kept = -1.0 => show every tree as an impostor (no thinning, no growth), for a dense, lush look.
+            let impostors = trees::impostor::build_mesh(&trees, up, Vec3::ZERO, -1.0, near_cut, Some(&proj.uv_map()));
             out.trees = if fine { trees::bake_tile(trees, up, proj.tile.width_m() as f32, 12) } else { trees::TileTrees { up, chunks: Vec::new(), impostors: Default::default() } };
             out.trees.impostors = impostors;
             // Rocks are small: only fine tiles show them, in culled chunks.

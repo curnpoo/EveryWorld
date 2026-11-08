@@ -127,16 +127,23 @@ fn vertex(v: ImpostorVertex) -> ImpostorOut {
     let up_w = ax * bu.x + up * bu.y + az * bu.z;
 
     let radius = v.params.x;
-    let kept = max(v.params.z, 1e-6);
+    let no_thin = v.params.z < 0.0;
+    let kept = max(abs(v.params.z), 1e-6);
     let near = v.params.w;
     let f = min(1.0, pow(imp.tune.x / d, 2.0));
     let keep_here = f / kept;
     // Wide ramp so a tree fades in over a ~40% change in share, not a pop.
-    var s = clamp((keep_here - v.axis.w) / max(0.4 * keep_here, 0.004), 0.0, 1.0);
+    var s = 1.0;
+    if !no_thin {
+        s = clamp((keep_here - v.axis.w) / max(0.4 * keep_here, 0.004), 0.0, 1.0);
+    }
     // Three quarters of the thinning compensation (pow 0.75): far crowns still
     // grow to cover thinned neighbours, but shrink with distance instead of
     // staying the same size out to the cap.
-    var grow = pow(min(inverseSqrt(max(min(f, kept), 1e-6)), imp.tune.y), 0.75);
+    var grow = 1.0;
+    if !no_thin {
+        grow = pow(min(inverseSqrt(max(min(f, kept), 1e-6)), imp.tune.y), 0.75);
+    }
     // Fine tiles meet the leaf cards at `near`: match their size there, grow
     // to full canopy cover further out.
     if near > 0.0 {
