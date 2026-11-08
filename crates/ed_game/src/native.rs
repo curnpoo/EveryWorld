@@ -208,8 +208,8 @@ mod imp {
     /// New meshes are requested (attributes extracted, clone + spawn) at most this often per frame
     /// while visible; hidden tiles (staged by `apply_tiles`) get a slice of the leftovers so their
     /// buffers exist before reveal. Tunable via EW_UPLOAD_BUDGET / EW_HIDDEN_UPLOAD_BUDGET.
-    const UPLOAD_BUDGET: usize = 48;
-    const HIDDEN_UPLOAD_BUDGET: usize = 16;
+    const UPLOAD_BUDGET: usize = 96;
+    const HIDDEN_UPLOAD_BUDGET: usize = 32;
 
     /// How many mesh prep workers run at the same time. Each prep builds a cluster grid and
     /// three decimation levels for one mesh, which is seconds of CPU for a big city tile.

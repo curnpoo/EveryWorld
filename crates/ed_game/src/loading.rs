@@ -185,7 +185,7 @@ fn update_loading(
     }
     let now = time.elapsed_secs();
     let playing = *state.get() == GameState::Playing;
-    let timeout: f32 = std::env::var("EW_LOAD_TIMEOUT").ok().and_then(|v| v.parse().ok()).unwrap_or(25.0);
+    let timeout: f32 = std::env::var("EW_LOAD_TIMEOUT").ok().and_then(|v| v.parse().ok()).unwrap_or(60.0);
 
     // Progress: wanted tiles in, then the geometry upload queue.
     let (tiles, got, want) = mgr.as_ref().map_or((0.0, 0, 0), |m| {

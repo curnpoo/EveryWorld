@@ -82,15 +82,15 @@ impl Plugin for StreamingPlugin {
 /// Main-thread apply budget per frame, in cost units (about one entity
 /// spawn, or ~10k triangles of mesh upload, per unit). `EW_APPLY_BUDGET`
 /// overrides it for tuning. The first item of a frame always runs.
-const APPLY_UNITS: u32 = 250;
+const APPLY_UNITS: u32 = 500;
 /// Wall-clock cap for the apply loop itself. Spawns are deferred commands, so
 /// the units above are the real limiter; this only stops a runaway frame.
-const APPLY_MS: u64 = 4;
+const APPLY_MS: u64 = 8;
 /// Loaded tiles kept resident while out of view, at most (`EW_RESIDENT_TILES`).
 const RESIDENT_CAP: usize = if cfg!(target_os = "windows") { 24 } else { 48 };
 /// Off-screen wanted tiles closer than this many tile widths are still built
 /// (at low priority): the ground you could turn and look at right away.
-const OFFSCREEN_PREBUILD: f64 = if cfg!(target_os = "windows") { 0.5 } else { 2.5 };
+const OFFSCREEN_PREBUILD: f64 = if cfg!(target_os = "windows") { 0.5 } else { 4.0 };
 /// Height allowance above the ground for buildings and trees in the view test.
 const BUILDING_ALLOWANCE_M: f32 = 500.0;
 /// Buildings farther than this (m) use the far massing mesh; crossing inward swaps to full geometry.
