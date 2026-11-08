@@ -181,9 +181,9 @@ impl TileRetentionSetting {
     }
     pub fn label(self) -> &'static str {
         match self {
-            Self::Low => "Low (48 tiles)",
-            Self::Normal => "Normal (150 tiles)",
-            Self::High => "High (400 tiles)",
+            Self::Low => "Low (150 tiles)",
+            Self::Normal => "Normal (400 tiles)",
+            Self::High => "High (1000 tiles)",
             Self::KeepAll => "Keep all (unbounded)",
         }
     }
@@ -191,16 +191,16 @@ impl TileRetentionSetting {
         // Windows draw distance is 2 km -> far fewer tiles; keep its caps tight.
         if cfg!(target_os = "windows") {
             match self {
-                Self::Low => 24,
-                Self::Normal => 48,
-                Self::High => 96,
+                Self::Low => 48,
+                Self::Normal => 96,
+                Self::High => 200,
                 Self::KeepAll => usize::MAX,
             }
         } else {
             match self {
-                Self::Low => 48,
-                Self::Normal => 150,
-                Self::High => 400,
+                Self::Low => 150,
+                Self::Normal => 400,
+                Self::High => 1000,
                 Self::KeepAll => usize::MAX,
             }
         }

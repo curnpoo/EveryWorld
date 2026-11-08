@@ -942,7 +942,15 @@ fn select_tiles(
     for t in loaded.iter().filter(|t| in_view.contains(t)) {
         mgr.seen.touch(t);
     }
-    let desired = wanted.intersection(&in_view).copied().collect();
+    // Load screen waits for `desired` to be fully loaded. Include every wanted tile
+    // within EW_LOAD_RADIUS_M (default 20 km) in 360°, not just the in-view cone,
+    // so the world is populated before play instead of needing a 20-30 s pan.
+    let load_radius = env_num("EW_LOAD_RADIUS_M", 20_000.0);
+    let desired: HashSet<TileId> = wanted
+        .iter()
+        .copied()
+        .filter(|t| in_view.contains(t) || cam.distance_to(t.center()) <= load_radius)
+        .collect();
     mgr.wanted = wanted;
     mgr.in_view = in_view;
     mgr.desired = desired;
