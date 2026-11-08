@@ -11,21 +11,21 @@
 use crate::body::Cosmetics;
 use crate::clouds::CloudOverride;
 use crate::config::Config;
-use crate::sky::{Clock, CurrentWeather};
-use crate::gamepad::{spawn_crosshair, InputMode, Pad};
+use crate::gamepad::{InputMode, Pad, spawn_crosshair};
 use crate::mapview::{MapCanvas, MapState};
 use crate::player::{ControlSettings, Player};
 use crate::settings::AudioSettings;
+use crate::sky::{Clock, CurrentWeather};
 use crate::spawn::{Arrived, Spawner};
 use avian3d::prelude::{Physics, PhysicsTime};
+use bevy::anti_alias::taa::TemporalAntiAliasing;
 use bevy::asset::embedded_asset;
 use bevy::ecs::hierarchy::ChildSpawnerCommands;
 use bevy::light::DirectionalLight;
-use bevy::pbr::ScreenSpaceAmbientOcclusion;
-use bevy::anti_alias::taa::TemporalAntiAliasing;
-use bevy::post_process::bloom::Bloom;
 use bevy::light::ShadowFilteringMethod;
 use bevy::pbr::ContactShadows;
+use bevy::pbr::ScreenSpaceAmbientOcclusion;
+use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use bevy::text::FontSize;
 use bevy::ui::RelativeCursorPosition;
@@ -64,11 +64,16 @@ impl Plugin for MenuPlugin {
                     apply_graphics,
                     update_debug_readout,
                     highlight_tabs,
+                    apply_window_mode,
+                    window_mode_shortcut,
                 )
                     .chain(),
             )
             .add_systems(Startup, pause_physics)
-            .add_systems(OnEnter(GameState::Playing), (capture_cursor, unpause_physics))
+            .add_systems(
+                OnEnter(GameState::Playing),
+                (capture_cursor, unpause_physics),
+            )
             .add_systems(OnExit(GameState::Playing), (release_cursor, pause_physics));
     }
 }
@@ -121,6 +126,41 @@ impl AaMode {
     }
 }
 
+/// How the game window is presented: plain window, borderless fullscreen
+/// (per-display, instant on/off, alt-tab friendly — the usual fullscreen
+/// games use on both macOS and Windows), or exclusive fullscreen.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum WindowModeSetting {
+    #[default]
+    Windowed,
+    Borderless,
+    Exclusive,
+}
+
+impl WindowModeSetting {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Windowed => Self::Borderless,
+            Self::Borderless => Self::Exclusive,
+            Self::Exclusive => Self::Windowed,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Windowed => "Windowed",
+            Self::Borderless => "Borderless fullscreen",
+            Self::Exclusive => "Exclusive fullscreen",
+        }
+    }
+    pub fn from_code(code: u8) -> Self {
+        match code {
+            1 => Self::Borderless,
+            2 => Self::Exclusive,
+            _ => Self::Windowed,
+        }
+    }
+}
+
 #[derive(Resource, Clone)]
 pub struct GraphicsSettings {
     pub aa_mode: AaMode,
@@ -133,6 +173,8 @@ pub struct GraphicsSettings {
     pub aa: bool,
     /// Extended debug/performance stats in the HUD.
     pub show_stats: bool,
+    /// Window presentation mode (persists via the settings file).
+    pub window_mode: WindowModeSetting,
     /// The clock was last set to real current time by the "Now" button.
     pub time_live: bool,
     pub hour_offset: f64,
@@ -340,9 +382,24 @@ impl OceanFft {
 impl Default for DebugSettings {
     fn default() -> Self {
         let probe_gi = !std::env::var("EW_PROBE_GI").is_ok_and(|v| v == "0");
-        let probe_view = ProbeView::from_debug_value(std::env::var("EW_PROBE_DEBUG").ok().and_then(|v| v.parse().ok()).unwrap_or(0));
-        let native_view = NativeDebugView::from_debug_value(std::env::var("EW_NATIVE_DBG").ok().and_then(|v| v.parse().ok()).unwrap_or(0));
-        Self { probe_gi, probe_view, native_view, ocean_fft: OceanFft::Auto }
+        let probe_view = ProbeView::from_debug_value(
+            std::env::var("EW_PROBE_DEBUG")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0),
+        );
+        let native_view = NativeDebugView::from_debug_value(
+            std::env::var("EW_NATIVE_DBG")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0),
+        );
+        Self {
+            probe_gi,
+            probe_view,
+            native_view,
+            ocean_fft: OceanFft::Auto,
+        }
     }
 }
 
@@ -352,11 +409,35 @@ pub const DEFAULT_SOLAR_HOUR: f64 = 15.0;
 impl Default for GraphicsSettings {
     fn default() -> Self {
         let post = !std::env::args().any(|a| a == "--no-post");
-        let mut g = Self { shadows: !std::env::args().any(|a| a == "--no-shadows"), ambient_occlusion: post, bloom: post, render_pct: 67, aa: post, aa_mode: if post { AaMode::Upscale } else { AaMode::Off }, show_stats: false, time_live: false, hour_offset: 0.0, hour_offset_applied: 0.0, solar_hour: DEFAULT_SOLAR_HOUR };
+        let args: Vec<String> = std::env::args().collect();
+        let window_mode = match std::env::var("EW_WINDOW_MODE").as_deref() {
+            Ok("windowed") => WindowModeSetting::Windowed,
+            Ok("borderless") => WindowModeSetting::Borderless,
+            Ok("fullscreen") => WindowModeSetting::Exclusive,
+            _ if args.iter().any(|a| a == "--fullscreen") => WindowModeSetting::Exclusive,
+            _ if args.iter().any(|a| a == "--borderless") => WindowModeSetting::Borderless,
+            _ => WindowModeSetting::Windowed,
+        };
+        let mut g = Self {
+            shadows: !std::env::args().any(|a| a == "--no-shadows"),
+            ambient_occlusion: post,
+            bloom: post,
+            render_pct: 67,
+            aa: post,
+            aa_mode: if post { AaMode::Upscale } else { AaMode::Off },
+            show_stats: false,
+            window_mode,
+            time_live: false,
+            hour_offset: 0.0,
+            hour_offset_applied: 0.0,
+            solar_hour: DEFAULT_SOLAR_HOUR,
+        };
         // Perf bisecting: `EW_GFX=ao=0,bloom=0,aa=0,shadows=0,res=50,stats=1`.
         if let Ok(spec) = std::env::var("EW_GFX") {
             for kv in spec.split(',') {
-                let Some((k, v)) = kv.split_once('=') else { continue };
+                let Some((k, v)) = kv.split_once('=') else {
+                    continue;
+                };
                 let b = v != "0";
                 match k {
                     "ao" => g.ambient_occlusion = b,
@@ -369,7 +450,13 @@ impl Default for GraphicsSettings {
                     "stats" => g.show_stats = b,
                     "res" => {
                         g.render_pct = v.parse().unwrap_or(g.render_pct);
-                        g.aa_mode = if g.render_pct < 100 { AaMode::Upscale } else if g.aa { AaMode::Aa } else { AaMode::Off };
+                        g.aa_mode = if g.render_pct < 100 {
+                            AaMode::Upscale
+                        } else if g.aa {
+                            AaMode::Aa
+                        } else {
+                            AaMode::Off
+                        };
                     }
                     _ => {}
                 }
@@ -392,6 +479,7 @@ pub enum MenuAction {
     CycleResolution,
     ToggleAa,
     ToggleStats,
+    CycleWindowMode,
     ToggleProbes,
     CycleProbeView,
     CycleNativeView,
@@ -463,7 +551,10 @@ struct WeatherPick {
 
 impl Default for WeatherPick {
     fn default() -> Self {
-        Self { name: "Live", live: None }
+        Self {
+            name: "Live",
+            live: None,
+        }
     }
 }
 
@@ -504,7 +595,13 @@ pub struct JoinForm {
     pub focus: u8, // 0 none, 1 server, 2 name
 }
 impl Default for JoinForm {
-    fn default() -> Self { Self { server: "127.0.0.1:7777".to_string(), name: "player".to_string(), focus: 0 } }
+    fn default() -> Self {
+        Self {
+            server: "127.0.0.1:7777".to_string(),
+            name: "player".to_string(),
+            focus: 0,
+        }
+    }
 }
 
 /// The pause screen's heading ("Paused" in game, the game name from the main menu).
@@ -546,7 +643,14 @@ pub fn button<A: Component>(p: &mut ChildSpawnerCommands, label: &str, action: A
         BackgroundColor(if accent { ORANGE } else { BTN }),
     ))
     .with_children(|b| {
-        b.spawn((Text::new(label), TextFont { font_size: FontSize::Px(17.0), ..default() }, TextColor(INK)));
+        b.spawn((
+            Text::new(label),
+            TextFont {
+                font_size: FontSize::Px(17.0),
+                ..default()
+            },
+            TextColor(INK),
+        ));
         badge(b);
     });
 }
@@ -560,7 +664,10 @@ fn badge(b: &mut ChildSpawnerCommands) {
     b.spawn((
         PadBadge,
         Text::new(""),
-        TextFont { font_size: FontSize::Px(15.0), ..default() },
+        TextFont {
+            font_size: FontSize::Px(15.0),
+            ..default()
+        },
         TextColor(Color::WHITE),
         Node {
             position_type: PositionType::Absolute,
@@ -581,7 +688,13 @@ fn badge(b: &mut ChildSpawnerCommands) {
 
 /// Big, rounded main-menu button in the title font.
 #[allow(deprecated)]
-fn home_button(p: &mut ChildSpawnerCommands, font: &Handle<Font>, label: &str, action: MenuAction, accent: bool) {
+fn home_button(
+    p: &mut ChildSpawnerCommands,
+    font: &Handle<Font>,
+    label: &str,
+    action: MenuAction,
+    accent: bool,
+) {
     p.spawn((
         Interaction::None,
         action,
@@ -594,7 +707,15 @@ fn home_button(p: &mut ChildSpawnerCommands, font: &Handle<Font>, label: &str, a
         BackgroundColor(if accent { ORANGE } else { BTN }),
     ))
     .with_children(|b| {
-        b.spawn((Text::new(label), TextFont { font: FontSource::Handle(font.clone()), font_size: FontSize::Px(34.0), ..default() }, TextColor(INK)));
+        b.spawn((
+            Text::new(label),
+            TextFont {
+                font: FontSource::Handle(font.clone()),
+                font_size: FontSize::Px(34.0),
+                ..default()
+            },
+            TextColor(INK),
+        ));
         badge(b);
     });
 }
@@ -656,14 +777,29 @@ fn update_badges(
 }
 
 fn text(p: &mut ChildSpawnerCommands, s: &str, size: f32, color: Color) {
-    p.spawn((Text::new(s), TextFont { font_size: FontSize::Px(size), ..default() }, TextColor(color)));
+    p.spawn((
+        Text::new(s),
+        TextFont {
+            font_size: FontSize::Px(size),
+            ..default()
+        },
+        TextColor(color),
+    ));
 }
 
 fn map_canvas(p: &mut ChildSpawnerCommands) {
     p.spawn((
         MapCanvas,
         RelativeCursorPosition::default(),
-        Node { flex_grow: 1.0, flex_basis: Val::Px(0.0), min_height: Val::Px(240.0), width: Val::Percent(100.0), overflow: Overflow::clip(), border_radius: BorderRadius::all(Val::Px(14.0)), ..default() },
+        Node {
+            flex_grow: 1.0,
+            flex_basis: Val::Px(0.0),
+            min_height: Val::Px(240.0),
+            width: Val::Percent(100.0),
+            overflow: Overflow::clip(),
+            border_radius: BorderRadius::all(Val::Px(14.0)),
+            ..default()
+        },
         BackgroundColor(Color::srgb(0.01, 0.012, 0.02)),
     ))
     .with_children(spawn_crosshair);
@@ -672,7 +808,12 @@ fn map_canvas(p: &mut ChildSpawnerCommands) {
 fn build_menus(mut commands: Commands, assets: Res<AssetServer>) {
     let font: Handle<Font> = assets.load("embedded://everyworld/menu_assets/Chewy-Regular.ttf");
     let bg: Handle<Image> = assets.load("embedded://everyworld/menu_assets/menu_bg.png");
-    let fill = Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() };
+    let fill = Node {
+        position_type: PositionType::Absolute,
+        width: Val::Percent(100.0),
+        height: Val::Percent(100.0),
+        ..default()
+    };
     // ---- Home: blurred Matterhorn sunset, big bubbly title ----
     commands
         .spawn((
@@ -695,17 +836,37 @@ fn build_menus(mut commands: Commands, assets: Res<AssetServer>) {
             p.spawn((fill, BackgroundColor(Color::srgba(0.05, 0.03, 0.10, 0.30))));
             p.spawn((
                 Text::new("EveryWorld"),
-                TextFont { font: FontSource::Handle(font.clone()), font_size: FontSize::Px(150.0), ..default() },
+                TextFont {
+                    font: FontSource::Handle(font.clone()),
+                    font_size: FontSize::Px(150.0),
+                    ..default()
+                },
                 TextColor(Color::srgb(1.0, 0.97, 0.90)),
-                TextShadow { offset: Vec2::new(0.0, 9.0), color: Color::srgba(0.80, 0.25, 0.05, 0.9) },
+                TextShadow {
+                    offset: Vec2::new(0.0, 9.0),
+                    color: Color::srgba(0.80, 0.25, 0.05, 0.9),
+                },
             ));
             p.spawn((
                 Text::new("The whole real Earth. Drop in anywhere."),
-                TextFont { font: FontSource::Handle(font.clone()), font_size: FontSize::Px(28.0), ..default() },
+                TextFont {
+                    font: FontSource::Handle(font.clone()),
+                    font_size: FontSize::Px(28.0),
+                    ..default()
+                },
                 TextColor(Color::srgb(1.0, 0.93, 0.82)),
             ));
-            p.spawn(Node { height: Val::Px(30.0), ..default() });
-            p.spawn(Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(16.0), width: Val::Px(340.0), ..default() }).with_children(|c| {
+            p.spawn(Node {
+                height: Val::Px(30.0),
+                ..default()
+            });
+            p.spawn(Node {
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(16.0),
+                width: Val::Px(340.0),
+                ..default()
+            })
+            .with_children(|c| {
                 home_button(c, &font, "Play", MenuAction::Play, true);
                 home_button(c, &font, "Quit", MenuAction::Quit, false);
             });
@@ -758,6 +919,7 @@ fn build_menus(mut commands: Commands, assets: Res<AssetServer>) {
             // Settings tab.
             p.spawn((TabBody(MenuView::Settings), Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(12.0), ..default() }, Visibility::Hidden)).with_children(|t| {
                 for (label, a) in [
+                    ("Window mode", MenuAction::CycleWindowMode),
                     ("Shadows", MenuAction::ToggleShadows),
                     ("Ambient occlusion", MenuAction::ToggleAo),
                     ("Bloom", MenuAction::ToggleBloom),
@@ -954,10 +1116,36 @@ fn build_menus(mut commands: Commands, assets: Res<AssetServer>) {
         });
 }
 
-fn setting_row(p: &mut ChildSpawnerCommands, label: &str, buttons: &[(&str, MenuAction)], value_of: MenuAction) {
-    p.spawn(Node { column_gap: Val::Px(12.0), align_items: AlignItems::Center, ..default() }).with_children(|r| {
-        r.spawn(Node { width: Val::Px(220.0), ..default() }).with_children(|c| text(c, label, 17.0, INK));
-        r.spawn((SettingValue(value_of), Text::new(""), TextFont { font_size: FontSize::Px(16.0), ..default() }, TextColor(ORANGE), Node { width: Val::Px(90.0), ..default() }));
+fn setting_row(
+    p: &mut ChildSpawnerCommands,
+    label: &str,
+    buttons: &[(&str, MenuAction)],
+    value_of: MenuAction,
+) {
+    p.spawn(Node {
+        column_gap: Val::Px(12.0),
+        align_items: AlignItems::Center,
+        ..default()
+    })
+    .with_children(|r| {
+        r.spawn(Node {
+            width: Val::Px(220.0),
+            ..default()
+        })
+        .with_children(|c| text(c, label, 17.0, INK));
+        r.spawn((
+            SettingValue(value_of),
+            Text::new(""),
+            TextFont {
+                font_size: FontSize::Px(16.0),
+                ..default()
+            },
+            TextColor(ORANGE),
+            Node {
+                width: Val::Px(90.0),
+                ..default()
+            },
+        ));
         for (l, a) in buttons {
             button(r, l, *a, false);
         }
@@ -965,13 +1153,39 @@ fn setting_row(p: &mut ChildSpawnerCommands, label: &str, buttons: &[(&str, Menu
 }
 
 fn slider_row(p: &mut ChildSpawnerCommands, label: &str, k: Knob) {
-    p.spawn(Node { column_gap: Val::Px(12.0), align_items: AlignItems::Center, ..default() }).with_children(|r| {
-        r.spawn(Node { width: Val::Px(220.0), ..default() }).with_children(|c| text(c, label, 17.0, INK));
-        r.spawn((KnobReadout(k), Text::new(""), TextFont { font_size: FontSize::Px(16.0), ..default() }, TextColor(ORANGE), Node { width: Val::Px(90.0), ..default() }));
+    p.spawn(Node {
+        column_gap: Val::Px(12.0),
+        align_items: AlignItems::Center,
+        ..default()
+    })
+    .with_children(|r| {
+        r.spawn(Node {
+            width: Val::Px(220.0),
+            ..default()
+        })
+        .with_children(|c| text(c, label, 17.0, INK));
+        r.spawn((
+            KnobReadout(k),
+            Text::new(""),
+            TextFont {
+                font_size: FontSize::Px(16.0),
+                ..default()
+            },
+            TextColor(ORANGE),
+            Node {
+                width: Val::Px(90.0),
+                ..default()
+            },
+        ));
         r.spawn((
             k,
             RelativeCursorPosition::default(),
-            Node { width: Val::Px(320.0), height: Val::Px(14.0), border_radius: BorderRadius::all(Val::Px(7.0)), ..default() },
+            Node {
+                width: Val::Px(320.0),
+                height: Val::Px(14.0),
+                border_radius: BorderRadius::all(Val::Px(7.0)),
+                ..default()
+            },
             BackgroundColor(BTN),
         ))
         .with_children(|tr| {
@@ -996,10 +1210,24 @@ fn slider_row(p: &mut ChildSpawnerCommands, label: &str, k: Knob) {
 /// Launching with --place / --lat / --fly skips the menu (handy for testing).
 /// `--menu-view home|map|pause-map|settings|audio|controls|character|debug` opens a screen
 /// directly (for screenshots).
-fn skip_menu_from_cli(cfg: Res<Config>, mut next: ResMut<NextState<GameState>>, mut view: ResMut<MenuView>, mut map: ResMut<MapState>) {
+fn skip_menu_from_cli(
+    cfg: Res<Config>,
+    mut next: ResMut<NextState<GameState>>,
+    mut view: ResMut<MenuView>,
+    mut map: ResMut<MapState>,
+) {
     let args: Vec<String> = std::env::args().collect();
-    let menu_view = args.iter().position(|a| a == "--menu-view").and_then(|i| args.get(i + 1)).cloned();
-    let zoom = args.iter().position(|a| a == "--map-zoom").and_then(|i| args.get(i + 1)).and_then(|z| z.parse().ok()).unwrap_or(crate::globe::WHOLE_EARTH_ZOOM);
+    let menu_view = args
+        .iter()
+        .position(|a| a == "--menu-view")
+        .and_then(|i| args.get(i + 1))
+        .cloned();
+    let zoom = args
+        .iter()
+        .position(|a| a == "--map-zoom")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|z| z.parse().ok())
+        .unwrap_or(crate::globe::WHOLE_EARTH_ZOOM);
     map.focus(cfg.start, zoom);
     match menu_view.as_deref() {
         Some("map") => *view = MenuView::Map,
@@ -1016,7 +1244,11 @@ fn skip_menu_from_cli(cfg: Res<Config>, mut next: ResMut<NextState<GameState>>, 
             next.set(GameState::Paused);
         }
         _ => {
-            if cfg.fly || args.iter().any(|a| a == "--place" || a == "--lat" || a == "--play") {
+            if cfg.fly
+                || args
+                    .iter()
+                    .any(|a| a == "--place" || a == "--lat" || a == "--play")
+            {
                 next.set(GameState::Playing);
             }
         }
@@ -1096,10 +1328,20 @@ fn pad_focus(
     map: Res<MapState>,
     mut focus: ResMut<MenuFocus>,
     mut next: ResMut<NextState<GameState>>,
-    mut buttons: Query<(Entity, &MenuAction, &InheritedVisibility, &mut Interaction, &mut BackgroundColor, &UiGlobalTransform)>,
+    mut buttons: Query<(
+        Entity,
+        &MenuAction,
+        &InheritedVisibility,
+        &mut Interaction,
+        &mut BackgroundColor,
+        &UiGlobalTransform,
+    )>,
 ) {
     let popup = map.selected.is_some();
-    let active = menu_showing(state.get(), *view) && !popup && *mode == InputMode::Controller && *view != MenuView::Map;
+    let active = menu_showing(state.get(), *view)
+        && !popup
+        && *mode == InputMode::Controller
+        && *view != MenuView::Map;
     if pad.b_just && !popup {
         match state.get() {
             GameState::Paused => next.set(GameState::Playing),
@@ -1117,7 +1359,11 @@ fn pad_focus(
     let want = if !active || cands.is_empty() {
         None
     } else if let Some(cur) = cur {
-        let from = cands.iter().find(|c| c.0 == cur).map(|c| c.1).unwrap_or_default();
+        let from = cands
+            .iter()
+            .find(|c| c.0 == cur)
+            .map(|c| c.1)
+            .unwrap_or_default();
         let dir = Vec2::new(pad.nav.x as f32, pad.nav.y as f32);
         if dir == Vec2::ZERO {
             Some(cur)
@@ -1130,14 +1376,22 @@ fn pad_focus(
                     let d = c.1 - from;
                     let along = d.dot(dir);
                     let across = (d - dir * along).length();
-                    (along > 4.0 && across <= along * 2.0 + 40.0).then_some((c.0, along + across * 2.0))
+                    (along > 4.0 && across <= along * 2.0 + 40.0)
+                        .then_some((c.0, along + across * 2.0))
                 })
                 .min_by(|a, b| a.1.total_cmp(&b.1));
             Some(best.map(|b| b.0).unwrap_or(cur))
         }
     } else {
         // First open: the top-most, then left-most button.
-        cands.iter().min_by(|a, b| (a.1.y.round(), a.1.x).partial_cmp(&(b.1.y.round(), b.1.x)).unwrap()).map(|c| c.0)
+        cands
+            .iter()
+            .min_by(|a, b| {
+                (a.1.y.round(), a.1.x)
+                    .partial_cmp(&(b.1.y.round(), b.1.x))
+                    .unwrap()
+            })
+            .map(|c| c.0)
     };
     if focus.0 != want {
         focus.0 = want;
@@ -1154,7 +1408,11 @@ fn pad_focus(
     // Repaint every button when the focus or the tab changes. In between, hover still works.
     if focus.is_changed() || view.is_changed() {
         for (e, action, _, _, mut bg, _) in &mut buttons {
-            let want_bg = if focus.0 == Some(e) { FOCUS_BG } else { rest_bg(action, *view) };
+            let want_bg = if focus.0 == Some(e) {
+                FOCUS_BG
+            } else {
+                rest_bg(action, *view)
+            };
             if bg.0 != want_bg {
                 bg.0 = want_bg;
             }
@@ -1163,7 +1421,15 @@ fn pad_focus(
 }
 
 /// Tab order for LB / RB. Home has no tabs, so bumpers do nothing there.
-const TAB_ORDER: [MenuView; 7] = [MenuView::Map, MenuView::Settings, MenuView::Audio, MenuView::Character, MenuView::Controls, MenuView::Debug, MenuView::Multiplayer];
+const TAB_ORDER: [MenuView; 7] = [
+    MenuView::Map,
+    MenuView::Settings,
+    MenuView::Audio,
+    MenuView::Character,
+    MenuView::Controls,
+    MenuView::Debug,
+    MenuView::Multiplayer,
+];
 /// The active tab's button. Orange like the Play and Resume accents, but translucent.
 const TAB_ON: Color = Color::srgba(0.98, 0.45, 0.12, 0.55);
 
@@ -1191,7 +1457,9 @@ fn pad_tabs(
     } else {
         return;
     };
-    let Some(i) = TAB_ORDER.iter().position(|t| *t == *view) else { return };
+    let Some(i) = TAB_ORDER.iter().position(|t| *t == *view) else {
+        return;
+    };
     let n = TAB_ORDER.len() as i32;
     let next = TAB_ORDER[(i as i32 + step).rem_euclid(n) as usize];
     *view = next;
@@ -1204,7 +1472,11 @@ fn pad_tabs(
 
 /// Keep the active tab lit. Other tabs go back to plain only when the tab
 /// changes, so their hover highlight still works between changes.
-fn highlight_tabs(view: Res<MenuView>, focus: Res<MenuFocus>, mut tabs: Query<(Entity, &MenuAction, &mut BackgroundColor)>) {
+fn highlight_tabs(
+    view: Res<MenuView>,
+    focus: Res<MenuFocus>,
+    mut tabs: Query<(Entity, &MenuAction, &mut BackgroundColor)>,
+) {
     let changed = view.is_changed();
     for (e, action, mut bg) in &mut tabs {
         let MenuAction::Tab(t) = action else { continue };
@@ -1284,11 +1556,21 @@ fn menu_buttons(
                 gfx.aa = gfx.aa_mode != AaMode::Off;
             }
             MenuAction::ToggleStats => gfx.show_stats = !gfx.show_stats,
+            MenuAction::CycleWindowMode => gfx.window_mode = gfx.window_mode.next(),
             MenuAction::ToggleProbes => dbg.probe_gi = !dbg.probe_gi,
             MenuAction::CycleProbeView => dbg.probe_view = dbg.probe_view.next(),
             MenuAction::CycleNativeView => dbg.native_view = dbg.native_view.next(),
             MenuAction::CycleOceanFft => dbg.ocean_fft = dbg.ocean_fft.next(),
-            MenuAction::CycleResolution => gfx.render_pct = match gfx.render_pct { 100 => 90, 90 => 85, 85 => 75, 75 => 67, 67 => 50, _ => 100 },
+            MenuAction::CycleResolution => {
+                gfx.render_pct = match gfx.render_pct {
+                    100 => 90,
+                    90 => 85,
+                    85 => 75,
+                    75 => 67,
+                    67 => 50,
+                    _ => 100,
+                }
+            }
             MenuAction::TimeMinus => {
                 gfx.time_live = false;
                 map.time_target_offset = None;
@@ -1339,8 +1621,12 @@ fn menu_buttons(
                 // Snap the clouds to the new weather instead of easing over minutes.
                 over.set_changed();
             }
-            MenuAction::SensMinus => controls.mouse_sensitivity = (controls.mouse_sensitivity - 0.1).max(0.2),
-            MenuAction::SensPlus => controls.mouse_sensitivity = (controls.mouse_sensitivity + 0.1).min(3.0),
+            MenuAction::SensMinus => {
+                controls.mouse_sensitivity = (controls.mouse_sensitivity - 0.1).max(0.2)
+            }
+            MenuAction::SensPlus => {
+                controls.mouse_sensitivity = (controls.mouse_sensitivity + 0.1).min(3.0)
+            }
             MenuAction::InvertY => controls.invert_y = !controls.invert_y,
             MenuAction::ToggleBackpack => cosmetics.backpack = !cosmetics.backpack,
             MenuAction::ToggleMute => audio.muted = !audio.muted,
@@ -1362,7 +1648,10 @@ fn refresh_menu(
     cosmetics: Res<Cosmetics>,
     audio: Res<AudioSettings>,
     mut screens: Query<(&Screen, &mut Visibility), Without<TabBody>>,
-    mut tabs: Query<(&TabBody, &mut Visibility, &mut Node), (Without<Screen>, Without<ResumeButton>)>,
+    mut tabs: Query<
+        (&TabBody, &mut Visibility, &mut Node),
+        (Without<Screen>, Without<ResumeButton>),
+    >,
     mut status: Query<&mut Text, (With<StatusLine>, Without<PauseTitle>, Without<SettingValue>)>,
     mut title: Query<&mut Text, (With<PauseTitle>, Without<StatusLine>, Without<SettingValue>)>,
     mut resume: Query<&mut Node, (With<ResumeButton>, Without<TabBody>)>,
@@ -1372,13 +1661,23 @@ fn refresh_menu(
     for (s, mut v) in &mut screens {
         let show = match s {
             Screen::Home => st == GameState::Menu && *view == MenuView::Home,
-            Screen::Pause => st == GameState::Paused || (st == GameState::Menu && *view != MenuView::Home),
+            Screen::Pause => {
+                st == GameState::Paused || (st == GameState::Menu && *view != MenuView::Home)
+            }
         };
-        v.set_if_neq(if show { Visibility::Inherited } else { Visibility::Hidden });
+        v.set_if_neq(if show {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        });
     }
     for (t, mut v, mut node) in &mut tabs {
         let on = t.0 == *view;
-        v.set_if_neq(if on { Visibility::Inherited } else { Visibility::Hidden });
+        v.set_if_neq(if on {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        });
         // Hidden tabs must also leave the layout, or they steal the map's height.
         let d = if on { Display::Flex } else { Display::None };
         if node.display != d {
@@ -1393,7 +1692,11 @@ fn refresh_menu(
         }
     }
     for mut n in &mut resume {
-        let d = if in_game { Display::Flex } else { Display::None };
+        let d = if in_game {
+            Display::Flex
+        } else {
+            Display::None
+        };
         if n.display != d {
             n.display = d;
         }
@@ -1403,20 +1706,39 @@ fn refresh_menu(
             s.0 = spawner.status.clone();
         }
     }
-    let on = |b: bool| if b { "On".to_string() } else { "Off".to_string() };
+    let on = |b: bool| {
+        if b {
+            "On".to_string()
+        } else {
+            "Off".to_string()
+        }
+    };
     for (sv, mut t) in &mut values {
         t.0 = match sv.0 {
             MenuAction::ToggleShadows => on(gfx.shadows),
             MenuAction::ToggleAo => on(gfx.ambient_occlusion),
             MenuAction::ToggleBloom => on(gfx.bloom),
             MenuAction::ToggleAa => gfx.aa_mode.label().to_string(),
-            MenuAction::CycleResolution => if gfx.aa_mode == AaMode::Upscale { format!("{}%", gfx.render_pct) } else { "native".to_string() },
+            MenuAction::CycleResolution => {
+                if gfx.aa_mode == AaMode::Upscale {
+                    format!("{}%", gfx.render_pct)
+                } else {
+                    "native".to_string()
+                }
+            }
             MenuAction::ToggleStats => on(gfx.show_stats),
+            MenuAction::CycleWindowMode => gfx.window_mode.label().to_string(),
             MenuAction::ToggleProbes => on(dbg.probe_gi),
             MenuAction::CycleProbeView => dbg.probe_view.label().to_string(),
             MenuAction::CycleNativeView => dbg.native_view.label().to_string(),
             MenuAction::CycleOceanFft => dbg.ocean_fft.label().to_string(),
-            MenuAction::TimePlus => if gfx.time_live { "Now".into() } else { "Custom".into() },
+            MenuAction::TimePlus => {
+                if gfx.time_live {
+                    "Now".into()
+                } else {
+                    "Custom".into()
+                }
+            }
             MenuAction::SetWeather(_) => pick.name.to_string(),
             MenuAction::SensPlus => format!("{:.1}", controls.mouse_sensitivity),
             MenuAction::InvertY => on(controls.invert_y),
@@ -1450,21 +1772,33 @@ fn update_debug_readout(
     }
     let Ok(cam) = cams.single() else {
         if let Ok(mut t) = readout.single_mut() {
-            let s = "LIVE DIAGNOSTICS\n\nNo world is running yet. Start a drop to collect live stats.";
+            let s =
+                "LIVE DIAGNOSTICS\n\nNo world is running yet. Start a drop to collect live stats.";
             if t.0 != s {
                 t.0 = s.to_string();
             }
         }
         return;
     };
-    let pos = players.single().map(|t| t.translation).unwrap_or(cam.translation());
+    let pos = players
+        .single()
+        .map(|t| t.translation)
+        .unwrap_or(cam.translation());
     let g = origin.to_geodetic(pos);
     let tile = ed_geo::tile::TileId::containing(g.lat_deg, g.lon_deg, 14);
-    let (tiles_loaded, tiles_pending, tiles_desired) = mgr.as_ref().map_or((0, 0, 0), |m| (m.loaded.len(), m.pending.len(), m.desired.len()));
+    let (tiles_loaded, tiles_pending, tiles_desired) = mgr.as_ref().map_or((0, 0, 0), |m| {
+        (m.loaded.len(), m.pending.len(), m.desired.len())
+    });
     let (p_io, p_build, p_apply) = mgr.as_ref().map_or((0, 0, 0), |m| m.pipeline());
-    let (buildings, trees, tris) = mgr.as_ref().map_or((0, 0, 0), |m| (m.totals.buildings, m.totals.trees, m.totals.triangles));
-    let (detail_loaded, detail_flight) = dm.as_ref().map_or((0, 0), |d| crate::streaming::detail_stats(d));
-    let (win_w, win_h, win_scale) = windows.single().map_or((0, 0, 1.0), |w| (w.physical_width(), w.physical_height(), w.scale_factor()));
+    let (buildings, trees, tris) = mgr.as_ref().map_or((0, 0, 0), |m| {
+        (m.totals.buildings, m.totals.trees, m.totals.triangles)
+    });
+    let (detail_loaded, detail_flight) = dm
+        .as_ref()
+        .map_or((0, 0), |d| crate::streaming::detail_stats(d));
+    let (win_w, win_h, win_scale) = windows.single().map_or((0, 0, 1.0), |w| {
+        (w.physical_width(), w.physical_height(), w.scale_factor())
+    });
     let fps = 1.0 / time.delta_secs().max(1e-4);
     let ms = time.delta_secs_f64() * 1000.0;
     let sea = mgr.as_ref().map_or(false, |m| m.sea_near());
@@ -1540,9 +1874,14 @@ fn time_slider(
         *dragging = false;
         return;
     }
-    let lon = players.single().map(|pt| origin.to_geodetic(pt.translation).lon_deg).unwrap_or(0.0);
+    let lon = players
+        .single()
+        .map(|pt| origin.to_geodetic(pt.translation).lon_deg)
+        .unwrap_or(0.0);
     let solar_hour = |unix_s: f64| ed_geo::sun::solar_hour(unix_s, lon);
-    let Ok((rcp, vis)) = track.single() else { return };
+    let Ok((rcp, vis)) = track.single() else {
+        return;
+    };
     // Hidden nodes keep a stale RelativeCursorPosition; ignore the track off its tab.
     if buttons.just_pressed(MouseButton::Left) && vis.get() && rcp.cursor_over {
         *dragging = true;
@@ -1596,7 +1935,9 @@ fn audio_sliders(
         if buttons.just_pressed(MouseButton::Left) && vis.get() && rcp.cursor_over {
             *dragging = Some(*k);
         }
-        if *dragging == Some(*k) && let Some(n) = rcp.normalized {
+        if *dragging == Some(*k)
+            && let Some(n) = rcp.normalized
+        {
             let v = ((n.x + 0.5).clamp(0.0, 1.0) * 100.0).round() / 100.0;
             if k.value(&audio) != v {
                 *k.slot(&mut audio) = v;
@@ -1622,10 +1963,37 @@ fn audio_sliders(
 }
 
 /// Once a spawn lands, start (or resume) playing.
-fn enter_play_on_arrival(mut commands: Commands, arrived: Option<Res<Arrived>>, mut next: ResMut<NextState<GameState>>) {
+fn enter_play_on_arrival(
+    mut commands: Commands,
+    arrived: Option<Res<Arrived>>,
+    mut next: ResMut<NextState<GameState>>,
+) {
     if arrived.is_some() {
         commands.remove_resource::<Arrived>();
         next.set(GameState::Playing);
+    }
+}
+
+/// Applies the chosen window mode to the primary window. Works identically on
+/// macOS and Windows through winit; borderless covers the current display,
+/// exclusive switches the display's video mode.
+fn apply_window_mode(gfx: Res<GraphicsSettings>, mut windows: Query<&mut Window, With<PrimaryWindow>>) {
+    let want = match gfx.window_mode {
+        WindowModeSetting::Windowed => bevy::window::WindowMode::Windowed,
+        WindowModeSetting::Borderless => bevy::window::WindowMode::BorderlessFullscreen(MonitorSelection::Current),
+        WindowModeSetting::Exclusive => bevy::window::WindowMode::Fullscreen(MonitorSelection::Current, VideoModeSelection::Current),
+    };
+    for mut w in &mut windows {
+        if w.mode != want {
+            w.mode = want;
+        }
+    }
+}
+
+/// F11 cycles window: borderless: exclusive, wherever you are.
+fn window_mode_shortcut(keys: Res<ButtonInput<KeyCode>>, mut gfx: ResMut<GraphicsSettings>) {
+    if keys.just_pressed(KeyCode::F11) {
+        gfx.window_mode = gfx.window_mode.next();
     }
 }
 
@@ -1633,7 +2001,15 @@ pub fn apply_graphics(
     mut gfx: ResMut<GraphicsSettings>,
     mut clock: ResMut<crate::sky::Clock>,
     mut commands: Commands,
-    cams: Query<(Entity, Has<ScreenSpaceAmbientOcclusion>, Has<Bloom>, Has<TemporalAntiAliasing>), (With<Camera3d>, Without<crate::globe::GlobeCamera>)>,
+    cams: Query<
+        (
+            Entity,
+            Has<ScreenSpaceAmbientOcclusion>,
+            Has<Bloom>,
+            Has<TemporalAntiAliasing>,
+        ),
+        (With<Camera3d>, Without<crate::globe::GlobeCamera>),
+    >,
     mut suns: Query<&mut DirectionalLight, Without<crate::globe::GlobeSun>>,
 ) {
     if !gfx.is_changed() {
@@ -1644,7 +2020,10 @@ pub fn apply_graphics(
     gfx.hour_offset_applied = gfx.hour_offset;
     // Screen-space contact shadows fill in the small-scale contact the
     // cascades miss (EW_CONTACT=0 to A/B).
-    let contact = gfx.shadows && std::env::var("EW_CONTACT").map(|v| v != "0").unwrap_or(true);
+    let contact = gfx.shadows
+        && std::env::var("EW_CONTACT")
+            .map(|v| v != "0")
+            .unwrap_or(true);
     for mut s in &mut suns {
         s.shadow_maps_enabled = gfx.shadows;
         s.contact_shadows_enabled = contact;
@@ -1652,9 +2031,17 @@ pub fn apply_graphics(
     for (e, has_ao, has_bloom, has_aa) in &cams {
         // Temporal PCF jitters the shadow taps and lets TAA average them:
         // softer edges than Gaussian for fewer taps. Without TAA it would shimmer.
-        commands.entity(e).insert(if gfx.aa { ShadowFilteringMethod::Temporal } else { ShadowFilteringMethod::Gaussian });
+        commands.entity(e).insert(if gfx.aa {
+            ShadowFilteringMethod::Temporal
+        } else {
+            ShadowFilteringMethod::Gaussian
+        });
         if contact {
-            commands.entity(e).insert(ContactShadows { linear_steps: 12, thickness: 0.25, length: 1.5 });
+            commands.entity(e).insert(ContactShadows {
+                linear_steps: 12,
+                thickness: 0.25,
+                length: 1.5,
+            });
         } else {
             commands.entity(e).remove::<ContactShadows>();
         }
@@ -1669,7 +2056,9 @@ pub fn apply_graphics(
         }
         match (gfx.ambient_occlusion, has_ao) {
             (true, false) => {
-                commands.entity(e).insert(ScreenSpaceAmbientOcclusion::default());
+                commands
+                    .entity(e)
+                    .insert(ScreenSpaceAmbientOcclusion::default());
             }
             (false, true) => {
                 commands.entity(e).remove::<ScreenSpaceAmbientOcclusion>();

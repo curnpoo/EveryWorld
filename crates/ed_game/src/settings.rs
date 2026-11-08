@@ -45,7 +45,16 @@ pub struct AudioSettings {
 
 impl Default for AudioSettings {
     fn default() -> Self {
-        Self { master: 0.7, world: 1.0, body: 1.0, air: 1.0, vehicles: 1.0, alerts: 1.0, muted: false, calm: true }
+        Self {
+            master: 0.7,
+            world: 1.0,
+            body: 1.0,
+            air: 1.0,
+            vehicles: 1.0,
+            alerts: 1.0,
+            muted: false,
+            calm: true,
+        }
     }
 }
 
@@ -71,7 +80,12 @@ impl AudioSettings {
 
 fn env_master() -> Option<f32> {
     static V: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
-    *V.get_or_init(|| std::env::var("EW_SOUND").ok().and_then(|s| s.parse::<f32>().ok()).map(|v| v * MASTER_REF / 0.35))
+    *V.get_or_init(|| {
+        std::env::var("EW_SOUND")
+            .ok()
+            .and_then(|s| s.parse::<f32>().ok())
+            .map(|v| v * MASTER_REF / 0.35)
+    })
 }
 
 /// What goes in the file. Every section is optional so old/partial files load.
@@ -95,6 +109,8 @@ struct SavedGraphics {
     aa: bool,
     render_pct: u32,
     show_stats: bool,
+    /// 0 windowed, 1 borderless, 2 exclusive.
+    window_mode: Option<u8>,
 }
 
 fn settings_path() -> Option<PathBuf> {
@@ -106,14 +122,20 @@ fn settings_path() -> Option<PathBuf> {
     // interactive session (Roaming; survives roaming profiles).
     if cfg!(target_os = "windows") {
         if let Some(appdata) = std::env::var_os("APPDATA") {
-            return Some(PathBuf::from(appdata).join("EveryWorld").join("settings.json"));
+            return Some(
+                PathBuf::from(appdata)
+                    .join("EveryWorld")
+                    .join("settings.json"),
+            );
         }
     }
     let home = std::env::var_os("HOME").map(PathBuf::from);
     if cfg!(target_os = "macos") {
         return home.map(|h| h.join("Library/Application Support/EveryWorld/settings.json"));
     }
-    let base = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).or_else(|| home.map(|h| h.join(".config")));
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| home.map(|h| h.join(".config")));
     base.map(|b| b.join("everyworld/settings.json"))
 }
 
@@ -162,11 +184,18 @@ impl Plugin for SettingsPlugin {
 
 fn automated(cfg: &Config) -> bool {
     let args: Vec<String> = std::env::args().collect();
-    cfg.screenshot.is_some() || cfg.headless || cfg.lookdev.is_some() || cfg.quit_after.is_some() || args.iter().any(|a| a == "--perf") || std::env::var_os("EW_PERF").is_some()
+    cfg.screenshot.is_some()
+        || cfg.headless
+        || cfg.lookdev.is_some()
+        || cfg.quit_after.is_some()
+        || args.iter().any(|a| a == "--perf")
+        || std::env::var_os("EW_PERF").is_some()
 }
 
 fn cli_graphics(cfg: &Config) -> bool {
-    cfg.no_post || std::env::args().any(|a| a == "--no-shadows" || a == "--no-post") || std::env::var_os("EW_GFX").is_some()
+    cfg.no_post
+        || std::env::args().any(|a| a == "--no-shadows" || a == "--no-post")
+        || std::env::var_os("EW_GFX").is_some()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -181,7 +210,11 @@ fn load(
     mut form: ResMut<JoinForm>,
 ) {
     let path = settings_path();
-    let saved = path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).map(|t| parse(&t)).unwrap_or_default();
+    let saved = path
+        .as_ref()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|t| parse(&t))
+        .unwrap_or_default();
     let auto = automated(&cfg);
     let cli_gfx = cli_graphics(&cfg) || auto;
     *audio = saved.audio;
@@ -192,6 +225,9 @@ fn load(
         gfx.aa = g.aa;
         gfx.render_pct = g.render_pct.clamp(25, 100);
         gfx.show_stats = g.show_stats;
+        if let Some(m) = g.window_mode {
+            gfx.window_mode = crate::menu::WindowModeSetting::from_code(m);
+        }
     }
     if let Some(s) = saved.mouse_sensitivity {
         controls.mouse_sensitivity = s.clamp(0.2, 3.0);
@@ -216,33 +252,92 @@ fn load(
         }
     }
     // Auto-connect on startup if a server was saved (and not an automated run).
-    if !auto && saved_server.as_ref().map(|s| !s.is_empty()).unwrap_or(false) {
+    if !auto
+        && saved_server
+            .as_ref()
+            .map(|s| !s.is_empty())
+            .unwrap_or(false)
+    {
         if let Ok(addr) = net.target.parse() {
-            net.cmd_tx.send(NetCmd::Connect { addr, name: net.name.clone() }).ok();
+            net.cmd_tx
+                .send(NetCmd::Connect {
+                    addr,
+                    name: net.name.clone(),
+                })
+                .ok();
             net.status = crate::net::NetStatus::Connecting;
         }
     }
     if let Some(p) = &path {
-        info!("settings: {} ({})", p.display(), if auto { "read-only, automated run" } else { "saved on change" });
+        info!(
+            "settings: {} ({})",
+            p.display(),
+            if auto {
+                "read-only, automated run"
+            } else {
+                "saved on change"
+            }
+        );
     }
-    commands.insert_resource(Store { path, persist: !auto, cli_graphics: cli_gfx, file_graphics: saved.graphics, dirty_since: None });
+    commands.insert_resource(Store {
+        path,
+        persist: !auto,
+        cli_graphics: cli_gfx,
+        file_graphics: saved.graphics,
+        dirty_since: None,
+    });
 }
 
-fn mark_dirty(time: Res<Time<Real>>, mut store: ResMut<Store>, audio: Res<AudioSettings>, gfx: Res<GraphicsSettings>, controls: Res<ControlSettings>, cosmetics: Res<Cosmetics>, form: Res<JoinForm>) {
+fn mark_dirty(
+    time: Res<Time<Real>>,
+    mut store: ResMut<Store>,
+    audio: Res<AudioSettings>,
+    gfx: Res<GraphicsSettings>,
+    controls: Res<ControlSettings>,
+    cosmetics: Res<Cosmetics>,
+    form: Res<JoinForm>,
+) {
     // `is_changed` is also true on the first frame (resources were just added).
-    let changed = audio.is_changed() || gfx.is_changed() || controls.is_changed() || cosmetics.is_changed() || form.is_changed();
+    let changed = audio.is_changed()
+        || gfx.is_changed()
+        || controls.is_changed()
+        || cosmetics.is_changed()
+        || form.is_changed();
     if changed && !audio.is_added() {
         store.dirty_since = Some(time.elapsed_secs_f64());
     }
 }
 
-fn snapshot(store: &Store, audio: &AudioSettings, gfx: &GraphicsSettings, controls: &ControlSettings, cosmetics: &Cosmetics, form: &JoinForm) -> Saved {
+fn snapshot(
+    store: &Store,
+    audio: &AudioSettings,
+    gfx: &GraphicsSettings,
+    controls: &ControlSettings,
+    cosmetics: &Cosmetics,
+    form: &JoinForm,
+) -> Saved {
     let graphics = if store.cli_graphics {
         store.file_graphics
     } else {
-        Some(SavedGraphics { shadows: gfx.shadows, ambient_occlusion: gfx.ambient_occlusion, bloom: gfx.bloom, aa: gfx.aa, render_pct: gfx.render_pct, show_stats: gfx.show_stats })
+        Some(SavedGraphics {
+            shadows: gfx.shadows,
+            ambient_occlusion: gfx.ambient_occlusion,
+            bloom: gfx.bloom,
+            aa: gfx.aa,
+            render_pct: gfx.render_pct,
+            show_stats: gfx.show_stats,
+            window_mode: Some(gfx.window_mode as u8),
+        })
     };
-    Saved { audio: *audio, graphics, mouse_sensitivity: Some(controls.mouse_sensitivity), invert_y: Some(controls.invert_y), backpack: Some(cosmetics.backpack), server: Some(form.server.clone()), player_name: Some(form.name.clone()) }
+    Saved {
+        audio: *audio,
+        graphics,
+        mouse_sensitivity: Some(controls.mouse_sensitivity),
+        invert_y: Some(controls.invert_y),
+        backpack: Some(cosmetics.backpack),
+        server: Some(form.server.clone()),
+        player_name: Some(form.name.clone()),
+    }
 }
 
 fn save_when_quiet(
@@ -262,8 +357,13 @@ fn save_when_quiet(
         return;
     }
     store.dirty_since = None;
-    let (true, Some(path)) = (store.persist, store.path.clone()) else { return };
-    let text = serde_json::to_string_pretty(&snapshot(&store, &audio, &gfx, &controls, &cosmetics, &form)).unwrap_or_default();
+    let (true, Some(path)) = (store.persist, store.path.clone()) else {
+        return;
+    };
+    let text = serde_json::to_string_pretty(&snapshot(
+        &store, &audio, &gfx, &controls, &cosmetics, &form,
+    ))
+    .unwrap_or_default();
     if let Err(e) = write_atomic(&path, &text) {
         warn!("settings: could not save {}: {e}", path.display());
     }
@@ -276,8 +376,22 @@ mod tests {
     #[test]
     fn round_trips() {
         let s = Saved {
-            audio: AudioSettings { master: 0.4, world: 0.2, muted: true, calm: false, ..default() },
-            graphics: Some(SavedGraphics { shadows: false, ambient_occlusion: true, bloom: false, aa: true, render_pct: 75, show_stats: true }),
+            audio: AudioSettings {
+                master: 0.4,
+                world: 0.2,
+                muted: true,
+                calm: false,
+                ..default()
+            },
+            graphics: Some(SavedGraphics {
+                shadows: false,
+                ambient_occlusion: true,
+                bloom: false,
+                aa: true,
+                render_pct: 75,
+                show_stats: true,
+                window_mode: Some(1),
+            }),
             mouse_sensitivity: Some(1.3),
             invert_y: Some(true),
             backpack: Some(true),
@@ -326,7 +440,8 @@ mod tests {
         };
         assert!(p.ends_with("settings.json"), "{p:?}");
         if cfg!(target_os = "windows") {
-            let appdata = PathBuf::from(std::env::var_os("APPDATA").expect("APPDATA is set on Windows"));
+            let appdata =
+                PathBuf::from(std::env::var_os("APPDATA").expect("APPDATA is set on Windows"));
             assert!(p.starts_with(&appdata), "{p:?} not under {appdata:?}");
             assert!(p.ends_with("EveryWorld/settings.json"), "{p:?}");
         }

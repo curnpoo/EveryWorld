@@ -6,7 +6,11 @@
 //! "drop here" popup and its buttons.
 
 use crate::spawn::{SpawnHeight, SpawnRequest};
-use bevy::input::{keyboard::KeyboardInput, mouse::{AccumulatedMouseScroll, MouseScrollUnit}, ButtonState};
+use bevy::input::{
+    ButtonState,
+    keyboard::KeyboardInput,
+    mouse::{AccumulatedMouseScroll, MouseScrollUnit},
+};
 use bevy::prelude::*;
 use bevy::tasks::{IoTaskPool, Task, block_on, futures_lite::future};
 use bevy::text::FontSize;
@@ -22,9 +26,14 @@ impl Plugin for MapViewPlugin {
             // never also the frame that closes the menu.
             .add_systems(
                 Update,
-                (search_input, search_paint).after(crate::menu::open_pause).before(crate::globe::GlobeControl),
+                (search_input, search_paint)
+                    .after(crate::menu::open_pause)
+                    .before(crate::globe::GlobeControl),
             )
-            .add_systems(Update, (popup_buttons, pad_popup.after(crate::globe::GlobeControl)))
+            .add_systems(
+                Update,
+                (popup_buttons, pad_popup.after(crate::globe::GlobeControl)),
+            )
             .add_systems(Update, ease_map_time.before(crate::menu::apply_graphics));
     }
 }
@@ -135,7 +144,12 @@ impl MapState {
     pub(crate) fn start_landing(&mut self, place: Geodetic, name: impl Into<String>, now: f32) {
         self.selected = None;
         self.selected_name.clear();
-        self.landing = Some(Landing { place, name: name.into(), created: now, started: None });
+        self.landing = Some(Landing {
+            place,
+            name: name.into(),
+            created: now,
+            started: None,
+        });
     }
 
     /// The search pin has landed: hand the highlight to the normal flow.
@@ -145,6 +159,45 @@ impl MapState {
             self.selected_name = l.name;
         }
     }
+}
+
+/// Attribution strip docked at the canvas' bottom-right corner.
+///
+/// Lists the open-data sources whose licences require visible credit:
+/// © OpenStreetMap contributors (ODbL), OpenFreeMap, AWS Terrain.
+#[allow(deprecated)]
+fn build_attribution(commands: &mut Commands, canvas: Entity) {
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                bottom: Val::Px(0.0),
+                right: Val::Px(0.0),
+                padding: UiRect {
+                    left: Val::Px(6.0),
+                    right: Val::Px(6.0),
+                    top: Val::Px(3.0),
+                    bottom: Val::Px(3.0),
+                },
+                border_radius: BorderRadius::top_left(Val::Px(6.0)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.52)),
+            ZIndex(5),
+            Pickable::IGNORE,
+            ChildOf(canvas),
+        ))
+        .with_children(|p| {
+            p.spawn((
+                Text::new("© OpenStreetMap contributors · OpenFreeMap · AWS Terrain"),
+                TextFont {
+                    font_size: FontSize::Px(10.0),
+                    ..default()
+                },
+                TextColor(Color::srgba(1.0, 1.0, 1.0, 0.72)),
+                Pickable::IGNORE,
+            ));
+        });
 }
 
 /// Scroll this frame in wheel notches. Trackpads report pixels (tens per
@@ -258,13 +311,33 @@ pub(crate) fn build_overlays(commands: &mut Commands, canvas: Entity) {
             ChildOf(canvas),
         ))
         .with_children(|p| {
-            p.spawn((Text::new("Drop in here"), TextFont { font_size: FontSize::Px(17.0), ..default() }, TextColor(Color::WHITE)));
-            p.spawn((PopupTitle, Text::new(""), TextFont { font_size: FontSize::Px(12.0), ..default() }, TextColor(Color::srgba(1.0, 1.0, 1.0, 0.6))));
-            for (label, action, accent) in [("Drop from the sky", PopupAction::Sky, true), ("Start on the ground", PopupAction::Ground, false), ("Cancel", PopupAction::Close, false)] {
+            p.spawn((
+                Text::new("Drop in here"),
+                TextFont {
+                    font_size: FontSize::Px(17.0),
+                    ..default()
+                },
+                TextColor(Color::WHITE),
+            ));
+            p.spawn((
+                PopupTitle,
+                Text::new(""),
+                TextFont {
+                    font_size: FontSize::Px(12.0),
+                    ..default()
+                },
+                TextColor(Color::srgba(1.0, 1.0, 1.0, 0.6)),
+            ));
+            for (label, action, accent) in [
+                ("Drop from the sky", PopupAction::Sky, true),
+                ("Start on the ground", PopupAction::Ground, false),
+                ("Cancel", PopupAction::Close, false),
+            ] {
                 crate::menu::button(p, label, action, accent);
             }
         });
     build_search_bar(commands, canvas);
+    build_attribution(commands, canvas);
 }
 
 /// The search bar: rounded panel docked at the canvas' top-left, a text field
@@ -290,55 +363,71 @@ fn build_search_bar(commands: &mut Commands, canvas: Entity) {
             ChildOf(canvas),
         ))
         .with_children(|p| {
-            p.spawn((
-                Node { flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: Val::Px(8.0), ..default() },
-            ))
-            .with_children(|row| {
-                row.spawn((
-                    SearchField,
-                    Interaction::None,
-                    Node {
-                        width: Val::Px(FIELD_W),
-                        height: Val::Px(38.0),
-                        padding: UiRect::axes(Val::Px(12.0), Val::Px(0.0)),
-                        align_items: AlignItems::Center,
-                        overflow: Overflow::clip(),
-                        border: UiRect::all(Val::Px(1.5)),
-                        border_radius: BorderRadius::all(Val::Px(10.0)),
-                        ..default()
-                    },
-                    BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.22)),
-                    BackgroundColor(crate::menu::BTN),
-                ))
-                .with_children(|f| {
-                    f.spawn((
-                        SearchFieldText,
-                        Text::new(SEARCH_PLACEHOLDER),
-                        TextFont { font_size: FontSize::Px(15.0), ..default() },
-                        TextColor(crate::menu::DIM),
-                    ));
+            p.spawn((Node {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                column_gap: Val::Px(8.0),
+                ..default()
+            },))
+                .with_children(|row| {
+                    row.spawn((
+                        SearchField,
+                        Interaction::None,
+                        Node {
+                            width: Val::Px(FIELD_W),
+                            height: Val::Px(38.0),
+                            padding: UiRect::axes(Val::Px(12.0), Val::Px(0.0)),
+                            align_items: AlignItems::Center,
+                            overflow: Overflow::clip(),
+                            border: UiRect::all(Val::Px(1.5)),
+                            border_radius: BorderRadius::all(Val::Px(10.0)),
+                            ..default()
+                        },
+                        BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.22)),
+                        BackgroundColor(crate::menu::BTN),
+                    ))
+                    .with_children(|f| {
+                        f.spawn((
+                            SearchFieldText,
+                            Text::new(SEARCH_PLACEHOLDER),
+                            TextFont {
+                                font_size: FontSize::Px(15.0),
+                                ..default()
+                            },
+                            TextColor(crate::menu::DIM),
+                        ));
+                    });
+                    row.spawn((
+                        SearchAsk,
+                        Interaction::None,
+                        Node {
+                            height: Val::Px(38.0),
+                            padding: UiRect::axes(Val::Px(16.0), Val::Px(0.0)),
+                            align_items: AlignItems::Center,
+                            justify_content: JustifyContent::Center,
+                            border_radius: BorderRadius::all(Val::Px(10.0)),
+                            ..default()
+                        },
+                        BackgroundColor(crate::menu::ORANGE),
+                    ))
+                    .with_children(|b| {
+                        b.spawn((
+                            Text::new("Search"),
+                            TextFont {
+                                font_size: FontSize::Px(15.0),
+                                ..default()
+                            },
+                            TextColor(crate::menu::INK),
+                        ));
+                    });
                 });
-                row.spawn((
-                    SearchAsk,
-                    Interaction::None,
-                    Node {
-                        height: Val::Px(38.0),
-                        padding: UiRect::axes(Val::Px(16.0), Val::Px(0.0)),
-                        align_items: AlignItems::Center,
-                        justify_content: JustifyContent::Center,
-                        border_radius: BorderRadius::all(Val::Px(10.0)),
-                        ..default()
-                    },
-                    BackgroundColor(crate::menu::ORANGE),
-                ))
-                .with_children(|b| {
-                    b.spawn((Text::new("Search"), TextFont { font_size: FontSize::Px(15.0), ..default() }, TextColor(crate::menu::INK)));
-                });
-            });
             p.spawn((
                 SearchStatus,
                 Text::new(""),
-                TextFont { font_size: FontSize::Px(13.0), ..default() },
+                TextFont {
+                    font_size: FontSize::Px(13.0),
+                    ..default()
+                },
                 TextColor(crate::menu::DIM),
                 Visibility::Hidden,
             ));
@@ -359,8 +448,16 @@ fn popup_buttons(
         match a {
             PopupAction::Close => st.selected = None,
             PopupAction::Sky | PopupAction::Ground => {
-                let height = if matches!(a, PopupAction::Sky) { SpawnHeight::Sky } else { SpawnHeight::Ground };
-                spawns.write(SpawnRequest::At { pos: sel, name: st.selected_name.clone(), height });
+                let height = if matches!(a, PopupAction::Sky) {
+                    SpawnHeight::Sky
+                } else {
+                    SpawnHeight::Ground
+                };
+                spawns.write(SpawnRequest::At {
+                    pos: sel,
+                    name: st.selected_name.clone(),
+                    height,
+                });
                 st.selected = None;
                 st.selected_name.clear();
             }
@@ -391,18 +488,29 @@ fn pad_popup(
     *was_open = open;
     if live {
         if pad.nav.y != 0 {
-            *idx = (*idx as i32 + pad.nav.y.signum()).clamp(0, POPUP_ORDER.len() as i32 - 1) as usize;
+            *idx =
+                (*idx as i32 + pad.nav.y.signum()).clamp(0, POPUP_ORDER.len() as i32 - 1) as usize;
         }
         if pad.b_just {
             st.selected = None;
             st.selected_name.clear();
         } else if pad.a_just {
-            let (Some(sel), action) = (st.selected, POPUP_ORDER[*idx]) else { return };
+            let (Some(sel), action) = (st.selected, POPUP_ORDER[*idx]) else {
+                return;
+            };
             match action {
                 PopupAction::Close => {}
                 PopupAction::Sky | PopupAction::Ground => {
-                    let height = if action == PopupAction::Sky { SpawnHeight::Sky } else { SpawnHeight::Ground };
-                    spawns.write(SpawnRequest::At { pos: sel, name: st.selected_name.clone(), height });
+                    let height = if action == PopupAction::Sky {
+                        SpawnHeight::Sky
+                    } else {
+                        SpawnHeight::Ground
+                    };
+                    spawns.write(SpawnRequest::At {
+                        pos: sel,
+                        name: st.selected_name.clone(),
+                        height,
+                    });
                 }
             }
             st.selected = None;
@@ -521,7 +629,11 @@ fn search_input(
             match res {
                 Ok(hits) if !hits.is_empty() => {
                     let h = &hits[0];
-                    let label = if h.region.is_empty() { h.name.clone() } else { format!("{}, {}", h.name, h.region) };
+                    let label = if h.region.is_empty() {
+                        h.name.clone()
+                    } else {
+                        format!("{}, {}", h.name, h.region)
+                    };
                     st.search_status.clear();
                     st.start_landing(h.position, label, time.elapsed_secs());
                     st.focus(h.position, crate::globe::zoom_for_span(h.span_deg));
@@ -544,28 +656,43 @@ fn over_ui(bar: Query<&RelativeCursorPosition, With<SearchBar>>) -> bool {
 #[allow(deprecated)]
 fn search_paint(
     st: Res<MapState>,
-    mut fields: Query<(&Interaction, &mut BackgroundColor, &mut BorderColor), (With<SearchField>, Without<SearchAsk>)>,
+    mut fields: Query<
+        (&Interaction, &mut BackgroundColor, &mut BorderColor),
+        (With<SearchField>, Without<SearchAsk>),
+    >,
     mut asks: Query<(&Interaction, &mut BackgroundColor), (With<SearchAsk>, Without<SearchField>)>,
     mut txt: Query<(&mut Text, &mut TextColor), (With<SearchFieldText>, Without<SearchStatus>)>,
     mut status: Query<(&mut Text, &mut Visibility), (With<SearchStatus>, Without<SearchFieldText>)>,
 ) {
     let focus = st.text_focus;
     for (i, mut bg, mut bc) in &mut fields {
-        let mut want = if focus { Color::srgba(1.0, 1.0, 1.0, 0.18) } else { crate::menu::BTN };
+        let mut want = if focus {
+            Color::srgba(1.0, 1.0, 1.0, 0.18)
+        } else {
+            crate::menu::BTN
+        };
         if *i == Interaction::Hovered && !focus {
             want = crate::menu::BTN_HOVER;
         }
         if bg.0 != want {
             bg.0 = want;
         }
-        let border = if focus { Color::srgba(1.0, 1.0, 1.0, 0.55) } else { Color::srgba(1.0, 1.0, 1.0, 0.22) };
+        let border = if focus {
+            Color::srgba(1.0, 1.0, 1.0, 0.55)
+        } else {
+            Color::srgba(1.0, 1.0, 1.0, 0.22)
+        };
         let want_bc = BorderColor::all(border);
         if *bc != want_bc {
             *bc = want_bc;
         }
     }
     for (i, mut bg) in &mut asks {
-        let want = if *i == Interaction::Hovered { Color::srgb(1.0, 0.54, 0.22) } else { crate::menu::ORANGE };
+        let want = if *i == Interaction::Hovered {
+            Color::srgb(1.0, 0.54, 0.22)
+        } else {
+            crate::menu::ORANGE
+        };
         if bg.0 != want {
             bg.0 = want;
         }
@@ -595,7 +722,11 @@ fn search_paint(
         if t.as_str() != st.search_status {
             *t = Text::new(st.search_status.clone());
         }
-        let want = if empty { Visibility::Hidden } else { Visibility::Inherited };
+        let want = if empty {
+            Visibility::Hidden
+        } else {
+            Visibility::Inherited
+        };
         if *v != want {
             *v = want;
         }
@@ -616,7 +747,9 @@ fn ease_map_time(
         map.time_target_offset = None;
         return;
     }
-    let Some(target) = map.time_target_offset else { return };
+    let Some(target) = map.time_target_offset else {
+        return;
+    };
 
     gfx.time_live = false;
     let cur = gfx.hour_offset;

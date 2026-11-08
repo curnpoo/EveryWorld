@@ -8,7 +8,9 @@ use crate::player::{MoveMode, Player};
 use crate::sky::{CelestialBody, Clock, CurrentWeather};
 use crate::streaming::{DetailManager, TileManager, detail_stats};
 use avian3d::prelude::LinearVelocity;
+use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::text::FontSize;
 use bevy::window::{PrimaryWindow, Window};
 use ed_geo::tile::TileId;
@@ -20,7 +22,14 @@ impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_hud).add_systems(
             Update,
-            (update_text, update_markers, update_toast, stats_visibility, hud_visibility),
+            (
+                update_text,
+                paint_tape,
+                update_markers,
+                update_toast,
+                stats_visibility,
+                hud_visibility,
+            ),
         );
     }
 }
@@ -40,7 +49,6 @@ pub const TEXT_MUTED: Color = Color::srgba(1.0, 1.0, 1.0, 0.48);
 
 #[derive(Component, Clone, Copy, PartialEq, Eq)]
 enum HudField {
-    CompassTape,
     CompassDeg,
     SpeedVal,
     SpeedSub,
@@ -49,6 +57,25 @@ enum HudField {
     Mode,
     Stats,
 }
+
+#[derive(Component)]
+struct HudTapeCanvas;
+
+/// The compass strip is drawn into a canvas texture: ticks every 5°, mid and
+/// major marks at 15°/45°, and the needle hanging from the top rim. Pixel
+/// offsets track the heading, so the strip slides like a real tape.
+#[derive(Resource)]
+struct HudTape {
+    handle: Handle<Image>,
+    /// Last painted tape centre in canvas px; `None` forces a repaint.
+    last_center: Option<f32>,
+}
+
+const TAPE_W_CSS: f32 = 560.0;
+const TAPE_H_CSS: f32 = 30.0;
+const TAPE_RES: u32 = 2;
+/// 70° of heading across the strip.
+const TAPE_PX_PER_DEG: f32 = TAPE_W_CSS / 70.0;
 
 #[derive(Component)]
 struct StatsRoot;
@@ -90,8 +117,23 @@ fn hud_visibility(
     }
 }
 
-fn spawn_hud(mut commands: Commands) {
-    // Top: compass strip and digital heading readout.
+fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
+    // Top: compass tick-strip (a canvas texture) and the digital heading readout.
+    let tape = images.add(Image::new_fill(
+        Extent3d {
+            width: TAPE_W_CSS as u32 * TAPE_RES,
+            height: TAPE_H_CSS as u32 * TAPE_RES,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        &[0, 0, 0, 0],
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    ));
+    commands.insert_resource(HudTape {
+        handle: tape.clone(),
+        last_center: None,
+    });
     commands
         .spawn((
             HudRoot,
@@ -99,18 +141,21 @@ fn spawn_hud(mut commands: Commands) {
                 position_type: PositionType::Absolute,
                 top: Val::Px(14.0),
                 width: Val::Percent(100.0),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(10.0),
                 justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
                 ..default()
             },
         ))
         .with_children(|c| {
             c.spawn((
                 Node {
-                    padding: UiRect::axes(Val::Px(18.0), Val::Px(7.0)),
+                    width: Val::Px(TAPE_W_CSS),
+                    height: Val::Px(TAPE_H_CSS + 12.0),
+                    padding: UiRect::vertical(Val::Px(6.0)),
                     border_radius: BorderRadius::all(Val::Px(12.0)),
                     border: UiRect::all(Val::Px(1.0)),
-                    column_gap: Val::Px(14.0),
-                    align_items: AlignItems::Center,
                     ..default()
                 },
                 BackgroundColor(GLASS_BG),
@@ -118,25 +163,43 @@ fn spawn_hud(mut commands: Commands) {
             ))
             .with_children(|p| {
                 p.spawn((
-                    HudField::CompassTape,
-                    Text::new(""),
-                    TextFont { font_size: FontSize::Px(14.0), ..default() },
-                    TextColor(Color::srgba(1.0, 1.0, 1.0, 0.72)),
+                    HudTapeCanvas,
+                    Node {
+                        width: Val::Px(TAPE_W_CSS),
+                        height: Val::Px(TAPE_H_CSS),
+                        ..default()
+                    },
+                    ImageNode {
+                        image: tape,
+                        ..default()
+                    },
                 ));
-                p.spawn((
-                    Node { width: Val::Px(1.0), height: Val::Px(14.0), ..default() },
-                    BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.16)),
-                ));
+            });
+            c.spawn((
+                Node {
+                    padding: UiRect::axes(Val::Px(18.0), Val::Px(6.0)),
+                    border_radius: BorderRadius::all(Val::Px(12.0)),
+                    border: UiRect::all(Val::Px(1.0)),
+                    ..default()
+                },
+                BackgroundColor(GLASS_BG),
+                BorderColor::all(GLASS_BORDER),
+            ))
+            .with_children(|p| {
                 p.spawn((
                     HudField::CompassDeg,
                     Text::new("000° N"),
-                    TextFont { font_size: FontSize::Px(15.0), ..default() },
-                    TextColor(ACCENT_CYAN),
+                    TextFont {
+                        font_size: FontSize::Px(20.0),
+                        ..default()
+                    },
+                    TextColor(TEXT_PRIMARY),
                 ));
             });
         });
 
-    // Bottom-left: speed telemetry card.
+    // Bottom-left: speed card with fixed-width columns so the layout never
+    // reflows as the values change.
     commands
         .spawn((
             HudRoot,
@@ -144,61 +207,105 @@ fn spawn_hud(mut commands: Commands) {
                 position_type: PositionType::Absolute,
                 left: Val::Px(18.0),
                 bottom: Val::Px(18.0),
-                padding: UiRect::axes(Val::Px(16.0), Val::Px(10.0)),
-                border_radius: BorderRadius::all(Val::Px(12.0)),
+                padding: UiRect::all(Val::Px(14.0)),
+                border_radius: BorderRadius::all(Val::Px(14.0)),
                 border: UiRect::all(Val::Px(1.0)),
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(2.0),
-                min_width: Val::Px(130.0),
+                column_gap: Val::Px(14.0),
+                align_items: AlignItems::Center,
                 ..default()
             },
             BackgroundColor(GLASS_BG),
             BorderColor::all(GLASS_BORDER),
         ))
         .with_children(|p| {
-            p.spawn((
-                Text::new("AIRSPEED"),
-                TextFont { font_size: FontSize::Px(10.0), ..default() },
-                TextColor(TEXT_MUTED),
-            ));
-            p.spawn(Node {
-                column_gap: Val::Px(6.0),
-                align_items: AlignItems::Baseline,
+            p.spawn((Node {
+                width: Val::Px(104.0),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(0.0),
                 ..default()
-            })
-            .with_children(|r| {
-                r.spawn((
-                    HudField::SpeedVal,
-                    Text::new("0"),
-                    TextFont { font_size: FontSize::Px(26.0), ..default() },
-                    TextColor(TEXT_PRIMARY),
-                ));
-                r.spawn((
-                    Text::new("MPH"),
-                    TextFont { font_size: FontSize::Px(12.0), ..default() },
-                    TextColor(TEXT_MUTED),
-                ));
-            });
+            },))
+                .with_children(|col| {
+                    col.spawn(Node {
+                        column_gap: Val::Px(5.0),
+                        align_items: AlignItems::Baseline,
+                        ..default()
+                    })
+                    .with_children(|r| {
+                        r.spawn((
+                            HudField::SpeedVal,
+                            Text::new("0"),
+                            TextFont {
+                                font_size: FontSize::Px(30.0),
+                                ..default()
+                            },
+                            TextColor(TEXT_PRIMARY),
+                        ));
+                        r.spawn((
+                            Text::new("MPH"),
+                            TextFont {
+                                font_size: FontSize::Px(11.0),
+                                ..default()
+                            },
+                            TextColor(TEXT_MUTED),
+                        ));
+                    });
+                    col.spawn((
+                        Text::new("SPEED"),
+                        TextFont {
+                            font_size: FontSize::Px(10.0),
+                            ..default()
+                        },
+                        TextColor(TEXT_MUTED),
+                    ));
+                });
             p.spawn((
-                HudField::SpeedSub,
-                Text::new("MACH 0.00"),
-                TextFont { font_size: FontSize::Px(11.0), ..default() },
-                TextColor(Color::srgba(1.0, 1.0, 1.0, 0.65)),
+                Node {
+                    width: Val::Px(1.0),
+                    height: Val::Px(46.0),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.14)),
             ));
+            p.spawn((Node {
+                width: Val::Px(84.0),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(0.0),
+                ..default()
+            },))
+                .with_children(|col| {
+                    col.spawn((
+                        Text::new("MACH"),
+                        TextFont {
+                            font_size: FontSize::Px(10.0),
+                            ..default()
+                        },
+                        TextColor(TEXT_MUTED),
+                    ));
+                    col.spawn((
+                        HudField::SpeedSub,
+                        Text::new("0.00"),
+                        TextFont {
+                            font_size: FontSize::Px(26.0),
+                            ..default()
+                        },
+                        TextColor(TEXT_PRIMARY),
+                    ));
+                });
         });
 
-    // Bottom-right: altitude and terrain clearance card (positioned above circular minimap).
+    // Bottom-right, beside the circular minimap: altitude with the vertical
+    // speed readout beneath it. Fixed width, no header.
     commands
         .spawn((
             HudRoot,
             Node {
                 position_type: PositionType::Absolute,
-                right: Val::Px(18.0),
-                bottom: Val::Px(248.0),
-                padding: UiRect::axes(Val::Px(16.0), Val::Px(10.0)),
-                border_radius: BorderRadius::all(Val::Px(12.0)),
+                right: Val::Px(crate::minimap::SIZE_PX + 30.0),
+                bottom: Val::Px(18.0),
+                padding: UiRect::all(Val::Px(14.0)),
+                border_radius: BorderRadius::all(Val::Px(14.0)),
                 border: UiRect::all(Val::Px(1.0)),
-                width: Val::Px(crate::minimap::SIZE_PX),
+                width: Val::Px(236.0),
                 flex_direction: FlexDirection::Column,
                 row_gap: Val::Px(2.0),
                 ..default()
@@ -208,25 +315,7 @@ fn spawn_hud(mut commands: Commands) {
         ))
         .with_children(|p| {
             p.spawn(Node {
-                justify_content: JustifyContent::SpaceBetween,
-                align_items: AlignItems::Center,
-                ..default()
-            })
-            .with_children(|top_row| {
-                top_row.spawn((
-                    Text::new("ALTITUDE (MSL)"),
-                    TextFont { font_size: FontSize::Px(10.0), ..default() },
-                    TextColor(TEXT_MUTED),
-                ));
-                top_row.spawn((
-                    HudField::AltSub,
-                    Text::new("AGL 0 FT"),
-                    TextFont { font_size: FontSize::Px(11.0), ..default() },
-                    TextColor(ACCENT_CYAN),
-                ));
-            });
-            p.spawn(Node {
-                column_gap: Val::Px(6.0),
+                column_gap: Val::Px(5.0),
                 align_items: AlignItems::Baseline,
                 ..default()
             })
@@ -234,12 +323,34 @@ fn spawn_hud(mut commands: Commands) {
                 r.spawn((
                     HudField::AltVal,
                     Text::new("0"),
-                    TextFont { font_size: FontSize::Px(26.0), ..default() },
+                    TextFont {
+                        font_size: FontSize::Px(30.0),
+                        ..default()
+                    },
                     TextColor(TEXT_PRIMARY),
                 ));
                 r.spawn((
                     Text::new("FT"),
-                    TextFont { font_size: FontSize::Px(12.0), ..default() },
+                    TextFont {
+                        font_size: FontSize::Px(11.0),
+                        ..default()
+                    },
+                    TextColor(TEXT_MUTED),
+                ));
+            });
+            p.spawn(Node {
+                justify_content: JustifyContent::FlexEnd,
+                align_items: AlignItems::Center,
+                ..default()
+            })
+            .with_children(|r| {
+                r.spawn((
+                    HudField::AltSub,
+                    Text::new(""),
+                    TextFont {
+                        font_size: FontSize::Px(12.0),
+                        ..default()
+                    },
                     TextColor(TEXT_MUTED),
                 ));
             });
@@ -273,7 +384,10 @@ fn spawn_hud(mut commands: Commands) {
                 p.spawn((
                     HudField::Mode,
                     Text::new(""),
-                    TextFont { font_size: FontSize::Px(13.0), ..default() },
+                    TextFont {
+                        font_size: FontSize::Px(13.0),
+                        ..default()
+                    },
                     TextColor(Color::srgba(1.0, 1.0, 1.0, 0.90)),
                 ));
             });
@@ -308,7 +422,10 @@ fn spawn_hud(mut commands: Commands) {
                 p.spawn((
                     HudField::Stats,
                     Text::new(""),
-                    TextFont { font_size: FontSize::Px(12.0), ..default() },
+                    TextFont {
+                        font_size: FontSize::Px(12.0),
+                        ..default()
+                    },
                     TextColor(Color::srgba(1.0, 1.0, 1.0, 0.86)),
                 ));
             });
@@ -343,7 +460,10 @@ fn spawn_hud(mut commands: Commands) {
                 c.spawn((
                     ArrivalText,
                     Text::new(""),
-                    TextFont { font_size: FontSize::Px(18.0), ..default() },
+                    TextFont {
+                        font_size: FontSize::Px(18.0),
+                        ..default()
+                    },
                     TextColor(Color::WHITE),
                 ));
             });
@@ -374,9 +494,15 @@ fn spawn_hud(mut commands: Commands) {
         commands.spawn((
             MarkerLabel(id),
             Text::new(""),
-            TextFont { font_size: FontSize::Px(12.0), ..default() },
+            TextFont {
+                font_size: FontSize::Px(12.0),
+                ..default()
+            },
             TextColor(Color::srgba(0.85, 0.95, 1.0, 0.95)),
-            Node { position_type: PositionType::Absolute, ..default() },
+            Node {
+                position_type: PositionType::Absolute,
+                ..default()
+            },
             Visibility::Hidden,
         ));
     }
@@ -397,28 +523,17 @@ fn cardinal_label(heading: f32) -> &'static str {
     }
 }
 
-fn heading_tape(heading: f32) -> String {
-    // 70° window, a tick every 5°, cardinal letters on the 45s.
-    let mut s = String::new();
-    let start = (heading - 35.0).round() as i32;
-    for d in (start..=start + 70).filter(|d| d.rem_euclid(5) == 0) {
-        let a = d.rem_euclid(360);
-        let label = match a {
-            0 => "N",
-            45 => "NE",
-            90 => "E",
-            135 => "SE",
-            180 => "S",
-            225 => "SW",
-            270 => "W",
-            315 => "NW",
-            _ if a % 15 == 0 => "|",
-            _ => "·",
-        };
-        s.push_str(label);
-        s.push(' ');
+fn thousands(v: i64) -> String {
+    let s = v.abs().to_string();
+    let bytes = s.as_bytes();
+    let mut out = String::new();
+    for (i, &c) in bytes.iter().enumerate() {
+        if i > 0 && (bytes.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c as char);
     }
-    s.trim_end().to_string()
+    if v < 0 { format!("-{out}") } else { out }
 }
 
 fn fmt_dist(m: f64) -> String {
@@ -455,7 +570,14 @@ fn update_text(
     let heading = (enu.x.atan2(enu.y).to_degrees() as f32).rem_euclid(360.0);
 
     let (pos, vel, mode, agl, boost, wing_on) = match players.single() {
-        Ok((t, v, p)) => (t.translation, v.0, p.mode, p.agl, p.boost_stage, p.wingsuit_on),
+        Ok((t, v, p)) => (
+            t.translation,
+            v.0,
+            p.mode,
+            p.agl,
+            p.boost_stage,
+            p.wingsuit_on,
+        ),
         Err(_) => (ct.translation, Vec3::ZERO, MoveMode::Fall, 0.0, 0, true),
     };
     let g = origin.to_geodetic(pos);
@@ -465,37 +587,33 @@ fn update_text(
     let ft = g.alt_m * 3.280_84;
     let mach = vel.length() as f64 / ed_flight::atmosphere(g.alt_m).speed_of_sound;
 
-    let tape_str = heading_tape(heading);
-    let deg_str = format!("{:03.0}° {}", heading.rem_euclid(360.0), cardinal_label(heading));
+    let deg_str = format!(
+        "{:03.0}° {}",
+        heading.rem_euclid(360.0),
+        cardinal_label(heading)
+    );
     let speed_val_str = format!("{:.0}", mph);
-    let speed_sub_str = if mach >= 0.8 {
-        format!("MACH {mach:.2}")
+    let speed_sub_str = format!("{mach:.2}");
+    let alt_val_str = thousands(ft as i64);
+    let alt_sub_str = if vs.abs() > 2.5 {
+        format!("{} {:.0} MPH", if vs < 0.0 { "↓" } else { "↑" }, vs.abs())
     } else {
-        format!("{:.0} m/s", vel.length())
-    };
-    let alt_val_str = format!("{:.0}", ft);
-    let alt_sub_str = {
-        let ft_agl = agl * 3.280_84;
-        let mut parts = Vec::new();
-        if vs.abs() > 5.0 {
-            parts.push(format!("{}{:.0} mph", if vs < 0.0 { "↓" } else { "↑" }, vs.abs()));
-        }
-        if ft_agl < 10_000.0 {
-            parts.push(format!("AGL {:.0} ft", ft_agl));
-        }
-        if parts.is_empty() {
-            "LEVEL".to_string()
-        } else {
-            parts.join("  •  ")
-        }
+        String::new()
     };
     let mode_str = {
         let mut s = mode.label().to_uppercase();
         if mode == MoveMode::RocketShoes {
-            s.push_str(&format!("  •  BOOST {} [SPACE]", ["I", "II", "III", "MAX"][boost]));
+            s.push_str(&format!(
+                "  •  BOOST {} [SPACE]",
+                ["I", "II", "III", "MAX"][boost]
+            ));
         }
         if !matches!(mode, MoveMode::Walk | MoveMode::Parachute) {
-            s.push_str(if wing_on { "  •  WINGSUIT READY [F]" } else { "  •  WINGSUIT OFF [F]" });
+            s.push_str(if wing_on {
+                "  •  WINGSUIT READY [F]"
+            } else {
+                "  •  WINGSUIT OFF [F]"
+            });
         }
         s
     };
@@ -506,17 +624,25 @@ fn update_text(
         let tile = TileId::containing(g.lat_deg, g.lon_deg, 14);
         let w = weather.and_then(|w| w.0.clone());
         let wtxt = w.map_or("weather n/a".to_string(), |w| {
-            format!("{} {:.0}°C wind {:.0} m/s", w.describe(), w.temperature_c, w.wind_speed_ms)
+            format!(
+                "{} {:.0}°C wind {:.0} m/s",
+                w.describe(),
+                w.temperature_c,
+                w.wind_speed_ms
+            )
         });
-        let (tiles_loaded, tiles_pending, tiles_desired) =
-            mgr.as_ref().map_or((0, 0, 0), |m| (m.loaded.len(), m.pending.len(), m.desired.len()));
+        let (tiles_loaded, tiles_pending, tiles_desired) = mgr.as_ref().map_or((0, 0, 0), |m| {
+            (m.loaded.len(), m.pending.len(), m.desired.len())
+        });
         let (p_io, p_build, p_apply) = mgr.as_ref().map_or((0, 0, 0), |m| m.pipeline());
         let sat_free = sat_pool.as_ref().map_or([0; 3], |p| p.free_layers());
-        let (buildings, trees, tris) =
-            mgr.as_ref().map_or((0, 0, 0), |m| (m.totals.buildings, m.totals.trees, m.totals.triangles));
+        let (buildings, trees, tris) = mgr.as_ref().map_or((0, 0, 0), |m| {
+            (m.totals.buildings, m.totals.trees, m.totals.triangles)
+        });
         let (detail_loaded, detail_flight) = dm.as_ref().map_or((0, 0), |d| detail_stats(d));
-        let (win_w, win_h, win_scale) =
-            windows.single().map_or((0, 0, 1.0), |w| (w.physical_width(), w.physical_height(), w.scale_factor()));
+        let (win_w, win_h, win_scale) = windows.single().map_or((0, 0, 1.0), |w| {
+            (w.physical_width(), w.physical_height(), w.scale_factor())
+        });
         let fps = 1.0 / time.delta_secs().max(1e-4);
         let ms = time.delta_secs_f64() * 1000.0;
         stats_str = format!(
@@ -571,11 +697,6 @@ fn update_text(
 
     for (field, mut t) in &mut fields {
         match field {
-            HudField::CompassTape => {
-                if t.0 != tape_str {
-                    t.0 = tape_str.clone();
-                }
-            }
             HudField::CompassDeg => {
                 if t.0 != deg_str {
                     t.0 = deg_str.clone();
@@ -615,8 +736,97 @@ fn update_text(
     }
 }
 
-fn stats_visibility(gfx: Res<GraphicsSettings>, mut roots: Query<&mut Visibility, With<StatsRoot>>) {
-    let want = if gfx.show_stats { Visibility::Inherited } else { Visibility::Hidden };
+fn paint_tape(
+    mut tape: ResMut<HudTape>,
+    mut images: ResMut<Assets<Image>>,
+    cams: Query<&Transform, (With<Camera3d>, Without<crate::globe::GlobeCamera>)>,
+    origin: Res<WorldOrigin>,
+    vis: Query<&InheritedVisibility, With<HudTapeCanvas>>,
+) {
+    let Ok(v) = vis.single() else { return };
+    if !v.get() {
+        tape.last_center = None;
+        return;
+    }
+    let Ok(cam) = cams.single() else { return };
+    let up = origin.up_at(cam.translation);
+    let fwd = cam.forward().as_vec3().reject_from_normalized(up);
+    let enu = ed_geo::render_to_enu(fwd.as_dvec3());
+    let heading = (enu.x.atan2(enu.y).to_degrees() as f32).rem_euclid(360.0);
+    // Tape centre in canvas px; redraw once it moved half a CSS pixel.
+    let center_px = heading * TAPE_PX_PER_DEG * TAPE_RES as f32;
+    if let Some(prev) = tape.last_center {
+        if (center_px - prev).abs() < 0.5 {
+            return;
+        }
+    }
+    tape.last_center = Some(center_px);
+    let Some(mut img) = images.get_mut(&tape.handle) else {
+        return;
+    };
+    let Some(data) = img.data.as_mut() else {
+        return;
+    };
+    let w = (TAPE_W_CSS as u32 * TAPE_RES) as usize;
+    let h = (TAPE_H_CSS as u32 * TAPE_RES) as usize;
+    data.fill(0);
+    let ppd = TAPE_PX_PER_DEG * TAPE_RES as f32;
+    let (warn, mid, low) = (200u8, 150u8, 110u8);
+    let d0 = (heading - 36.0).floor() as i32;
+    for d in d0..=(heading + 36.0) as i32 {
+        let (hh, alpha) = if d.rem_euclid(45) == 0 {
+            (h as i32 - 8, warn)
+        } else if d.rem_euclid(15) == 0 {
+            (h as i32 - 26, mid)
+        } else if d.rem_euclid(5) == 0 {
+            (h as i32 - 44, low)
+        } else {
+            continue;
+        };
+        // Bottom-anchored tick at its heading offset from the tape centre.
+        let x = (((d as f32 - heading) * ppd) + w as f32 * 0.5).round() as i32;
+        for dx in 0..3 {
+            let xx = x + dx;
+            if xx < 0 || xx >= w as i32 {
+                continue;
+            }
+            for yy in 0..hh {
+                let y = h as i32 - hh + yy;
+                if y >= 0 && y < h as i32 {
+                    let at = (y as usize * w + xx as usize) * 4;
+                    data[at] = 255;
+                    data[at + 1] = 255;
+                    data[at + 2] = 255;
+                    data[at + 3] = alpha;
+                }
+            }
+        }
+    }
+    // Needle: white wedge hanging from the top rim over the tape centre.
+    for i in 0..14_i32 {
+        let half = ((13 - i) / 2 + 1) as i32;
+        for dx in -half..=half {
+            let xx = w as i32 / 2 + dx;
+            if (0..w as i32).contains(&xx) && i < h as i32 {
+                let at = (i as usize * w + xx as usize) * 4;
+                data[at] = 255;
+                data[at + 1] = 255;
+                data[at + 2] = 255;
+                data[at + 3] = 235;
+            }
+        }
+    }
+}
+
+fn stats_visibility(
+    gfx: Res<GraphicsSettings>,
+    mut roots: Query<&mut Visibility, With<StatsRoot>>,
+) {
+    let want = if gfx.show_stats {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
     for mut v in &mut roots {
         v.set_if_neq(want);
     }
@@ -644,9 +854,14 @@ fn update_toast(
             t.0 = format!("Arrived at {}", notice.name);
         }
     }
-    let show = playing && !loading.is_some_and(|l| l.active) && time.elapsed_secs_f64() < notice.until_s;
+    let show =
+        playing && !loading.is_some_and(|l| l.active) && time.elapsed_secs_f64() < notice.until_s;
     for mut v in &mut roots {
-        v.set_if_neq(if show { Visibility::Inherited } else { Visibility::Hidden });
+        v.set_if_neq(if show {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        });
     }
     if !show && time.elapsed_secs_f64() >= notice.until_s {
         commands.remove_resource::<ArrivalNotice>();
@@ -663,8 +878,14 @@ fn update_markers(
     mut rings: Query<(&Marker, &mut Node, &mut Visibility), Without<MarkerLabel>>,
     mut labels: Query<(&MarkerLabel, &mut Node, &mut Text, &mut Visibility), Without<Marker>>,
 ) {
-    let Ok((cam, cgt)) = cams.single() else { return };
-    let observer = focus.iter().next().map(|f| f.translation()).unwrap_or(cgt.translation());
+    let Ok((cam, cgt)) = cams.single() else {
+        return;
+    };
+    let observer = focus
+        .iter()
+        .next()
+        .map(|f| f.translation())
+        .unwrap_or(cgt.translation());
     let in_space = origin.to_geodetic(observer).alt_m >= crate::sky::SPACE_ALTITUDE_M;
     for (m, mut node, mut vis) in &mut rings {
         if !in_space {
@@ -674,7 +895,9 @@ fn update_markers(
             }
             continue;
         }
-        let Some((_, bgt)) = bodies.iter().find(|(b, _)| b.0 == m.0) else { continue };
+        let Some((_, bgt)) = bodies.iter().find(|(b, _)| b.0 == m.0) else {
+            continue;
+        };
         let p = bgt.translation();
         let in_front = (p - cgt.translation()).dot(cgt.forward().as_vec3()) > 0.0;
         match cam.world_to_viewport(cgt, p) {
@@ -683,11 +906,16 @@ fn update_markers(
                 node.left = Val::Px(s.x - 12.0);
                 node.top = Val::Px(s.y - 12.0);
                 *vis = Visibility::Visible;
-                if let Some((_, mut ln, mut lt, mut lv)) = labels.iter_mut().find(|l| l.0.0 == m.0) {
+                if let Some((_, mut ln, mut lt, mut lv)) = labels.iter_mut().find(|l| l.0.0 == m.0)
+                {
                     ln.left = Val::Px(s.x + 18.0);
                     ln.top = Val::Px(s.y - 8.0);
                     let d = (p - cgt.translation()).length() as f64;
-                    lt.0 = format!("{}  •  {}", ed_space::info(m.0).name.to_uppercase(), fmt_dist(d));
+                    lt.0 = format!(
+                        "{}  •  {}",
+                        ed_space::info(m.0).name.to_uppercase(),
+                        fmt_dist(d)
+                    );
                     *lv = Visibility::Visible;
                 }
             }
