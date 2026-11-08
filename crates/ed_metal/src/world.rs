@@ -1268,6 +1268,7 @@ impl WorldRenderer {
             // full-redraw slot and must know each other's wants.
             let mut plans: [Option<(Vec<u64>, u64)>; NCASC] = std::array::from_fn(|_| None);
             let mut jobs: [Option<Job>; NCASC] = std::array::from_fn(|_| None);
+            let mid_building_shadows = std::env::var_os("EW_MID_BUILDING_SHADOWS").is_some();
             for ci in 0..NCASC {
                 // Caster set for this cascade: in range, and big enough to matter at this texel size.
                 let texel = casc.info[ci][0];
@@ -1275,7 +1276,14 @@ impl WorldRenderer {
                 let mut casters: Vec<(u64, usize)> = Vec::new();
                 for (i, (d, b)) in draws.iter().zip(&bounds).enumerate() {
                     let Some(b) = b else { continue };
-                    let min_r = if ci == 5 && d.terrain { 0.0 } else { min_r0 };
+                    // Cascades 4 (mid, 4 km) and 5 (far, 20 km) are terrain-only by default.
+                    // Buildings and trees cast in cascades 0-3 (to 700 m, matching p.shadow_far).
+                    // In cities, casting buildings to 4-20 km adds thousands of shadow draws and
+                    // invalidates shadow caches on every streaming tile.
+                    if ci >= 4 && !d.terrain && !mid_building_shadows {
+                        continue;
+                    }
+                    let min_r = if ci >= 4 && d.terrain { 0.0 } else { min_r0 };
                     if !d.cast_shadow || d.blend == Blend::Alpha || b.r < min_r {
                         continue;
                     }
@@ -1597,11 +1605,19 @@ impl WorldRenderer {
                 } else {
                     let mm = Mat4::from_cols_array_2d(&d.model);
                     let sc = mm.x_axis.truncate().length().max(mm.y_axis.truncate().length()).max(mm.z_axis.truncate().length());
-                    for cl in &m.clusters {
+                    let mut vis_clusters: Vec<(usize, f32)> = Vec::with_capacity(m.clusters.len());
+                    for (cli, cl) in m.clusters.iter().enumerate() {
                         let cw = mm.transform_point3(Vec3::from(cl.c));
-                        if !in_view(cw, cl.r * sc) {
-                            continue;
+                        if in_view(cw, cl.r * sc) {
+                            let d2 = (cw - vcam).length_squared();
+                            vis_clusters.push((cli, d2));
                         }
+                    }
+                    // Sort clusters front-to-back so front-facing bays/facades write depth first.
+                    vis_clusters.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+                    for (cli, _) in vis_clusters {
+                        let cl = &m.clusters[cli];
+                        let cw = mm.transform_point3(Vec3::from(cl.c));
                         let dist = ((cw - vcam).length() - cl.r * sc * 0.5).max(1.0);
                         // `EW_LOD_USE=0` keeps the proxies but always draws the full geometry:
                         // separates "the proxy geometry is wrong" from "the proxy draw is wrong".
@@ -1638,7 +1654,25 @@ impl WorldRenderer {
         re.setDepthStencilState(Some(&self.ds_opaque));
         let mut tc = u64::MAX;
         let mut cur_t = 0u8;
-        for d in draws.iter().filter(|d| d.visible && d.blend != Blend::Alpha && !d.water) {
+
+        let mut opaque_indices: Vec<usize> = (0..draws.len())
+            .filter(|&i| {
+                let d = &draws[i];
+                d.visible && d.blend != Blend::Alpha && !d.water
+            })
+            .collect();
+
+        // Sort front-to-back: closer meshes write reverse-Z depth first so Apple Silicon TBDR
+        // HSR / Early-Z discards occluded geometry before running the heavy PBR + PCF shadow +
+        // probe GI fragment shader.
+        opaque_indices.sort_unstable_by(|&a, &b| {
+            let da = bounds[a].as_ref().map_or(f32::MAX, |bnd| (bnd.c - vcam).length_squared());
+            let db = bounds[b].as_ref().map_or(f32::MAX, |bnd| (bnd.c - vcam).length_squared());
+            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        for &i in &opaque_indices {
+            let d = &draws[i];
             if let Some(m) = self.meshes.get(&d.mesh) {
                 draw_one(&re, d, m, &mut tc, &mut cur_t);
             }
@@ -2015,7 +2049,54 @@ pub fn prep_flat(positions: &[[f32; 3]], normals: &[[f32; 3]], uvs: &[[f32; 2]],
     }
     let center = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5, (lo[2] + hi[2]) * 0.5];
     let radius = ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + (hi[2] - lo[2]).powi(2)).sqrt() * 0.5;
-    MeshPrep { data, idx: indices.to_vec(), center, radius, clusters: Vec::new(), pidx: Vec::new(), ed_clusters: None, box_min: lo, box_max: hi, box_avg_color: bavg }
+    let ntri = indices.len() / 3;
+    let mut idx: Vec<u32> = indices.to_vec();
+    let mut clusters: Vec<PrepCluster> = Vec::new();
+    if ntri > 20_000 {
+        let n = ((ntri as f32 / 10_000.0).sqrt().ceil() as usize).clamp(2, 16);
+        let (sx, sz) = ((hi[0] - lo[0]).max(1e-3), (hi[2] - lo[2]).max(1e-3));
+        let cell_of = |t: usize| -> usize {
+            let (a, b, c) = (positions[indices[t * 3] as usize], positions[indices[t * 3 + 1] as usize], positions[indices[t * 3 + 2] as usize]);
+            let cx = (a[0] + b[0] + c[0]) / 3.0;
+            let cz = (a[2] + b[2] + c[2]) / 3.0;
+            let ix = (((cx - lo[0]) / sx * n as f32) as usize).min(n - 1);
+            let iz = (((cz - lo[2]) / sz * n as f32) as usize).min(n - 1);
+            iz * n + ix
+        };
+        let mut counts = vec![0usize; n * n + 1];
+        let cells: Vec<usize> = (0..ntri).map(&cell_of).collect();
+        for &c in &cells {
+            counts[c + 1] += 1;
+        }
+        for i in 0..n * n {
+            counts[i + 1] += counts[i];
+        }
+        let starts = counts.clone();
+        let mut cur = counts;
+        for (t, &c) in cells.iter().enumerate() {
+            let o = cur[c] * 3;
+            idx[o..o + 3].copy_from_slice(&indices[t * 3..t * 3 + 3]);
+            cur[c] += 1;
+        }
+        for c in 0..n * n {
+            let (a, b) = (starts[c] * 3, starts[c + 1] * 3);
+            if a == b {
+                continue;
+            }
+            let (mut l, mut h) = ([f32::MAX; 3], [f32::MIN; 3]);
+            for &vi in &idx[a..b] {
+                let p = positions[vi as usize];
+                for k in 0..3 {
+                    l[k] = l[k].min(p[k]);
+                    h[k] = h[k].max(p[k]);
+                }
+            }
+            let cc = [(l[0] + h[0]) * 0.5, (l[1] + h[1]) * 0.5, (l[2] + h[2]) * 0.5];
+            let r = ((h[0] - l[0]).powi(2) + (h[1] - l[1]).powi(2) + (h[2] - l[2]).powi(2)).sqrt() * 0.5;
+            clusters.push(PrepCluster { first: a, count: b - a, proxy: [(0, 0); 3], c: cc, r });
+        }
+    }
+    MeshPrep { data, idx, center, radius, clusters, pidx: Vec::new(), ed_clusters: None, box_min: lo, box_max: hi, box_avg_color: bavg }
 }
 
 /// Stable identity of one shadow caster within a cascade: mesh, translation quantised to the

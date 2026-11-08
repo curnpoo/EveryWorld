@@ -1,15 +1,16 @@
 # Roadmap
 
-Rewritten 2026-11-05. What's done, what's next, in what order, and why. Recent changes and open checks: `CHANGES.md`. Open bugs: `BUGS.md`. Plans: `plans/` (engine, assets and agents, buildings, world sim, space visuals, shadows, flora, sound, voxel proxies and navara, multiplayer). How it works: `ARCHITECTURE.md`.
+Updated 2026-11-07. What's done, what's next, and how the product plans fit the engineering work. Recent changes and open checks: `CHANGES.md`. Open bugs: `BUGS.md`. Plans: `plans/` (engine, assets and agents, buildings, world sim, space visuals, shadows, flora, sound, voxel proxies and navara, multiplayer). How it works: `ARCHITECTURE.md`.
 
 ## Where we are
 
-A playable game: a good-looking real-Earth world with a flyable robot courier (rocket boots, skydive, parachute, wingsuit), teleport by place name, HUD, procedural trees/buildings/ground, clouds and atmosphere. What holds it back:
+A playable real-Earth world with a flyable robot courier, place-name teleport, procedural terrain/buildings/trees, clouds, atmosphere, a native Metal renderer, and a working ghost-multiplayer baseline. Cars and planes are playable prototypes. The next product work is to grow the vehicle, mission, wildlife, weather, customization, space, and platform offerings while renderer and streaming work continues. What holds it back:
 
 - **Performance.** Below 30 fps on an M3 Pro (baseline measured at 33.5 fps in an Ohio suburb at 67% render scale; worse in cities). M0 and M1 are built; the headless harness (`tools/perf_headless.sh`) shows real gains (shadow proxies took the cruise scene from 17.4 to 34.9 fps) but the M0 exit (45+ fps) is not met and the windowed Mac pass has not been done. The native Metal renderer *does* have per-pass GPU timers now (`ed_metal::timers`, printed by `RUST_LOG=info` runs), and the first measurements are in `plans/voxel-proxy-and-navara.md`: in a settled city (Shibuya, street level, 2144x1206) the frame is 20.8 ms of GPU - world pass 71%, ocean 25%, shadows 20% - with 15.6 M triangles submitted in 474 per-tile draws. So the GPU is the limit, and it is fed per-tile merged geometry plus an ocean FFT that runs every frame for water the camera cannot see (~4.8 ms, 23% of the frame, measured). The next stops are the cheap wins (skip the ocean FFT when the sea is not visible, shadow cache survives streaming) and then GPU-driven per-cluster culling.
 - **City performance is BAD right now (2026-11-06).** Do not read the older "35-44 fps after the shadow fix" line and assume a city is fine. Measured today on the native Metal renderer in Shibuya at street level (2144x1206, headless): **27-32 fps settled, `gpu_wait` 20.8 ms, 15.6 M triangles submitted in 474 per-tile draws**; while the city streams it is far worse (`gpu_wait` 93 -> 207 ms, 1639 shadow draws, 0 cascades cached - every arriving tile invalidates all six cascades). The LOD fix stopped distant towers shredding into sails but did not cut the triangle count (23.4 M vs 26.9 M with the LOD off): in a city the triangles *are* the buildings, and `meshopt` can only remove ~17 % of them inside a sane error budget. So: below the 30 fps floor in a city, and unplayable while it loads. The four fixes in order are in `docs/CHANGES.md` (skip the ocean FFT when the sea is not visible; make the shadow cache survive streaming; a per-building far LOD; GPU-driven per-cluster culling in M2). The 6 reference scenes still need re-measuring on the same basis.
 - **Visual glitches.** LOD flashes, impostor flicker, shadow cascades, road/guardrail/path geometry, atmosphere/satellite/cloud altitude transitions (`BUGS.md`).
-- **Missing:** vehicles, missions, multiplayer, space beyond a prototype, other planets.
+- **Still to build:** a finished multiplayer world and persistence layer; helicopters, rockets, spaceships and boats; delivery/racing missions; NPCs, traffic and parked cars; wildlife; building interiors; rain, snow and severe storms; a coupled ocean simulation; Moon/Mars/planet exploration; procedural planets and galaxies; and broader character customization.
+- **Community ideas:** include pigeons among the first urban wildlife. Mission ideas beyond delivery and racing are open for suggestions.
 
 ## Decisions (2026-11-05)
 
@@ -17,7 +18,7 @@ A playable game: a good-looking real-Earth world with a flyable robot courier (r
 2. **A Nanite-like geometry system is the goal** (cluster LOD + GPU culling + visibility buffer + software raster for small triangles). Bevy's meshlets measured ~60% slower on the M3 Pro, so we build our own on `ed_gpu`/`ed_render`, not on Bevy.
 3. **Windows must support DLSS/FSR3 and hardware ray tracing (RTX).** `ed_gpu` is designed for it from the start: an upscaler interface, an acceleration-structure interface, a bindless resource model. A D3D12 backend is written when Stage H starts.
 4. **Use the GPU fully.** Measure it first (Stage A), then fix what the measurements show. Better shaders and materials follow from a renderer that is not starved.
-5. **Performance and looks come before vehicles.** Vehicles are a planned step (Stage F), but the game must run well and look good first.
+5. **Keep performance and looks in the loop.** Cars and planes already work as prototypes; broader gameplay can progress alongside the remaining renderer, streaming, and low-end-PC work.
 6. **Multiplayer is designed in early.** The world must match for every player. Stage A lays the determinism foundation; Stage C ships ghost multiplayer.
 
 ## Stage order
@@ -26,12 +27,12 @@ A playable game: a good-looking real-Earth world with a flyable robot courier (r
 |---|---|---|---|
 | **A** | Stabilize and measure | P1 bugs; Mac test pass; GPU pass timers and utilization capture; `perf_gate.sh`; determinism golden-hash CI; pinned data versions | We know what limits the frame. Reference scenes glitch-free. |
 | **B** | Fast | Finish M1 (GPU-resident tiles); M2 (`ed_gpu` + `ed_render` v1); G1 scope check | 60 fps steady on the 6 reference scenes (M3 Pro) |
-| **C** | Together | Ghost multiplayer; `ed_store` world deltas; procedural climate synced by (seed, UTC) | Two machines see the same world and each other |
+| **C** | Together | Ghost multiplayer baseline is working; harden sync, determinism and platform behavior; add `ed_store` world deltas and procedural climate synced by (seed, UTC) | Two machines share a reliable, persistent world |
 | **D** | Native and Nanite-like | Native Metal backend; cluster LOD + software raster; material and shader system v2 | 120 fps High tier on M3 Pro |
 | **E** | Lighting | GTAO, froxel fog, motion blur, night lights (cheap first); virtual shadow maps; DDGI | Looks cinematic within budget; every feature has a cost per tier and an off switch |
-| **F** | Play | Vehicles; water; traffic; missions; NPCs and animals | Full delivery loop with vehicles, on one machine and online |
-| **G** | Space | Reference frames; orbit; Earth from orbit; Moon; Mars; procedural planets; galaxy | Rocket to the Moon, walk on it, keep your edits |
-| **H** | Platforms | Windows (D3D12, DLSS/FSR3, RTX); then mobile (iOS, then Android) | Ships on other hardware with the perf gate passing |
+| **F** | Play | Extend existing car and plane prototypes with helicopters, rockets, spaceships and boats; delivery/racing and other missions; NPCs, traffic and parked cars; animals; character customization; deeper ocean simulation | A varied, shared play loop with missions, vehicles and living places |
+| **G** | Space | Build from the existing Moon/planet sky catalog into explorable Moon and Mars surfaces, other planets, procedural planets and galaxies | Travel from Earth to explorable worlds and seeded star systems |
+| **H** | Platforms | Broader Windows PC support, including lower-end PCs; native D3D12 with DLSS/FSR3 and RTX; then mobile (iOS, then Android) | Runs well across a wide range of PC hardware, then other platforms |
 
 Stages A to C are strictly ordered by dependency. D to H can overlap with different sessions on different files, but the exit criteria above are what "done" means.
 
@@ -71,7 +72,7 @@ Goal: 60 fps steady on an M3 Pro for the world as it looks today. Engine design:
    - `ed_gpu` is the render hardware interface: bindless tables, GPU-driven indirect draws, transient targets, async compute, explicit heaps for streaming pages, pipeline precompilation, an upscaler interface, an acceleration-structure interface. First backend: wgpu, so work can start on top of it.
    - `ed_render` v1: terrain clipmap, GPU-culled instancing, visibility buffer, cached shadow maps, own TAA upscaler.
    - Renderer code is written against `ed_gpu` only, never against wgpu or Metal directly.
-3. **Phase 2 items that M2 delivers:** instanced building modules (windows, balconies, AC units), CDLOD geomorphing for terrain, crossfades for building detail.
+3. **Phase 2 items that M2 delivers:** instanced building modules (windows, balconies, AC units; see `plans/gpu-building-instancing.md`), CDLOD geomorphing for terrain, crossfades for building detail.
 4. **Exit:** 60 fps steady on all 6 reference scenes, no frame over 50 ms after load.
 5. **G1 scope check** (end of M2). Native Metal is already decided. G1 now answers *how much* of the renderer goes native first: profile wgpu vs native Metal on the same scene and prioritize what the numbers show (CPU overhead above 1.5 ms per frame, emulated indirect draws or missing tile memory costing over 2 ms, features that cannot go through wgpu: mesh shaders, ray tracing, MetalFX).
 
@@ -80,7 +81,7 @@ Goal: 60 fps steady on an M3 Pro for the world as it looks today. Engine design:
 Goal: players share the same world. Design: `plans/engine.md` section 9.
 
 - **Principle:** terrain, buildings, trees and weather are *never sent*. Every client generates them from the same inputs (world seed, pinned data version, UTC time). Only deltas (edits) and entity state (players, vehicles, NPCs) travel.
-- **Ghost multiplayer first:** a thin relay sends player position, pose and boot state at 20-30 Hz; each client generates the world. The test: two clients at the same coordinates see the same buildings, trees, clouds and sun, and see each other. *(Body parity landed: protocol v5 shares the full 62-part procedural IK rig, wing deformation, and flame cones between local and remote players. Remote spatial movement audio and boot smoke trails added 2026-11-07; needs Mac and Windows two-client checks.)*
+- **Ghost multiplayer baseline works:** the relay sends player position, movement state and pose; each client builds the same world and renders remote avatars. Protocol v5 shares the 62-part IK rig, wing deformation and flames. Remote spatial movement audio and boot smoke trails are implemented; distance mix and valley plume grounding are being tuned. Remaining Stage C work: test reliability on Mac and Windows, deterministic/pinned world data, server-owned state and persistence.
 - **`ed_store`:** persistent world deltas (save files and multiplayer share the format). Reliable delivery.
 - **Procedural climate** (`ed_climate` milestones 1-3, `plans/world-sim.md`): weather is a pure function of (seed, UTC), replacing Open-Meteo. Deterministic spin-up and fast-forward from checkpoints so all clients reach the same state.
 - **Netcode:** authoritative server per region shard, interest management by speed (walking small, jet large, orbit coarse), prediction and reconciliation for owned players and vehicles, interpolation for others. Candidates: `lightyear` or `renet` over QUIC (`quinn`).
@@ -106,34 +107,34 @@ Goal: make it look great without breaking the frame budget. **Engine rule: every
 1. Cheap, high-value first: GTAO, froxel fog, motion blur, night lights (lit windows, street lights, NASA city lights from orbit).
 2. Virtual shadow maps (replaces the cascade work in `plans/shadows.md` for near range; far-range horizon maps stay).
 3. DDGI global illumination, with hardware ray tracing used where available.
-4. Phase 1.6 weather effects land here: rain and snow particles, wet roads, fog from visibility; later local storms (hurricane, tornado, sandstorm) per `plans/world-sim.md`.
+4. Weather still to add: rain, snow, wet roads, visibility fog, and local hurricanes, tornadoes and sandstorms per `plans/world-sim.md`.
 
 ## Stage F: Play
 
 Goal: a game loop worth playing, built on a renderer that holds frame rate.
 
-1. **Vehicles** (Phase 4): car (raycast suspension, tire model, torque curve, gearbox), engine audio (done: `ed_engine_audio`; next Doppler, rocket generator, per-car gearing), plane (per-surface lift/drag, runways from OSM aeroways), helicopter, rocket ship (launch from real sites).
-2. **Water:** FFT ocean and local shallow water, buoyancy, rivers that flow downhill, waves, shoreline foam (boats come with this).
-3. **Traffic:** AI cars on road centerlines (already exported).
-4. **Missions:** delivery planner (pick up, multi-leg route, timer, scoring), missions v1 online.
-5. **NPCs and animals** by biome; photo mode and postcards; character customization, save/load, settings, controller support.
+1. **Vehicles:** cars and planes are playable prototypes. Grow them into a complete set: helicopters, rockets, spaceships and boats. Improve per-vehicle handling, runways, gearing and engine audio.
+2. **Missions:** finish delivery missions, add racing, then select more mission types with community input.
+3. **Living world:** NPCs, AI traffic, parked cars and biome wildlife. Start city wildlife with pigeons and other familiar urban birds.
+4. **Customization:** expand beyond the backpack to character appearance and equipment; add persistence for character and world state.
+5. **Water and weather:** the FFT ocean already renders, and rivers/water generation exist. Build a coupled ocean simulation with waves and buoyancy, then add rain, snow, wet roads, fog and severe local storms.
 
 ## Stage G: Space
 
 Goal: rocket to the Moon and beyond, with the same world rules (determinism plus deltas).
 
-1. Reference frames (galaxy, system, planet) and orbital mechanics.
+1. Reference frames (galaxy, system, planet) and orbital mechanics; the current sky already includes the Moon and planet positions.
 2. Earth from orbit: low-zoom globe tiles, atmosphere from space, cloud layer from `ed_climate` (`plans/space-visuals.md`).
-3. The Moon: procedural cratered terrain, then NASA LOLA elevation; land and walk. Mars (MOLA), then the rest, with HUD target rings and approach guidance.
+3. Turn the Moon and Mars from sky objects into explorable worlds: procedural terrain, then NASA LOLA/MOLA elevation; landing, walking and approach guidance. Continue with other real planets.
 4. Starfield: procedural sky done (`starfield.rs`); next a real Hipparcos/Yale catalog.
-5. Procedural planets and a seeded galaxy with real nearby stars (Gaia/HYG). Systems are generated on demand; a flag planted on a moon persists via `ed_store`.
+5. Procedural planets and a seeded galaxy with real nearby stars (Gaia/HYG). Generate systems on demand and persist discoveries and edits through `ed_store`.
 6. Time compression on long coasts. The Moon and Mars work on the current f64 positions; only galaxy scale needs the new reference frames.
 
 ## Stage H: Platforms
 
 Goal: ship beyond the dev Mac.
 
-1. **Windows:** D3D12 backend (native), DLSS and FSR3 through the upscaler interface, hardware ray tracing (RTX) through the acceleration-structure interface, perf gate on Windows. Target: 120 fps High on RTX 3060. Dev/test on Windows through the existing Bevy/wgpu path is already in place (CI on macOS + Windows, `docs/WINDOWS.md` with test batteries and an agent checklist, 2026-11-06); the native backend above is still this stage's job.
+1. **Windows:** a Bevy/wgpu development path, Windows build CI and test instructions already exist. Expand support to run on a broad range of PCs, including lower-end systems. The longer-term native path is D3D12 with DLSS/FSR3, RTX and a Windows performance gate.
 2. **Mobile:** iOS first (shares the Metal backend; tile memory is the big win), then Android (Vulkan backend). Low-power tier with its own budget.
 3. macOS app bundle and signing.
 

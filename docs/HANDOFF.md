@@ -52,12 +52,14 @@ Filter FPS with `grep "native: [0-9]* fps"`.
 Native water is a dedicated pass: `WorldRenderer::encode` draws opaque, blits depth+HDR copies (`dcopy`/`hcopy`), then draws meshes marked `attenuation_distance == WATER_MARK` (`assets.rs`) with `water_fs`. GPU FFT ocean (`ocean.rs`, 3 cascades) feeds slopes and Jacobian foam; shoaling, breakers, refraction and caustics come from scene depth. Switches: `EW_NATIVE_NOWATER=1` (opaque water draw), `EW_NATIVE_NOFFT=1` (analytic waves). Full status and the specs for **phase 6 (CPU deterministic wave model / buoyancy / spray)** and **phase 7 (underwater pass)**, which are NOT done, are in `docs/plans/ultra-water-port.md`. Also open: vertex displacement, per-tile shore map, terrain swash, planar reflection, double-counted sky where SSR hits.
 
 ## Open work, in priority order
-0. **City performance is BAD right now (2026-11-06).** Shibuya, street level, native renderer, 2144x1206:
-   27-32 fps settled (`gpu_wait` 20.8 ms, 15.6 M triangles, 474 per-tile draws) and unusable while the
-   city streams (`gpu_wait` 93 -> 207 ms - every arriving tile invalidates all six shadow cascades).
-   Fixes in order: skip the ocean FFT when the camera's tile has no sea (`sea_fraction`), make the shadow
-   cache survive streaming, per-building far LOD, then GPU-driven per-cluster culling (M2).
-   Details and numbers: `docs/CHANGES.md`, 2026-11-06.
+0. **City performance (improved 2026-11-07):** Shibuya street level native renderer previously hit
+   17-20 fps streaming (`gpu_wait` 93 -> 207 ms, 1639 shadow draws) due to all 6 cascades rasterizing
+   buildings out to 4-20 km, overdraw from unsorted opaque draws, and disabled far LOD.
+   Landed fixes: opaque front-to-back sorting (mesh & cluster level), cascades 4 & 5 terrain-only by
+   default (cascades 0-3 cover buildings to 700 m), far massing LOD enabled at 3500 m (`EW_FAR_LOD_M`)
+   with spatial clusters in `prep_flat`, and background LOD prep to kill upgrade hitches.
+   Next step for steady 60 fps: GPU instancing for canonical building parts (windows/doors/AC/rooftop)
+   and GPU-driven cluster culling / visibility buffer (M2). Details in `docs/CHANGES.md`.
 1. **NYC window frames render detached** from facades (street level). Likely transform/offset in the window geometry mirrored by `native.rs`. See BUGS B13.
 2. **Far buildings to 20 km** per `docs/plans/far-buildings-and-nanite.md` (tiers 3-8 km merged footprints, 8-20 km simplified; `ed_world/src/lod.rs` floor 16 km).
    Verify 20 km shadows visually (low sun, NYC) and shadow-map cost.
