@@ -145,6 +145,7 @@ Headline goals: a fast, beautiful, shared real-Earth world; renderer end state i
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — how it works
 - [docs/BUGS.md](docs/BUGS.md) — known visual/feel issues
 - [docs/plans/](docs/plans/) — engine, buildings, shadows, flora, and more
+- [docs/solarpunk/](docs/solarpunk/) — Solarpunk World modular asset spec + reference images
 
 ---
 
