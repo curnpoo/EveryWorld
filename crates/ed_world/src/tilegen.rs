@@ -574,16 +574,13 @@ pub fn build(job: &TileJob) -> TileBuild {
             let max = match tile.z {
                 // 8k since 2026-11-06: 16k baked ~1.6 M card triangles per canyon tile and the
                 // whole game felt better at 8k with no visible loss.
-                14.. => 2_000,
-                12 | 13 => 2_000,
-                11 => 1_500,
-                _ => 1_000,
+                14.. => 4_000,
+                12 | 13 => 3_500,
+                11 => 2_500,
+                _ => 1_500,
             };
             // `EW_SCATTER_MAX` caps the tree/shrub instances per tile (each bakes to ~110 card
             // triangles; a canyon tile at the 16 k cap is ~1.7 M triangles resident).
-            // Far (cheap) tiles still get trees, but far fewer, so the world is never barren
-            // past the spawn area. Full detail arrives when the camera gets close.
-            let max = if job.far { (max / 4).max(500) } else { max };
             let max = std::env::var("EW_SCATTER_MAX").ok().and_then(|v| v.parse().ok()).unwrap_or(max);
             let (trees, rocks, kept) = foliage::scatter(&proj, &grid, &surface, Some(&occ), max);
             out.stats.trees = trees.len();
