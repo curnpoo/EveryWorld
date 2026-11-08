@@ -161,6 +161,68 @@ impl WindowModeSetting {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum TileRetentionSetting {
+    Low,
+    #[default]
+    Normal,
+    High,
+    KeepAll,
+}
+
+impl TileRetentionSetting {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Low => Self::Normal,
+            Self::Normal => Self::High,
+            Self::High => Self::KeepAll,
+            Self::KeepAll => Self::Low,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Low => "Low (48 tiles)",
+            Self::Normal => "Normal (150 tiles)",
+            Self::High => "High (400 tiles)",
+            Self::KeepAll => "Keep all (unbounded)",
+        }
+    }
+    pub fn cap(self) -> usize {
+        // Windows draw distance is 2 km -> far fewer tiles; keep its caps tight.
+        if cfg!(target_os = "windows") {
+            match self {
+                Self::Low => 24,
+                Self::Normal => 48,
+                Self::High => 96,
+                Self::KeepAll => usize::MAX,
+            }
+        } else {
+            match self {
+                Self::Low => 48,
+                Self::Normal => 150,
+                Self::High => 400,
+                Self::KeepAll => usize::MAX,
+            }
+        }
+    }
+    pub fn from_code(code: u8) -> Self {
+        match code {
+            1 => Self::Normal,
+            2 => Self::High,
+            3 => Self::KeepAll,
+            _ => Self::Low,
+        }
+    }
+    pub fn to_code(self) -> u8 {
+        match self {
+            Self::Low => 0,
+            Self::Normal => 1,
+            Self::High => 2,
+            Self::KeepAll => 3,
+        }
+    }
+}
+
 #[derive(Resource, Clone)]
 pub struct GraphicsSettings {
     pub aa_mode: AaMode,
@@ -175,6 +237,8 @@ pub struct GraphicsSettings {
     pub show_stats: bool,
     /// Window presentation mode (persists via the settings file).
     pub window_mode: WindowModeSetting,
+    /// How many streamed tiles stay resident when out of view (live-applied).
+    pub tile_retention: TileRetentionSetting,
     /// The clock was last set to real current time by the "Now" button.
     pub time_live: bool,
     pub hour_offset: f64,
@@ -434,6 +498,7 @@ impl Default for GraphicsSettings {
             aa_mode,
             show_stats: false,
             window_mode,
+            tile_retention: TileRetentionSetting::default(),
             time_live: false,
             hour_offset: 0.0,
             hour_offset_applied: 0.0,
@@ -487,6 +552,7 @@ pub enum MenuAction {
     ToggleAa,
     ToggleStats,
     CycleWindowMode,
+    CycleTileRetention,
     ToggleProbes,
     CycleProbeView,
     CycleNativeView,
@@ -927,6 +993,7 @@ fn build_menus(mut commands: Commands, assets: Res<AssetServer>) {
             p.spawn((TabBody(MenuView::Settings), Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(12.0), ..default() }, Visibility::Hidden)).with_children(|t| {
                 for (label, a) in [
                     ("Window mode", MenuAction::CycleWindowMode),
+                    ("Tile retention", MenuAction::CycleTileRetention),
                     ("Shadows", MenuAction::ToggleShadows),
                     ("Ambient occlusion", MenuAction::ToggleAo),
                     ("Bloom", MenuAction::ToggleBloom),
@@ -1564,6 +1631,7 @@ fn menu_buttons(
             }
             MenuAction::ToggleStats => gfx.show_stats = !gfx.show_stats,
             MenuAction::CycleWindowMode => gfx.window_mode = gfx.window_mode.next(),
+            MenuAction::CycleTileRetention => gfx.tile_retention = gfx.tile_retention.next(),
             MenuAction::ToggleProbes => dbg.probe_gi = !dbg.probe_gi,
             MenuAction::CycleProbeView => dbg.probe_view = dbg.probe_view.next(),
             MenuAction::CycleNativeView => dbg.native_view = dbg.native_view.next(),
@@ -1729,6 +1797,7 @@ fn refresh_menu(
             MenuAction::CycleResolution => format!("{}%", gfx.render_pct),
             MenuAction::ToggleStats => on(gfx.show_stats),
             MenuAction::CycleWindowMode => gfx.window_mode.label().to_string(),
+            MenuAction::CycleTileRetention => gfx.tile_retention.label().to_string(),
             MenuAction::ToggleProbes => on(dbg.probe_gi),
             MenuAction::CycleProbeView => dbg.probe_view.label().to_string(),
             MenuAction::CycleNativeView => dbg.native_view.label().to_string(),

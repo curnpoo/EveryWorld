@@ -65,6 +65,7 @@ impl Plugin for StreamingPlugin {
                 (
                     // The main menu is just a map: don't load the world until a spawn is chosen.
                     select_tiles.run_if(not(in_state(crate::menu::GameState::Menu))),
+                    sync_tile_retention,
                     pump_jobs,
                     apply_tiles,
                     retire_tiles,
@@ -89,7 +90,7 @@ const APPLY_MS: u64 = 4;
 const RESIDENT_CAP: usize = if cfg!(target_os = "windows") { 24 } else { 48 };
 /// Off-screen wanted tiles closer than this many tile widths are still built
 /// (at low priority): the ground you could turn and look at right away.
-const OFFSCREEN_PREBUILD: f64 = 1.5;
+const OFFSCREEN_PREBUILD: f64 = if cfg!(target_os = "windows") { 0.5 } else { 2.5 };
 /// Height allowance above the ground for buildings and trees in the view test.
 const BUILDING_ALLOWANCE_M: f32 = 500.0;
 /// Buildings farther than this (m) use the far massing mesh; crossing inward swaps to full geometry.
@@ -431,7 +432,7 @@ pub struct TileManager {
     sat_tags: HashMap<TileId, u32>,
     /// When each loaded tile was last in view.
     seen: Lru<TileId>,
-    resident_cap: usize,
+    pub resident_cap: usize,
     pub ground_estimate: f64,
     last_select: f32,
     /// Origin generation last seen; a jump means old tiles are off-screen and can retire at once.
@@ -453,6 +454,9 @@ pub struct Totals {
 }
 
 impl TileManager {
+    pub fn set_resident_cap(&mut self, cap: usize) {
+        self.resident_cap = cap;
+    }
     fn new() -> Self {
         let (io_n, cpu_n) = ed_runtime::jobs::default_threads();
         let io_n = env_num("EW_IO_THREADS", io_n);
@@ -904,7 +908,7 @@ fn select_tiles(
         // Off-screen wanted tiles beyond the prebuild ring wait: at street level `wanted` is
         // ~354 tiles (z14 out to 16 km) while the view holds ~137, so building them all is far
         // too expensive. Rotating into them is a known build storm (see CHANGES 2026-11-06).
-        if std::env::var_os("EW_KEEP_TILES").is_none() && !visible && d > if cfg!(target_os = "windows") { 0.5 } else { OFFSCREEN_PREBUILD } {
+        if std::env::var_os("EW_KEEP_TILES").is_none() && !visible && d > env_num("EW_OFFSCREEN_PREBUILD", if cfg!(target_os = "windows") { 0.5 } else { OFFSCREEN_PREBUILD }) {
             continue;
         }
         // 0 (or negative) disables the far massing LOD entirely; it must not mean "every tile is far".
@@ -1457,6 +1461,22 @@ fn dump_sat(t: TileId, n: u32, data: &[u8]) {
 
 /// Despawn tiles we no longer want once their replacements are in (where
 /// you can look), and the oldest out-of-view tiles once over the residency cap.
+fn sync_tile_retention(
+    gfx: Option<Res<crate::menu::GraphicsSettings>>,
+    mut mgr: ResMut<TileManager>,
+) {
+    let Some(gfx) = gfx else { return };
+    // Env overrides win: EW_KEEP_TILES forces unlimited, EW_RESIDENT_TILES forces a number.
+    let cap = if std::env::var_os("EW_KEEP_TILES").is_some() {
+        usize::MAX
+    } else if let Ok(v) = std::env::var("EW_RESIDENT_TILES") {
+        v.parse::<usize>().unwrap_or(gfx.tile_retention.cap())
+    } else {
+        gfx.tile_retention.cap()
+    };
+    mgr.set_resident_cap(cap);
+}
+
 fn retire_tiles(
     mut commands: Commands,
     mut mgr: ResMut<TileManager>,
@@ -1472,7 +1492,7 @@ fn retire_tiles(
     // frame). Relying on `scheduler::retire` here is too conservative - its
     // blocking/ancestor holding keeps almost all of them alive, so the mesh slab
     // grows until the GPU runs out of memory.
-    let retire = if jumped {
+    let mut retire = if jumped {
         let r: Vec<TileId> = mgr
             .loaded
             .keys()
@@ -1482,11 +1502,15 @@ fn retire_tiles(
         info!("origin jump: retiring {} stale tiles at once", r.len());
         r
     } else {
+        // Hold ancestors of *any* not-yet-loaded wanted tile (not just in-view ones),
+        // so off-screen prebuilds keep their coarse parents alive during a turn and
+        // no hole appears while the finer tile finishes building. `in_view` is still
+        // used below for the over-cap LRU eviction.
         let mut r = scheduler::retire(
             mgr.loaded.keys().copied(),
             &mgr.wanted,
             |t| mgr.loaded.contains_key(t),
-            |t| mgr.in_view.contains(t),
+            |_| true,
         );
         // Over the cap: oldest unseen first. `over_cap` never returns tiles seen
         // this tick, and in-view tiles are touched every select.
@@ -1507,6 +1531,20 @@ fn retire_tiles(
             r
         }
     };
+    // Keep coarse parents alive while any of their (finer) descendants are still
+    // loaded, so a turn never leaves a hole where a parent retired before its
+    // replacement finished building. (Cheap: a few dozen coarse tiles max.)
+    if !jumped {
+        let loaded: Vec<TileId> = mgr.loaded.keys().copied().collect();
+        retire.retain(|t| {
+            !loaded.iter().any(|l| {
+                t.z < l.z && {
+                    let (anc, _, _, _) = l.ancestor(t.z);
+                    anc == *t
+                }
+            })
+        });
+    }
     if retire.is_empty() {
         crate::probes::add_retire(t0.elapsed());
         return;

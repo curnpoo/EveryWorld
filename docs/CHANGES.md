@@ -1,3 +1,21 @@
+## 2026-11-08: tile retention setting + smoother turns (no pop-in)
+- **Root cause of turn pop-in:** `resident_cap` defaulted to 48 (Mac) / 24 (Windows) tiles, so a
+  90° turn evicted most of the just-visible ring; `retire_tiles` only held coarse parents for
+  *in-view* not-yet-loaded tiles, so off-screen prebuilds did not keep their parents alive.
+- **Fixes:**
+  - New `TileRetentionSetting` (Low / Normal / High / Keep all) in `GraphicsSettings`, cycled in the
+    Settings tab ("Tile retention"), persisted in `settings.json`, applied live to
+    `TileManager.resident_cap` via `sync_tile_retention` (env `EW_KEEP_TILES` / `EW_RESIDENT_TILES`
+    still override).
+  - Caps: Mac 48 / 150 / 400 / unbounded; Windows 24 / 48 / 96 / unbounded.
+  - `scheduler::retire` now holds ancestors of *any* not-yet-loaded wanted tile (not just in-view),
+    so off-screen prebuilds keep their coarse parents alive through a turn — no holes.
+  - Coarse parents that still have a loaded descendant are never retired (prevents parent-retires-
+    before-child gaps).
+  - Off-screen prebuild ring widened from 1.5 to 2.5 tiles on Mac (env `EW_OFFSCREEN_PREBUILD`).
+- Needs Mac check: spin in place at ground level; horizon and nearby ground should stay populated.
+  Raise the setting to High/Keep all if 48/150 still pops.
+
 ## 2026-11-07: minimap rotation bug — degrees fed to trig (fixed)
 - The CPU-composited minimap rotated its canvas sampling with
   `cos(heading)`/`sin(heading)` where `heading` is **degrees**, so the disk's
