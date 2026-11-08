@@ -26,7 +26,7 @@ impl Plugin for MapViewPlugin {
             // never also the frame that closes the menu.
             .add_systems(
                 Update,
-                (search_input, search_paint)
+                (search_input, search_paint, waypoint_button_input)
                     .after(crate::menu::open_pause)
                     .before(crate::globe::GlobeControl),
             )
@@ -45,6 +45,9 @@ pub struct MapCanvas;
 /// The orange pin shown where the user clicked.
 #[derive(Component)]
 pub(crate) struct Marker;
+
+#[derive(Component)]
+pub(crate) struct WaypointMarker;
 
 #[derive(Component)]
 pub(crate) struct Popup;
@@ -74,6 +77,9 @@ struct SearchStatus;
 #[derive(Component)]
 pub(crate) struct SearchPin;
 
+#[derive(Component)]
+pub(crate) struct WaypointPlaceButton;
+
 /// Expanding impact ring, visible during the pin's landing bounce.
 #[derive(Component)]
 pub(crate) struct SearchRing;
@@ -86,6 +92,7 @@ const SEARCH_PLACEHOLDER: &str = "Search places, regions, addresses…";
 enum PopupAction {
     Sky,
     Ground,
+    Waypoint,
     Close,
 }
 
@@ -102,6 +109,11 @@ pub struct MapState {
     /// A place found by the search bar: the pin is falling towards it. When it
     /// lands it hands over to `selected` and the drop popup opens.
     pub(crate) landing: Option<Landing>,
+    /// When true, the next globe click places a waypoint instead of selecting
+    /// a drop point.
+    pub waypoint_mode: bool,
+    /// Pending waypoint from a globe click; consumed by the waypoint system.
+    pub pending_waypoint: Option<Geodetic>,
     /// The search text field owns the keyboard.
     pub(crate) text_focus: bool,
     /// What is typed in the search field.
@@ -229,6 +241,23 @@ pub(crate) fn build_overlays(commands: &mut Commands, canvas: Entity) {
         ZIndex(3),
         ChildOf(canvas),
     ));
+    // Waypoint marker on the globe (green, same size as Marker).
+    commands.spawn((
+        WaypointMarker,
+        Node {
+            position_type: PositionType::Absolute,
+            width: Val::Px(18.0),
+            height: Val::Px(18.0),
+            border: UiRect::all(Val::Px(4.0)),
+            border_radius: BorderRadius::MAX,
+            ..default()
+        },
+        BackgroundColor(Color::srgb(0.2, 0.85, 0.3)),
+        BorderColor::all(Color::WHITE),
+        Visibility::Hidden,
+        ZIndex(3),
+        ChildOf(canvas),
+    ));
     // Search pin: a little map pin that falls onto the searched spot. The tip
     // is the node's bottom centre, so `top` is anchored so it points at the geo.
     commands
@@ -331,6 +360,7 @@ pub(crate) fn build_overlays(commands: &mut Commands, canvas: Entity) {
             for (label, action, accent) in [
                 ("Drop from the sky", PopupAction::Sky, true),
                 ("Start on the ground", PopupAction::Ground, false),
+                ("Set Waypoint", PopupAction::Waypoint, false),
                 ("Cancel", PopupAction::Close, false),
             ] {
                 crate::menu::button(p, label, action, accent);
@@ -338,6 +368,32 @@ pub(crate) fn build_overlays(commands: &mut Commands, canvas: Entity) {
         });
     build_search_bar(commands, canvas);
     build_attribution(commands, canvas);
+    // Waypoint placement button.
+    commands.spawn((
+        WaypointPlaceButton,
+        Interaction::None,
+        Node {
+            position_type: PositionType::Absolute,
+            right: Val::Px(14.0),
+            top: Val::Px(14.0),
+            padding: UiRect::axes(Val::Px(12.0), Val::Px(6.0)),
+            border_radius: BorderRadius::all(Val::Px(10.0)),
+            ..default()
+        },
+        BackgroundColor(crate::menu::BTN),
+        ZIndex(5),
+        ChildOf(canvas),
+    ))
+    .with_children(|p| {
+        p.spawn((
+            Text::new("Set Waypoint"),
+            TextFont {
+                font_size: FontSize::Px(13.0),
+                ..default()
+            },
+            TextColor(crate::menu::INK),
+        ));
+    });
 }
 
 /// The search bar: rounded panel docked at the canvas' top-left, a text field
@@ -447,6 +503,12 @@ fn popup_buttons(
         let Some(sel) = st.selected else { continue };
         match a {
             PopupAction::Close => st.selected = None,
+            PopupAction::Waypoint => {
+                let sel = st.selected.unwrap();
+                st.pending_waypoint = Some(sel);
+                st.selected = None;
+                st.selected_name.clear();
+            }
             PopupAction::Sky | PopupAction::Ground => {
                 let height = if matches!(a, PopupAction::Sky) {
                     SpawnHeight::Sky
@@ -465,7 +527,7 @@ fn popup_buttons(
     }
 }
 
-const POPUP_ORDER: [PopupAction; 3] = [PopupAction::Sky, PopupAction::Ground, PopupAction::Close];
+const POPUP_ORDER: [PopupAction; 4] = [PopupAction::Sky, PopupAction::Ground, PopupAction::Waypoint, PopupAction::Close];
 
 /// Controller path through the "drop here" popup: D-pad up/down moves the
 /// highlight, A presses it, B cancels. Runs after the globe's `control`, so the
@@ -500,6 +562,11 @@ fn pad_popup(
             };
             match action {
                 PopupAction::Close => {}
+                PopupAction::Waypoint => {
+                    st.pending_waypoint = Some(sel);
+                    st.selected = None;
+                    st.selected_name.clear();
+                }
                 PopupAction::Sky | PopupAction::Ground => {
                     let height = if action == PopupAction::Sky {
                         SpawnHeight::Sky
@@ -643,6 +710,20 @@ fn search_input(
                 }
                 Err(e) => st.search_status = format!("Search unavailable ({e})."),
             }
+        }
+    }
+}
+
+/// Handle the "Set Waypoint" button: enters waypoint placement mode.
+#[allow(deprecated)]
+fn waypoint_button_input(
+    mut st: ResMut<MapState>,
+    q: Query<&Interaction, (With<WaypointPlaceButton>, Changed<Interaction>)>,
+) {
+    for i in &q {
+        if *i == Interaction::Pressed {
+            st.waypoint_mode = true;
+            st.search_status = "Click on the globe to place waypoint".to_string();
         }
     }
 }

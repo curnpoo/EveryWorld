@@ -1,6 +1,6 @@
 # Roadmap
 
-Updated 2026-11-07. What's done, what's next, and how the product plans fit the engineering work. Recent changes and open checks: `CHANGES.md`. Open bugs: `BUGS.md`. Plans: `plans/` (engine, assets and agents, buildings, world sim, space visuals, shadows, flora, sound, voxel proxies and navara, multiplayer). How it works: `ARCHITECTURE.md`.
+Updated 2026-11-08. What's done, what's next, and how the product plans fit the engineering work. Recent changes and open checks: `CHANGES.md`. Open bugs: `BUGS.md`. Plans: `plans/` (engine, assets and agents, buildings, world sim, space visuals, shadows, flora, sound, voxel proxies and navara, multiplayer). How it works: `ARCHITECTURE.md`. **User goals (compiled): `GOALS.md`** — the running "what I want the game to be" list, including the seamless surface-to-space-to-planets fantasy, parked-vehicle persistence, and the altitude-transition fixes.
 
 ## Where we are
 
@@ -111,6 +111,8 @@ Goal: make it look great without breaking the frame budget. **Engine rule: every
 
 ## Stage F: Play
 
+Goal additions (from `GOALS.md`): **parked-state vehicle persistence** — when a vehicle is far from the active camera (or its tile unloads), it becomes a parked data record (f64 ECEF state, no Avian body/collider) and rehydrates into a live body on return. Do not attempt live physics from orbit (precision, colliders, cost, determinism). Autonomous ground traffic later runs a simplified kinematic simulation-LOD tier.
+
 Goal: a game loop worth playing, built on a renderer that holds frame rate.
 
 1. **Vehicles:** cars and planes are playable prototypes. Grow them into a complete set: helicopters, rockets, spaceships and boats. Improve per-vehicle handling, runways, gearing and engine audio.
@@ -120,6 +122,8 @@ Goal: a game loop worth playing, built on a renderer that holds frame rate.
 5. **Water and weather:** the FFT ocean already renders, and rivers/water generation exist. Build a coupled ocean simulation with waves and buoyancy, then add rain, snow, wet roads, fog and severe local storms.
 
 ## Stage G: Space
+
+Goal additions (from `GOALS.md`): seamless climb ground → stratosphere → orbit → Moon with no visual switch; unify the two renderers (map globe + in-game) into one shared `GlobeTiles` cache, one atmosphere calibration, one cloud field; crossfade ground atmosphere → `globe_atmo.wesl` (30–100 km); terrain → satellite sphere above ~200 km; 2D cloud-cover shell from `ed_climate` feeding both globes; city lights from orbit; Moon/Mars as explorable worlds with floating origin re-anchored to the body's frame.
 
 Goal: rocket to the Moon and beyond, with the same world rules (determinism plus deltas).
 

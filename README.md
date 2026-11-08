@@ -121,6 +121,23 @@ Then in the game: `Esc` → **Multiplayer** tab → **Connect**. The first remot
 
 ---
 
+## Roadmap (summary)
+
+Current stage: **A — Stabilize and measure.** Full detail: [docs/ROADMAP.md](docs/ROADMAP.md). User goals list: [docs/GOALS.md](docs/GOALS.md).
+
+| Stage | Name | Key work | Status |
+|---|---|---|---|
+| **A** | Stabilize & measure | Bug fixes (B1–B12), Mac test pass, GPU perf measurement, perf gate, determinism CI, pinned data versions | **Now** |
+| **B** | Fast | Finish M1 (GPU-resident tiles), M2 (`ed_gpu` + `ed_render` v1), 60 fps on 6 reference scenes | Next |
+| **C** | Together | Ghost multiplayer hardening, `ed_store` world deltas, deterministic procedural climate | After B |
+| **D** | Native & Nanite-like | Native Metal backend, cluster LOD + software raster, material/shader system v2, 120 fps | Overlaps |
+| **E** | Lighting | GTAO, froxel fog, motion blur, night lights, virtual shadow maps, DDGI | Overlaps |
+| **F** | Play | Helicopters/rockets/spaceships/boats, missions, NPCs/traffic/parked cars, animals, customization, coupled ocean | Overlaps |
+| **G** | Space | Seamless ground→orbit→Moon, orbital clouds/atmosphere, explorable Moon/Mars, starfield, procedural planets/galaxy | Overlaps |
+| **H** | Platforms | Windows (D3D12, DLSS/FSR3, RTX), mobile (iOS then Android) | Later |
+
+Headline goals: a fast, beautiful, shared real-Earth world; renderer end state is native Metal + a Nanite-like geometry system (cluster LOD, GPU culling, visibility buffer, software raster) on `ed_gpu`/`ed_render`; multiplayer-safe generation (pure function of world seed + pinned data version + UTC time); every feature declares cost per tier with an off switch.
+
 ## Docs
 
 - [docs/ROADMAP.md](docs/ROADMAP.md) — stages, status, what’s next

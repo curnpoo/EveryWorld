@@ -40,6 +40,7 @@ impl Plugin for MinimapPlugin {
                     position_north,
                     minimap_visibility,
                     update_minimap_remote_dots,
+                    update_minimap_waypoint,
                 )
                     .chain(),
             );
@@ -88,6 +89,12 @@ struct MinimapNorth;
 struct MinimapRemoteDot {
     id: u64,
 }
+
+#[derive(Component)]
+struct MinimapWaypointArrow;
+
+#[derive(Component)]
+struct MinimapWaypointLabel;
 
 #[derive(Resource, Default)]
 struct MinimapRemoteDots {
@@ -246,6 +253,22 @@ fn spawn_minimap(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
                 UiTransform::from_xy(Val::Px(-6.0), Val::Px(-24.0)),
                 ZIndex(4),
             ));
+            // Waypoint direction arrow (rotated per bearing).
+            p.spawn((
+                MinimapWaypointArrow,
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(SIZE_PX * 0.5 - 4.0),
+                    top: Val::Px(SIZE_PX * 0.5 - 4.0),
+                    width: Val::Px(8.0),
+                    height: Val::Px(8.0),
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.2, 0.85, 0.3)),
+                Visibility::Hidden,
+                ZIndex(3),
+            ));
+
             // A north marker on the rim, positioned by the heading.
             p.spawn((
                 MinimapNorth,
@@ -275,6 +298,7 @@ fn update_minimap(
     time: Res<Time>,
     mut st: ResMut<MinimapState>,
     cams: Query<&Transform, (With<Camera3d>, Without<crate::globe::GlobeCamera>)>,
+    players: Query<&Transform, With<crate::player::Player>>,
     roots: Query<(&ComputedNode, &InheritedVisibility), With<MinimapRoot>>,
 ) {
     let Ok((node, vis)) = roots.single() else {
@@ -284,7 +308,8 @@ fn update_minimap(
         return;
     }
     let Ok(cam) = cams.single() else { return };
-    let g = origin.to_geodetic(cam.translation);
+    let pos = players.single().map(|t| t.translation).unwrap_or(cam.translation);
+    let g = origin.to_geodetic(pos);
     st.center = to_world(g);
     let dt = time.delta_secs().max(1e-3);
     if let Some(prev) = st.prev {
@@ -583,6 +608,46 @@ fn minimap_visibility(
     };
     for mut v in &mut roots {
         v.set_if_neq(want);
+    }
+}
+
+fn update_minimap_waypoint(
+    wp: Res<crate::waypoint::Waypoint>,
+    st: Res<MinimapState>,
+    origin: Res<WorldOrigin>,
+    cams: Query<&Transform, (With<Camera3d>, Without<crate::globe::GlobeCamera>)>,
+    mut arrows: Query<(&mut Node, &mut Visibility), With<MinimapWaypointArrow>>,
+) {
+    // Hide if no waypoint.
+    let Some(g) = wp.pos else {
+        for (mut node, mut vis) in arrows.iter_mut() {
+            node.left = Val::Px(-100.0);
+            node.top = Val::Px(-100.0);
+            node.width = Val::Px(0.0);
+            node.height = Val::Px(0.0);
+            *vis = Visibility::Hidden;
+        }
+        return;
+    };
+
+    let Ok(cam) = cams.single() else { return };
+    let player_geo = origin.to_geodetic(cam.translation);
+
+    let dist_m = player_geo.distance_to(g);
+    let dist_km = dist_m / 1000.0;
+
+    // Arrow on the rim pointing toward the waypoint's relative bearing.
+    let bearing = player_geo.bearing_to(g);
+    let relative = (bearing as f32 - st.heading).to_radians();
+    let r = SIZE_PX * 0.42;
+    let dx = relative.sin() * r;
+    let dy = -relative.cos() * r;
+    for (mut node, mut vis) in arrows.iter_mut() {
+        node.left = Val::Px(SIZE_PX * 0.5 + dx - 4.0);
+        node.top = Val::Px(SIZE_PX * 0.5 + dy - 4.0);
+        node.width = Val::Px(8.0);
+        node.height = Val::Px(8.0);
+        *vis = Visibility::Inherited;
     }
 }
 

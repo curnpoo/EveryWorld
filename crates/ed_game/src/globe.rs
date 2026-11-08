@@ -8,7 +8,7 @@
 //!
 //! Globe space: radius 1, +Y north, lon 0 on +X, 90°E on -Z.
 
-use crate::mapview::{MapCanvas, MapState, Marker, Popup, PopupTitle, SearchBar, SearchPin, SearchRing, build_overlays, scroll_notches};
+use crate::mapview::{MapCanvas, MapState, Marker, Popup, PopupTitle, SearchBar, SearchPin, SearchRing, WaypointMarker, build_overlays, scroll_notches};
 use crate::menu::GameState;
 use crate::net::RemotePlayers;
 use crate::sky::Clock;
@@ -753,10 +753,15 @@ fn control(
                 if g.moved < 5.0 && hover && (end - start).length() < 0.02 {
                     if let Some(p) = g.cursor_pick {
                         let (lat, lon) = gl::latlon_from_unit(p);
-                        map.select(Geodetic::new(lat, lon, 0.0));
-                        retarget_time(&mut map, &mut gfx, &clock, lon);
-                        // Bring the picked place to the middle of the view.
-                        g.fly = Some((p, g.goal_zoom));
+                        if map.waypoint_mode {
+                            map.waypoint_mode = false;
+                            map.search_status.clear();
+                            map.pending_waypoint = Some(Geodetic::new(lat, lon, 0.0));
+                        } else {
+                            map.select(Geodetic::new(lat, lon, 0.0));
+                            retarget_time(&mut map, &mut gfx, &clock, lon);
+                            g.fly = Some((p, g.goal_zoom));
+                        }
                     }
                 }
             }
@@ -1163,8 +1168,10 @@ fn update_overlays(
     g: Res<GlobeState>,
     mut map: ResMut<MapState>,
     pin: Res<PlayerPin>,
+    wp: Res<crate::waypoint::Waypoint>,
     canvases: Query<(&RelativeCursorPosition, &ComputedNode, &InheritedVisibility), With<MapCanvas>>,
-    mut marker: Query<(&mut Node, &mut Visibility), (With<Marker>, Without<Popup>, Without<PinRoot>, Without<SearchPin>, Without<SearchRing>)>,
+    mut marker: Query<(&mut Node, &mut Visibility), (With<Marker>, Without<Popup>, Without<PinRoot>, Without<SearchPin>, Without<SearchRing>, Without<WaypointMarker>)>,
+    mut wp_marker: Query<(&mut Node, &mut Visibility), (With<WaypointMarker>, Without<Marker>, Without<Popup>, Without<PinRoot>, Without<SearchPin>, Without<SearchRing>)>,
     mut popup: Query<(&mut Node, &mut Visibility, &ComputedNode), (With<Popup>, Without<Marker>, Without<PinRoot>, Without<SearchPin>, Without<SearchRing>)>,
     mut title: Query<&mut Text, (With<PopupTitle>, Without<Readout>)>,
     mut pins: Query<(&mut Node, &mut Visibility, &mut UiTransform), (With<PinRoot>, Without<Marker>, Without<Popup>, Without<PinRing>)>,
@@ -1258,6 +1265,22 @@ fn update_overlays(
     let sel_px = sel.and_then(|(_, p)| g.facing(p).then(|| g.project(p)).flatten()).map(at);
     for (mut n, mut v) in &mut marker {
         match sel_px {
+            Some(px) => {
+                n.left = Val::Px(px.x - 9.0);
+                n.top = Val::Px(px.y - 9.0);
+                *v = Visibility::Inherited;
+            }
+            None => *v = Visibility::Hidden,
+        }
+    }
+    // Waypoint marker on the globe.
+    let wp_px = wp.pos.and_then(|wpg| {
+        let p = gl::unit_from_latlon(wpg.lat_deg, wpg.lon_deg);
+        if !g.facing(p) { return None; }
+        g.project(p).map(|f| at(f))
+    });
+    for (mut n, mut v) in &mut wp_marker {
+        match wp_px {
             Some(px) => {
                 n.left = Val::Px(px.x - 9.0);
                 n.top = Val::Px(px.y - 9.0);

@@ -1161,6 +1161,7 @@ pub fn net_menu_actions(
 }
 
 fn net_update_nametags(
+    state: Res<State<crate::menu::GameState>>,
     remote: Res<RemotePlayers>,
     origin: Res<WorldOrigin>,
     camera: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<crate::globe::GlobeCamera>)>,
@@ -1170,6 +1171,12 @@ fn net_update_nametags(
     mut dist_texts: Query<(&NametagDistText, &mut Text, &mut Visibility), (Without<RemoteNametag>, Without<NametagLine>)>,
     mut lines: Query<(&NametagLine, &mut Node, &mut Visibility), (Without<RemoteNametag>, Without<NametagDistText>)>,
 ) {
+    if *state.get() != crate::menu::GameState::Playing {
+        for (_, _, _, mut vis, _) in anchors.iter_mut() { *vis = Visibility::Hidden; }
+        for (_, _, mut v) in dist_texts.iter_mut() { *v = Visibility::Hidden; }
+        for (_, _, mut v) in lines.iter_mut() { *v = Visibility::Hidden; }
+        return;
+    }
     let cam = camera.iter().next();
     let pos_by_id: HashMap<u64, Vec3> = avatars.iter().map(|(t, a)| (a.id, t.translation)).collect();
     let win_logical = windows.single().ok().map(|w| w.resolution.size()).unwrap_or(Vec2::ZERO);

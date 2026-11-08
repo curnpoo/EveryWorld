@@ -13,10 +13,17 @@ pub struct DiskCache {
 impl DiskCache {
     /// `~/Library/Caches/earthdrop` on macOS, `$XDG_CACHE_HOME/earthdrop` on Linux.
     pub fn default_location() -> Self {
-        let root = std::env::var_os("EARTHDROP_CACHE")
-            .map(PathBuf::from)
-            .or_else(|| dirs::cache_dir().map(|d| d.join("earthdrop")))
-            .unwrap_or_else(|| PathBuf::from(".earthdrop-cache"));
+        // Default to a temp directory so downloaded tiles do not linger on disk
+        // (and are cleared on reboot). Set EARTHDROP_CACHE to persist them.
+        let root = match std::env::var_os("EARTHDROP_CACHE") {
+            Some(p) => PathBuf::from(p),
+            None => {
+                // Ephemeral: wiped on every launch so nothing lingers.
+                let r = std::env::temp_dir().join("earthdrop");
+                let _ = std::fs::remove_dir_all(&r);
+                r
+            }
+        };
         Self::new(root)
     }
 
