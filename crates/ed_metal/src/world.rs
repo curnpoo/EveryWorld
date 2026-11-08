@@ -1582,7 +1582,8 @@ impl WorldRenderer {
                 re.setFragmentBytes_length_atIndex(ptr, std::mem::size_of::<DrawU>(), 2);
                 let key = d.tex.wrapping_add(d.tex2.wrapping_mul(0x9E37_79B9_7F4A_7C15));
                 if *tex_cache != key {
-                    re.setFragmentTexture_atIndex(Some(self.textures.get(&d.tex).unwrap_or(&self.white)), 0);
+                    let fallback0 = if d.terrain { &self.neutral } else { &self.white };
+                    re.setFragmentTexture_atIndex(Some(self.textures.get(&d.tex).unwrap_or(fallback0)), 0);
                     re.setFragmentTexture_atIndex(Some(self.textures.get(&d.tex2).unwrap_or(&self.neutral)), 2);
                     *tex_cache = key;
                 }
