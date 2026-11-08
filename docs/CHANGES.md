@@ -1,3 +1,17 @@
+## 2026-11-07: minimap rotation bug — degrees fed to trig (fixed)
+- The CPU-composited minimap rotated its canvas sampling with
+  `cos(heading)`/`sin(heading)` where `heading` is **degrees**, so the disk's
+  effective rotation was `heading` taken as *radians*: the map swept ~57x
+  camera rate while turning ("spins like crazy") and showed arbitrary
+  orientation at rest (e.g. facing 250° W displayed ~284°).
+- Fix: convert to radians in `paint_bytes` (`heading.rem_euclid(360.0).to_radians()`).
+- Added `heading_180_shows_north_at_the_bottom_midline` regression test; the
+  older edge tests passed under the bug by tile-granularity luck, so the test
+  centers also moved off the exact tile seam (±0.25 px samples used to flip
+  tiles).
+- Needs Mac check: turn in place with the minimap on — north should now stay
+  world-fixed and the disk counter-rotate at camera rate.
+
 ## 2026-11-07: native-metal-city-perf — front-to-back sorting, shadow caster bounds, far massing LOD
 - **Front-to-back opaque draw order (`ed_metal::world::WorldRenderer::encode`):**
   - Opaque mesh draws are now sorted front-to-back by camera distance before rasterization.

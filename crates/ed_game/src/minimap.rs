@@ -528,7 +528,7 @@ fn paint_bytes(
     let cyu = center.1 * (1u32 << tz) as f64;
     let hw = n as f32 * 0.5;
     let r_css = SIZE_PX * 0.5;
-    let h = heading.rem_euclid(360.0) as f64;
+    let h = heading.rem_euclid(360.0).to_radians() as f64;
     let (ch, sh) = (h.cos() as f32, h.sin() as f32);
     let rows = n as usize;
     for py in 0..rows {
@@ -711,7 +711,7 @@ mod tests {
         // h = 90° (due east). The texel due north of the camera must appear on
         // the screen's LEFT midline; the texel due east must appear ABOVE it.
         let z = 14u8;
-        let center = (0.5, 0.5);
+        let center = (0.55, 0.5);
         let n = 1u32 << z;
         // Red tile to the camera's north, empty world elsewhere.
         let red_id = TileId::new(
@@ -734,7 +734,7 @@ mod tests {
     fn heading_zero_keeps_north_up() {
         let z = 14u8;
         let n = 1u32 << z;
-        let center = (0.5, 0.5);
+        let center = (0.55, 0.5);
         let red_id = TileId::new(
             z,
             (center.0 * n as f64) as u32,
@@ -746,6 +746,31 @@ mod tests {
         // North tile shows above centre; below centre is blank.
         assert_eq!(px(&out, np / 2, 20)[0], 255);
         assert_eq!(px(&out, np / 2, np - 21)[3], 0);
+    }
+
+    #[test]
+    fn heading_180_shows_north_at_the_bottom_midline() {
+        // Facing south (h = 180°), the north texel must sit exactly on the
+        // bottom midline. Guarded with an inner offset so the whole sampled
+        // ray keeps its bearing (caught a degrees-as-radians rotation bug
+        // that the tile granular edge tests slipped through).
+        let z = 14u8;
+        let n = 1u32 << z;
+        let center = (0.55, 0.5);
+        let red_id = TileId::new(
+            z,
+            (center.0 * n as f64) as u32,
+            (center.1 * n as f64) as u32 - 1,
+        );
+        let tiles = HashMap::from([(red_id, solid([255, 0, 0, 255]))]);
+        let out = paint(center, 180.0, z as f32, &tiles);
+        let np = SIZE_PX as u32 * RES;
+        for dy in [21, 60, 100] {
+            let (cxff, cy) = (np / 2, np - dy);
+            assert_eq!(px(&out, cxff, cy)[0], 255, "row -{dy}");
+        }
+        // Above centre it is blank (south neighbour).
+        assert_eq!(px(&out, np / 2, 21)[3], 0);
     }
 
     #[test]
