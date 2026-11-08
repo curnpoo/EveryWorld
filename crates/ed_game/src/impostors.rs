@@ -31,7 +31,7 @@ const SHADER: &str = "embedded://everyworld/shaders/impostor.wesl";
 /// (FULL_M / d)^2 while the kept ones grow.
 pub const FULL_M: f32 = 1000.0;
 /// Cap on how much a kept tree grows to stand in for its thinned neighbours.
-pub const GROW_MAX: f32 = 6.0;
+pub const GROW_MAX: f32 = 1.5;
 /// Trees smaller than this on screen (px) fade out (ramp 0.8x..1.3x; sub-2 px quads flicker).
 pub const MIN_PX: f32 = 2.5;
 
