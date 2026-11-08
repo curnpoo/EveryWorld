@@ -18,7 +18,7 @@ use ed_world::farshadow::{self, FarShadowTex, HZ_H, HZ_W, SURF_N};
 use crate::ground_material::{LayerUpload, layer_array_image, write_layers};
 
 /// Same total as the satellite classes: one far layer per resident terrain tile.
-const LAYERS: u32 = 72 + 96 + 192 - 32;
+const LAYERS: u32 = 128 + 192 + 384 - 64;
 
 /// `EW_FAR_SHADOWS=debug`: the terrain shader tints what the far terms darken.
 pub static DEBUG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

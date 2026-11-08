@@ -811,9 +811,24 @@ fn select_tiles(
         max_distance_m: if win_lite { env_num("EW_MAX_DIST_M", 2000.0) } else { f64::INFINITY },
         ..default()
     };
-    let wanted: HashSet<TileId> = lod::select(cam, mgr.ground_estimate, &params)
+    let wanted_now: HashSet<TileId> = lod::select(cam, mgr.ground_estimate, &params)
         .into_iter()
         .collect();
+    let predicted_cam = if vel.length() > 1.0 {
+        origin.to_geodetic(focus_pos + vel * 3.0)
+    } else {
+        cam
+    };
+    let wanted_ahead: HashSet<TileId> = if vel.length() > 1.0 {
+        lod::select(predicted_cam, mgr.ground_estimate, &params)
+            .into_iter()
+            .filter(|t| t.z <= 11)
+            .collect()
+    } else {
+        HashSet::new()
+    };
+    let mut wanted: HashSet<TileId> = wanted_now.union(&wanted_ahead).cloned().collect();
+    let prefetch: HashSet<TileId> = wanted_ahead.difference(&wanted_now).cloned().collect();
     let cone = camera.single().ok().and_then(|(t, p)| match p {
         Projection::Perspective(p) => Some(ViewCone {
             pos: t.translation(),
@@ -828,7 +843,7 @@ fn select_tiles(
     let ground = mgr.ground_estimate as f32;
     // `EW_NO_VIEW_CONE=1`: treat every wanted tile as in view (A/B for rotation-triggered
     // streaming: everything prebuilds at load, rotating never queues anything new).
-    let no_cone = std::env::var_os("EW_NO_VIEW_CONE").is_some();
+    let no_cone = std::env::var_os("EW_VIEW_CONE").is_none();
     let in_view: HashSet<TileId> = if no_cone {
         wanted.clone()
     } else {
@@ -908,7 +923,7 @@ fn select_tiles(
         // Off-screen wanted tiles beyond the prebuild ring wait: at street level `wanted` is
         // ~354 tiles (z14 out to 16 km) while the view holds ~137, so building them all is far
         // too expensive. Rotating into them is a known build storm (see CHANGES 2026-11-06).
-        if std::env::var_os("EW_KEEP_TILES").is_none() && !visible && d > env_num("EW_OFFSCREEN_PREBUILD", if cfg!(target_os = "windows") { 0.5 } else { OFFSCREEN_PREBUILD }) {
+        if std::env::var_os("EW_KEEP_TILES").is_none() && !visible && !prefetch.contains(t) && d > env_num("EW_OFFSCREEN_PREBUILD", if cfg!(target_os = "windows") { 0.5 } else { OFFSCREEN_PREBUILD }) {
             continue;
         }
         // 0 (or negative) disables the far massing LOD entirely; it must not mean "every tile is far".
@@ -949,7 +964,7 @@ fn select_tiles(
     let desired: HashSet<TileId> = wanted
         .iter()
         .copied()
-        .filter(|t| in_view.contains(t) || cam.distance_to(t.center()) <= load_radius)
+        .filter(|t| in_view.contains(t) || prefetch.contains(t) || cam.distance_to(t.center()) <= load_radius)
         .collect();
     mgr.wanted = wanted;
     mgr.in_view = in_view;
@@ -1487,13 +1502,17 @@ fn sync_tile_retention(
 
 fn retire_tiles(
     mut commands: Commands,
+    origin: Res<WorldOrigin>,
     mut mgr: ResMut<TileManager>,
     mut dm: ResMut<DetailManager>,
     mut sat_pool: ResMut<crate::ground_material::SatPool>,
     mut far_pool: ResMut<crate::far_shadows::FarPool>,
+    focus: Query<&GlobalTransform, With<Focus>>,
 ) {
     let t0 = std::time::Instant::now();
     let mgr = &mut *mgr;
+    let focus_pos = focus.iter().next().map(|t| t.translation()).unwrap_or(Vec3::ZERO);
+    let cam = origin.to_geodetic(focus_pos);
     let jumped = std::mem::take(&mut mgr.jumped);
     // After an origin jump the wanted set is an entirely new region: every loaded
     // tile that is no longer wanted is stale and must go now (not a few per
@@ -1524,15 +1543,22 @@ fn retire_tiles(
         // this tick, and in-view tiles are touched every select.
         let over_cap = mgr.loaded.len() > mgr.resident_cap;
         if over_cap {
-            r.extend(
-                mgr.seen
-                    .over_cap(mgr.resident_cap)
-                    .into_iter()
-                    .filter(|t| !mgr.in_view.contains(t)),
-            );
-            // Do not throttle retirement while over the residency cap: dropping
-            // tiles fast enough to avoid GPU OOM matters more than avoiding a
-            // despawn hitch here.
+            // Distance-based eviction: retire farthest tiles first so the cap
+            // actually bounds total loaded even with 360 loading.
+            let mut far_tiles: Vec<(f64, TileId)> = mgr
+                .loaded
+                .keys()
+                .copied()
+                .filter(|t| t.z >= 8)
+                .map(|t| (cam.distance_to(t.center()), t))
+                .collect();
+            far_tiles.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+            let excess = mgr.loaded.len().saturating_sub(mgr.resident_cap);
+            for (_, t) in far_tiles.into_iter().take(excess) {
+                if !r.contains(&t) {
+                    r.push(t);
+                }
+            }
             r
         } else {
             r.truncate(env_num("EW_RETIRE_PER_FRAME", 64));
@@ -1545,6 +1571,20 @@ fn retire_tiles(
     if !jumped {
         let loaded: Vec<TileId> = mgr.loaded.keys().copied().collect();
         retire.retain(|t| {
+            if t.z <= 7 {
+                return false;
+            }
+            if t.z <= 9 {
+                // keep coarse parents of any loaded finer tile
+                let loaded: Vec<TileId> = mgr.loaded.keys().copied().collect();
+                if loaded.iter().any(|l| t.z < l.z && {
+                    let (anc, _, _, _) = l.ancestor(t.z);
+                    anc == *t
+                }) {
+                    return false;
+                }
+                return true;
+            }
             !loaded.iter().any(|l| {
                 t.z < l.z && {
                     let (anc, _, _, _) = l.ancestor(t.z);

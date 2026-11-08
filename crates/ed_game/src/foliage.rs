@@ -226,6 +226,7 @@ fn update_wind(
 pub struct TreeChunks {
     up: Vec3,
     chunks: Vec<ChunkState>,
+    pub impostor: Option<Entity>,
 }
 
 impl TreeChunks {
@@ -328,17 +329,20 @@ pub fn prepare_trees(trees: TileTrees) -> PreparedTrees {
 /// entity, plus one chunk-set entity on fine tiles. Returns the entity count.
 pub fn spawn_tile_trees(commands: &mut Commands, meshes: &mut Assets<Mesh>, imp: &crate::impostors::Impostors, parent: Entity, p: PreparedTrees, far_tag: u32) -> u32 {
     let mut n = 0;
-    if let Some((mesh, aabb)) = p.impostors {
-        crate::impostors::spawn(commands, meshes, imp, parent, mesh, aabb, far_tag);
+    let imp_ent = if let Some((mesh, aabb)) = p.impostors {
+        let e = crate::impostors::spawn(commands, meshes, imp, parent, mesh, aabb, far_tag);
         n += 1;
-    }
+        Some(e)
+    } else {
+        None
+    };
     if !p.chunks.is_empty() {
         let chunks = p
             .chunks
             .into_iter()
             .map(|c| ChunkState { center: c.center, far_src: c.far, far_mesh: None, instances: c.instances, far: None, near: Vec::new() })
             .collect();
-        commands.spawn((TreeChunks { up: p.up, chunks }, Transform::default(), Visibility::default(), ChildOf(parent)));
+        commands.spawn((TreeChunks { up: p.up, chunks, impostor: imp_ent }, Transform::default(), Visibility::default(), ChildOf(parent)));
         n += 1;
     }
     n
@@ -410,6 +414,14 @@ pub fn stream_tree_chunks(
                 if let Some(e) = c.far {
                     commands.entity(e).remove::<RenderLayers>();
                 }
+            }
+        }
+        if let Some(imp) = set.impostor {
+            let has_near = set.chunks.iter().any(|c| !c.near.is_empty());
+            if has_near {
+                commands.entity(imp).insert(Visibility::Hidden);
+            } else {
+                commands.entity(imp).insert(Visibility::Inherited);
             }
         }
     }

@@ -232,6 +232,6 @@ pub fn to_mesh(m: ImpostorMesh) -> (Mesh, Aabb) {
 
 /// Spawn a tile's impostor entity under `parent`. `far_tag` = the tile's
 /// far-shadow layer bits (`FarPool::alloc`), 0 for none.
-pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, imp: &Impostors, parent: Entity, mesh: Mesh, aabb: Aabb, far_tag: u32) {
-    commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(imp.material.clone()), bevy::mesh::MeshTag::new(far_tag), Transform::default(), aabb, NotShadowCaster, ChildOf(parent)));
+pub fn spawn(commands: &mut Commands, meshes: &mut Assets<Mesh>, imp: &Impostors, parent: Entity, mesh: Mesh, aabb: Aabb, far_tag: u32) -> Entity {
+    commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(imp.material.clone()), bevy::mesh::MeshTag::new(far_tag), Transform::default(), aabb, NotShadowCaster, ChildOf(parent))).id()
 }

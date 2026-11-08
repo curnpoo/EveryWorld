@@ -167,6 +167,7 @@ pub enum TileRetentionSetting {
     #[default]
     Normal,
     High,
+    Ultra,
     KeepAll,
 }
 
@@ -175,15 +176,17 @@ impl TileRetentionSetting {
         match self {
             Self::Low => Self::Normal,
             Self::Normal => Self::High,
-            Self::High => Self::KeepAll,
+            Self::High => Self::Ultra,
+            Self::Ultra => Self::KeepAll,
             Self::KeepAll => Self::Low,
         }
     }
     pub fn label(self) -> &'static str {
         match self {
-            Self::Low => "Low (150 tiles)",
-            Self::Normal => "Normal (400 tiles)",
-            Self::High => "High (1000 tiles)",
+            Self::Low => "Low (50 tiles)",
+            Self::Normal => "Normal (200 tiles)",
+            Self::High => "High (500 tiles)",
+            Self::Ultra => "Ultra (1000 tiles)",
             Self::KeepAll => "Keep all (unbounded)",
         }
     }
@@ -191,16 +194,18 @@ impl TileRetentionSetting {
         // Windows draw distance is 2 km -> far fewer tiles; keep its caps tight.
         if cfg!(target_os = "windows") {
             match self {
-                Self::Low => 48,
+                Self::Low => 24,
                 Self::Normal => 96,
                 Self::High => 200,
+                Self::Ultra => 400,
                 Self::KeepAll => usize::MAX,
             }
         } else {
             match self {
-                Self::Low => 150,
-                Self::Normal => 400,
-                Self::High => 1000,
+                Self::Low => 50,
+                Self::Normal => 200,
+                Self::High => 500,
+                Self::Ultra => 1000,
                 Self::KeepAll => usize::MAX,
             }
         }
@@ -209,7 +214,8 @@ impl TileRetentionSetting {
         match code {
             1 => Self::Normal,
             2 => Self::High,
-            3 => Self::KeepAll,
+            3 => Self::Ultra,
+            4 => Self::KeepAll,
             _ => Self::Low,
         }
     }
@@ -218,7 +224,8 @@ impl TileRetentionSetting {
             Self::Low => 0,
             Self::Normal => 1,
             Self::High => 2,
-            Self::KeepAll => 3,
+            Self::Ultra => 3,
+            Self::KeepAll => 4,
         }
     }
 }

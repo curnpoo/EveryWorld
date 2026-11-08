@@ -1,3 +1,14 @@
+## 2026-11-08: terrain loading + collider + retention session
+
+- **360 loading by default** (`streaming.rs`): view-cone culling off unless `EW_VIEW_CONE=1`; tiles load in all directions. Predictive prefetch of coarse tiles (z≤11) 3 s ahead along velocity.
+- **Terrain colliders removed**: ground height sampled from `TerrainGrid` (no Avian re-sync on rebase). Terrain normal corrected for slope foot placement. `REBASE_DISTANCE_M` 8000→16000 (fewer rebases).
+- **Impostor trees fixed**: impostor quads hide when full-detail trees spawn nearby (no double draw).
+- **Coarse base layer (z≤9) never retired**: eliminates whole-tile gaps.
+- **Distance-based cap eviction**: `resident_cap` now actually bounds total loaded tiles (retires farthest first), even with 360 loading. Cap options: Low 50 / Normal 200 / High 500 / Ultra 1000 / Keep all (unbounded).
+- **Pool sizes doubled**: SatPool 2x, FarPool 2x (328→640) to reduce "pool full" warnings under 360 loading.
+- **Tile retention setting** (committed earlier) still in place; `EW_RESIDENT_TILES`/`EW_KEEP_TILES` override.
+- Needs Mac check: foot placement on slopes, impostor hide/show, gap-free terrain at speed, pool warnings gone.
+
 ## 2026-11-08: tile retention setting + smoother turns (no pop-in)
 - **Root cause of turn pop-in:** `resident_cap` defaulted to 48 (Mac) / 24 (Windows) tiles, so a
   90° turn evicted most of the just-visible ring; `retire_tiles` only held coarse parents for

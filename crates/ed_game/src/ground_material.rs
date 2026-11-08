@@ -241,9 +241,9 @@ fn array_image(layers: &[&[u8]], size: u32, format: TextureFormat, srgb: bool) -
 /// Windows uses a much smaller pool (~6 MB total) because the draw distance
 /// caps resident tiles to ~24; `EW_MAX_DIST_M` controls the trade-off.
 #[cfg(target_os = "windows")]
-pub const SAT_CLASSES: [(u32, u32); 3] = [(1024, 6), (512, 16), (256, 24)];
+pub const SAT_CLASSES: [(u32, u32); 3] = [(1024, 12), (512, 32), (256, 48)];
 #[cfg(not(target_os = "windows"))]
-pub const SAT_CLASSES: [(u32, u32); 3] = [(1024, 32), (512, 80), (256, 320)];
+pub const SAT_CLASSES: [(u32, u32); 3] = [(1024, 64), (512, 160), (256, 640)];
 
 /// Tag bit: the satellite layer also has baked DEM detail.
 pub const DETAIL_BIT: u32 = 1 << 23;

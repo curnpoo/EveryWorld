@@ -65,7 +65,7 @@ pub struct Rebased;
 #[derive(Component)]
 pub struct Focus;
 
-pub const REBASE_DISTANCE_M: f32 = 8_000.0;
+pub const REBASE_DISTANCE_M: f32 = 16_000.0;
 
 fn affine_to_transform(a: DAffine3) -> Transform {
     Transform::from_matrix(DMat4::from(a).as_mat4())
