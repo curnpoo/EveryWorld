@@ -46,17 +46,6 @@ impl Plugin for ImpostorPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "shaders/impostor.wesl");
         app.add_plugins(MaterialPlugin::<ImpostorMaterial>::default()).add_systems(Update, install_atlas);
-        app.add_systems(Update, imp_dbg_hide); // TEMP debug
-    }
-}
-
-// TEMP debug: EW_HIDE_IMP=1 hides every impostor entity.
-fn imp_dbg_hide(mut q: Query<&mut Visibility, With<MeshMaterial3d<ImpostorMaterial>>>) {
-    if std::env::var("EW_HIDE_IMP").is_err() {
-        return;
-    }
-    for mut v in &mut q {
-        *v = Visibility::Hidden;
     }
 }
 

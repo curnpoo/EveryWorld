@@ -237,6 +237,9 @@ fn sample_impostor(in: ImpostorOut) -> Sampled {
 @if(PREPASS_PIPELINE)
 @fragment
 fn fragment(in: ImpostorOut) -> FragmentOutput {
+    if length(view.world_position.xyz - in.centre) < 230.0 {
+        discard;
+    }
     let s = sample_impostor(in);
     if s.albedo.a < 0.5 {
         discard;
@@ -297,6 +300,9 @@ fn far_tree_shadow(wp: vec3<f32>, uv: vec2<f32>, tag: u32, L: vec3<f32>) -> f32 
 @if(!PREPASS_PIPELINE)
 @fragment
 fn fragment(in: ImpostorOut, @builtin(front_facing) is_front: bool) -> FragmentOutput {
+    if length(view.world_position.xyz - in.centre) < 230.0 {
+        discard;
+    }
     let s = sample_impostor(in);
     if s.albedo.a < 0.5 {
         discard;

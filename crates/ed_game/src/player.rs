@@ -340,6 +340,7 @@ fn spawn_player(
     body_assets: Res<crate::body::BodyAssets>,
     mut meshes: ResMut<Assets<Mesh>>,
     cosmetics: Res<crate::body::Cosmetics>,
+    asset_server: Res<AssetServer>,
 ) {
     let pos = origin.to_render(ed_geo::Geodetic {
         alt_m: cfg.start.alt_m.max(0.0) + cfg.start_agl.max(3.0),
@@ -380,6 +381,7 @@ fn spawn_player(
         // Render the body between fixed physics ticks so planted feet don't jitter against a stair-stepping pelvis.
         TransformInterpolation,
         Transform::from_translation(pos).with_rotation(rot),
+        Visibility::Inherited,
         Rebased,
         Focus,
         Name::new("player"),
@@ -392,6 +394,14 @@ fn spawn_player(
         player_entity,
         &cosmetics,
     );
+
+    // Temporary: attach the Solarcat rigged mesh as a visual on the player.
+    let scene_handle = asset_server.load::<bevy::world_serialization::WorldAsset>(bevy::gltf::GltfAssetLabel::Scene(0).from_asset("characters/Solarcat.glb"));
+    commands.spawn((
+        bevy::world_serialization::prelude::WorldAssetRoot(scene_handle),
+        Transform::from_scale(Vec3::splat(1.0)),
+        ChildOf(player_entity),
+    ));
 }
 
 /// Probes ground beneath left/right hips (fixed hip offsets, eliminating foot-position feedback jitter!).

@@ -140,13 +140,13 @@ fn enter_exit(
     keys: Res<ButtonInput<KeyCode>>,
     mut driving: ResMut<Driving>,
     mut commands: Commands,
-    mut players: Query<(Entity, &mut Transform, &mut Visibility), (With<Player>, Without<Car>, Without<Plane>)>,
-    vehicles: Query<(Entity, &Transform), Or<(With<Car>, With<Plane>)>>,
+    mut players: Query<(Entity, &mut Transform, &mut Visibility), With<Player>>,
+    vehicles: Query<(Entity, &Transform), (Or<(With<Car>, With<Plane>)>, Without<Player>)>,
 ) {
-    if !keys.just_pressed(KeyCode::KeyE) {
+    if !keys.just_pressed(KeyCode::KeyE) && !keys.just_pressed(KeyCode::KeyR) {
         return;
     }
-    let Ok((pe, mut pt, mut vis)) = players.single_mut() else { return };
+    let Some((pe, mut pt, mut vis)) = players.iter_mut().next() else { eprintln!("enter_exit: no player entity"); return };
     match driving.0 {
         Some(v) => {
             if let Ok((_, vt)) = vehicles.get(v) {
@@ -159,12 +159,16 @@ fn enter_exit(
         }
         None => {
             let near = vehicles.iter().min_by(|a, b| a.1.translation.distance(pt.translation).total_cmp(&b.1.translation.distance(pt.translation)));
-            if let Some((v, vt)) = near.filter(|(_, vt)| vt.translation.distance(pt.translation) < 8.0) {
-                let _ = vt;
-                commands.entity(pe).insert((RigidBodyDisabled, ColliderDisabled)).remove::<Focus>();
-                commands.entity(v).insert(Focus);
-                *vis = Visibility::Hidden;
-                driving.0 = Some(v);
+            if let Some((v, vt)) = near {
+                let d = vt.translation.distance(pt.translation);
+                eprintln!("enter_exit: nearest vehicle dist={d:.1} (threshold 50)");
+                if d < 50.0 {
+                    let _ = vt;
+                    commands.entity(pe).insert((RigidBodyDisabled, ColliderDisabled)).remove::<Focus>();
+                    commands.entity(v).insert(Focus);
+                    *vis = Visibility::Hidden;
+                    driving.0 = Some(v);
+                }
             }
         }
     }
