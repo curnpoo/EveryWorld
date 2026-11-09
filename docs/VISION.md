@@ -155,13 +155,15 @@ proportioned characters**; and a **solarpunk built world** that is stylized by *
 assets'* cleanliness, not to the environment's lighting/material fidelity.
 
 **Realistic lighting is the foundation — everywhere.** One physically based lighting model
-covers the whole game: PBR/GGX materials with correct energy, image-based and voxel-clipmap
-**global illumination** (multi-bounce + screen traces), real **reflections** (SSR now,
-hardware ray tracing where available), physically based atmosphere/sun/shadows, real
-exposure and tone mapping. Cel shading is **not** a separate unlit renderer and **not** a
-global art style switch — it is an optional *material model* that characters (and only
-characters, by choice) can use, still lit by the same sun, GI and reflections so they sit
-inside the photoreal world instead of looking pasted on.
+covers the whole game: PBR/GGX materials with correct energy, **dynamic global illumination
+in the voxel-GI / Lumen class** (voxelized scene or SDF traces, multi-bounce, screen-space
+fallback so off-screen light still arrives), **virtual shadow maps** for consistent
+high-resolution sun/shadow detail at every distance, real **reflections** (screen trace
+first, hardware ray tracing where available), physically based atmosphere/sun, real exposure
+and tone mapping. Cel shading is **not** a separate unlit renderer and **not** a global art
+style switch — it is an optional *material model* that characters (and only characters, by
+choice) can use, still lit by the same sun, GI and reflections so they sit inside the
+photoreal world instead of looking pasted on.
 
 **Cartoon ≠ cel.** The characters are stylized primarily by *design* (proportions, silhouettes,
 expressive shapes, owner's `Solarcat.glb` style). Their shading is a per-avatar choice:
@@ -336,6 +338,11 @@ have to be rebuilt to admit interiors.
 5. **Server: Ubuntu LTS**, headless, region shards, `ed_store` persistence.
 6. **Repo private; packaged commercial game**; asset licensing tracked in `docs/data/`.
 7. **Characters:** owner's GLB first → VRM/custom avatars later; realistic + robot NPCs.
-8. **Name TBD.**
+8. **Water is redesigned from scratch** (planet-scale seamless ocean, rivers/lakes, buoyancy,
+   reflections, foam, underwater) — the alpha FFT is not ported.
+9. **Shadows are virtual shadow maps; GI is voxel/Lumen-class dynamic GI.** The alpha's probe
+   GI, FFT ocean and cached-shadow scheme were Metal/Bevy-era bandaids and are **not** salvage
+   targets (owner, 2026-11-09; see `docs/plans/water.md` for the water brief).
+10. **Name TBD.**
 
 Rationale and full target architecture: `docs/plans/rearchitecture.md`.

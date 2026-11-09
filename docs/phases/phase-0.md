@@ -166,14 +166,17 @@ already built on it.
 2. Read the builder and renderer; produce a **port map**: what ports conceptually as-is
    (cluster DAG, cut selection, two-phase occlusion, software raster, voxel GI, paging), what
    needs Metal-specific rewriting, and what does not exist there at all (dynamic objects,
-   skinning, motion vectors, translucency, planet VT).
+   skinning, motion vectors, translucency, planet VT, **water — a from-scratch design, not a
+   port; see `docs/plans/water.md`**).
 3. Check the specific gaps our engine needs: 64-bit atomics on Metal, bindless argument
    buffers, tier behaviour on Apple silicon, memory ceiling of the GI clipmap.
 4. **Pass criteria:** the techniques are understood well enough to write a build plan for
-   `ed_render`, and no blocker invalidates Metal-first.
+   `ed_render` (including a chosen dynamic-GI shape and VSM approach), and no blocker
+   invalidates Metal-first.
 5. **Failure branch:** if a technique proves Metal-hostile or the GI cost is out of budget at
-   the High tier, choose the fallback (cached GI probes / DDGI-style alternative) now, while it
-   is still a paragraph instead of a rewrite.
+   the High tier, choose a cheaper **dynamic-GI** configuration (fewer voxel cascades, lower
+   update rate, screen-space-only at distance) now, while it is still a paragraph instead of a
+   rewrite. Do **not** fall back to probe GI or cached shadow cascades — those are rejected.
 
 **Artifact.** Port map + feasibility verdict + updated risk table.
 **Risk retired.** "Nanite-like on Metal" turning out to be a dead end in Phase 3.
@@ -310,7 +313,7 @@ fallback branch (§6), and continue — the point of a spike is to fail cheaply.
 | If… | Then… |
 |---|---|
 | Box3D is not deterministic on macOS/Windows, or too slow | Keep the `ed_sim` API, switch the backend to Rapier plus our own determinism layer, and record the cost now |
-| Solstice techniques are Metal-hostile or over budget at High tier | Keep the cluster-DAG + visibility-buffer design, choose the cheaper GI (cached probes / DDGI-style), and gate hardware RT as Ultra-only |
+| Solstice techniques are Metal-hostile or over budget at High tier | Keep the cluster-DAG + visibility-buffer design, choose a cheaper **dynamic-GI** configuration (fewer voxel cascades / lower update rate / screen-space-only at distance), and gate hardware RT as Ultra-only. Do **not** fall back to probe GI or cached shadow cascades |
 | The owner's GLB rig cannot retarget cleanly | Use it as the art reference and start from a clean standard skeleton; re-skin, do not re-rig the engine around it |
 | Golden hashes show pervasive nondeterminism | Insert "Phase 0.5: generator determinism" before Phase 2 and fix the generator — multiplayer cannot be built on a nondeterministic base |
 | Megascans conversion is lossy or licence metadata is hard to track | Prefer authored/procedural assets for the kit and use scans only where they survive the pipeline; keep provenance in the registry |

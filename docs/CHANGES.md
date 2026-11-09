@@ -1,3 +1,25 @@
+## 2026-11-09: rendering direction — VSM, voxel/Lumen GI, new water
+
+- **Owner correction applied across the docs:** the alpha's probe GI, FFT ocean and
+  cached/horizon-map shadow scheme are **not salvage targets** (they were Metal/Bevy-era
+  bandaids). The target is now **voxel/Lumen-class dynamic GI**, **virtual shadow maps (VSM)**
+  and a **from-scratch water system**. `P1-D18` is deliberately softened to allow fresh
+  decisions later, not default salvage.
+- **New `docs/plans/water.md`:** a full design brief — why the alpha water failed, continuity
+  (orbit→shore→underwater), multi-scale waves, deterministic sim field for buoyancy,
+  reflection/refraction/absorption/foam, rivers/lakes, tiers, candidate techniques, phases and
+  acceptance criteria. Explicit non-goal: porting the alpha FFT.
+- **Updated:** `VISION.md` (§5 lighting, §11 decision 9), `ARCHITECTURE.md` (stack, crate map,
+  planet water, rendering), `MASTER.md` (Solstice row, crate map, §5.1–5.2, salvage, phase
+  table, index), `ROADMAP.md` (Phase 3/7 rows, rendering backlog, alpha-history note),
+  `plans/rearchitecture.md` (survives list, crate map, water, Solstice port list, salvage
+  table, Phase 3/7), `phases/phase-0.md` (Solstice spike + failure branch now dynamic-GI
+  variants, no probe fallback), `phases/phase-1.md` (D18 rewrite, shadow-map placeholder
+  wording), `AGENTS.md`, `CLAUDE.md`, `README.md`.
+- **Bannered as superseded/reference-only:** `docs/alpha/plans/shadows.md` (VSM replaces
+  cascades/horizon maps) and `docs/alpha/plans/ultra-water-port.md` (new water brief replaces
+  the FFT port plan).
+
 ## 2026-11-09: master document, README rewrite, alpha doc archive
 
 - **`docs/phases/phase-1.md`** added: detailed Phase 1 — the spine philosophy, **20 explicit

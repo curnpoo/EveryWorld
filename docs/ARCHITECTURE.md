@@ -17,7 +17,7 @@ fixed-step simulation and region-sharded servers make it one persistent, shared 
 | Language | Rust (2024) | One toolchain for client, server and tools |
 | Engine | **Custom (`ew`)** — winit, own scene/sim core | Bevy's entity model and renderer were the ceiling |
 | GPU | **`ed_gpu` RHI**: Metal first, D3D12 + Vulkan later | 64-bit atomics, bindless, tile memory, MetalFX/DLSS/FSR, optional HW RT |
-| Renderer | **`ed_render`**: cluster-LOD DAG, GPU culling, visibility buffer, software raster, voxel-clipmap GI | Photoreal density (Solstice techniques, ported; MIT) |
+| Renderer | **`ed_render`**: cluster-LOD DAG, GPU culling, visibility buffer, software raster, voxel/Lumen-class dynamic GI, virtual shadow maps | Photoreal density (Solstice geometry/occlusion/GI techniques ported; MIT) |
 | Planet | **`ed_planet`**: cube-sphere quadtree per body | No flat-plane/globe switch; poles work |
 | Physics | **Box3D** (C17, MIT) behind **`ed_sim`** | Cross-platform determinism, replay, character mover, CCD |
 | Net | **`ed_net`** + **`ed_server`**: directory + region shards, prediction/interpolation, sky-event bus | One persistent universe on a gaming-PC host |
@@ -45,8 +45,9 @@ NEW
   ed_assets        bake CLI + library: glTF/FBX (Megascans, VRM) → cluster DAG, BC7/ASTC,
                    collision, kit manifests, data bake packs
   ed_gpu           RHI: device, passes, bindless tables, heaps, timers, caps, upscaler + AS
-  ed_render        cull + visbuffer + software raster, shadows/VSM, GI, atmosphere/clouds,
-                   ocean, post, TAA/MetalFX/DLSS/FSR, skinning, cel/toon + PBR materials
+  ed_render        cull + visbuffer + software raster, VSM shadows, voxel/Lumen-class GI,
+                   atmosphere/clouds, water, post, TAA/MetalFX/DLSS/FSR, skinning,
+                   cel/toon + PBR materials
   ed_sim           fixed-step deterministic sim: Box3D, character mover, vehicles, ragdolls,
                    destruction, parked records, sim-LOD tiers. No render types
   ed_anim          skeletons, retargeting, clips, motion matching, cloth/jiggle,
@@ -80,7 +81,8 @@ client and server share `ed_world` + `ed_planet` generation with pinned data ver
   matched), one mip chain from orbit to boots — no satellite "layer" that turns off.
 - One **atmosphere** (Hillaire-style tables) for ground and orbital views; one **cloud
   field** (volumetric near, 2D shell far, same climate source); **night lights** on the dark
-  side; **ocean** as a sea-level shell with FFT detail near the camera.
+  side; **ocean** as a seamless planet-scale shell with a from-scratch wave/reflection/foam
+  model (brief: `docs/plans/water.md`) — the alpha FFT is not ported.
 - Moon/Mars/fourth world use the same code with different body constants; stations and the
   manufactured world are instanced structure worlds in orbit/body frames.
 
@@ -111,10 +113,14 @@ reference data (pinned) ──> ed_data decode ──> ed_planet sampling (heigh
   buffer, material resolve shades each pixel once.
 - **Streaming:** paged geometry/textures with fixed GPU memory; a parent draws until its
   children are resident — no holes.
-- **Lighting:** one physically based model for the whole game — atmosphere + sun, cached/
-  cascaded shadows → VSM later, **voxel-clipmap GI with multi-bounce + screen traces**,
-  GTAO, **real reflections (SSR now, hardware ray tracing where available)**, physical
-  exposure and filmic/ACES tone mapping, HDR + TAA/upscalers.
+- **Lighting:** one physically based model for the whole game — atmosphere + sun, **virtual
+  shadow maps (VSM)** for consistent high-resolution shadow detail at every distance,
+  **voxel/Lumen-class dynamic GI** (voxel/SDF scene traces, multi-bounce, screen-space
+  fallback), GTAO, **real reflections (screen trace first, hardware ray tracing where
+  available)**, physical exposure and filmic/ACES tone mapping, HDR + TAA/upscalers.
+- **Water:** from-scratch design (`docs/plans/water.md`): seamless planet-scale shell,
+  distance-scaled waves, shoaling from scene depth, reflections, foam/whitecaps, buoyancy
+  hand-off to `ed_sim`, and an underwater path. The alpha FFT ocean is explicitly retired.
 - **Materials:** data-driven, hot-reloadable, all energy-consistent. **PBR/GGX is the default
   everywhere** (world, foliage, vehicles, realistic characters/NPCs). **Toon/cel is an
   optional second material model** for characters that opt in: bandwidth/outline shading that

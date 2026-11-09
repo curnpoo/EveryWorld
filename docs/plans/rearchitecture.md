@@ -78,8 +78,9 @@ Everything in this plan exists to make that row of beats work, in that order of 
   Leaving Bevy does not touch these. This is the project's biggest asset.
 - **Design knowledge**, even where the code gets rewritten: `TerrainGrid` single-height-truth
   rule, roads v2 deck-solver design, `beamng-earth-lessons.md`, region/archkit data tables,
-  biome/climate model, FFT ocean and probe-GI experiments, the perf-measurement culture and
-  harnesses, the engine-sound port, ephemeris, the ghost-protocol rig sync lessons.
+  biome/climate model, the FFT-ocean and probe-GI experiments (lessons, **not** salvage), the
+  perf-measurement culture and harnesses, the engine-sound port, ephemeris, the ghost-protocol
+  rig sync lessons.
 - **Determinism and data-versioning rules** (`AGENTS.md` rule 4). Still correct; now they also
   serve server-side generation and replay.
 
@@ -134,9 +135,10 @@ NEW
                    textures, collision meshes, modular-kit manifests, data bake packs
   ed_gpu           RHI: device, passes, bindless tables, heaps, timers, caps, upscaler + AS
                    interfaces. Backends: Metal (first), D3D12, Vulkan (later)
-  ed_render        cluster cull + visibility buffer, software raster, shadows/VSM, voxel-
-                   clipmap GI, atmosphere/clouds, ocean/water, post, TAA/MetalFX/DLSS/FSR,
-                   skinning, toon/cel material model, translucency, emissives
+  ed_render        cluster cull + visibility buffer, software raster, VSM shadows,
+                   voxel/Lumen-class GI, atmosphere/clouds, water, post,
+                   TAA/MetalFX/DLSS/FSR, skinning, toon/cel material model,
+                   translucency, emissives
   ed_sim           fixed-step deterministic sim: Box3D binding, character mover, vehicles,
                    ragdolls, destruction, parked records, sim-LOD tiers. No render types
   ed_anim          skeletons, clips, motion matching, cloth/jiggle, (optional) MotionBricks
@@ -170,8 +172,10 @@ with pinned data versions.
   sample the same function).
 - **LOD:** nodes split/merge on projected geometric error with geomorphing; object detail comes
   from the cluster DAG (§3.3), so LOD is one continuous error metric, not tile-tier swaps.
-- **Ocean:** sea-level ellipsoid shell, FFT detail near the camera (port `ed_metal` ocean work),
-  shoaling from scene depth. **Atmosphere:** one Hillaire-style table set used for both
+- **Water:** a from-scratch, planet-scale water system (design brief: `docs/plans/water.md`) —
+  seamless ellipsoid shell, distance-scaled waves, shoaling from scene depth, reflections,
+  foam/whitecaps, buoyancy hand-off to `ed_sim`, underwater path. The alpha FFT ocean is
+  explicitly retired, not ported. **Atmosphere:** one Hillaire-style table set used for both
   ground aerial perspective and the orbital limb. **Clouds:** one climate field; volumetric
   raymarch near, 2D shell far, same source. **Night:** Black Marble city lights on the night
   side. **Moon/Mars:** same `ed_planet` code with different body constants, procedural terrain
@@ -184,9 +188,10 @@ with pinned data versions.
 
 **Port (MIT, credit in CREDITS):** offline cluster-DAG builder (128-tri clusters, locked-boundary
 group simplification, watertight cuts), per-frame GPU cut selection, two-phase occlusion culling,
-software rasterizer for small clusters, visibility buffer + resolve, cached shadow cascades,
-voxel-clipmap GI with multi-bounce + screen traces, the Horizon/UE cloud model, page streaming
-with no holes and fixed GPU memory, BC texture pipeline, geometric-foliage thinning.
+software rasterizer for small clusters, visibility buffer + resolve, voxel-GI ideas (a dynamic
+GI reference; its cached shadow-cascade scheme is **not** ported), the Horizon/UE cloud model,
+page streaming with no holes and fixed GPU memory, BC texture pipeline, geometric-foliage
+thinning.
 
 **Build new (the reasons we are not just forking Solstice):** dynamic objects and previous-frame
 transforms, skinned meshes + motion vectors, 64-bit-atomic visibility buffer (Metal, cap-gated),
@@ -194,7 +199,7 @@ bindless argument buffers, MetalFX / DLSS / FSR3 upscalers, optional hardware RT
 emissive materials, **two shading models in one lighting pipeline** — PBR (default, everything)
 and **cel/toon as an opt-in character material** (sun/GI/reflection-aware so a cel hero sits in
 the photoreal world beside a realistic NPC), destruction mesh swapping, planetary virtual
-texturing, VSM later.
+texturing, **virtual shadow maps (VSM)**, and a from-scratch water model.
 
 **Foliage:** near/mid = geometric leaves/blades with cluster thinning (Solstice-style), sourced
 from Megascans/Megaplants conversions + `spec.md` vegetation library + Solstice-style `.species`
@@ -313,7 +318,7 @@ cross-platform in `ew` from day one. macOS bundle/signing at ship time.
 | `ed_geo`, `ed_data`, `ed_flight`, `ed_space`, `ed_runtime`, audio crates | Keep; extend |
 | `ed_world` | Keep rules; replace mesh-merging output with part instances + heightfields |
 | `ed_game` (Bevy app) | Retired module by module as `ew` gains parity; then deleted |
-| `ed_metal` | Salvage device/layer/timers, ocean FFT, probe-GI bake, shader maths into `ed_gpu`/`ed_render`; the entity mirror is deleted |
+| `ed_metal` | Salvage device/layer/timers and shader maths only. **Do not port** the ocean FFT, probe-GI bake or shadow caching — all replaced by the new water model, voxel/Lumen-class GI and virtual shadow maps. The entity mirror is deleted |
 | Bevy WESL shaders | Reference only |
 | Avian | Replaced by Box3D behind `ed_sim` |
 | `body.rs` procedural robot | Replaced by skinned characters; IK lessons move to `ed_anim` |
@@ -359,9 +364,9 @@ perf harness, `ed_assets` bake CLI v1 (glTF → cluster DAG, BC7) with the Solst
 ground ↔ orbit continuous flight; procedural Moon. **Gate:** the seamless recording + perf. If
 it fails, fall back to improving the old representation before building more on it.
 
-**Phase 3 — Renderer core (wk 4–8).** GPU cull, visibility buffer, software raster, cached
-shadows, GI v1, real reflections, post + MetalFX, geometric foliage + Megascans dressing,
-PBR + optional cel material model.
+**Phase 3 — Renderer core (wk 4–8).** GPU cull, visibility buffer, software raster, virtual
+shadow maps, voxel/Lumen-class GI, real reflections, from-scratch water, post + MetalFX,
+geometric foliage + Megascans dressing, PBR + optional cel material model.
 **Gate:** forest + city at 60 fps High, fixed memory, no streaming holes.
 
 **Phase 4 — Sim and vehicles (wk 6–9).** Box3D, character mover + boots, car v1 (real tires),
@@ -374,8 +379,8 @@ save/load, housing plot. **Gate:** the whole north-star loop solo, recorded.
 co-op mission, sky events, chat, server persistence. **Gate:** §5 multiplayer criteria.
 
 **Phase 7 — Living world and polish (ongoing).** NPC schedules, traffic, dialogue, mission
-variety, destruction/ragdolls, MotionBricks evaluation, VSM, DDGI/RT, weather, coupled water,
-smoke if budget allows.
+variety, destruction/ragdolls, MotionBricks evaluation, hardware RT reflections, GI/water
+polish, weather, smoke if budget allows.
 
 **Phase 8 — Platforms and ship.** Windows/D3D12, then iOS/Android tiers, packaging, perf gates.
 

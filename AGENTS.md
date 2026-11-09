@@ -40,11 +40,13 @@ Rules for every agent and session:
    those subsystems are being replaced, not tuned.
 2. **Renderer end state:** our own `ed_gpu` RHI (Metal first, D3D12/Vulkan
    later) + `ed_render` with cluster-LOD DAG, GPU culling, visibility buffer,
-   software raster and voxel-clipmap GI (Solstice techniques ported, MIT —
-   credit in CREDITS). Planet geometry is a **cube-sphere quadtree**
-   (`ed_planet`); slippy tiles survive only as the data layer. New renderer
-   code targets `ed_gpu` only, never wgpu or Metal directly. Physics is
-   **Box3D** behind `ed_sim` (deterministic, replay-tested); Avian is gone.
+   software raster, **virtual shadow maps** and **voxel/Lumen-class dynamic GI**
+   (Solstice geometry/occlusion/GI techniques ported, MIT — credit in CREDITS;
+   its cached shadow scheme is not ported). Water is a **from-scratch design**
+   (`docs/plans/water.md`), not a port of the alpha FFT. Planet geometry is a
+   **cube-sphere quadtree** (`ed_planet`); slippy tiles survive only as the data
+   layer. New renderer code targets `ed_gpu` only, never wgpu or Metal directly.
+   Physics is **Box3D** behind `ed_sim` (deterministic, replay-tested); Avian is gone.
 3. **Use the GPU fully, and measure first.** Tools: `tools/perf_headless.sh`,
    `EW_BISECT`, `EW_GPU_WAIT`, `EW_POST`, `EW_TILE_STATS`, `--perf`. Add a dated
    `docs/CHANGES.md` entry with before/after numbers. Every feature declares its
@@ -374,4 +376,4 @@ artifacts as source.
   different crates/files.
 
 ## Native Metal renderer (alpha only — salvage source for `ed_gpu`/`ed_render`)
-`ed_game::native` mirrors Bevy `Mesh3d` entities into `ed_metal::world::WorldRenderer` (own CAMetalLayer under a transparent Bevy window). `EW_NATIVE=0` returns to the Bevy renderer. Headless check: `./target/release/earthdrop --headless --fly --lat .. --lon .. --alt .. --heading .. --pitch .. --hour 15 --width 1600 --height 900 --frames N --no-wait --screenshot out.png`, filter log with `grep "native: [0-9]* fps"`. Switches: `EW_NATIVE_NOSSR/NOBOUNCE/NOAO/NOBLOOM/NOGROUND/NOWATER/NOFFT`, `EW_HOLD_SPACE=1`, `EW_NATIVE_DBG`. Full state, switches (incl. `EW_CONTACT`, `EW_PROBE_GI`, `EW_NATIVE_SCALE`, `EW_NATIVE_NOAA`, `EW_WEATHER`) and prioritised open work: `docs/alpha/HANDOFF.md`; water design, status and the not-yet-built phases 6 (CPU wave model/buoyancy) and 7 (underwater): `docs/alpha/plans/ultra-water-port.md`; per-change detail in `docs/CHANGES.md`.
+`ed_game::native` mirrors Bevy `Mesh3d` entities into `ed_metal::world::WorldRenderer` (own CAMetalLayer under a transparent Bevy window). `EW_NATIVE=0` returns to the Bevy renderer. Headless check: `./target/release/earthdrop --headless --fly --lat .. --lon .. --alt .. --heading .. --pitch .. --hour 15 --width 1600 --height 900 --frames N --no-wait --screenshot out.png`, filter log with `grep "native: [0-9]* fps"`. Switches: `EW_NATIVE_NOSSR/NOBOUNCE/NOAO/NOBLOOM/NOGROUND/NOWATER/NOFFT`, `EW_HOLD_SPACE=1`, `EW_NATIVE_DBG`. Full state, switches (incl. `EW_CONTACT`, `EW_PROBE_GI`, `EW_NATIVE_SCALE`, `EW_NATIVE_NOAA`, `EW_WEATHER`) and prioritised open work: `docs/alpha/HANDOFF.md`; water: the new design brief is `docs/plans/water.md` (the alpha `ultra-water-port.md` is a superseded post-mortem); per-change detail in `docs/CHANGES.md`.

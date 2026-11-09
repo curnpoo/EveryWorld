@@ -234,13 +234,19 @@ is explicit rather than emergent.
   sim is a desync. Making the boundary explicit in Phase 1 means Phase 6 does not have to hunt
   for it.
 
-### P1-D18 — Salvage policy from `ed_metal`
+### P1-D18 — Salvage policy from `ed_metal` (provisional)
 
-- **Choice:** **reimplement** device/layer/passes/timers against the new RHI, **copy with tests**
-  only pure, self-contained code (ocean FFT, probe-GI bake math, shadow-cache maths, shader
-  helper functions), and **never** copy the Bevy↔Metal entity mirror.
+- **Choice:** **reimplement** device/layer/passes/timers against the new RHI and **copy with
+  tests** only pure, self-contained shader/helper maths. **Do not port** the ocean FFT, the
+  probe-GI bake or the cached-shadow scheme: those were Metal/Bevy-era bandaids and are
+  replaced by a from-scratch water model (`docs/plans/water.md`), **voxel/Lumen-class dynamic
+  GI** and **virtual shadow maps**. Never copy the Bevy↔Metal entity mirror.
 - **Why:** the mirror is the reason the alpha had three renderers (S1). Salvage the knowledge,
-  not the coupling.
+  not the coupling — and for the three systems the owner has explicitly rejected, the
+  "knowledge" is the list of failure modes, not the code.
+- **Revisit:** D18 is deliberately **soft** right now. If Phase 3's GI/shadow/water design
+  lands better by reusing a specific proven routine (e.g. an FFT for small local wave detail),
+  that is a fresh decision with new evidence, not a default salvage.
 
 ### P1-D19 — Test scene definition
 
@@ -293,8 +299,9 @@ the public RHI without Metal types outside `ed_gpu_metal`.
 ### W3 — `ed_render` bootstrap (frame graph, passes, test scene)
 
 **Steps:** render graph with transient aliasing + per-pass timers; depth/reverse-Z helpers;
-mesh + cluster upload path; PBR v0 + toon interface; analytic sky/sun and a simple shadow pass
-(placeholder for Phase 3); egui overlay; the proving-ground scene (P1-D19).
+mesh + cluster upload path; PBR v0 + toon interface; analytic sky/sun and a simple shadow map
+(placeholder for the Phase 3 virtual shadow map system); egui overlay; the proving-ground
+scene (P1-D19).
 **Artifact:** the test scene at budget with an egui stats panel and per-pass timings.
 **Done when:** budgets P1-D20 hold or the gap is documented with a plan.
 

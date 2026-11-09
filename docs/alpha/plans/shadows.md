@@ -1,5 +1,11 @@
 # Shadows: from 700 m to the horizon (B3)
 
+> **Superseded (2026-11-09) — do not salvage.** This alpha shadow design (cascades + cached far
+> shadow map + horizon maps) was a Metal/Bevy-era bandaid. The new engine uses **virtual shadow
+> maps (VSM)** with a single virtualised source. Keep this document only as a record of the
+> failure modes. See `docs/VISION.md` §11, `docs/ARCHITECTURE.md` (Rendering),
+> `docs/MASTER.md` §5.2.
+
 Status 2026-11-04: **stage 1 landed** (4 AGL-planned cascades to 2.5-12 km with a far fade). **Stage 2 prototype**: an engine-free horizon-map bake (`ed_world::horizon`, unit-tested, not yet wired into rendering). Everything below stage 2 is design.
 
 ## Recommendation

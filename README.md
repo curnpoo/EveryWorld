@@ -27,6 +27,7 @@ More detail per topic:
 | [docs/phases/phase-1.md](docs/phases/phase-1.md) | Next phase in detail: the 20 key decisions, workstreams, budgets, exit gate |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Target architecture |
 | [docs/plans/rearchitecture.md](docs/plans/rearchitecture.md) | The audit + full technical plan |
+| [docs/plans/water.md](docs/plans/water.md) | Water design brief (from-scratch, planet-scale) |
 | [docs/data/](docs/data/README.md) | Planetary data catalog, licensing, acquisition |
 | [docs/solarpunk/](docs/solarpunk/) | Modular asset spec + character spec |
 | [docs/alpha/](docs/alpha/README.md) | Archived alpha docs (bugs, handoff, old plans) |
@@ -51,9 +52,11 @@ More detail per topic:
 ### Tech direction (locked)
 
 Custom Rust engine, own GPU RHI (Metal first, D3D12/Vulkan later) · cluster-LOD + visibility
-buffer + voxel-clipmap GI (Solstice techniques, MIT) · cube-sphere planet with slippy tiles
-as the data layer · Box3D deterministic physics (MIT) · region-sharded persistent servers on
-Ubuntu LTS · Megascans (Fab Standard License) + authored solarpunk kit · VRM avatars later.
+buffer + **virtual shadow maps** + **voxel/Lumen-class dynamic GI** (Solstice geometry/
+occlusion/GI techniques, MIT) · from-scratch water (`docs/plans/water.md`) · cube-sphere planet
+with slippy tiles as the data layer · Box3D deterministic physics (MIT) · region-sharded
+persistent servers on Ubuntu LTS · Megascans (Fab Standard License) + authored solarpunk kit ·
+VRM avatars later.
 
 ## Running the alpha (branch `alpha-early`)
 

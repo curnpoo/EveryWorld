@@ -1,5 +1,12 @@
 # Porting Ultra-Water (three.js) to the native Metal renderer
 
+> **Superseded (2026-11-09) — reference only, not a plan.** The new engine rethinks water from
+> scratch; the alpha's FFT-shell approach (and this port plan) is explicitly retired. The
+> current design brief is **`docs/plans/water.md`**. Keep this document as a study of what to
+> avoid and as a source of specific ideas (shore field, caustics, height-query buoyancy) that
+> may be re-evaluated under the new design. See `docs/VISION.md` §11 and
+> `docs/phases/phase-1.md` D18.
+
 Source: https://github.com/Humpalumps/Ultra-Water (MIT, (c) 2026 Humpalumps). Study date 2026-11-05. Keep its MIT notice if code is copied.
 Read: README, `src/water/{OceanSim,OceanSurface,shoreMap,Caustics,UnderwaterPass,WaterQuery,bakeTextures}.js`, `src/scene/{islandHeight,floaters}.js`.
 Not read: PostFX, PlanarReflection, sky/atmosphere, Spray, MarineSnow. The repo wiki is empty. All its shaders are inline strings in the JS.

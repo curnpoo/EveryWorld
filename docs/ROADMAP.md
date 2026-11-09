@@ -21,11 +21,11 @@ the old Stages A–H roadmap; the mapping and alpha history are at the bottom.
 | 0 | Freeze & prepare | Determinism tests, baselines, vendor study, crate skeleton, data registry started | Repo ready for parallel engine work | **Now** |
 | 1 | Engine skeleton | `ew` app + `ed_gpu` Metal backend + fixed-step loop + bake CLI | Test scene renders natively; headless perf harness works | Next |
 | 2 | Planet spike | One continuous cube-sphere Earth; ground↔orbit with no switch; procedural Moon | Unbroken ground→orbit→ground recording at budget | Next (parallel) |
-| 3 | Renderer core | Cluster DAG + GPU cull + visbuffer + GI + geometric foliage + cel material | Forest + city 60 fps High tier, fixed memory, no streaming holes | |
+| 3 | Renderer core | Cluster DAG + GPU cull + visbuffer + VSM shadows + voxel/Lumen-class GI + from-scratch water + geometric foliage + cel material | Forest + city 60 fps High tier, fixed memory, no streaming holes | |
 | 4 | Sim & vehicles | Box3D, character mover + boots, real car, driveable roads v2, parked records | Forest→city drive signoff; park→orbit→return works | |
 | 5 | Golden path solo | Rocket, Moon landing, save/load, housing plot | Whole north-star loop solo, recorded | |
 | 6 | Multiplayer | Directory + region shards, prediction, shared vehicles, co-op mission, sky events | Two clients share car + mission; launch seen cross-region; 8-player hub | |
-| 7 | Living world & polish | NPC schedules, traffic, dialogue, mission variety, destruction, VSM/DDGI, weather, water, MotionBricks eval | World feels populated on a gaming-PC server | Ongoing |
+| 7 | Living world & polish | NPC schedules, traffic, dialogue, mission variety, destruction, hardware RT reflections, GI/water polish, weather, MotionBricks eval | World feels populated on a gaming-PC server | Ongoing |
 | 8 | Platforms & ship | Windows D3D12, then iOS/Android tiers, packaging, perf gates | Ships on macOS + Windows; mobile tier proven | Later |
 
 Phases overlap; every phase ends playable. Do not start Phase 6 before Phase 5 passes.
@@ -97,8 +97,8 @@ produces the first honest numbers.
   TBD), procedural planets and a seeded galaxy (later), time compression.
 - **Characters:** VRM avatar import, avatar material sandbox, customization, MotionBricks
   evaluation, realistic + robot NPCs.
-- **Rendering:** VSM, DDGI/RT, rain/snow/wet roads, motion blur, night lights, coupled ocean,
-  destruction effects and budget-gated smoke.
+- **Rendering:** hardware RT reflections/upscalers, GI and water polish, rain/snow/wet roads,
+  motion blur, night lights, destruction effects and budget-gated smoke.
 - **Platforms:** Windows D3D12 + DLSS/FSR3/RTX, iOS then Android, signing/packaging.
 
 ## Mapping to the old Stages A–H
@@ -123,4 +123,5 @@ audio port, volumetric clouds, atmosphere, FFT ocean, native Metal renderer with
 probe GI/MetalFX, ghost multiplayer (protocol v5), delivery mission planner, lookdev and
 headless perf tooling. Known alpha measurements: Shibuya street level 27–32 fps settled,
 unplayable during streaming; GPU-bound with per-tile merged geometry. Those numbers are the
-baseline the new renderer must beat, not a target to keep tuning.
+baseline the new renderer must beat, not a target to keep tuning. The alpha's probe GI, FFT
+ocean and cached-shadow scheme are **not** salvage targets (VISION §11).

@@ -172,9 +172,10 @@ ephemeris; engine-audio port; ghost-protocol lessons.
 
 ### 3.2 External tech evaluation (verified)
 
-- **Solstice** (MIT): cluster-DAG builder, two-phase occlusion, software raster, voxel-clipmap
-  GI, geometric foliage, no-hole page streaming. **Port techniques; do not adopt as engine**
-  (WebGPU-shaped limits; static scenes only; no skinning; untested on Mac).
+- **Solstice** (MIT): cluster-DAG builder, two-phase occlusion, software raster, voxel-GI
+  ideas, geometric foliage, no-hole page streaming. **Port techniques; do not adopt as engine**
+  (WebGPU-shaped limits; static scenes only; no skinning; untested on Mac). Its cached
+  shadow-cascade scheme is **not** ported — we build virtual shadow maps.
 - **Box3D** (MIT, Erin Catto, June 2026): soft-step solver, character mover, CCD, wheel
   joints, heightfields, **cross-platform + multithreading determinism, recording/replay**.
   Pure-Rust port exists (`box3d-rust`, MIT). Young → isolate behind `ed_sim`.
@@ -221,8 +222,8 @@ NEW
   ed_assets   bake CLI: glTF/FBX/VRM (Megascans) → cluster DAG, BC7/ASTC, collision,
               kit manifests, data packs
   ed_gpu      RHI: passes, bindless, heaps, timers, caps, upscaler + AS interfaces
-  ed_render   cull/visbuffer/software raster, shadows→VSM, GI, atmosphere/clouds,
-              ocean, post/upscalers, skinning, PBR + cel materials
+  ed_render   cull/visbuffer/software raster, VSM shadows, voxel/Lumen-class GI,
+              atmosphere/clouds, water, post/upscalers, skinning, PBR + cel materials
   ed_sim      fixed-step deterministic sim: Box3D, character mover, vehicles,
               ragdolls, destruction, parked records, sim-LOD
   ed_anim     skeletons, retargeting, clips, motion matching, cloth/jiggle,
@@ -257,7 +258,8 @@ generation with pinned data versions.
   planet samples them. Data and geometry are decoupled (old cubesphere rejection superseded).
 - **Virtual texturing** for imagery (orthophotos + raw Sentinel-2, colour-matched), one mip
   chain orbit→boots. One atmosphere (Hillaire tables), one cloud field (volumetric near /
-  2D shell far), night lights, ocean shell + FFT near camera.
+  2D shell far), night lights, ocean as a seamless planet-scale shell with a from-scratch
+  wave/reflection/foam model (`docs/plans/water.md`).
 - Moon/Mars: same code, different body constants; procedural terrain → LOLA/MOLA. Stations
   and the fourth world: instanced structure worlds in orbit/body frames.
 - **Acceptance:** unbroken ground→orbit→ground recording, no representation/texture switch.
@@ -265,25 +267,32 @@ generation with pinned data versions.
 ### 5.2 Renderer (`ed_gpu` + `ed_render`) — kills S1/S2
 
 - **Port from Solstice (MIT):** cluster-DAG builder (128-tri clusters, watertight cuts), GPU
-  cut selection, two-phase occlusion, software raster, visibility buffer + resolve, cached
-  shadows, voxel-clipmap GI + screen traces, cloud model, no-hole fixed-memory paging, BC
-  textures, geometric foliage thinning.
+  cut selection, two-phase occlusion, software raster, visibility buffer + resolve, voxel-GI
+  ideas + screen traces (GI reference only; its cached shadow-cascade scheme is **not**
+  ported), cloud model, no-hole fixed-memory paging, BC textures, geometric foliage thinning.
 - **Build new:** dynamic objects + previous transforms, skinning + motion vectors, 64-bit
   atomic visbuffer (cap-gated), bindless argument buffers, MetalFX/DLSS/FSR3, optional HW RT,
-  translucent/emissive materials, destruction swaps, planetary VT, VSM later.
+  translucent/emissive materials, destruction swaps, planetary VT, **virtual shadow maps
+  (VSM)**, from-scratch water.
 - **One lighting model, two shading models.** Realistic PBR/GGX with physics-based
-  atmosphere/sun/shadows, **voxel-clipmap GI with multi-bounce + screen traces**, and **real
-  reflections** (SSR; HW ray tracing where available) is the default for *everything*.
-  **Cel/toon is an opt-in material model for characters** (VRM/MToon-style: banded response +
-  outlines) that samples the same sun/GI/reflection data, so a cel hero is lit by the same
-  world as a photoreal NPC. Cel is per-avatar, never a global switch — a player who wants a
-  realistic human avatar gets the full PBR path.
+  atmosphere/sun, **virtual shadow maps**, **voxel/Lumen-class dynamic GI** (voxel/SDF traces,
+  multi-bounce, screen fallback) and **real reflections** (screen trace; HW ray tracing where
+  available) is the default for *everything*. **Cel/toon is an opt-in material model for
+  characters** (VRM/MToon-style: banded response + outlines) that samples the same
+  sun/GI/reflection data, so a cel hero is lit by the same world as a photoreal NPC. Cel is
+  per-avatar, never a global switch — a player who wants a realistic human avatar gets the
+  full PBR path.
+- **Water:** a from-scratch, planet-scale design (`docs/plans/water.md`): seamless shell,
+  distance-scaled waves, shoaling, reflections, foam/whitecaps, buoyancy hand-off, underwater.
+  The alpha FFT ocean is retired, not ported.
 - **Foliage:** geometric near/mid; billboard clusters *inside the same DAG* far (the separate
   impostor renderer and its flicker bugs die). Lush geometric ground cover near.
 - **Tiers:** Ultra (RTX desktop) / High (M3 Pro, 60 fps 1440p) / Low (mobile); perf gates on
   six reference scenes + golden-path route.
-- **Salvage from `ed_metal`:** device/layer/timers, ocean FFT, probe-GI bake, shadow caching,
-  shader maths. The entity mirror is deleted.
+- **Salvage from `ed_metal`:** device/layer/timers and shader maths only. **Not salvaged:** the
+  probe-GI bake, FFT ocean and cached-shadow scheme — all three were Metal/Bevy bandaids and
+  are replaced by voxel/Lumen-class GI, virtual shadow maps and a new water model. The entity
+  mirror is deleted.
 
 ### 5.3 Simulation & vehicles (`ed_sim`) — kills S4
 
@@ -459,11 +468,11 @@ expectation is **6–10 months total**; gates matter more than dates.
 | 0 | Freeze & prepare | Branch hygiene, alpha baseline, golden-hash tests, vendor Box3D/Solstice study, `data/registry` + license gate, crate skeletons, GLB import check | Repo ready for parallel engine work | Week 1 |
 | 1 | Engine skeleton | `ew` winit app, `ed_gpu` Metal (salvaged), fixed-step loop, debug UI, headless perf harness, `ed_assets` bake CLI v1 (glTF→cluster DAG, BC7) | Native test scene + harness + bake works | Month 1 |
 | 2 | Planet spike | `ed_planet` terrain + VT + unified atmosphere; ground↔orbit; procedural Moon | **Unbroken ground→orbit→ground recording at budget** (fallback: improve old representation before going further) | Months 1–2 |
-| 3 | Renderer core | GPU cull, visbuffer, software raster, cached shadows, GI v1, real reflections, post + MetalFX, geometric foliage + Megascans, PBR + optional cel material, kit contract for interiors | **Forest + city 60 fps High, fixed memory, no holes** | Months 2–3 |
+| 3 | Renderer core | GPU cull, visbuffer, software raster, virtual shadow maps, voxel/Lumen-class GI, real reflections, from-scratch water, post + MetalFX, geometric foliage + Megascans, PBR + optional cel material, kit contract for interiors | **Forest + city 60 fps High, fixed memory, no holes** | Months 2–3 |
 | 4 | Sim & vehicles | Box3D, character mover + boots, car v1, roads v2 driveability, parked records | **Forest→city drive signoff; park→orbit→return** | Months 3–4 |
 | 5 | Golden path solo | Rocket, Moon landing, placeholder loot, save/load, housing plot | **Whole north-star loop solo, recorded** | Months 4–5 |
 | 6 | Multiplayer | Directory + shards, prediction, shared car + seats, co-op mission, sky events, chat, server persistence | **Two clients share car + mission; cross-region launch visible; 8-player hub** | Months 5–6 |
-| 7 | Living world & polish | NPC schedules, traffic, dialogue, mission variety, interiors, destruction/ragdolls, MotionBricks eval, VSM/DDGI/RT, weather, coupled water, smoke | World feels populated on the gaming-PC server | Months 6–10 |
+| 7 | Living world & polish | NPC schedules, traffic, dialogue, mission variety, interiors, destruction/ragdolls, MotionBricks eval, hardware RT reflections, GI/water polish, weather, smoke | World feels populated on the gaming-PC server | Months 6–10 |
 | 8 | Platforms & ship | Windows D3D12, iOS/Android tiers, packaging, perf gates | Ships macOS + Windows; mobile tier proven | Months 8–10+ |
 
 Rules: phases overlap; each ends playable; **no Phase 6 before Phase 5 passes**; parallel AI
@@ -526,8 +535,8 @@ exit gate and failure branches.
 
 **Current direction:** `docs/VISION.md` (verbatim goals + systems) · `docs/ROADMAP.md` ·
 `docs/ARCHITECTURE.md` · `docs/GOALS.md` (status board) · `docs/plans/rearchitecture.md`
-(full audit + plan) · `docs/data/` (registry + rules) · `docs/solarpunk/` (asset + character
-specs) · `docs/CHANGES.md` · this file.
+(full audit + plan) · `docs/plans/water.md` (water design brief) · `docs/data/` (registry +
+rules) · `docs/solarpunk/` (asset + character specs) · `docs/CHANGES.md` · this file.
 
 **Alpha archive:** `docs/alpha/` (BUGS as replacement criteria, HANDOFF salvage map, m2/engine/
 nanite/space plans, roads, flora, buildings, beamng lessons, water, shadows, perf reports).
