@@ -1,5 +1,11 @@
 # Plan: space visuals (atmosphere from orbit, stars, Moon, planets)
 
+> **SUPERSEDED APPROACH (2026-11-08):** crossfading between the two renderers is replaced by
+> **one** `ed_planet` representation — the problems listed here (two renderers sharing almost
+> nothing, hard switch at 200 km, separate map globe) are removed by construction. Work items
+> that remain valid as feature specs: star catalog, night lights, Moon/Mars terrain, cloud
+> field unification, eclipse/exposure polish. See `docs/plans/rearchitecture.md` §3.2.
+
 Status: partly built. Weather/clouds come from `ed_climate` (`world-sim.md`); rendering and perf: `engine.md`.
 
 ## Where we are

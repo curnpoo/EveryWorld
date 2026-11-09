@@ -4,34 +4,46 @@ Drop anywhere on real Earth; walk, drive, fly, rocket to the Moon. Real data
 (OSM vector tiles, elevation, weather) decides **what** is there; procedural
 rules decide **how it looks**.
 
-This file is the map of the repository. `CLAUDE.md` is the short working memory;
-`docs/ROADMAP.md` says what's done and next (Stages A-H);
-`docs/CHANGES.md` lists recent changes and open checks; `docs/ARCHITECTURE.md`
-is the design document; `docs/plans/` holds the plans.
+This file is the map of the repository. Read **`docs/VISION.md` first** (the
+owner's goals, verbatim, with the systems that deliver them), then
+`docs/ROADMAP.md` (Phases 0-8), `docs/ARCHITECTURE.md` (target design) and
+`docs/plans/rearchitecture.md` (audit + full plan). `CLAUDE.md` is the short
+working memory; `docs/CHANGES.md` lists recent changes and open checks;
+`docs/data/` is the geospatial source catalog + licensing rules;
+`docs/alpha/plans/` holds the older plans (several superseded — check their banners).
+
+**Branch state:** `main` is the custom-engine reboot. The playable Bevy alpha
+is frozen on branch `alpha-early` (crash fixes only). Most of the crate index
+below describes the alpha codebase, which survives as reference and as the
+engine-free crates; new work follows `docs/ARCHITECTURE.md`.
 
 ---
 
 ## Direction and goals (read before planning any work)
 
-Goal: a fast, beautiful, shared real-Earth world. The roadmap is Stages A-H in
-`docs/ROADMAP.md` (A stabilize and measure, B fast, C multiplayer, D native
-Metal + Nanite-like, E lighting, F play/vehicles, G space, H platforms).
-**Current stage: A. Next stop: GPU measurement** (baseline table on the 6
-reference scenes, per-pass GPU timers, a verdict on each performance
-hypothesis; ROADMAP Stage A item 3), then M2 in Stage B.
+Goal: the game in `docs/VISION.md` — a persistent, social, solarpunk universe:
+photoreal Earth (and Moon/Mars), cel-shaded expressive characters, real-feeling
+vehicles, merit-based progression, home bases, dense scripted NPC life, and a
+seamless ground → orbit → Moon → back loop with no loading screens.
+
+The roadmap is **Phases 0-8** in `docs/ROADMAP.md`. **Current phase: 0
+(freeze and prepare)**, then Phase 1 (custom engine skeleton) and Phase 2
+(cube-sphere planet spike) in parallel. The north-star acceptance test is the
+full session loop in `VISION.md` §2.
 
 Rules for every agent and session:
 
-1. **Performance and looks before new gameplay.** Vehicles, missions and space
-   are planned (Stages F, G) but wait. The game misses 30 fps on an M3 Pro and
-   has visual glitches (`docs/BUGS.md`); that comes first.
-2. **Renderer end state:** native Metal plus a Nanite-like geometry system we
-   build ourselves (cluster LOD, GPU culling, visibility buffer, software
-   raster) on `ed_gpu` / `ed_render`. Windows uses D3D12 with DLSS/FSR3 and RTX
-   ray tracing. Bevy meshlets are not the path (measured ~60% slower). Short-term
-   fixes on the Bevy renderer are fine; do not build large features that only
-   work on Bevy's pipeline. New renderer code targets `ed_gpu` only, never wgpu
-   or Metal directly.
+1. **All-in on the custom engine.** No new Bevy features and no visual-bug
+   fixes on the alpha renderer (crash fixes on `alpha-early` only). Do not
+   spend effort optimizing per-tile triangle counts or the Bevy↔Metal mirror;
+   those subsystems are being replaced, not tuned.
+2. **Renderer end state:** our own `ed_gpu` RHI (Metal first, D3D12/Vulkan
+   later) + `ed_render` with cluster-LOD DAG, GPU culling, visibility buffer,
+   software raster and voxel-clipmap GI (Solstice techniques ported, MIT —
+   credit in CREDITS). Planet geometry is a **cube-sphere quadtree**
+   (`ed_planet`); slippy tiles survive only as the data layer. New renderer
+   code targets `ed_gpu` only, never wgpu or Metal directly. Physics is
+   **Box3D** behind `ed_sim` (deterministic, replay-tested); Avian is gone.
 3. **Use the GPU fully, and measure first.** Tools: `tools/perf_headless.sh`,
    `EW_BISECT`, `EW_GPU_WAIT`, `EW_POST`, `EW_TILE_STATS`, `--perf`. Add a dated
    `docs/CHANGES.md` entry with before/after numbers. Every feature declares its
@@ -47,7 +59,7 @@ Rules for every agent and session:
    visibility-buffer resolve (shade each pixel once).
 6. **Keep the docs current.** When work lands, add a `docs/CHANGES.md` entry
    (what changed, what needs a Mac check) and update `docs/ROADMAP.md`.
-   `docs/plans/engine.md` still uses the old M0-M10 names; the mapping is at the
+   `docs/alpha/plans/engine.md` still uses the old M0-M10 names; the mapping is at the
    bottom of the roadmap.
 
 ---
@@ -72,7 +84,7 @@ cargo check --offline -p ed_game
 ```
 
 Windows (PowerShell; one-time setup, batteries and the agent checklist are in
-`docs/WINDOWS.md`):
+`docs/alpha/WINDOWS.md`):
 
 ```powershell
 cargo test --workspace          # same suite; CI runs it on macOS + Windows
@@ -320,7 +332,7 @@ artifacts as source.
 - `#[ignore]` tests touch the network (`cargo test -- --ignored`).
 - Windows: the same `cargo test --workspace` (CI runs macOS + Windows on every
   push). The `.sh` batteries are macOS-only; PowerShell versions of the
-  screenshot smoke and six-scene perf battery live in `docs/WINDOWS.md`.
+  screenshot smoke and six-scene perf battery live in `docs/alpha/WINDOWS.md`.
 - Visual checks: `tools/shoot_places.sh OUT_DIR` (Central Park, Zermatt, Aix,
   Marrakech, Shibuya, Manhattan); `--lookdev` boards.
 - `--screenshot` may produce a black image in some two-camera/render-scale
@@ -345,19 +357,20 @@ artifacts as source.
 
 ## Current status / known issues
 
-- Status lives in `docs/ROADMAP.md` and `docs/CHANGES.md`; read those first.
-  M0/M1 perf work (tree impostors, tiles as data, `ed_runtime`) is unmeasured
-  on the Mac.
-- Building roof/foundation overhaul landed (`docs/plans/buildings.md`); needs
-  in-game visual checks. Threshold constants (350/500 m², 4 floors, 14 m span)
-  live in `roof_plan`.
-- Open question: does terrain render at a coarser LOD than the building's
-  `TerrainGrid`? Foundations currently have a 0.5 m margin.
-- Active uncommitted work often includes perf logger, render scale, streaming,
-  camera and menu tweaks; always check `git status` first.
-- Roadmap next: Stage A (bugs, Mac test pass, GPU measurement, perf gate,
-  determinism CI), then Stage B (finish M1, M2 `ed_gpu` + `ed_render`). Instancing,
-  CDLOD and the other Phase 2 items arrive with M2. See `docs/ROADMAP.md`.
+- **Reboot in progress.** `main` = custom engine (Phase 0); `alpha-early` =
+  playable Bevy alpha with all known issues frozen. `docs/alpha/BUGS.md` is now a
+  list of *replacement criteria*, not a fix list for the old renderer.
+- Read `docs/VISION.md`, `docs/ROADMAP.md` and `docs/plans/rearchitecture.md`
+  before planning anything. Older plan docs carry superseded banners where
+  their direction changed; unmarked ones (roads, flora, beamng lessons,
+  buildings) are still valid design references.
+- **P0 data licensing:** WorldClim (baked climate) is redistribution-restricted
+  and must be replaced; the EOX Sentinel-2 mosaic is CC BY-NC-SA and must be
+  replaced or licensed before any commercial build. See `docs/data/README.md`.
+- Uncommitted alpha WIP at the time of the reboot: impostors/loading/player/
+  vehicles/tilegen edits + untracked `assets/`; review before carrying forward.
+- Always check `git status` first; parallel sessions keep edits scoped to
+  different crates/files.
 
-## Native Metal renderer (default on macOS)
-`ed_game::native` mirrors Bevy `Mesh3d` entities into `ed_metal::world::WorldRenderer` (own CAMetalLayer under a transparent Bevy window). `EW_NATIVE=0` returns to the Bevy renderer. Headless check: `./target/release/earthdrop --headless --fly --lat .. --lon .. --alt .. --heading .. --pitch .. --hour 15 --width 1600 --height 900 --frames N --no-wait --screenshot out.png`, filter log with `grep "native: [0-9]* fps"`. Switches: `EW_NATIVE_NOSSR/NOBOUNCE/NOAO/NOBLOOM/NOGROUND/NOWATER/NOFFT`, `EW_HOLD_SPACE=1`, `EW_NATIVE_DBG`. Full state, switches (incl. `EW_CONTACT`, `EW_PROBE_GI`, `EW_NATIVE_SCALE`, `EW_NATIVE_NOAA`, `EW_WEATHER`) and prioritised open work: `docs/HANDOFF.md`; water design, status and the not-yet-built phases 6 (CPU wave model/buoyancy) and 7 (underwater): `docs/plans/ultra-water-port.md`; per-change detail in `docs/CHANGES.md`.
+## Native Metal renderer (alpha only — salvage source for `ed_gpu`/`ed_render`)
+`ed_game::native` mirrors Bevy `Mesh3d` entities into `ed_metal::world::WorldRenderer` (own CAMetalLayer under a transparent Bevy window). `EW_NATIVE=0` returns to the Bevy renderer. Headless check: `./target/release/earthdrop --headless --fly --lat .. --lon .. --alt .. --heading .. --pitch .. --hour 15 --width 1600 --height 900 --frames N --no-wait --screenshot out.png`, filter log with `grep "native: [0-9]* fps"`. Switches: `EW_NATIVE_NOSSR/NOBOUNCE/NOAO/NOBLOOM/NOGROUND/NOWATER/NOFFT`, `EW_HOLD_SPACE=1`, `EW_NATIVE_DBG`. Full state, switches (incl. `EW_CONTACT`, `EW_PROBE_GI`, `EW_NATIVE_SCALE`, `EW_NATIVE_NOAA`, `EW_WEATHER`) and prioritised open work: `docs/alpha/HANDOFF.md`; water design, status and the not-yet-built phases 6 (CPU wave model/buoyancy) and 7 (underwater): `docs/alpha/plans/ultra-water-port.md`; per-change detail in `docs/CHANGES.md`.

@@ -1,5 +1,10 @@
 # EveryWorld — Architecture, Research, and Nanite Roadmap
 
+> **PARTLY SUPERSEDED (2026-11-08):** sections 1–3 are a useful alpha snapshot, but the
+> cube-sphere question is now decided **yes for render geometry** (slippy tiles stay as the
+> data layer), and the engine plan is the custom-engine reboot. See `docs/VISION.md` §3 and
+> `docs/plans/rearchitecture.md` §3.2.
+
 Saved from session on 2026-11-08. This is the full analysis as discussed; no code changes are made by this document.
 
 ---

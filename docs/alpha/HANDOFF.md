@@ -1,5 +1,11 @@
 # Handoff: native Metal renderer state (2026-11-05)
 
+> **SUPERSEDED (2026-11-08):** the project is all-in on the custom-engine reboot
+> (`docs/VISION.md`, `docs/plans/rearchitecture.md`). This file is kept as the salvage map
+> for `ed_gpu`/`ed_render` (device/layer/timers, ocean FFT, probe-GI bake, shadow caching,
+> shader maths). The Bevy↔Metal entity mirror itself is deleted, not ported. Alpha lives on
+> branch `alpha-early`.
+
 Read `docs/CHANGES.md` top entries for the per-change detail; this file is the map.
 
 ## Goal

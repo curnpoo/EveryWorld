@@ -1,5 +1,11 @@
 # Bugs
 
+> **STATUS (2026-11-08):** with the custom-engine reboot (`docs/VISION.md`,
+> `docs/plans/rearchitecture.md`), these alpha issues are **replacement criteria**, not a
+> fix list. Do not fix visual/feel bugs on the Bevy renderer; each item below must be shown
+> fixed *by construction* as the corresponding new subsystem lands (planet renderer,
+> cluster-LOD foliage, roads v2, camera/sim loop). Crash fixes only, on `alpha-early`.
+
 Open visual and feel issues reported from play on the Mac, 2026-11-04 (Central Park spawn, rocket shoes). Newest reports at the bottom of each group. When one is fixed, delete it here and note the fix in `CHANGES.md`. Screenshot sources are the reporter's Desktop captures from 5:29-5:33 PM that day (not in the repo).
 
 Priority: **P1** breaks the look or feel on first contact, **P2** clearly wrong, **P3** polish.

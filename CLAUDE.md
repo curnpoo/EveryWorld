@@ -1,19 +1,34 @@
 # EveryWorld (binary: `earthdrop`)
 
+**Reboot:** `main` is the custom-engine rebuild; the playable Bevy alpha is frozen on
+branch `alpha-early`. Read **`docs/VISION.md`** (owner's goals, verbatim + systems),
+`docs/ROADMAP.md` (Phases 0-8), `docs/ARCHITECTURE.md` (target design) and
+`docs/plans/rearchitecture.md` (audit + plan) before any work. World data + licensing:
+`docs/data/`. This file's module notes below describe the alpha codebase (reference +
+surviving engine-free crates).
+
 Drop anywhere on real Earth; walk, drive, fly, rocket to the Moon. Real data (OSM vector tiles, elevation, weather) decides *what* is there; procedural rules decide *how it looks*. Rust 2024 + Bevy 0.20 + Avian 0.8, Metal on macOS.
 Docs (start with the first two):
 - `docs/ROADMAP.md`: what's done and what's next, as Stages A-H (A stabilize and measure, B fast, C multiplayer, D native Metal + Nanite-like, E lighting, F play/vehicles, G space, H platforms). Old M0-M10 names are mapped at the bottom.
 - `docs/CHANGES.md`: recent changes, newest first, with what still needs checking on the Mac. Add an entry when you land work; fold verified items into the roadmap.
-- `docs/ARCHITECTURE.md`: how it works. `docs/plans/`: `procedural-flora.md` (species as data, per-tree genomes, niche selection: read before touching trees/ground cover), `engine.md` (target engine, milestones, meshlet findings), `assets-and-agents.md`, `buildings.md`, `world-sim.md`, `space-visuals.md`, `shadows.md` (layered shadows: cascades, horizon maps, cached far map). `docs/lookdev/round2/*`: art review notes.
+- `docs/ARCHITECTURE.md`: how it works. `docs/alpha/plans/`: `procedural-flora.md` (species as data, per-tree genomes, niche selection: read before touching trees/ground cover), `engine.md` (target engine, milestones, meshlet findings), `assets-and-agents.md`, `buildings.md`, `world-sim.md`, `space-visuals.md`, `shadows.md` (layered shadows: cascades, horizon maps, cached far map). `docs/lookdev/round2/*`: art review notes.
 
 ## Direction (read before planning any work)
-Goal: a fast, beautiful, shared real-Earth world. Roadmap = Stages A-H in `docs/ROADMAP.md`. **Current stage: A (stabilize and measure). Next stop: GPU measurement** (baseline table, per-pass GPU timers, hypothesis verdicts; ROADMAP Stage A item 3), then M2 in Stage B.
-1. **Performance and looks come before new gameplay.** Vehicles/missions/space are planned (Stages F, G) but wait. The game currently misses 30 fps on an M3 Pro and has visual glitches (`docs/BUGS.md`); fixing that is the priority.
-2. **Renderer end state:** native Metal + a Nanite-like geometry system we build ourselves (cluster LOD, GPU culling, visibility buffer, software raster) on `ed_gpu`/`ed_render`; Windows via D3D12 with DLSS/FSR3 and RTX ray tracing. Bevy meshlets are not the path (measured ~60% slower). Short-term fixes on the Bevy renderer are fine; don't build big new features that only work on Bevy's pipeline. Write new renderer code against `ed_gpu` only.
+Goal: the game in `docs/VISION.md` — persistent solarpunk universe, photoreal world +
+cel-shaded characters, seamless ground → orbit → Moon, real vehicles, merit progression,
+NPC life. Roadmap = **Phases 0-8** in `docs/ROADMAP.md`. **Current phase: 0 (freeze and
+prepare)**, then Phase 1 (engine skeleton) + Phase 2 (planet spike) in parallel.
+1. **All-in on the custom engine.** No new Bevy features; alpha visual bugs are replacement
+   criteria, not a fix list. Crash fixes only, on `alpha-early`.
+2. **Renderer end state:** own `ed_gpu` RHI (Metal first, D3D12/Vulkan later) + `ed_render`
+   (cluster LOD, GPU culling, visibility buffer, software raster, voxel-clipmap GI — Solstice
+   techniques ported). Planet = cube-sphere quadtree in `ed_planet`; slippy tiles only as the
+   data layer. Physics = Box3D behind `ed_sim` (deterministic). New renderer code targets
+   `ed_gpu` only.
 3. **Use the GPU fully, and measure first.** Use `tools/perf_headless.sh`, `EW_BISECT`, `EW_GPU_WAIT`; add a dated `CHANGES.md` entry with before/after numbers. Every feature declares its cost per quality tier and has an off switch.
 4. **Multiplayer-safe from now on.** The world must be identical for every player: generation is a pure function of (world seed, pinned data version, UTC time). No `HashMap` iteration order, thread-order float reductions, unseeded RNG, wall-clock reads or platform-dependent hashing in generators or weather. Terrain/buildings/trees/weather are never sent over the network; only world deltas and entity state are. Keep simulation state separate from render state.
 5. **Materials and shaders** are data-driven and hot-reloadable, shaped for a visibility-buffer resolve (shade each pixel once).
-6. **Keep the docs current.** When work lands, add a `docs/CHANGES.md` entry (what changed, what needs a Mac check) and tick/update `docs/ROADMAP.md`. `docs/plans/engine.md` still uses the old M0-M10 names; the mapping is at the bottom of the roadmap.
+6. **Keep the docs current.** When work lands, add a `docs/CHANGES.md` entry (what changed, what needs a Mac check) and tick/update `docs/ROADMAP.md`. `docs/alpha/plans/engine.md` still uses the old M0-M10 names; the mapping is at the bottom of the roadmap.
 
 ## Read this first (saves tokens)
 - Do NOT read whole big files. Use `grep -n '^\(pub \)\?fn\|^struct\|^enum'` on a file, then read ranges. Biggest: `ed_world/src/trees/mod.rs` (1.8k), `voice.rs` (1.4k), `buildings.rs` (1.4k), `archkit.rs` (1.3k), `ground_scatter.rs` (1k).
@@ -33,7 +48,7 @@ cargo check --offline -p ed_game
 tools/shoot_places.sh OUT_DIR   # 6 reference scenes (Central Park, Zermatt, Aix, Marrakech, Shibuya, Manhattan)
 ```
 Windows (PowerShell): same `cargo` commands; setup, the screenshot/perf
-batteries and the agent checklist are in `docs/WINDOWS.md`. Set
+batteries and the agent checklist are in `docs/alpha/WINDOWS.md`. Set
 `$env:RUST_LOG = "info,wgpu=error,naga=warn,bevy_render=warn"` to see the
 `GPU adapter` line (Dx12 or Vulkan) and other info logs.
 Cache dir `.earthdrop-cache/` (tiles cached forever; gitignored). Dev profile: deps opt-level 3, own code 1.
@@ -58,7 +73,7 @@ Cache dir `.earthdrop-cache/` (tiles cached forever; gitignored). Dev profile: d
 - `archkit.rs` per-`Region` `Variant` tables (wall/roof palettes, `roof_forms`, `pitch`, `overhang`, floor heights, ground-floor type). `style.rs` `Region::locate` + street kits. Data tables, not code paths.
 - `meshkit.rs` modeling toolkit (`sweep`, `inset`, `polygon`, `wall_with_openings`, `Basis`, `signed_area`). `bparts.rs` parts (windows, doors, balconies, chimneys...; `Mat` buckets, `Out`). `mesh.rs` `MeshData`.
 - `library.rs` **asset library**: `AssetDef` (key, `RenderPath`, `ColliderShape`, generator) + `Placement`. Tiles emit `TileBuild::placements` instead of baking discrete objects; `library::get()` is global (content packs `install` before first tile). Street props are the first assets (`props::register_street_props`).
-- `roads/` (v2, see `docs/plans/roads.md`: `net` world-space network from 3x3 tiles, `solve` height solver, `plan2`, `structures` decks/tunnels, `junction`, `width`, `median`, `keepout`, `nav` graph; `mod.rs` keeps the legacy planner behind `EW_ROADS=legacy`), `garage.rs`, `water.rs`, `surface.rs` (land-cover raster `SurfaceMap`, `Cover`; WorldCover canopy/shrub rasters and lithology drive plant density and colour), `biome.rs` (`Biome::from_climate`, real climate with heuristic fallback), `foliage.rs`+`trees/` (procedural trees; `trees/species.rs` = `SpeciesDef` table + `Genome`: add species as rows, don't hard-code palettes/budgets in `mod.rs`; `trees/impostor.rs` CPU-bakes the impostor atlas and builds per-tile impostor quads), `props.rs` (rocks, street furniture), `ground_scatter.rs`+`ground_tex.rs`+`noise.rs` (near-camera cover, procedural textures), `clouds.rs` (engine-free cloud volumes), `horizon.rs` (terrain horizon-map bake for far shadows, not yet wired), `lod.rs` (terrain quadtree), `maprender.rs` (2D menu map), `missions.rs`.
+- `roads/` (v2, see `docs/alpha/plans/roads.md`: `net` world-space network from 3x3 tiles, `solve` height solver, `plan2`, `structures` decks/tunnels, `junction`, `width`, `median`, `keepout`, `nav` graph; `mod.rs` keeps the legacy planner behind `EW_ROADS=legacy`), `garage.rs`, `water.rs`, `surface.rs` (land-cover raster `SurfaceMap`, `Cover`; WorldCover canopy/shrub rasters and lithology drive plant density and colour), `biome.rs` (`Biome::from_climate`, real climate with heuristic fallback), `foliage.rs`+`trees/` (procedural trees; `trees/species.rs` = `SpeciesDef` table + `Genome`: add species as rows, don't hard-code palettes/budgets in `mod.rs`; `trees/impostor.rs` CPU-bakes the impostor atlas and builds per-tile impostor quads), `props.rs` (rocks, street furniture), `ground_scatter.rs`+`ground_tex.rs`+`noise.rs` (near-camera cover, procedural textures), `clouds.rs` (engine-free cloud volumes), `horizon.rs` (terrain horizon-map bake for far shadows, not yet wired), `lod.rs` (terrain quadtree), `maprender.rs` (2D menu map), `missions.rs`.
 
 ## ed_game modules (`crates/ed_game/src`) — each is a Bevy Plugin, wired in `main.rs`
 - Core: `library` (cooks every library asset once at PreStartup -> `CookedLibrary`; `spawn_placements` instances them as meshlets + static colliders), `origin` (floating origin, re-anchors at >8 km), `config` (CLI), `assets` (shared materials/textures), `building_materials` (one material per `bparts::Mat`), `meshconv` (MeshData -> bevy Mesh).
@@ -91,14 +106,14 @@ Cache dir `.earthdrop-cache/` (tiles cached forever; gitignored). Dev profile: d
 - Parallel sessions touch different files (trees, ground, clouds, buildings); keep edits scoped.
 
 ## Known issues / active work
-- Buildings: roof/foundation overhaul landed (see `docs/plans/buildings.md` for what and what's left). `buildings.rs`: `roof_plan` (Flat | Mansard | Pitched(rects)) is shared by `detail_one` and `lod_one`; `foundation()` skins walls above low terrain. Needs visual check in-game; thresholds (350/500 m2, 4 floors, 14 m span) are constants in `roof_plan`.
+- Buildings: roof/foundation overhaul landed (see `docs/alpha/plans/buildings.md` for what and what's left). `buildings.rs`: `roof_plan` (Flat | Mansard | Pitched(rects)) is shared by `detail_one` and `lod_one`; `foundation()` skins walls above low terrain. Needs visual check in-game; thresholds (350/500 m2, 4 floors, 14 m span) are constants in `roof_plan`.
 - Open: does terrain render at a coarser LOD than the building's `TerrainGrid`? Foundations have a 0.5 m margin only.
 - M0/M1 (env map, cascades, shared terrain material, budgeted apply, `ed_runtime`, tree impostors, tiles as data) is on `main` but unmeasured on the Mac: test pass in `docs/CHANGES.md`. Clouds ½ res + shadow proxies done (headless numbers in `docs/CHANGES.md`). Open: pipeline pre-warm, explode hitches. Next: Stage A (bugs, Mac test pass, GPU measurement, determinism CI), then M2 in Stage B (`docs/ROADMAP.md`).
 
 ## Flora and collision (read before adding species or plant variety)
-- Species are rows in `trees/species.rs` `SPECIES` (same order as `TreeKind`, tested). Per-tree variety goes through `Genome` (`Genome::sample` -> `build_genome`), never new hard-coded variants. Roadmap of the remaining steps (niche selection, per-instance genomes, lazy banks, ground cover/rocks on the same system): `docs/plans/procedural-flora.md`.
+- Species are rows in `trees/species.rs` `SPECIES` (same order as `TreeKind`, tested). Per-tree variety goes through `Genome` (`Genome::sample` -> `build_genome`), never new hard-coded variants. Roadmap of the remaining steps (niche selection, per-instance genomes, lazy banks, ground cover/rocks on the same system): `docs/alpha/plans/procedural-flora.md`.
 - Climate/biome/land cover/geology are static real data (`ed_data`), separate from the future procedural weather sim (`ed_climate`); weather modulates, never decides what grows.
 - Collision: trunk cylinders (one static compound per tree chunk, only the full-detail tier) and rock trimeshes (within 90 m, `near_chunks.rs`). Cards and impostors never collide.
 
 ## Native Metal renderer (default on macOS)
-`ed_game::native` mirrors Bevy `Mesh3d` entities into `ed_metal::world::WorldRenderer` (own CAMetalLayer under a transparent Bevy window). `EW_NATIVE=0` returns to the Bevy renderer. Headless check: `./target/release/earthdrop --headless --fly --lat .. --lon .. --alt .. --heading .. --pitch .. --hour 15 --width 1600 --height 900 --frames N --no-wait --screenshot out.png`, filter log with `grep "native: [0-9]* fps"`. Switches: `EW_NATIVE_NOSSR/NOBOUNCE/NOAO/NOBLOOM/NOGROUND/NOWATER/NOFFT`, `EW_HOLD_SPACE=1`, `EW_NATIVE_DBG`. Full state, switches (incl. `EW_CONTACT`, `EW_PROBE_GI`, `EW_NATIVE_SCALE`, `EW_NATIVE_NOAA`, `EW_WEATHER`) and prioritised open work: `docs/HANDOFF.md`; water design, status and the not-yet-built phases 6 (CPU wave model/buoyancy) and 7 (underwater): `docs/plans/ultra-water-port.md`; per-change detail in `docs/CHANGES.md`.
+`ed_game::native` mirrors Bevy `Mesh3d` entities into `ed_metal::world::WorldRenderer` (own CAMetalLayer under a transparent Bevy window). `EW_NATIVE=0` returns to the Bevy renderer. Headless check: `./target/release/earthdrop --headless --fly --lat .. --lon .. --alt .. --heading .. --pitch .. --hour 15 --width 1600 --height 900 --frames N --no-wait --screenshot out.png`, filter log with `grep "native: [0-9]* fps"`. Switches: `EW_NATIVE_NOSSR/NOBOUNCE/NOAO/NOBLOOM/NOGROUND/NOWATER/NOFFT`, `EW_HOLD_SPACE=1`, `EW_NATIVE_DBG`. Full state, switches (incl. `EW_CONTACT`, `EW_PROBE_GI`, `EW_NATIVE_SCALE`, `EW_NATIVE_NOAA`, `EW_WEATHER`) and prioritised open work: `docs/alpha/HANDOFF.md`; water design, status and the not-yet-built phases 6 (CPU wave model/buoyancy) and 7 (underwater): `docs/alpha/plans/ultra-water-port.md`; per-change detail in `docs/CHANGES.md`.

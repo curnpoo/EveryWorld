@@ -1,3 +1,53 @@
+## 2026-11-09: master document, README rewrite, alpha doc archive
+
+- **`docs/MASTER.md`** added: the single-file master plan — decisions log, vision (verbatim),
+  session record, full target architecture, systems & implementation, data & licensing, art
+  direction with the solarpunk/character/UI/lookdev images embedded, Phases 0-8 with
+  indicative pacing, acceptance metrics, risks, open questions and the doc index.
+- **README.md rewritten** around the master doc: status, branch table, tech direction,
+  6–10 month pacing expectation (alpha was 4 days with AI coding models; gates over dates).
+- **Alpha-era docs moved to `docs/alpha/`** (HANDOFF, BUGS, WINDOWS, RELEASE_ALPHA_0.15, perf
+  reports, all old plans except `docs/plans/rearchitecture.md`); references rewired across
+  the current docs; `docs/alpha/README.md` explains the archive.
+- **Building interiors added to the vision** (owner note): walk-in buildings, procedural floor
+  plans + authored interiors, no door-teleports (`VISION.md` §12; kit contract from Phase 3,
+  full interiors in Phase 7).
+- **Alpha code WIP committed to `alpha-early`** (impostors, loading, player, vehicles,
+  tilegen). `assets/characters/Solarcat.glb` deliberately left uncommitted (owner).
+- Needs Mac check: nothing (docs + branch housekeeping only). Engine work has NOT started
+  (owner instruction); next is Phase 0 when the owner says go.
+
+## 2026-11-08: Rearchitecture decided + full doc realignment (no code changes)
+
+- **Direction change (owner-approved):** all-in on a custom engine. `main` becomes the reboot;
+  the playable Bevy alpha is preserved on branch **`alpha-early`** (created at `7cea773`).
+  No new Bevy features; alpha visual bugs become replacement criteria (`docs/alpha/BUGS.md` banner).
+- **New docs:** `docs/VISION.md` (owner's goals verbatim + explanation + the real systems per
+  goal: merit-based progression, home bases, guided freedom, photoreal world + cel characters,
+  VRM avatars, NPC life, stations/Moon/Mars civilizations/fourth world);
+  `docs/plans/rearchitecture.md` (audit + target architecture + Phases 0-8);
+  `docs/data/registry.md` (full planetary data catalog as provided, GREEN/YELLOW/RED
+  licensing) and `docs/data/README.md` (current-source audit, registry format, acquisition
+  phases, storage/distribution).
+- **Rewritten:** `docs/ROADMAP.md` (Phases 0-8 replace Stages A-H), `docs/ARCHITECTURE.md`
+  (target: custom `ew` app, `ed_gpu`/`ed_render`, cube-sphere `ed_planet`, Box3D `ed_sim`,
+  region shards + `ed_store`), `docs/GOALS.md` (now a status board pointing at VISION),
+  `README.md`, `AGENTS.md`, `CLAUDE.md`. Superseded banners added to `docs/alpha/HANDOFF.md`,
+  `docs/alpha/plans/{m2,engine,nanite-roadmap,space-visuals}.md`.
+- **Tech decisions locked:** custom engine + own RHI (Metal first, D3D12/Vulkan later);
+  cube-sphere render geometry with slippy tiles as the data layer; Box3D (C17, MIT,
+  deterministic) behind `ed_sim`; Solstice techniques ported (MIT) rather than adopted;
+  Megascans via Fab Standard License (private repo + packaged game, no standalone
+  redistribution); server Ubuntu LTS; owner's GLB character first, VRM avatars later.
+- **P0 licensing findings:** WorldClim (baked into `ed_data`) restricts commercial
+  redistribution — replacement required (CHELSA/TerraClimate/ERA5/MERRA-2 candidates); EOX
+  Sentinel-2 mosaic is CC BY-NC-SA — replace or license before selling.
+- **Needs Mac check:** nothing (docs only). Uncommitted alpha WIP (impostors, loading,
+  player, vehicles, tilegen + untracked `assets/`) still uncommitted; review whether it
+  belongs on `alpha-early`.
+- **Next:** ROADMAP Phase 0 tasks (baseline, golden-hash tests, vendor Box3D/Solstice, data
+  registry TOML + license gate, crate skeletons), then Phase 1 + Phase 2 in parallel.
+
 ## 2026-11-08: terrain loading + collider + retention session
 
 - **360 loading by default** (`streaming.rs`): view-cone culling off unless `EW_VIEW_CONE=1`; tiles load in all directions. Predictive prefetch of coarse tiles (z≤11) 3 s ahead along velocity.
@@ -237,7 +287,7 @@
   compiles examples, and both used Metal APIs with no target gate - they would
   have broken `cargo test --workspace` on Windows. Non-macOS now gets an empty
   `main`, the same pattern the `ed_metal` bins already used.
-- **`docs/WINDOWS.md`:** one-time setup (rustup MSVC + VS Build Tools C++),
+- **`docs/alpha/WINDOWS.md`:** one-time setup (rustup MSVC + VS Build Tools C++),
   everyday commands, PowerShell versions of the GPU-adapter probe, screenshot
   smoke test and six-scene perf battery (CSV summary in PowerShell, no Python),
   plus a paste-back checklist for handing the run to a coding agent.
@@ -253,7 +303,7 @@
 - Needs checking on Windows: `cargo test --workspace` green, one
   `cargo build --release`, one windowed run, one headless screenshot, the
   six-scene perf battery, and the `GPU adapter` line (Dx12 or Vulkan) from
-  `docs/WINDOWS.md`.
+  `docs/alpha/WINDOWS.md`.
 
 ## 2026-11-06: tall buildings no longer stop at 90 floors
 - The building generator clamped every source height to 90 floors, so a 93-storey
@@ -314,7 +364,7 @@
      in a city that is a few ms for free.
   2. Make the shadow cache survive streaming: a new tile must not invalidate all six cascades.
   3. A per-building far LOD (merged footprints, then boxes) - the only thing that really cuts
-     the city's triangle count (`docs/plans/far-buildings-and-nanite.md`).
+     the city's triangle count (`docs/alpha/plans/far-buildings-and-nanite.md`).
   4. GPU-driven per-cluster culling (M2) - the renderer still submits per-tile merged geometry.
 - Needs Mac check: the numbers above are headless (they include a framebuffer readback);
   re-measure windowed before quoting them.
@@ -354,7 +404,7 @@
   the waves should be gone by a few hundred metres out.
 
 ## 2026-11-06: docs only, voxel proxies + navara plan, and a measured cost breakdown
-- New plan `docs/plans/voxel-proxy-and-navara.md`: what is worth taking from MapLibre's
+- New plan `docs/alpha/plans/voxel-proxy-and-navara.md`: what is worth taking from MapLibre's
   navara (read the occluder, spike PMTiles for pinned data versions, 3D Tiles/PLATEAU later)
   and from a custom-engine post (CLODs, voxel far representation instead of impostors,
   proxies without instance data). It also records where the frame time actually goes, measured
@@ -397,22 +447,22 @@
 # Changes
 
 ## 2026-11-06 (second pass): retaining walls, roof shapes, national markings, OSM tags, inferred bridges, measured heights
-- One commit each; details and numbers in `docs/plans/roads.md`, "Follow-ups". New off switches: `EW_OSMTAGS=0`, `EW_INFER_BRIDGES=0`, `EW_ROADZ=0`.
+- One commit each; details and numbers in `docs/alpha/plans/roads.md`, "Follow-ups". New off switches: `EW_OSMTAGS=0`, `EW_INFER_BRIDGES=0`, `EW_ROADZ=0`.
 - Walled embankments (`Bed::Fill`), Overture `roof:shape` in the building generator, per-country marking tables (`roads/marks.rs`), OSM lanes/width/sidewalks/cycle lanes/speed from baked Postpass tiles (`tools/bake_osm_tags.py`), bridges inferred from ground height at untagged crossings, surveyed deck and tunnel heights for France (IGN) and Norway (NVDB).
-- Needs checking on the Mac: the checklist in `docs/plans/roads.md` plus: walled fills look right and carry a car; roof shapes on baked Overture tiles; lane lines and bike lanes after `python3 tools/bake_osm_tags.py --lat .. --lon ..`; an inferred bridge where a road passes over another in a cutting; a French or Norwegian bridge at its surveyed height. US lidar heights are not done.
+- Needs checking on the Mac: the checklist in `docs/alpha/plans/roads.md` plus: walled fills look right and carry a car; roof shapes on baked Overture tiles; lane lines and bike lanes after `python3 tools/bake_osm_tags.py --lat .. --lon ..`; an inferred bridge where a road passes over another in a cutting; a French or Norwegian bridge at its surveyed height. US lidar heights are not done.
 
 ## 2026-11-06: roads v2 (world-space network, solved heights, decks, tunnels, junctions, nav graph), Overture buildings, garages
-- Full write-up and Mac checklist: `docs/plans/roads.md`. `EW_ROADS=legacy` returns to the old planner, `EW_OVERTURE=0` to OpenFreeMap buildings.
+- Full write-up and Mac checklist: `docs/alpha/plans/roads.md`. `EW_ROADS=legacy` returns to the old planner, `EW_OVERTURE=0` to OpenFreeMap buildings.
 - `ed_world/src/roads.rs` became `roads/mod.rs` plus `net`, `ground`, `solve`, `plan2`, `structures`, `junction`, `width`, `median`, `keepout`, `nav`. The network is assembled from the 3x3 block of vector tiles (each source tile clipped to its own square, pieces joined on borders), levels come from `brunnel` and `layer`, and one solver (`solve.rs`) picks every height: decks clear what runs under them by 6 m plus deck depth, approaches climb onto fill at the class grade, tunnel floors take the lower hull of the ground. Real-tile runs: LA Four Level 957 crossings, 13 audit deficits (worst 5.7 m).
 - Geometry: closed deck sections with parapets and underside, hammerhead piers clear of lower roads, tunnel tubes with portals, jersey barriers on divided highways, rounded country junctions, urban crosswalks, cycleways coloured, markings dash and edge colour by region. Decks, tunnels, barriers and garages get a trimesh collider (`TileBuild::road_collider`); low-arch tunnel sections cut holes in the terrain collider only (`TerrainGrid.holes`).
 - Triangle diet: road triangles per z14 tile 452k -> 281k (Central Park), 137k -> 64k (Zermatt), 485k -> 388k (Shibuya), 659k -> 502k (LA). Footpaths no longer subdivide or hang curtains; guardrails use half the samples. The v2 solve costs 0.25-0.7 s of worker time on dense tiles (more neighbours fetched in the IO stage).
 - Nav graph per tile (`roads::nav::NavTile`, stable node ids, lanes, speeds, signals) is on `TileBuild::nav` and as a `TileNav` component on each tile entity. No driver uses it yet.
 - Overture: `tools/bake_overture.py` (pinned release 2026-10-21.0) writes per-tile JSON, `ed_data::overture` reads it as a `building` layer; buildings on roads or decks are dropped (`keepout.rs`); street width comes from building facades where walled in; `class = parking` footprints become drivable garages (`garage.rs`).
-- Needs checking on the Mac: everything in the checklist at the end of `docs/plans/roads.md`. Not done: retaining walls, inferred bridges, truss/arch/suspension looks, lane/sidewalk tags, traffic drivers.
+- Needs checking on the Mac: everything in the checklist at the end of `docs/alpha/plans/roads.md`. Not done: retaining walls, inferred bridges, truss/arch/suspension looks, lane/sidewalk tags, traffic drivers.
 
 ## 2026-11-06: docs only, BeamNG.Earth lessons and tile-load hitch investigation
-- New `docs/plans/beamng-earth-lessons.md`: what BeamNG.Earth (MIT, github.com/TecnaGamer/BeamNG.Earth) does for roads, data sources, terrain grading, ground imagery, trees, buildings, streets, nav graph and streaming, compared to us, with an ordered plan (R0-R13 for roads) and where each step fits the roadmap. Read from their docs and module headers; their mod was not run.
-- New `docs/plans/tile-load-hitch.md`: per-tile cost sheet (worker CPU 1.0-3.5 s warm, 1.9-4.9 s cold; 301k terrain, 140k-587k road and up to 565k wall triangles per z14 tile) and ranked hypotheses for the white-tile-then-freeze symptom. Leading cause: `ed_metal::world::WorldRenderer::upload` clusters and simplifies every mesh over 40k triangles on the main thread (~0.45 ms per 1k triangles in a CPU replica, ~250-700 ms per dense tile on a Linux box), invisible to `FrameBudget`. White comes from the `unwrap_or(&self.white)` texture fallback in the terrain draw.
+- New `docs/alpha/plans/beamng-earth-lessons.md`: what BeamNG.Earth (MIT, github.com/TecnaGamer/BeamNG.Earth) does for roads, data sources, terrain grading, ground imagery, trees, buildings, streets, nav graph and streaming, compared to us, with an ordered plan (R0-R13 for roads) and where each step fits the roadmap. Read from their docs and module headers; their mod was not run.
+- New `docs/alpha/plans/tile-load-hitch.md`: per-tile cost sheet (worker CPU 1.0-3.5 s warm, 1.9-4.9 s cold; 301k terrain, 140k-587k road and up to 565k wall triangles per z14 tile) and ranked hypotheses for the white-tile-then-freeze symptom. Leading cause: `ed_metal::world::WorldRenderer::upload` clusters and simplifies every mesh over 40k triangles on the main thread (~0.45 ms per 1k triangles in a CPU replica, ~250-700 ms per dense tile on a Linux box), invisible to `FrameBudget`. White comes from the `unwrap_or(&self.white)` texture fallback in the terrain draw.
 - No code changed. Needs on the Mac: steps M1-M5 and A0-A6 in the hitch doc to confirm or reject each hypothesis. Licence flag: `ed_data/satellite.rs` says the EOX Sentinel-2 mosaic is CC BY-NC-SA 4.0 (non-commercial).
 
 ## 2026-11-05: native shadows to 20 km (cached), screen-space contact shadows
@@ -461,7 +511,7 @@
 - Headless NYC check: scale 0.67 is visually equal to native with clean edges. Resolve time looked inflated at scale 1.0 (machine busy); re-measure on an idle Mac.
 - Not yet tested: moving camera (jitter/motion sign), boots under MetalFX.
 - Second option planned: AMD FSR 4 via the community Metal port (macOS 26+, unofficial); FSR3 source is DX12/UE5 only.
-- Nanite-like options (Windows/Mac) research is still to be written up in `docs/plans/engine.md`.
+- Nanite-like options (Windows/Mac) research is still to be written up in `docs/alpha/plans/engine.md`.
 
 ## 2026-11-05: native Metal is now the default renderer; AA; research; what is left
 - `native::enabled()` is on by default on macOS. `EW_NATIVE=0` falls back to the Bevy renderer. Headless NYC check (Central Park, 1600x900): looks right, 27 fps under load (world 19 ms; machine was busy, re-measure idle).
@@ -469,7 +519,7 @@
 - Native renderer ported so far: cascaded + far shadows, GGX PBR, sky/haze, GTAO, SSR, bounce, bloom, filmic grade, splat-layer terrain with normal mapping, alpha blend pass, boots/plume (`boot_plume.rs`).
 - NOT ported yet (in priority order): (1) [DONE, see impostors entry] far tree impostors; (2) probe GI (`probe_gi.rs`: small ground probes, large air probes, ~5 km, coarser farther); (3) 20 km buildings (`ed_world/src/lod.rs` floor is 16 km) and far Manhattan shadows (building shadow range 700 m); (4) more contrast in the grade; (5) menu option wiring on the native path (render scale / FSR options only affect the Bevy path, `render_scale.rs` returns early when native owns the world).
 - Upscaling plan: `ed_game::render_scale` FSR1 EASU stays Bevy-only. For native use **MetalFX** (Apple, macOS 13+, iOS 16+): the spatial scaler needs only a colour texture; the temporal scaler (DLSS2/FSR2 class) needs colour + depth + motion vectors + jitter, so add a jittered projection and a velocity target to `WorldRenderer` first. Also an option: AMD FSR 4 community Metal port (macOS 26+, unofficial).
-- Prior art searched: no open-source Nanite-style renderer exists for Metal (examples are D3D12/Vulkan: Nyx, Vulcanite, jglrxavpok "Recreating Nanite", Bevy virtual geometry write-up by jms55). Metal 3 has mesh shaders, so the cluster-LOD + visibility-buffer plan in `docs/plans/engine.md` is ours to build; borrow the algorithms (METIS clustering, 64 vert/124 tri clusters, normal cones).
+- Prior art searched: no open-source Nanite-style renderer exists for Metal (examples are D3D12/Vulkan: Nyx, Vulcanite, jglrxavpok "Recreating Nanite", Bevy virtual geometry write-up by jms55). Metal 3 has mesh shaders, so the cluster-LOD + visibility-buffer plan in `docs/alpha/plans/engine.md` is ours to build; borrow the algorithms (METIS clustering, 64 vert/124 tri clusters, normal cones).
 
 
 ## 2026-11-05 Native Metal: splat-layer terrain (normal mapping)
@@ -515,7 +565,7 @@
 - New debug envs: `EW_NATIVE_NOPROXY`, `EW_NATIVE_DBG` (1 normals, 2 shadow vis, 3 ambient, 4 cascade, 5 ndl, 6-9 force cascade, 10 depth diff).
 - Still open: cloud shadows over the whole map (native has no clouds; sky is clear), shadow cache never hits, compare with real photos.
 
-Recent work, newest first, and what still needs checking. When an entry is verified on the Mac, fold the result into `ROADMAP.md` and trim it here. Plans live in `docs/plans/`; the roadmap says what's done and what's next.
+Recent work, newest first, and what still needs checking. When an entry is verified on the Mac, fold the result into `ROADMAP.md` and trim it here. Plans live in `docs/alpha/plans/`; the roadmap says what's done and what's next.
 
 ---
 
@@ -524,7 +574,7 @@ Recent work, newest first, and what still needs checking. When an entry is verif
 - `ed_metal::world::WorldRenderer` + `shaders/world.metal` draw the world into a `CAMetalLayer` view placed *below* Bevy's transparent window; Bevy keeps sim/input/audio/physics/UI. Bridge: `crates/ed_game/src/native.rs` (mirrors visible opaque `Mesh3d`s, CPU sphere cull, reverse-Z, sun from the `Sun` light).
 - Native mode: Bevy 3D camera off, UI camera clears to transparent, `render_scale` skipped, meshes keep `MAIN_WORLD` data (`native::mesh_usage()`), window `transparent` + `PostMultiplied`.
 - Zermatt, same spawn: Bevy path ~16 fps (GPU-bound) vs native ~110 fps (world pass ~7 ms, ~280 draws, 7.2 M tris). Look is basic (hemisphere light, fog, no shadows/atmosphere/clouds/textures yet); alpha-blended/tested materials, foliage, impostors and clouds are skipped for now.
-- Next: heights into the clipmap, cluster ICB for buildings/trees, shadows, atmosphere/post/MetalFX (see `docs/plans/m2.md`).
+- Next: heights into the clipmap, cluster ICB for buildings/trees, shadows, atmosphere/post/MetalFX (see `docs/alpha/plans/m2.md`).
 
 ## 2026-11-05: GPU-driven ICB probe (N0/N2 groundwork)
 
@@ -538,8 +588,8 @@ Recent work, newest first, and what still needs checking. When an entry is verif
 ## 2026-11-05: GPU pass tooling, M2 plan
 - `tools/gpu_passes.sh OUT_DIR [args]`: Metal System Trace of a headless run (with `EW_PERF` for real fps), `tools/gpu_sum.py` prints GPU occupancy and per-encoder shares. Needs Xcode's `xctrace`. Zermatt still: GPU 92% busy, ~61 ms/frame at 16 fps, so GPU-bound. No single hot pass: main opaque ~33%, shadow cascades ~21%, early prepass ~9% (excluding the headless-only surface copy). Absolute per-pass ms are not reported (intervals overlap); use shares.
 - `crates/ed_gpu` (S1, core): pass graph with declared reads/writes, culling, transient lifetimes and alias plan; `Caps`; `PassTimes` (EMA per pass). No wgpu/Bevy dependency, 10 unit tests. wgpu backend (Bevy device, `timestamp_writes`) and the `ed_render` debug pass are next.
-- **Priorities changed: native Metal first (N0..N7 in `docs/plans/m2.md` §4), no wgpu spike.** `crates/ed_metal` (objc2-metal): device/queue, `CAMetalLayer` on a winit window, runtime MSL compile, `GpuTimers` (ring of counter sample buffers at stage boundaries, resolved without stalls). `ed_metal_probe` renders at display rate and prints per-pass GPU ms (triangle ~0.15 ms). `ed_gpu` also gained `pool` (suballocator with deferred free), `cull` (instance/indirect structs, CPU reference, `shaders/cull.metal`), `clipmap` (terrain block generator). Offline `xcrun metal` needs `xcodebuild -downloadComponent MetalToolchain` (not run; runtime compile works).
-- `docs/plans/m2.md`: M2 design rules and slices; native Metal spike starts after slice S1.
+- **Priorities changed: native Metal first (N0..N7 in `docs/alpha/plans/m2.md` §4), no wgpu spike.** `crates/ed_metal` (objc2-metal): device/queue, `CAMetalLayer` on a winit window, runtime MSL compile, `GpuTimers` (ring of counter sample buffers at stage boundaries, resolved without stalls). `ed_metal_probe` renders at display rate and prints per-pass GPU ms (triangle ~0.15 ms). `ed_gpu` also gained `pool` (suballocator with deferred free), `cull` (instance/indirect structs, CPU reference, `shaders/cull.metal`), `clipmap` (terrain block generator). Offline `xcrun metal` needs `xcodebuild -downloadComponent MetalToolchain` (not run; runtime compile works).
+- `docs/alpha/plans/m2.md`: M2 design rules and slices; native Metal spike starts after slice S1.
 - The first 6-scene baseline (19-22 fps) was taken while a windowed game was open and is discarded. Do not run perf scenes while a game window is open. Clean baseline (quiet machine): still 16.0, cruise 14.5, spin 16.7, forest 15.2, lapaz 13.6, origin 15.2 fps (`target/perf_2026-11-05_clean/summary.txt`). The `EW_BISECT` base run that showed 72 fps had 0 tiles loaded; discard it.
 - Not run: `EW_BISECT=hide:all` and `noshadow:all` hang the headless loop (frame counter runs away); `EW_GPU_WAIT` variant produced no rows. Use per-category hides instead. Windowed Mac pass still open.
 
@@ -612,7 +662,7 @@ Recent work, newest first, and what still needs checking. When an entry is verif
 - Camera: keys no longer turn the view (only the mouse does; keys tilt the rocket aim by up to 0.6 rad pitch / 0.4 rad yaw while held). Third-person rig is rigid to the body: removed the `vel * 0.03` pivot lead (9 m ahead at 300 m/s, so the camera sat in front of the character) and the lateral spring; only vertical easing remains, on the ground.
 - Wingsuit agility (`flyer.rs`): A/D are now ailerons (twist = key, roll rate 1.6 -> 3.6 rad/s: a full barrel roll in < 2 s, `wingsuit_holding_d_barrel_rolls`). Trim range 0.03..0.50 -> -0.30..0.65 rad: W pushes over into a ~52 deg dive in 1.9 s and holds it without bunting inverted (`wingsuit_w_pushes_over_into_a_steep_dive`); S/turns can pull much harder. View turn adds a `PULL` while heading error remains, released as the view comes round (stops the spiral): 90 deg turn 3.8 s -> 2.9 s. Near-vertical dives (exit, after a roll) are flown out before chasing the view (flat heading is noise straight down). Limb smoothing 5 -> 10 /s in `player.rs`. Check on the Mac: rolls not too twitchy, W dive feels controllable, exit from a standstill still pulls into a glide.
 - Wingsuit fast-dive corkscrew fixed (`flyer.rs`): diving with the view off to the side slowly rolled the suit over. Two causes: bank was measured against world up, which is meaningless when the path is near vertical (new `path_bank`: bank about the velocity vector, reference = world up off the path, blended toward the view as the dive steepens); and W's negative trim flips lift to the belly, so banking steered *away* from the view. A lift floor now keeps arch at or above zero-lift while there's heading to make up. Test `wingsuit_fast_dive_looking_sideways_does_not_corkscrew` (worst roll 2.03 < 2.5 rad). Check on the Mac: W dive + look sideways turns toward the view instead of flipping.
-- Sound plan: `docs/plans/sound.md`, every sound source in the game (body, air, rockets, vehicles, biome/water/weather/city beds, space, UI) tied to the data that drives it, plus a build order.
+- Sound plan: `docs/alpha/plans/sound.md`, every sound source in the game (body, air, rockets, vehicles, biome/water/weather/city beds, space, UI) tied to the data that drives it, plus a build order.
 - Suit off (F) in freefall = a plain skydiver, no glide: `flyer::freefall_torque` (limbs in the airflow, authority grows with airspeed). W = forward somersault (4.5 rad/s), A/D = barrel roll (5.5 rad/s), S = spread eagle (+40% drag, firmer box), no keys = arches back to belly-down facing the view. `Player::fall_tuck`/`fall_spread` drive the ball-up / spread-eagle pose in `body.rs`. Skydive mode only (short hops in `Fall` keep the upright tilt).
 - Check on the Mac: feel (too loose/stiff?), stability at 300+ m/s with Shift, rocket hover holds altitude, leg swing reads clearly, wingsuit doesn't stall in tight turns.
 
@@ -647,7 +697,7 @@ Recent work, newest first, and what still needs checking. When an entry is verif
 ## 2026-11-04: far shadows past the cascades (B3 stage 2, on by default; `EW_FAR_SHADOWS=0` off, `=debug` magenta tint)
 - Far tree impostors receive the horizon far shadow too (per-tree lookup at the tree's tile uv; `EW_FAR_SHADOWS=debug` tints them cyan). Check on the Mac: forests on slopes in ridge shadow go dark beyond the cascades, no popping at the cascade edge.
 
-Horizon maps (work from orbit), canopy darkening and a short surface-height march, all baked per tile on the worker and stored in a pooled texture array (`ed_world::farshadow`, `ed_game::far_shadows`, block in `terrain.wesl`). Details and limits are in `docs/plans/shadows.md` under "Stage 2 landed".
+Horizon maps (work from orbit), canopy darkening and a short surface-height march, all baked per tile on the worker and stored in a pooled texture array (`ed_world::farshadow`, `ed_game::far_shadows`, block in `terrain.wesl`). Details and limits are in `docs/alpha/plans/shadows.md` under "Stage 2 landed".
 - Verified: tests pass. Headless Everest from 65 km at 07:00 shows correct west-pointing ridge shadows.
 - Mac check:
   - GPU cost on/off with `--perf` over mountains.
@@ -657,7 +707,7 @@ Horizon maps (work from orbit), canopy darkening and a short surface-height marc
 
 ## 2026-11-04: shadow cascades, stage 1 (B3) + horizon-map prototype
 
-Plan: `docs/plans/shadows.md` (layered: cascades near, cached mid map, terrain horizon maps far).
+Plan: `docs/alpha/plans/shadows.md` (layered: cascades near, cached mid map, terrain horizon maps far).
 - `ed_runtime::shadows` (new, 5 tests): `CascadePlan::for_agl`, 4 cascades. Walking: bounds 15/83/454/2500 m, texels 1.8 cm/9.5 cm/52 cm/2.9 m (was 2 cascades, 4.6 cm then 80.5 cm with a 17x jump at 34 m and a hard cut at 700 m). Flying: reach grows to 12 km (11.6 km at 1500 m AGL). AGL is quantized to quarter octaves so plans don't breathe.
 - `ed_game::shadows` (new plugin): ray-casts down every 8 frames and swaps the Sun's `CascadeShadowConfig` only when the plan changes. `sky.rs` spawns the Sun with the plan for the start AGL. `EW_SHADOWS=legacy` restores the old config.
 - `vendor/bevy_pbr/src/render/shadows.wesl`: the last cascade fades to lit over 80-100% of its far bound, so the hard cut is gone. Listed in CLAUDE.md's patch list.
@@ -696,7 +746,7 @@ Cause: impostors were cut per tree at ~650 m, but leaf-card chunks exist per ~30
 
 ## 2026-11-04: species as data + genomes, tree and rock collision
 
-Plan and next steps: `docs/plans/procedural-flora.md` (step 1 of 6 landed).
+Plan and next steps: `docs/alpha/plans/procedural-flora.md` (step 1 of 6 landed).
 
 | Item | Where |
 |---|---|
@@ -983,7 +1033,7 @@ renderer still picks a level per cell.
 
 **What the LOD cannot do (yet):** in a city the triangles *are* the buildings - `meshopt` can
 only remove ~17 % of them within a sane error budget, because merging two buildings is a huge
-shape error. The big win (and the repo's plan in `docs/plans/far-buildings-and-nanite.md`) is a
+shape error. The big win (and the repo's plan in `docs/alpha/plans/far-buildings-and-nanite.md`) is a
 *per building* far LOD: merged footprints for 3-8 km, simplified boxes for 8-20 km. That needs
 the per-building ranges to survive the tile merge, which the merged mesh does not carry today.
 
@@ -1035,7 +1085,7 @@ builds them but never uses them.
     instead of 3 per frame, which is what shortened the transition.
 - **Still the load bottleneck:** a city load uploads GBs of building vertex data (z14 tiles out
   to ~16 km, each merged tile mesh 6-74 MB). Options measured/estimated: per-building far LOD
-  (`docs/plans/far-buildings-and-nanite.md`) is the real cut; vertex compression (colours
+  (`docs/alpha/plans/far-buildings-and-nanite.md`) is the real cut; vertex compression (colours
   4xf32 -> 4xu8, normals -> oct f16: 48 B -> 28 B per vertex, ~-42 %) is contained; a mesh arena
   would remove the allocation spikes.
 - **Tooling added:** `perf.csv` now has `apply_ms,retire_ms,native_ms,upload_ms,prepq,readyq,

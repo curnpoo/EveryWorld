@@ -1,140 +1,168 @@
-# EveryWorld architecture
+# Architecture (target)
 
-Drop anywhere on the real Earth. Walk, rocket-jump, skydive, drive, fly, and launch rockets to the Moon. The world is built from public map data and made to look like *that place* through procedural rules.
+This describes the **target** architecture for the custom-engine reboot on `main`
+(`docs/plans/rearchitecture.md`, `docs/VISION.md`). The shipped Bevy alpha and its docs are
+preserved on branch `alpha-early`; where the alpha differs, this file wins for new work.
 
 ## The one-sentence version
 
-**Real data decides what is there. Procedural rules decide how it looks. A floating origin lets one engine cover everything from a pebble to Neptune.**
+**Real data decides what is there. Authored assets and procedural rules decide how it looks.
+One continuous planet renderer covers pebble to orbit to other worlds; a deterministic
+fixed-step simulation and region-sharded servers make it one persistent, shared universe.**
 
 ## Stack
 
 | Layer | Choice | Why |
 |---|---|---|
-| Language | Rust | Fast, safe threading for streaming, one toolchain |
-| Engine | Bevy 0.20 | ECS, modern renderer, Metal on macOS via wgpu |
-| Physics | Avian 0.8 | ECS-native, continuous collision, good character/vehicle primitives |
-| Renderer backend | wgpu (Metal on Mac, Vulkan elsewhere) | Native Apple Silicon, no translation layer |
+| Language | Rust (2024) | One toolchain for client, server and tools |
+| Engine | **Custom (`ew`)** — winit, own scene/sim core | Bevy's entity model and renderer were the ceiling |
+| GPU | **`ed_gpu` RHI**: Metal first, D3D12 + Vulkan later | 64-bit atomics, bindless, tile memory, MetalFX/DLSS/FSR, optional HW RT |
+| Renderer | **`ed_render`**: cluster-LOD DAG, GPU culling, visibility buffer, software raster, voxel-clipmap GI | Photoreal density (Solstice techniques, ported; MIT) |
+| Planet | **`ed_planet`**: cube-sphere quadtree per body | No flat-plane/globe switch; poles work |
+| Physics | **Box3D** (C17, MIT) behind **`ed_sim`** | Cross-platform determinism, replay, character mover, CCD |
+| Net | **`ed_net`** + **`ed_server`**: directory + region shards, prediction/interpolation, sky-event bus | One persistent universe on a gaming-PC host |
+| Persistence | **`ed_store`**: SQLite → Postgres; same format for SP saves | Plots, parked vessels, ranks, missions, NPC lives |
+| Server OS | Ubuntu LTS (headless) | Owner's host; cheap to scale later |
+| Data | `ed_data` + `data/registry/` + baked packs (`docs/data/`) | Licensed, pinned, shippable without live APIs |
 
 ## Crates
 
 ```
-crates/
-  ed_geo     WGS84/ECEF/ENU math, slippy tiles, real sun position         (no engine)
-  ed_data    HTTP + disk cache, elevation, vector tiles (MVT), weather     (no engine)
-  ed_world   terrain, ground cover, buildings, roads, trees, missions      (no engine)
-  ed_flight  atmosphere, drag, Mach, gravity, "superpower" rockets         (no engine)
-  ed_space   Moon + planet positions (real ephemeris), body catalog        (no engine)
-  ed_engine_audio  engine sound kit port: engine voices, mixer, game adapter  (no engine)
-  ed_runtime jobs (IO + CPU pools, priority, cancel), frame budgets, residency, streaming scheduler  (no engine)
-  ed_game    the Bevy app: streaming, rendering, player, vehicles, HUD
+SURVIVE FROM THE ALPHA (engine-free, unit-tested)
+  ed_geo           f64 WGS84/ECEF/ENU, TileId, sun
+  ed_data          HTTP+cache, elevation, MVT, imagery providers, registry-driven sources
+  ed_flight        ISA atmosphere, drag, Mach, rocket stages
+  ed_space         ephemeris, body catalog
+  ed_engine_audio / ed_audio   engine sound kit + mixer
+  ed_runtime       job pools, budgets, LRU, scheduler
+  ed_world         world RULES: regions, biomes, archkit, roads v2, foliage placement,
+                   missions. Emits PART INSTANCES + heightfields + placements (refactored:
+                   no more merged per-tile vertex soups)
+
+NEW
+  ed_planet        cube-sphere quadtree; slippy→planet sampling; virtual texturing;
+                   body frames (Earth ECEF, Moon/Mars frames); projected-error LOD
+  ed_assets        bake CLI + library: glTF/FBX (Megascans, VRM) → cluster DAG, BC7/ASTC,
+                   collision, kit manifests, data bake packs
+  ed_gpu           RHI: device, passes, bindless tables, heaps, timers, caps, upscaler + AS
+  ed_render        cull + visbuffer + software raster, shadows/VSM, GI, atmosphere/clouds,
+                   ocean, post, TAA/MetalFX/DLSS/FSR, skinning, cel/toon + PBR materials
+  ed_sim           fixed-step deterministic sim: Box3D, character mover, vehicles, ragdolls,
+                   destruction, parked records, sim-LOD tiers. No render types
+  ed_anim          skeletons, retargeting, clips, motion matching, cloth/jiggle,
+                   (optional) MotionBricks client layer
+  ed_store         accounts, plots, parked vessels, ranks/trust/merit, missions, NPC lives
+  ed_net           protocol, interest management, prediction/reconciliation, sky events
+  ed_server        region shards, directory, hubs, missions service, NPC scheduler
+  ew               the app: winit, input, UI (egui debug; game UI), audio, main loop
 ```
 
-Everything except `ed_game` is engine-free, unit tested, and runs on any thread. If we ever change engines (or add a server), the world generator comes with us.
+Dependency direction: sim never imports render; server never imports `ed_gpu`/`ed_render`;
+client and server share `ed_world` + `ed_planet` generation with pinned data versions.
 
-## Coordinate systems (the "big world" problem)
+## Coordinates (the big-world problem)
 
-`f32` has ~7 significant digits. At 10 km from the origin that's millimeter precision; at 6,371 km (Earth's radius) it's half a meter, and everything jitters. So:
+- Truth is **f64 body-fixed** (Earth ECEF; Moon/Mars their own frames). Render is **f32
+  camera-relative**, computed from f64 node transforms. Never do far-from-origin math in f32.
+- A **floating origin** still exists for physics and local frames — precision requires it —
+  but there is no *visual* switch between representations at any altitude.
+- Reverse-Z infinite projection; far plane huge on purpose. Moving entities are carried
+  across rebases; parked/static things store f64 placements.
 
-1. **Truth is f64 ECEF** (Earth-centered, Earth-fixed meters). Every static thing stores its placement as an f64 affine in ECEF (`GeoAnchored`).
-2. **Rendering is f32 in a local East-North-Up frame** around the player (x=East, y=Up, z=-North). Curvature is real: a tile 50 km away is genuinely below the horizon.
-3. **Floating origin**: when the player is >8 km from the frame origin, the frame moves under them. Static entities recompute their transforms from ECEF; moving bodies (player, vehicles, camera) are rigidly transformed, including velocities.
-4. **Space**: Moon and planets are tracked in f64 ECEF too (0.5 mm precision at the Moon). The renderer only ever draws relative to the camera, and Bevy's reverse-Z infinite projection handles the depth range.
+## Planet rendering
 
-## Data sources (all free, no API keys)
+- Six cube-sphere faces, quadtree per face; a node is a heightfield patch positioned on the
+  ellipsoid, with geomorphing between levels. Curvature lives in the vertex transform, so
+  ground, horizon, limb and orbit are the same mesh.
+- **Slippy tiles remain the data layer** (`TileId`, caches, Mapterhorn/OpenFreeMap); the
+  planet samples them. Render geometry and data addressing are decoupled.
+- **Imagery is virtual texturing** over the planet (orthophotos + raw Sentinel-2, colour
+  matched), one mip chain from orbit to boots — no satellite "layer" that turns off.
+- One **atmosphere** (Hillaire-style tables) for ground and orbital views; one **cloud
+  field** (volumetric near, 2D shell far, same climate source); **night lights** on the dark
+  side; **ocean** as a sea-level shell with FFT detail near the camera.
+- Moon/Mars/fourth world use the same code with different body constants; stations and the
+  manufactured world are instanced structure worlds in orbit/body frames.
 
-| What | Source | Notes |
-|---|---|---|
-| Elevation | **Mapterhorn** (Terrarium WebP, 512 px) | Copernicus GLO-30 + national lidar (swisstopo, USGS 3DEP) |
-| Elevation fallback | AWS Terrain Tiles (Terrarium PNG) | SRTM/GMTED + ETOPO1 bathymetry |
-| Map vectors | **OpenFreeMap** (OpenMapTiles schema) | buildings w/ heights + colour, roads, water, land cover, land use, parks, airports, POIs |
-| Climate normals | **WorldClim 2.1** (10 arc-min, baked by `tools/bake_climate.py`, embedded in `ed_data`) | CC BY 4.0. Temperature (lapse-rate corrected), coldest month, precipitation, rain seasonality -> `Biome`. Static, not weather |
-| Land cover | **ESA WorldCover 2021 v200** COGs on S3 (HTTP range reads, 256 KB blocks cached) | CC BY 4.0. Fills what OSM leaves unmapped (forest/scrub/grass/bare/crop/snow) and gives canopy fractions for tree density |
-| Geology | **Macrostrat** point lookup, cached per ~1 km | CC BY 4.0. Lithology keywords -> rock colour (rocks now; sand/scree tint is a follow-up) |
-| Weather | Open-Meteo | current + 48 h hourly forecast |
-| Place search | Open-Meteo geocoding | "drop me in Zermatt" |
-| Moon/planets | JPL Keplerian elements + Almanac lunar series | computed locally, no network |
-
-Planned additions: ESA WorldCover 10 m land cover, TerraClimate (real climate instead of latitude bands), Macrostrat geology (rock color/type), NASA LOLA/MOLA for real Moon and Mars terrain, Gaia/Hipparcos stars, NASA SVS city lights.
-
-Everything is cached on disk forever (tiles are immutable per planet build), so the second visit to a place is instant and offline.
-
-## World generation pipeline (per tile)
+## World generation pipeline
 
 ```
-tile id ─┬─> elevation tile ──> TerrainGrid (single source of truth for ground height)
-         └─> vector tile ─────> SurfaceMap (land cover raster: wood/grass/farmland/sand/rock/ice/urban/water)
+reference data (pinned) ──> ed_data decode ──> ed_planet sampling (height/imagery)
                                    │
-   biome (climate) + region (architecture/street kit) from lat/lon/elevation
+              biome + region + settlement rules (ed_world)
                                    │
-   ┌───────────┬───────────┬───────┴──────┬──────────────┬──────────────┐
- terrain     water       roads         buildings       foliage        props
- mesh+       (inland;    ribbons,      footprints ->   trees by       street lights,
- collider    ocean is    markings,     walls w/ window biome, rocks   poles, signals,
-             global)     sidewalks,    grid, shops,    by cover       stop signs
-                         guardrails    awnings, roofs
+        terrain heights | water | road plans | PART INSTANCES | plant placements
+                                   │
+        authored kit + Megascans assets (ed_assets bakes: cluster DAG, collision, LOD)
+                                   │
+        state 03: climate/weather/ecosystem simulation (seed, UTC) + persisted deltas
 ```
 
-- Everything that sits on the ground samples the **same** `TerrainGrid` with the same triangle interpolation as the render mesh and the physics collider. Nothing floats, nothing sinks.
-- Each tile becomes about ten entities: terrain, water, roads, merged props (+ one compound collider), merged LOD buildings per material (+ one collider), one impostor mesh for all its trees, and holders for things that only become entities near the camera (leaf-card chunks, full trees, rocks, building detail). Tiles are data first; the ECS holds what's near or has behaviour.
-- Generation is deterministic (hash of OSM id / tile / cell), so the world looks identical every run on every Mac.
-- Typical z14 tile: 0.3 to 1 s on one core, 400k to 800k triangles.
+- One height truth per node, sampled identically by render, placement and collision.
+- Generators emit **placements of authored parts** (solarpunk kit, `docs/solarpunk/spec.md`),
+  enabling GPU instancing, destruction and interiors. Handcrafted hubs/landmarks/missions are
+  first-class content inserted into the generated world (VISION §8).
+- Deterministic from (seed, pinned data version, UTC); golden-hash CI.
 
-### Making places look like themselves
+## Rendering
 
-`style.rs` and `roads.rs` hold data tables, not code paths:
-
-- **Region** (from lat/lon/elevation/density): `NorthAmericaCity`, `Paris`, `Mediterranean`, `Alpine`, `Nordic`, `Japan`, `NorthAfricaMiddleEast`, ... Each has wall/roof palettes, roof shapes and pitch, floor height, default storeys, shopfront odds, awning colors.
-- **StreetKit** per region: drive side, center-line style (double yellow vs dashed white), utility poles (wood/concrete/none), signal layout (vertical vs Japanese horizontal), sidewalk color, curb height, stop-sign text.
-- **Biome** (climate): chosen from real WorldClim normals (`Biome::from_climate`, heuristic boxes only where the grid has no data); drives ground palette, tree species mix (palms, conifers, acacias, cacti, cypress...), snowline, tree line, rock density.
-- OSM `building:colour` always wins when present.
-
-Adding "Kyoto machiya" or "Lagos compound" is one table entry. These tables move to `assets/styles/*.ron` so art direction can be tuned without recompiling.
-
-## Level of detail ("never see it pop")
-
-- **Terrain**: quadtree over map tiles, ~2 km tiles under you, ~600 km tiles at the horizon, a few hundred total. Skirts hide cracks. Next: CDLOD geomorphing so vertices slide between levels instead of popping.
-- **Trees**: full tree (< 230 m) -> merged leaf cards per chunk (< 800 m, z14 tiles) -> one impostor quad per tree (hemi-octahedral atlas baked at startup; thinned with distance, survivors grow to keep canopy cover, sub-pixel trees fade into the satellite colour). Trees exist on z10+ tiles, so forests read to ~20-30 km.
-- **Buildings**: merged LOD massing per tile; near the player the tile splits into chunks and swaps in full-detail facades chunk by chunk, then merges back when you leave.
-- **Streaming**: `ed_runtime` job pools (IO + CPU, priority, cancel), budgeted staged apply, height-aware view test, hole-free retire, out-of-view tiles kept resident up to a cap.
-- **Nanite-style virtual geometry**: Bevy meshlets work on Metal but measured slower in the game (one cull per view); off by default (`EW_MESHLET=1`). The plan is our own cluster renderer (`plans/engine.md`, M2-M3).
-- **Down to pebbles**: data stops at ~5 m resolution, so below that we add procedural micro-detail (noise displacement + scattered pebbles/grass near the camera, by ground type).
-- **Up to planets**: a body is a dot (HUD marker), then a sphere, then a quadtree of terrain tiles. Same LOD system at every scale.
-
-## Lighting ("filmic, not photoreal")
-
-- HDR camera, physically based **Atmosphere** (sky, sunsets, aerial perspective from space down to the street)
-- **AtmosphereEnvironmentMapLight**: the sky generates the environment map, so ambient light and reflections match time of day
-- Real-lux sun at its true position (NOAA algorithm) with cascaded shadows; Moon lit by the same sun, so phases are correct
-- SSAO, TAA, bloom, **Blender Filmic** tone mapping (picked in lookdev round 1)
-- Next: irradiance-volume light probes for interiors and street canyons, screen-space reflections on water and glass, volumetric clouds driven by weather
+- **Geometry:** offline cluster-LOD DAG (128-tri clusters, watertight cuts), per-frame GPU cut
+  selection, two-phase occlusion culling, software raster for small clusters, one visibility
+  buffer, material resolve shades each pixel once.
+- **Streaming:** paged geometry/textures with fixed GPU memory; a parent draws until its
+  children are resident — no holes.
+- **Lighting:** physically based atmosphere + sun; cached shadows first, VSM later;
+  voxel-clipmap GI with multi-bounce + screen traces; GTAO/SSR; HDR + TAA/upscalers; bloom,
+  exposure, filmic/ACES tonemap.
+- **Materials:** data-driven, hot-reloadable; PBR for the world, **cel/toon for characters**
+  (sun/GI-aware so they sit inside the realistic lighting), translucency, emissives.
+- **Foliage:** geometric leaves/blades with cluster thinning near; billboard clusters inside
+  the same DAG far; lush ground cover near, shaded detail far.
+- **Tiers:** Ultra (desktop RTX), High (M3 Pro, 60 fps at 1440p), Low (mobile). Every feature
+  has a cost per tier and an off switch; perf gates on the reference scenes + golden path.
 
 ## Characters, vehicles, physics
 
-- **Player**: physics capsule; input sets *target torso velocity*, a PD controller applies forces. The robot body is procedural on top: ground raycasts pick foot targets, two-bone IK for legs and arms, head bob feeds the first-person camera. First and third person share the rig.
-- **Rocket shoes / ships**: real forces (gravity falls off with altitude, ISA atmosphere, quadratic drag, Mach from real speed of sound) with "superpower" thrust stages and inertial-damper assist. Breaking Mach 1 fires a boom, vapor cone and camera shake.
-- **Cars**: raycast suspension per wheel (spring + damper), tire friction model, engine torque curve.
-- **Planes**: lift/drag from angle of attack per surface, thrust, control surfaces.
-- **Engine audio** (`ed_engine_audio`): the owner's engine sound kit (`vendor/engine-sound-kit`) ported to Rust: every cylinder fires in its firing order through header delays, tailpipe waveguides, muffler and body resonances, with turbo, blow-off, pops and bangs; 31 vehicles including a jet. `ed_game/src/engine_audio.rs` streams the nearest six on the audio thread with distance gain and pan. See `docs/lookdev/round2/engine-audio/NOTES.md`.
+- **Characters:** glTF/VRM skinned import + retargeting onto a standard humanoid; clips +
+  motion matching; cloth/jiggle per `character-spec.md`; avatar material sandbox for player
+  self-expression; realistic human + robot NPCs. MotionBricks is an optional NVIDIA-only
+  client-side layer; the wire carries inputs/target poses, never neural state.
+- **Vehicles:** custom models over Box3D queries — raycast suspension + Pacejka-style tires +
+  gearbox for cars (Assetto-grade feel), per-surface aero for planes, buoyancy for boats,
+  staged rockets from `ed_flight`. Simcade tuning: faster than life, signoff-gated.
+- **Sim-LOD:** full bodies near players → kinematic f64 tier → parked records (f64 body-fixed
+  state) → statistical population. Parked vessels/houses persist in `ed_store`; no live
+  ground physics from orbit.
+- **Destruction:** pre-fractured buildings and hinged trees become dynamic only inside player
+  bubbles, server-owned, persisted as deltas. Smoke is tier-gated GPU particles.
 
-## Space
+## Multiplayer, persistence, living world
 
-- `ed_space` gives true positions of the Sun, Moon and planets for any time (tested against the April 2024 eclipse and the Jan 2025 Mars approach).
-- HUD target rings for bodies and waypoints, with distance and ETA, from "blip in the sky" to landing.
-- Moon/Mars terrain: procedural cratering first, then NASA LOLA/MOLA elevation through the same tile pipeline.
+- **Topology:** global directory + region shards (geographic cells with handoff), always-on
+  hubs, separate Moon/Mars processes; single-process multi-region on the first Ubuntu host.
+- **Sky-event bus:** coarse global replication of launches/trajectories so distant takeoffs
+  are visible anywhere.
+- **Netcode:** interest by speed/altitude (~20/5/1 Hz tiers), prediction + reconciliation for
+  owned entities, interpolation otherwise; seats + authority transfer for shared vehicles.
+  Determinism aids replay/reconciliation; no lockstep.
+- **Persistence:** accounts, ranks/trust/merit progression (no currency in the core loop),
+  housing plots, parked vessels, inventories, mission state, NPC home/work assignments.
+- **NPC life:** scripted schedules seeded by (npc id, UTC), authored dialogue/lore, traffic
+  on the road nav graph, ambient spaceport launches. Statistical → kinematic → full →
+  rendered tiers keep a gaming-PC server inside budget.
 
-## Missions
+## Platforms
 
-`missions.rs` plans multi-modal deliveries over real hubs: drive to an airport, fly to a launch site (they have runways), rocket to the launch site nearest the destination, fly, drive to the door. Brooklyn to Kyoto routes JFK, Kennedy Space Center, Tanegashima, Osaka Itami. Airports also stream in from map tiles.
+macOS/Metal first; Windows D3D12 (DLSS/FSR3, RTX) second; iOS Metal Low tier later (ASTC,
+tile memory); Android Vulkan last. Input/UI/audio are cross-platform in `ew` from day one.
 
-## Running on Mac
+## Invariants (carried forward, still binding)
 
-```bash
-cargo run --release
-cargo run --release -- --lat 43.53 --lon 5.45 --alt 3000   # optional: skydive into specific coords
-```
-
-## Testing
-
-- `cargo test --workspace` runs fast, offline unit tests (geo math, sun, ephemeris, MVT decode, meshes face the right way, regions, missions).
-- `cargo test -- --ignored` hits the real data sources.
-- `--screenshot out.png` renders a frame after streaming settles; used for lookdev boards and visual regression.
+1. Truth is f64; render is camera-relative f32. No far-from-origin f32 math.
+2. One height truth per node; nothing floats or sinks.
+3. Generation deterministic from (seed, pinned data version, UTC); no hash-order/float-
+   reduction/thread-order nondeterminism; golden-hash CI.
+4. Terrain/buildings/trees/weather are never sent over the network — only deltas and entity
+   state. Sim and render state are separate; fixed-step sim, interpolated render.
+5. Every rendering feature declares cost per tier and has an off switch.
+6. Data licensing: RED never ships; attribution is generated (`docs/data/README.md`).

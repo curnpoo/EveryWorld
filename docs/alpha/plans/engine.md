@@ -1,6 +1,10 @@
 # Plan: the EveryWorld engine
 
-Status: proposed, Nov 2026. This is the target architecture.
+Status: proposed, Nov 2026. **Partially superseded 2026-11-08** by
+`docs/plans/rearchitecture.md` + `docs/VISION.md`: the custom-engine decision is now final
+(all-in, no Bevy), planet geometry is cube-sphere, physics is Box3D, and the phase plan in
+`docs/ROADMAP.md` replaces the M0-M10 milestones below. Kept for the detailed renderer and
+netcode design discussions.
 
 Vision set by user: a **120 fps whole-Earth sim sandbox**, extending to other planets and the wider universe. It needs:
 - **Rendering:** Nanite-like geometry, DLSS-style upscaling, global illumination, motion blur, AO and a full post chain that gives the world a strong sense of grounding through lighting.
