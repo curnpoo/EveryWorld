@@ -469,6 +469,10 @@ expectation is **6–10 months total**; gates matter more than dates.
 Rules: phases overlap; each ends playable; **no Phase 6 before Phase 5 passes**; parallel AI
 sessions own disjoint crates; every landed change gets a `CHANGES.md` entry with numbers.
 
+**Phase 0 detail:** `docs/phases/phase-0.md` — why the phase exists, seven workstreams with
+pass criteria and artifacts, ordering, exit gate, pre-decided failure branches, and how each
+workstream serves the VISION goals.
+
 ---
 
 ## 9. Acceptance metrics & testing

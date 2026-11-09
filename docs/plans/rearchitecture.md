@@ -425,12 +425,10 @@ Remaining:
 
 ## 9. Immediate next actions
 
-1. User: paste map sources; answer §8.
-2. Phase 0 tasks above; then Phase 1 + Phase 2 kick off in parallel when the frontier-model
-   budget resets.
-3. Phase 0 tasks above; then Phase 1 + Phase 2 kick off in parallel when the frontier-model
-   budget resets. `ROADMAP.md`, `GOALS.md`, `ARCHITECTURE.md` and `VISION.md` are already
-   aligned with this plan (done 2026-11-08).
+1. **Phase 0** — detailed workstreams, pass criteria and exit gate in `docs/phases/phase-0.md`;
+   `ROADMAP.md`, `GOALS.md`, `ARCHITECTURE.md` and `VISION.md` are aligned with this plan.
+2. Then **Phase 1** (`ew` + `ed_gpu` Metal skeleton) and **Phase 2** (cube-sphere planet spike)
+   start in parallel.
 
 ## References
 

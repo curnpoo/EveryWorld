@@ -1,5 +1,11 @@
 ## 2026-11-09: master document, README rewrite, alpha doc archive
 
+- **`docs/phases/phase-0.md`** added: detailed Phase 0 — philosophy (evidence before
+  architecture, freeze-don't-delete, one-way doors, parallel-ready repo), seven workstreams
+  with pass criteria and artifacts, ordering/timeboxing, exit-gate checklist, pre-decided
+  failure branches, and a mapping of each workstream to the VISION goals. `ROADMAP.md` Phase 0
+  now summarises and links it; `rearchitecture.md` §9 next actions de-duplicated.
+
 - **`docs/MASTER.md`** added: the single-file master plan — decisions log, vision (verbatim),
   session record, full target architecture, systems & implementation, data & licensing, art
   direction with the solarpunk/character/UI/lookdev images embedded, Phases 0-8 with

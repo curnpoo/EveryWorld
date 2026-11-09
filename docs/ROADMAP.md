@@ -38,16 +38,23 @@ compress the gates to chase dates.
 
 ## Phase 0 tasks (this week)
 
-1. Branch hygiene: `alpha-early` preserves the alpha (done); uncommitted WIP reviewed and
-   either committed to `alpha-early` or carried into the reboot.
-2. Record the six-scene performance baseline of the alpha for historical A/B.
-3. Golden-hash determinism tests over `ed_world` reference tiles (macOS + Windows CI).
-4. Vendor and build **Box3D** samples; clone **Solstice**, run its native viewer, study
-   `solstice-builder` (cluster DAG) and `solstice-render` (GI, streaming).
-5. Start `data/registry/*.toml` + license gate + `CREDITS.md` generator (`docs/data/README.md`).
-   **P0: WorldClim replacement chosen; EOX replacement planned.**
-6. Crate skeletons: `ed_gpu`, `ed_planet`, `ed_assets`, `ed_sim`, `ed_anim`, `ed_store`,
-   `ew`. Owner's GLB character located and importable.
+Full detail — philosophy, workstreams, pass criteria, exit gate, failure branches and the
+goal mapping — is in **`docs/phases/phase-0.md`**. Summary:
+
+| # | Workstream | Artifact |
+|---|---|---|
+| W1 | Branch & repo hygiene | Tagged `alpha-early`, clean `main`, untracked triage |
+| W2 | Forensic alpha baseline | Dated six-scene + golden-path perf report (fps/p99/VRAM/draws/tris) |
+| W3 | Determinism harness | Per-subsystem golden-hash tests, macOS + Windows CI, triaged failures |
+| W4 | Dependency spikes | Box3D determinism/perf decision · Solstice port map · GLB+VRM+Megascans import proven |
+| W5 | Data registry & licence gate | `data/registry/*.toml`, CI gate, generated `CREDITS.md`, WorldClim/EOX decisions |
+| W6 | Crate skeletons & CI | Documented empty crates, enforced dependency edges, green CI matrix |
+| W7 | Interface contracts | Generation · sim · asset · persistence contracts in `docs/contracts/` |
+
+Rules: W1 before W2; no feature work; a failed spike takes its pre-written fallback rather than
+blocking the week. Exit gate is the checklist in `phase-0.md` §5.
+
+## Phases
 
 ## Standing engineering rules
 

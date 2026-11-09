@@ -23,6 +23,7 @@ More detail per topic:
 |---|---|
 | [docs/VISION.md](docs/VISION.md) | Goals, verbatim, each mapped to real systems |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Phases 0–8 and current status |
+| [docs/phases/phase-0.md](docs/phases/phase-0.md) | Current phase in detail: why, workstreams, pass criteria, exit gate |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Target architecture |
 | [docs/plans/rearchitecture.md](docs/plans/rearchitecture.md) | The audit + full technical plan |
 | [docs/data/](docs/data/README.md) | Planetary data catalog, licensing, acquisition |
