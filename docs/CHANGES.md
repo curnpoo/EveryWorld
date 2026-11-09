@@ -12,6 +12,11 @@
 - **Building interiors added to the vision** (owner note): walk-in buildings, procedural floor
   plans + authored interiors, no door-teleports (`VISION.md` §12; kit contract from Phase 3,
   full interiors in Phase 7).
+- **Art direction clarified** (owner question): lighting, GI, reflections and materials are
+  **realistic for the whole game**; **cel/toon is an optional per-avatar material model**, not
+  a global style switch. Realistic PBR characters are first-class. Updated across `VISION.md`
+  §5–6, `ARCHITECTURE.md` (Rendering), `MASTER.md` (D5, §5.2, §5.4, §7.1), `GOALS.md`,
+  `rearchitecture.md`, `AGENTS.md`.
 - **Alpha code WIP committed to `alpha-early`** (impostors, loading, player, vehicles,
   tilegen). `assets/characters/Solarcat.glb` deliberately left uncommitted (owner).
 - Needs Mac check: nothing (docs + branch housekeeping only). Engine work has NOT started

@@ -15,7 +15,8 @@ Docs (start with the first two):
 
 ## Direction (read before planning any work)
 Goal: the game in `docs/VISION.md` — persistent solarpunk universe, photoreal world +
-cel-shaded characters, seamless ground → orbit → Moon, real vehicles, merit progression,
+cel-shaded characters (optional per avatar; world lighting/materials/reflections stay
+realistic), seamless ground → orbit → Moon, real vehicles, merit progression,
 NPC life. Roadmap = **Phases 0-8** in `docs/ROADMAP.md`. **Current phase: 0 (freeze and
 prepare)**, then Phase 1 (engine skeleton) + Phase 2 (planet spike) in parallel.
 1. **All-in on the custom engine.** No new Bevy features; alpha visual bugs are replacement

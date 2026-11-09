@@ -111,11 +111,16 @@ reference data (pinned) ──> ed_data decode ──> ed_planet sampling (heigh
   buffer, material resolve shades each pixel once.
 - **Streaming:** paged geometry/textures with fixed GPU memory; a parent draws until its
   children are resident — no holes.
-- **Lighting:** physically based atmosphere + sun; cached shadows first, VSM later;
-  voxel-clipmap GI with multi-bounce + screen traces; GTAO/SSR; HDR + TAA/upscalers; bloom,
-  exposure, filmic/ACES tonemap.
-- **Materials:** data-driven, hot-reloadable; PBR for the world, **cel/toon for characters**
-  (sun/GI-aware so they sit inside the realistic lighting), translucency, emissives.
+- **Lighting:** one physically based model for the whole game — atmosphere + sun, cached/
+  cascaded shadows → VSM later, **voxel-clipmap GI with multi-bounce + screen traces**,
+  GTAO, **real reflections (SSR now, hardware ray tracing where available)**, physical
+  exposure and filmic/ACES tone mapping, HDR + TAA/upscalers.
+- **Materials:** data-driven, hot-reloadable, all energy-consistent. **PBR/GGX is the default
+  everywhere** (world, foliage, vehicles, realistic characters/NPCs). **Toon/cel is an
+  optional second material model** for characters that opt in: bandwidth/outline shading that
+  samples the *same* sun, GI and reflection data — never an unlit or separate-pass look.
+  Cel is a per-material/per-avatar choice, not a global style switch. Plus translucency,
+  emissives and wet/subsurface variants on the PBR side.
 - **Foliage:** geometric leaves/blades with cluster thinning near; billboard clusters inside
   the same DAG far; lush ground cover near, shaded detail far.
 - **Tiers:** Ultra (desktop RTX), High (M3 Pro, 60 fps at 1440p), Low (mobile). Every feature

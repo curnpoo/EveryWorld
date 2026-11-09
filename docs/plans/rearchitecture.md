@@ -19,8 +19,10 @@ of the old ROADMAP Stages A/B/D; the mapping old → new is in §6.9.
 4. **Physics: deterministic, Box3D-style.** Vehicles must feel real (Assetto Corsa cars, MSFS
    planes, real boats and rockets) but tuned faster than life. Ragdolls, dynamic animation,
    destruction, knock-over trees; smoke sims only if the budget allows.
-5. **Art: photoreal environment** (Megascans-heavy), **cel-shaded cartoon characters**
-   (Fortnite-wacky, per `character-spec.md`), **solarpunk world dressing** per `spec.md`.
+5. **Art: photoreal environment** (Megascans-heavy) with **realistic lighting everywhere —
+   PBR materials, GI, real reflections**; **cartoon-proportioned characters** (Fortnite-wacky,
+   per `character-spec.md`) whose **cel/toon shading is an opt-in per-avatar material model**
+   (realistic PBR is equally supported); **solarpunk world dressing** per `spec.md`.
 6. **Servers: region instancing + persistence.** House plots and parked vehicles persist;
    distant rocket launches are visible; dense scripted NPC life; first server is a gaming PC.
 7. **Repo is/will be private; the product is a packaged game.** Megascans/Fab assets may live in
@@ -187,8 +189,10 @@ with no holes and fixed GPU memory, BC texture pipeline, geometric-foliage thinn
 **Build new (the reasons we are not just forking Solstice):** dynamic objects and previous-frame
 transforms, skinned meshes + motion vectors, 64-bit-atomic visibility buffer (Metal, cap-gated),
 bindless argument buffers, MetalFX / DLSS / FSR3 upscalers, optional hardware RT, translucent +
-emissive + **cel/toon material models** (sun/GI-aware so characters sit in the photoreal world),
-destruction mesh swapping, planetary virtual texturing, VSM later.
+emissive materials, **two shading models in one lighting pipeline** — PBR (default, everything)
+and **cel/toon as an opt-in character material** (sun/GI/reflection-aware so a cel hero sits in
+the photoreal world beside a realistic NPC), destruction mesh swapping, planetary virtual
+texturing, VSM later.
 
 **Foliage:** near/mid = geometric leaves/blades with cluster thinning (Solstice-style), sourced
 from Megascans/Megaplants conversions + `spec.md` vegetation library + Solstice-style `.species`
@@ -354,7 +358,8 @@ ground ↔ orbit continuous flight; procedural Moon. **Gate:** the seamless reco
 it fails, fall back to improving the old representation before building more on it.
 
 **Phase 3 — Renderer core (wk 4–8).** GPU cull, visibility buffer, software raster, cached
-shadows, GI v1, post + MetalFX, geometric foliage + Megascans dressing, cel material model.
+shadows, GI v1, real reflections, post + MetalFX, geometric foliage + Megascans dressing,
+PBR + optional cel material model.
 **Gate:** forest + city at 60 fps High, fixed memory, no streaming holes.
 
 **Phase 4 — Sim and vehicles (wk 6–9).** Box3D, character mover + boots, car v1 (real tires),

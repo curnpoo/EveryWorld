@@ -35,7 +35,7 @@ Detail docs are linked throughout; if anything disagrees, `VISION.md` (goals) an
 | D2 | **One cube-sphere planet** for render geometry; slippy Web-Mercator tiles remain only the data layer. No separate globe, no flat-plane switch, no loading screens. |
 | D3 | **North star = the full session loop** (§2.2). Ground→orbit→Moon→back foundation first; graphics and multiplayer grow on it together. Solo loop before multiplayer. |
 | D4 | **Physics: Box3D** (C17, MIT, cross-platform deterministic + replay) behind `ed_sim`; custom vehicle models (Assetto Corsa cars / MSFS planes / boats / rockets, faster than life); ragdolls, destruction, knockable trees; smoke if budget allows. |
-| D5 | **Art:** photoreal environment (Megascans-heavy), cel-shaded cartoon characters, solarpunk built world. Handcrafted assets + guided procedural, never "all code". |
+| D5 | **Art:** photoreal environment (Megascans-heavy), cartoon characters, solarpunk built world. **Lighting/materials/reflections/GI are realistic everywhere; cel shading is a per-avatar material option, never a global style switch.** Handcrafted assets + guided procedural, never "all code". |
 | D6 | **Universe:** one persistent world, **region-instanced servers**; persistent houses/vehicles; distant launches visible; dense **scripted** NPC life; first host Ubuntu LTS gaming PC. |
 | D7 | **Progression:** ranks/trust/merit, **not money**; violence and currency de-prioritized; persistent home bases (build or reuse). |
 | D8 | **Repo private; packaged commercial game.** Fab/Megascans assets allowed in-repo and in-game; never redistributed standalone. |
@@ -106,7 +106,8 @@ Region shards + sky-event bus + four NPC sim tiers (§5.6).
 > heavily realy on those assets [Megascans] to decorate the world and create the procedural
 > world"
 
-Photoreal nature · cel-shaded people · solarpunk civilization (§7).
+Photoreal nature · expressive cartoon people (cel optional, PBR equally supported) · solarpunk
+civilization (§7).
 
 ### 2.6 Characters & self-expression
 
@@ -269,7 +270,14 @@ generation with pinned data versions.
   textures, geometric foliage thinning.
 - **Build new:** dynamic objects + previous transforms, skinning + motion vectors, 64-bit
   atomic visbuffer (cap-gated), bindless argument buffers, MetalFX/DLSS/FSR3, optional HW RT,
-  translucent/emissive/**cel-toon** materials, destruction swaps, planetary VT, VSM later.
+  translucent/emissive materials, destruction swaps, planetary VT, VSM later.
+- **One lighting model, two shading models.** Realistic PBR/GGX with physics-based
+  atmosphere/sun/shadows, **voxel-clipmap GI with multi-bounce + screen traces**, and **real
+  reflections** (SSR; HW ray tracing where available) is the default for *everything*.
+  **Cel/toon is an opt-in material model for characters** (VRM/MToon-style: banded response +
+  outlines) that samples the same sun/GI/reflection data, so a cel hero is lit by the same
+  world as a photoreal NPC. Cel is per-avatar, never a global switch — a player who wants a
+  realistic human avatar gets the full PBR path.
 - **Foliage:** geometric near/mid; billboard clusters *inside the same DAG* far (the separate
   impostor renderer and its flicker bugs die). Lush geometric ground cover near.
 - **Tiers:** Ultra (RTX desktop) / High (M3 Pro, 60 fps 1440p) / Low (mobile); perf gates on
@@ -293,8 +301,9 @@ generation with pinned data versions.
 
 - glTF/VRM skinned import + **retargeting** (owner's `Solarcat.glb` first); clips + motion
   matching; cloth/jiggle (ears, hair, straps, terrarium per `character-spec.md`).
-- **Avatar platform:** VRM + glTF, parameterized toon/PBR material sandbox (no arbitrary user
-  shader code), server-side budget limits; cosmetic-only on the wire.
+- **Avatar platform:** VRM + glTF, parameterized **toon *or* PBR** material sandbox (no
+  arbitrary user shader code) — self-expression includes looking realistic, cel-shaded, or
+  anything between; server-side budget limits; cosmetic-only on the wire.
 - NPCs: realistic humans (MetaHuman-class, **license check for non-UE use**; Reallusion/CC0/
   MakeHuman alternatives) + procedural robots.
 - MotionBricks optional on NVIDIA clients; inputs/target poses only on the wire.
@@ -388,13 +397,19 @@ consuming systems). Tooling: **license gate** (RED never ships; YELLOW needs rev
 
 ### 7.1 The three art layers
 
-1. **Photoreal nature:** Megascans scans, real GI/atmosphere, dense geometric foliage, lush
-   ground cover — "an Unreal demo you can fly off of."
-2. **Cel-shaded characters:** wacky, expressive, Fortnite-adjacent heroes per
-   `docs/solarpunk/character-spec.md`; toon shading that still responds to sun + GI.
+1. **Photoreal nature:** Megascans scans, physical atmosphere, **real GI, real reflections,
+   PBR materials**, dense geometric foliage, lush ground cover — "an Unreal demo you can fly
+   off of." The lighting/materials pipeline is realistic for the entire game; nothing gets a
+   cheaper unlit look.
+2. **Expressive characters:** wacky, cartoon-proportioned heroes per
+   `docs/solarpunk/character-spec.md`. Shading is a **per-avatar choice**: **cel/toon**
+   (banded, outlined, MToon-style — the owner's first hero) *or* **realistic PBR** (players who
+   want to look human, plus realistic NPCs). Both are lit by the same sun/GI/reflections, so
+   neither looks pasted in. Cel is optional, not the default art style.
 3. **Solarpunk civilization:** modular, one-with-nature architecture per
    `docs/solarpunk/spec.md` — five families (temperate forest, urban rewilding, arid desert,
    tropical/coastal, arctic/alpine), 2 m/0.5 m grid, renewable tech, vines and glow accents.
+   Stylized by *design*, rendered with full physical materials and lighting.
 
 ### 7.2 Solarpunk reference boards (in repo)
 
@@ -439,7 +454,7 @@ expectation is **6–10 months total**; gates matter more than dates.
 | 0 | Freeze & prepare | Branch hygiene, alpha baseline, golden-hash tests, vendor Box3D/Solstice study, `data/registry` + license gate, crate skeletons, GLB import check | Repo ready for parallel engine work | Week 1 |
 | 1 | Engine skeleton | `ew` winit app, `ed_gpu` Metal (salvaged), fixed-step loop, debug UI, headless perf harness, `ed_assets` bake CLI v1 (glTF→cluster DAG, BC7) | Native test scene + harness + bake works | Month 1 |
 | 2 | Planet spike | `ed_planet` terrain + VT + unified atmosphere; ground↔orbit; procedural Moon | **Unbroken ground→orbit→ground recording at budget** (fallback: improve old representation before going further) | Months 1–2 |
-| 3 | Renderer core | GPU cull, visbuffer, software raster, cached shadows, GI v1, post + MetalFX, geometric foliage + Megascans, cel material, kit contract for interiors | **Forest + city 60 fps High, fixed memory, no holes** | Months 2–3 |
+| 3 | Renderer core | GPU cull, visbuffer, software raster, cached shadows, GI v1, real reflections, post + MetalFX, geometric foliage + Megascans, PBR + optional cel material, kit contract for interiors | **Forest + city 60 fps High, fixed memory, no holes** | Months 2–3 |
 | 4 | Sim & vehicles | Box3D, character mover + boots, car v1, roads v2 driveability, parked records | **Forest→city drive signoff; park→orbit→return** | Months 3–4 |
 | 5 | Golden path solo | Rocket, Moon landing, placeholder loot, save/load, housing plot | **Whole north-star loop solo, recorded** | Months 4–5 |
 | 6 | Multiplayer | Directory + shards, prediction, shared car + seats, co-op mission, sky events, chat, server persistence | **Two clients share car + mission; cross-region launch visible; 8-player hub** | Months 5–6 |

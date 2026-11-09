@@ -22,7 +22,8 @@ engine-free crates; new work follows `docs/ARCHITECTURE.md`.
 ## Direction and goals (read before planning any work)
 
 Goal: the game in `docs/VISION.md` — a persistent, social, solarpunk universe:
-photoreal Earth (and Moon/Mars), cel-shaded expressive characters, real-feeling
+photoreal Earth (and Moon/Mars), expressive cartoon characters (cel shading optional per
+avatar; the lighting, materials and reflections stay realistic everywhere), real-feeling
 vehicles, merit-based progression, home bases, dense scripted NPC life, and a
 seamless ground → orbit → Moon → back loop with no loading screens.
 

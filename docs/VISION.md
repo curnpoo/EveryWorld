@@ -148,17 +148,40 @@ for owned entities, interpolation for the rest; vehicles support seats and autho
 > moon, mars, with no loading screens."
 
 **What this means.** Three art layers, deliberately contrasted: a **photoreal natural world**
-(Megascans scans, real GI/atmosphere, dense geometric foliage); **cel-shaded, expressive
-characters**; and a **solarpunk built world** that is stylized by *design* (one-with-nature,
-renewable, glowing accents, vines everywhere), not by realism. This refines
+(Megascans scans, real GI/atmosphere, dense geometric foliage); **expressive, cartoon-
+proportioned characters**; and a **solarpunk built world** that is stylized by *design*
+(one-with-nature, renewable, glowing accents, vines everywhere), not by realism. This refines
 `docs/solarpunk/spec.md`: the spec's "avoid photorealism" clause applies to the *built
 assets'* cleanliness, not to the environment's lighting/material fidelity.
 
+**Realistic lighting is the foundation — everywhere.** One physically based lighting model
+covers the whole game: PBR/GGX materials with correct energy, image-based and voxel-clipmap
+**global illumination** (multi-bounce + screen traces), real **reflections** (SSR now,
+hardware ray tracing where available), physically based atmosphere/sun/shadows, real
+exposure and tone mapping. Cel shading is **not** a separate unlit renderer and **not** a
+global art style switch — it is an optional *material model* that characters (and only
+characters, by choice) can use, still lit by the same sun, GI and reflections so they sit
+inside the photoreal world instead of looking pasted on.
+
+**Cartoon ≠ cel.** The characters are stylized primarily by *design* (proportions, silhouettes,
+expressive shapes, owner's `Solarcat.glb` style). Their shading is a per-avatar choice:
+
+| Character shading | Who uses it | How it renders |
+|---|---|---|
+| **Realistic PBR** | Players who want to look like people (and realistic NPCs) | Full GGX + GI + reflections, same as the world |
+| **Cel / toon (MToon-style)** | Players who want the Fortnite/anime look (default for the owner's first hero) | Quantized bands + outlines, but sampled from the *same* light/GI/reflection data |
+
+So: the *environment* is always photoreal, the *lighting is always realistic*, and any
+individual character can opt into cel shading. Nothing in the pipeline makes cel the default
+for the whole game.
+
 **Real systems.** `ed_assets` Megascans bake pipeline (license: free on Fab again as of
 2026-11-05, any engine, no standalone redistribution — private repo + packaged game is fine);
-cluster-LOD geometric foliage with far billboards inside the same DAG; a cel/toon material
-model in `ed_render` that still responds to sun + GI; the modular solarpunk kit with region
-tables and vegetation dressing. See `rearchitecture.md` §3.3, §3.5, §3.6.
+cluster-LOD geometric foliage with far billboards inside the same DAG; **two material models
+in one lighting pipeline** — `PBR` (world, vehicles, realistic characters) and `Toon` (cel
+characters, sun/GI/reflection-aware) — selected per material/avatar, not per build; the
+modular solarpunk kit with region tables and vegetation dressing. See `rearchitecture.md`
+§3.3, §3.5, §3.6.
 
 ---
 
@@ -181,8 +204,10 @@ one world with the cartoon players.
   motion matching, cloth/jiggle for ears/hair/straps per `character-spec.md`.
 - **Avatar format: VRM** (the VRChat ecosystem's glTF-based standard, incl. MToon) alongside
   plain glTF; avatar validation + a **sandboxed shader/material model** (users pick from
-  parameterized toon/PBR material graphs; arbitrary user shader code is not executed).
-  Avatar data is cosmetic-only on the wire; server enforces size/budget limits.
+  parameterized **toon *or* realistic PBR** material graphs — real/catgirl/robot/meme all
+  supported, and a realistic-looking avatar is a first-class choice, not a downgrade;
+  arbitrary user shader code is not executed). Both models are lit by the same sun/GI/
+  reflections. Avatar data is cosmetic-only on the wire; server enforces size/budget limits.
 - **NPCs:** realistic human assets — "MetaHuman or something similar" needs a **license check**
   (MetaHuman content has historically been UE-restricted; evaluate Reallusion/CC0/MakeHuman
   alternatives) — plus procedural robots. NPC rendering shares `ed_anim`.

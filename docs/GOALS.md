@@ -10,7 +10,7 @@ keep working. Update statuses as phases land (`docs/ROADMAP.md`).
 | §2 | North-star session loop, solo then multiplayer | Phases 5 and 6 respectively |
 | §3 | One continuous planet, no flat-plane/globe switch | Phase 2 spike; alpha had the hard switch at ~200 km |
 | §4 | Persistent shared universe, visible distant launches, NPC life | Phase 6 (shards, sky events), Phase 7 (NPC schedules) |
-| §5 | Photoreal world + cel characters + solarpunk built world | Phase 3 (renderer + Megascans + toon materials) |
+| §5 | Photoreal world + expressive characters (cel optional) + solarpunk built world | Phase 3 (renderer + Megascans + PBR/Toon material models) |
 | §6 | Owner GLB → VRM custom avatars; realistic + robot NPCs | `ed_anim` Phase 3–4; avatar platform Phase 7 |
 | §7 | Real-feeling vehicles, destruction, knockable trees | Phase 4 (Box3D + car signoff), Phase 7 (destruction) |
 | §8 | Handcrafted + guided procedural, authored hubs | Ongoing; kit + placements in Phases 1–4 |
