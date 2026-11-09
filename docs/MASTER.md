@@ -473,6 +473,10 @@ sessions own disjoint crates; every landed change gets a `CHANGES.md` entry with
 pass criteria and artifacts, ordering, exit gate, pre-decided failure branches, and how each
 workstream serves the VISION goals.
 
+**Phase 1 detail:** `docs/phases/phase-1.md` — the spine (window, frame, fixed step, bake
+pack), the 20 key decisions with alternatives and rationale, workstreams, week plan, budgets,
+exit gate and failure branches.
+
 ---
 
 ## 9. Acceptance metrics & testing

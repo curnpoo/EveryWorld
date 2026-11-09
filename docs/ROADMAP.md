@@ -54,6 +54,15 @@ goal mapping — is in **`docs/phases/phase-0.md`**. Summary:
 Rules: W1 before W2; no feature work; a failed spike takes its pre-written fallback rather than
 blocking the week. Exit gate is the checklist in `phase-0.md` §5.
 
+## Phase 1 in detail
+
+Full detail — philosophy, the 20 Phase 1 decisions (shader language, Metal bindings, frame
+graph, entity model, asset format and cluster builder, material v0, threading, caps/tiers,
+budgets), workstreams, week plan, exit gate and failure branches — is in
+**`docs/phases/phase-1.md`**. Shape: a real Metal window rendering the proving-ground scene at
+budget, a deterministic bake CLI, a fixed-step Box3D replay loop, and a headless harness that
+produces the first honest numbers.
+
 ## Phases
 
 ## Standing engineering rules

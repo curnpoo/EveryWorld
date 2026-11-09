@@ -1,5 +1,15 @@
 ## 2026-11-09: master document, README rewrite, alpha doc archive
 
+- **`docs/phases/phase-1.md`** added: detailed Phase 1 — the spine philosophy, **20 explicit
+  decisions** (Slang shaders with MSL escape hatch; `objc2` Metal bindings behind `ed_gpu`;
+  render graph; 2–3 frames in flight; main-thread orchestration; no general ECS in the render
+  path; f64 body-fixed → camera-relative f32; reverse-Z; argument-buffer bindless + descriptor
+  fallback; caps/tier probe incl. 64-bit atomics; own `.ewpack` + meshoptimizer cluster DAG;
+  PBR v0 + toon interface; BC7 + VT-ready texture pages; egui dev-only UI; headless harness and
+  GPU-CI strategy; fixed-step + Box3D minimal integration; determinism boundary; salvage
+  policy; proving-ground scene; Phase 1 budgets), workstreams, 3-week plan, exit gate, failure
+  branches, and goal mapping. Linked from `ROADMAP.md`, `MASTER.md` and `README.md`.
+
 - **`docs/phases/phase-0.md`** added: detailed Phase 0 — philosophy (evidence before
   architecture, freeze-don't-delete, one-way doors, parallel-ready repo), seven workstreams
   with pass criteria and artifacts, ordering/timeboxing, exit-gate checklist, pre-decided
