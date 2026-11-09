@@ -31,8 +31,10 @@ of the old ROADMAP Stages A/B/D; the mapping old → new is in §6.9.
 9. **All-in on the new engine.** The playable Bevy alpha is preserved on branch
    **`alpha-early`** (crash fixes only); `main` becomes the new engine.
 10. **Characters:** start from the owner's rigged GLB (retargeted); later **VRM / VRChat-style
-    custom avatars** with a sandboxed material system for self-expression; NPCs are realistic
-    humans (MetaHuman-class, license to verify) and robots coexisting.
+    custom avatars** with a sandboxed material system for self-expression (toon *or* PBR).
+    **NPCs are max-realism PBR, never cel** — high-fidelity humans (MetaHuman-class, license to
+    verify) and robots with full facial/eye/cloth/hair animation; fidelity scales with distance
+    via sim-LOD, not art style.
 11. **Game feel:** guided freedom, progression through **ranks/trust/merit rather than money**,
     persistent home bases; violence/currency de-prioritized; handcrafted assets + guided
     procedural, never "all code"; space stations, Moon/Mars civilizations, travel lanes, and a

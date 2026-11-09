@@ -40,7 +40,7 @@ Detail docs are linked throughout; if anything disagrees, `VISION.md` (goals) an
 | D7 | **Progression:** ranks/trust/merit, **not money**; violence and currency de-prioritized; persistent home bases (build or reuse). |
 | D8 | **Repo private; packaged commercial game.** Fab/Megascans assets allowed in-repo and in-game; never redistributed standalone. |
 | D9 | **All-in on the new engine.** Playable alpha preserved on branch `alpha-early`; alpha visual bugs are replacement criteria, not a fix list. |
-| D10 | **Characters:** owner's rigged GLB first (`Solarcat.glb`, kept uncommitted for now), retargeted; later **VRM/VRChat-style custom avatars** with sandboxed materials; realistic human + robot NPCs (MetaHuman-class licensing to verify). |
+| D10 | **Characters:** owner's rigged GLB first (`Solarcat.glb`, kept uncommitted for now), retargeted; later **VRM/VRChat-style custom avatars** with sandboxed toon-or-PBR materials. **NPCs are max-realism PBR only** — high-fidelity humans + robots, never cel (MetaHuman-class licensing to verify). |
 | D11 | **Alpha-era docs archived** to `docs/alpha/`; current direction lives in `VISION.md`, `ROADMAP.md`, `ARCHITECTURE.md`, `GOALS.md`, `data/`, `plans/rearchitecture.md`, and this file. |
 | D12 | **Building interiors are in scope** — walk-in buildings, no door-teleports (owner note, 2026-11-09). |
 
@@ -304,9 +304,13 @@ generation with pinned data versions.
 - **Avatar platform:** VRM + glTF, parameterized **toon *or* PBR** material sandbox (no
   arbitrary user shader code) — self-expression includes looking realistic, cel-shaded, or
   anything between; server-side budget limits; cosmetic-only on the wire.
-- NPCs: realistic humans (MetaHuman-class, **license check for non-UE use**; Reallusion/CC0/
-  MakeHuman alternatives) + procedural robots.
-- MotionBricks optional on NVIDIA clients; inputs/target poses only on the wire.
+- **NPCs are max-realism and PBR-only — cel/toon is never used for them.** Scanned-style
+  humans (MetaHuman-class, **license check for non-UE use**; Reallusion Character Creator /
+  CC0 / MakeHuman-based pipelines as alternatives) + procedural robots with real materials,
+  wear and emissives. Full facial/eye/cloth/hair animation on the same `ed_anim`; fidelity is
+  reduced with distance (sim-LOD), never by art style.
+- MotionBricks optional on NVIDIA clients; inputs/target poses only on the wire; most valuable
+  on NPC crowds.
 
 ### 5.5 World generation, assets & interiors (`ed_world` + `ed_assets`) — kills S5/S9
 
@@ -402,10 +406,11 @@ consuming systems). Tooling: **license gate** (RED never ships; YELLOW needs rev
    off of." The lighting/materials pipeline is realistic for the entire game; nothing gets a
    cheaper unlit look.
 2. **Expressive characters:** wacky, cartoon-proportioned heroes per
-   `docs/solarpunk/character-spec.md`. Shading is a **per-avatar choice**: **cel/toon**
-   (banded, outlined, MToon-style — the owner's first hero) *or* **realistic PBR** (players who
-   want to look human, plus realistic NPCs). Both are lit by the same sun/GI/reflections, so
-   neither looks pasted in. Cel is optional, not the default art style.
+   `docs/solarpunk/character-spec.md`. For **players**, shading is a per-avatar choice:
+   **cel/toon** (banded, outlined, MToon-style — the owner's first hero) *or* **realistic PBR**
+   (players who want to look human). **NPCs are always max-realism PBR** — high-fidelity humans
+   and robots, never cel, so the world's inhabitants read as real people beside however players
+   present themselves. Everything is lit by the same sun/GI/reflections.
 3. **Solarpunk civilization:** modular, one-with-nature architecture per
    `docs/solarpunk/spec.md` — five families (temperate forest, urban rewilding, arid desert,
    tropical/coastal, arctic/alpine), 2 m/0.5 m grid, renewable tech, vines and glow accents.

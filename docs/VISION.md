@@ -196,8 +196,10 @@ modular solarpunk kit with region tables and vegetation dressing. See `rearchite
 
 **What this means.** Start with the owner's rigged GLB (retargeted onto our standard
 humanoid skeleton). The endgame is **player-authored avatars as self-expression** — VRChat-
-style variety including custom shaders — while NPCs are realistic humans and robots sharing
-one world with the cartoon players.
+style variety including custom shaders — while NPCs are **as realistic as we can make them**:
+high-fidelity humans and robots rendered with the full PBR/GI/reflection path, never cartoon
+or cel. The contrast is the point: the *inhabitants of the world* look real, and players show
+themselves however they like beside them.
 
 **Real systems.**
 - `ed_anim`: GLB/glTF skinned import, **retargeting** (weak rigs are expected), clips +
@@ -208,11 +210,16 @@ one world with the cartoon players.
   supported, and a realistic-looking avatar is a first-class choice, not a downgrade;
   arbitrary user shader code is not executed). Both models are lit by the same sun/GI/
   reflections. Avatar data is cosmetic-only on the wire; server enforces size/budget limits.
-- **NPCs:** realistic human assets — "MetaHuman or something similar" needs a **license check**
-  (MetaHuman content has historically been UE-restricted; evaluate Reallusion/CC0/MakeHuman
-  alternatives) — plus procedural robots. NPC rendering shares `ed_anim`.
+- **NPCs are max-realism, PBR-only** (cel/toon is never used for NPCs): scanned-style human
+  assets — "MetaHuman or something similar", subject to a **license check** since MetaHuman
+  content has historically been UE-restricted (evaluate Reallusion Character Creator,
+  CC0/MakeHuman-based pipelines, or purpose-built scans) — plus procedural robots with real
+  materials, wear and emissives. They share `ed_anim`, full skeletal animation, facial/
+  eye animation and cloth/hair, and the same skin/eye/hair shading models as realistic player
+  avatars. Fidelity is tiered by distance (sim-LOD in `rearchitecture.md` §3.4, §3.7), not by
+  art style: an NPC is never "downgraded to cartoon" to save cost.
 - MotionBricks is an optional NVIDIA-only client-side motion layer, never a server dependency
-  (`rearchitecture.md` §3.5).
+  (`rearchitecture.md` §3.5). It is most valuable on NPC crowds.
 
 ---
 

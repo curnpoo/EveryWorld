@@ -130,8 +130,10 @@ reference data (pinned) ──> ed_data decode ──> ed_planet sampling (heigh
 
 - **Characters:** glTF/VRM skinned import + retargeting onto a standard humanoid; clips +
   motion matching; cloth/jiggle per `character-spec.md`; avatar material sandbox for player
-  self-expression; realistic human + robot NPCs. MotionBricks is an optional NVIDIA-only
-  client-side layer; the wire carries inputs/target poses, never neural state.
+  self-expression (toon **or** PBR). **NPCs are max-realism PBR only** — high-fidelity humans
+  and robots with full facial/eye/cloth/hair animation, never cel; fidelity scales with
+  distance via sim-LOD, not art style. MotionBricks is an optional NVIDIA-only client-side
+  layer; the wire carries inputs/target poses, never neural state.
 - **Vehicles:** custom models over Box3D queries — raycast suspension + Pacejka-style tires +
   gearbox for cars (Assetto-grade feel), per-surface aero for planes, buoyancy for boats,
   staged rockets from `ed_flight`. Simcade tuning: faster than life, signoff-gated.
