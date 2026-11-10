@@ -6,3 +6,5 @@ edition.workspace = true
 [dependencies]
 glam = { workspace = true }
 serde = { workspace = true }
+libm = "0.2"
+blake3 = "1"

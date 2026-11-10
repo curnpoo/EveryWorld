@@ -7,18 +7,20 @@ Owner: `ed_geo`. Decisions: F1, F5. Evidence: `../reference/spikes/w4d-addressin
 ```rust
 /// body:8 | face:3 | level:5 | x:24 | y:24, most significant first.
 #[repr(transparent)]
-pub struct NodeId(pub u64);
+pub struct NodeId(u64);                           // private: only valid ids exist
 
 impl NodeId {
     pub const MAX_LEVEL: u8 = 24;
     pub fn new(body: BodyId, face: u8, level: u8, x: u32, y: u32) -> Option<NodeId>;
     pub fn parent(self) -> Option<NodeId>;          // None at level 0
-    pub fn children(self) -> [NodeId; 4];           // order: (0,0) (1,0) (0,1) (1,1)
+    pub fn from_bits(bits: u64) -> Option<NodeId>;
+    pub fn children(self) -> Option<[NodeId; 4]>;   // order: (0,0) (1,0) (0,1) (1,1); None at level 24
     pub fn ancestor(self, level: u8) -> NodeId;
     pub fn neighbour(self, dx: i32, dy: i32) -> NodeId;   // crosses face edges
     pub fn contains(self, other: NodeId) -> bool;
     pub fn corner(self, i: u8) -> DVec3;            // unit vector, body-fixed
     pub fn centre(self) -> DVec3;
+    pub fn grid_point(self, i: u32, j: u32, cells: u32) -> DVec3;   // the node's own vertex grid
     pub fn from_unit(body: BodyId, p: DVec3, level: u8) -> NodeId;
 }
 pub struct BodyId(pub u8);                           // index into the ed_space body catalog
@@ -27,8 +29,10 @@ pub struct BodyId(pub u8);                           // index into the ed_space 
 - `x`, `y` are in `0..2^level`. Bits above `level` are zero. A `NodeId` with face > 5 or
   level > 24 is invalid and cannot be constructed.
 - Ordering of the `u64` is: body, face, level, x, y. It is used as a sort key in manifests.
-- The text form is `body/face/level/x/y`, for example `earth/2/12/1840/977`. Used in logs,
-  file names and URLs.
+- The text form is `body/face/level/x/y` with the body as its catalog index, for example
+  `3/2/12/1840/977`. Used in logs, file names and URLs.
+- `neighbour` clamps offsets to one face width. A diagonal step across a cube corner has no
+  unique answer; the x step crosses and the y step is clamped.
 
 ## 2. Faces and the mapping
 
@@ -91,8 +95,8 @@ pub struct ObjectId(pub u128);
 impl ObjectId {
     /// First 16 bytes of BLAKE3 over the fields below, each length-prefixed.
     pub fn generated(dataset: &str, feature: &str, generator: &str, sub: u32) -> ObjectId;
-    /// Random 128 bits with the top bit set. Stored in the layer file that creates it.
-    pub fn authored(rng: &mut impl Rng) -> ObjectId;
+    /// 128 random bits with the top bit set. Stored in the layer file that creates it.
+    pub fn authored(random: u128) -> ObjectId;
     pub fn is_authored(self) -> bool;   // top bit
 }
 ```
@@ -121,6 +125,9 @@ impl ObjectId {
   go-to box.
 
 ## 6. Tests
+
+A1 to A9 are implemented in `crates/ed_geo/tests/addressing.rs`. A10 arrives with the first
+generator that emits per node (Phase 3).
 
 | # | Test |
 |---|---|
