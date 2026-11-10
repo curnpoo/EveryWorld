@@ -1,0 +1,16 @@
+id = "geonames"
+name = "GeoNames gazetteer"
+organisation = "GeoNames"
+kind = "data"
+urls = ["https://www.geonames.org/"]
+coverage = "global"
+format = "TSV"
+licence = "CC BY 4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+commercial = "yes"
+modification = "yes"
+redistribution = "yes"
+attribution = "GeoNames."
+screening = "GREEN"
+licence_checked = ""
+consumers = ["ed_data"]

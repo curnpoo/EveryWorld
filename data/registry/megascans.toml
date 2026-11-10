@@ -1,0 +1,15 @@
+id = "megascans"
+name = "Quixel Megascans"
+organisation = "Epic Games / Quixel"
+kind = "asset"
+urls = ["https://www.fab.com/sellers/Quixel"]
+licence = "Fab Standard License"
+licence_url = "https://www.fab.com/eula"
+commercial = "yes"
+modification = "yes"
+redistribution = "conditions"
+attribution = "Megascans assets used under the Fab Standard License."
+screening = "YELLOW"
+review_notes = "Assets may ship only inside the packaged game, never as loose source files or in the public repository. Keep originals outside the repo; record the Fab asset id per converted asset."
+licence_checked = ""
+consumers = ["ed_assets"]

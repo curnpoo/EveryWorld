@@ -519,7 +519,13 @@ pub fn build(job: &TileJob) -> TileBuild {
             let mut lod: Vec<((u8, u8), BuildingMeshes)> = chunks.iter().map(|(c, v)| (*c, buildings::build_lod(v.iter(), up))).collect();
             lod.sort_by_key(|(c, _)| *c);
             out.building_lod = lod;
-            out.building_far = buildings::build_massing(chunks.values().flatten(), up);
+            out.building_far = {
+                // Sorted chunk order: HashMap iteration order would change the vertex order of
+                // the merged mesh from run to run (found by the golden suite).
+                let mut keys: Vec<_> = chunks.keys().copied().collect();
+                keys.sort_unstable();
+                buildings::build_massing(keys.iter().flat_map(|k| &chunks[k]), up)
+            };
             out.building_detail = Some(Arc::new(DetailSet {
                 ctx: buildings::DetailCtx { proj, grid: grid.clone(), roads: r.centerlines.clone() },
                 chunks,
@@ -567,7 +573,13 @@ pub fn build(job: &TileJob) -> TileBuild {
             let mut lod: Vec<((u8, u8), BuildingMeshes)> = chunks.iter().map(|(c, v)| (*c, buildings::build_lod(v.iter(), up))).collect();
             lod.sort_by_key(|(c, _)| *c);
             out.building_lod = lod;
-            out.building_far = buildings::build_massing(chunks.values().flatten(), up);
+            out.building_far = {
+                // Sorted chunk order: HashMap iteration order would change the vertex order of
+                // the merged mesh from run to run (found by the golden suite).
+                let mut keys: Vec<_> = chunks.keys().copied().collect();
+                keys.sort_unstable();
+                buildings::build_massing(keys.iter().flat_map(|k| &chunks[k]), up)
+            };
         }
         if tile.z >= 10 {
             let occ = foliage::Occupancy::from_vector(vt, 512);

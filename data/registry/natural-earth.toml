@@ -1,0 +1,16 @@
+id = "natural-earth"
+name = "Natural Earth"
+organisation = "Natural Earth"
+kind = "data"
+urls = ["https://www.naturalearthdata.com/"]
+coverage = "global"
+format = "Shapefile"
+licence = "Public domain"
+licence_url = "https://www.naturalearthdata.com/about/terms-of-use/"
+commercial = "yes"
+modification = "yes"
+redistribution = "yes"
+attribution = "Made with Natural Earth."
+screening = "GREEN"
+licence_checked = ""
+consumers = ["ed_data"]

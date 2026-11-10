@@ -1,0 +1,28 @@
+[package]
+name = "ew"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ed_geo = { path = "../ed_geo" }
+ed_data = { path = "../ed_data" }
+ed_world = { path = "../ed_world" }
+ed_pack = { path = "../ed_pack" }
+ed_planet = { path = "../ed_planet" }
+ed_gpu = { path = "../ed_gpu" }
+ed_render = { path = "../ed_render" }
+ed_sim = { path = "../ed_sim" }
+ed_anim = { path = "../ed_anim" }
+ed_editor = { path = "../ed_editor" }
+ed_store = { path = "../ed_store" }
+ed_net = { path = "../ed_net" }
+ed_runtime = { path = "../ed_runtime" }
+ed_flight = { path = "../ed_flight" }
+ed_space = { path = "../ed_space" }
+ed_audio = { path = "../ed_audio" }
+ed_engine_audio = { path = "../ed_engine_audio" }
+ed_assets = { path = "../ed_assets" }

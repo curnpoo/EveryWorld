@@ -1,0 +1,14 @@
+id = "worldclim"
+name = "WorldClim 2.1"
+organisation = "WorldClim"
+kind = "data"
+urls = ["https://www.worldclim.org/"]
+licence = "WorldClim terms (no redistribution, no commercial use without permission)"
+licence_url = "https://www.worldclim.org/about.html"
+commercial = "no"
+modification = "conditions"
+redistribution = "no"
+screening = "RED"
+review_notes = "Currently baked into ed_data (climate table). Development only until the CHELSA re-bake."
+licence_checked = ""
+consumers = ["ed_data"]

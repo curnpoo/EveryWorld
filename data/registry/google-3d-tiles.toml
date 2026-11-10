@@ -1,0 +1,13 @@
+id = "google-3d-tiles"
+name = "Google Photorealistic 3D Tiles"
+organisation = "Google"
+kind = "data"
+urls = ["https://developers.google.com/maps/documentation/tile/3d-tiles"]
+licence = "Google Maps Platform terms"
+licence_url = "https://developers.google.com/maps/documentation/tile/policies"
+commercial = "conditions"
+modification = "no"
+redistribution = "no"
+screening = "RED"
+review_notes = "No caching, storing or offline use. Also shows the present-day world, not ours."
+licence_checked = ""

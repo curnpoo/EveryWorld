@@ -25,5 +25,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: dependency rules
+        run: cargo xtask check-deps
+      - name: licence gate
+        run: cargo xtask licence-gate
+      - name: credits up to date
+        run: cargo xtask credits --check
       - name: cargo test --workspace
         run: cargo test --workspace --locked
+      - name: determinism (golden hashes)
+        run: cargo xtask golden

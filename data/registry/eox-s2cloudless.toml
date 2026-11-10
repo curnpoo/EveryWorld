@@ -1,0 +1,14 @@
+id = "eox-s2cloudless"
+name = "EOX Sentinel-2 cloudless"
+organisation = "EOX IT Services"
+kind = "data"
+urls = ["https://s2maps.eu/"]
+licence = "CC BY-NC-SA 4.0 (2018 and later)"
+licence_url = "https://creativecommons.org/licenses/by-nc-sa/4.0/"
+commercial = "no"
+modification = "yes"
+redistribution = "conditions"
+screening = "RED"
+review_notes = "Alpha imagery. Replaced by sentinel2-composite."
+licence_checked = ""
+consumers = ["ed_data"]

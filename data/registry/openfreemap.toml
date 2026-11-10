@@ -1,0 +1,14 @@
+id = "openfreemap"
+name = "OpenFreeMap / OpenMapTiles vector tiles"
+organisation = "OpenFreeMap"
+kind = "data"
+urls = ["https://openfreemap.org/"]
+licence = "ODbL 1.0 (data); OpenMapTiles schema CC BY 4.0"
+licence_url = "https://openfreemap.org/tos/"
+commercial = "yes"
+modification = "yes"
+redistribution = "conditions"
+screening = "DEV"
+review_notes = "Retired as the road source (F8): clipped, simplified, tags dropped. Development and the 2D map view only."
+licence_checked = ""
+consumers = ["ed_data"]

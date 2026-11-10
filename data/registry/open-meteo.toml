@@ -1,0 +1,14 @@
+id = "open-meteo"
+name = "Open-Meteo weather and geocoding API"
+organisation = "Open-Meteo"
+kind = "data"
+urls = ["https://open-meteo.com/"]
+licence = "CC BY 4.0 data; free API tier is non-commercial"
+licence_url = "https://open-meteo.com/en/terms"
+commercial = "conditions"
+modification = "yes"
+redistribution = "conditions"
+screening = "DEV"
+review_notes = "Development only. Replaced by the simulated climate and the packaged gazetteer."
+licence_checked = ""
+consumers = ["ed_data"]

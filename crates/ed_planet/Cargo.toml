@@ -1,0 +1,14 @@
+[package]
+name = "ed_planet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ed_geo = { path = "../ed_geo" }
+ed_pack = { path = "../ed_pack" }
+ed_runtime = { path = "../ed_runtime" }
+ed_space = { path = "../ed_space" }

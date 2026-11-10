@@ -2,13 +2,9 @@
 name = "ed_gpu"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
-# GPU abstraction for the native-renderer path (docs/plans/m2.md): pass graph, capabilities,
-# per-pass timing. The core has no wgpu/Bevy dependency so it is unit-tested and a Metal
-# backend can reuse it unchanged. Backends live behind features.
-
-[features]
-default = []
+[lints]
+workspace = true
 
 [dependencies]
-meshopt = "0.6"

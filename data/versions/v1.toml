@@ -1,0 +1,22 @@
+# Data version 1: the set of datasets a pack may be built from, each at one pinned release.
+# Chunks record this version number. Changing any pin means a new version file.
+version = 1
+description = "First pinned set for the new engine (Phases 2-3)."
+
+[datasets]
+copernicus-glo30 = "unpinned"
+mapterhorn = "unpinned"
+gebco = "unpinned"
+sentinel2-composite = "unpinned"
+esa-worldcover-2021 = "v200"
+overture-transportation = "unpinned"
+overture-buildings = "unpinned"
+openstreetmap = "unpinned"
+canopy-height = "unpinned"
+chelsa = "v2.1"
+macrostrat = "unpinned"
+nasa-black-marble = "unpinned"
+geonames = "unpinned"
+natural-earth = "5.1.2"
+lola = "unpinned"
+jpl-elements = "1800-2050 table"

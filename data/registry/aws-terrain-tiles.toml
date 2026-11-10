@@ -1,0 +1,14 @@
+id = "aws-terrain-tiles"
+name = "AWS Terrain Tiles (Mapzen terrarium)"
+organisation = "Mapzen / AWS Open Data"
+kind = "data"
+urls = ["https://registry.opendata.aws/terrain-tiles/"]
+licence = "Per source"
+licence_url = "https://github.com/tilezen/joerd/blob/master/docs/attribution.md"
+commercial = "conditions"
+modification = "conditions"
+redistribution = "conditions"
+screening = "DEV"
+review_notes = "Alpha fallback elevation. Not part of data version 1."
+licence_checked = ""
+consumers = ["ed_data"]

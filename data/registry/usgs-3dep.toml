@@ -1,0 +1,17 @@
+id = "usgs-3dep"
+name = "USGS 3DEP elevation"
+organisation = "U.S. Geological Survey"
+kind = "data"
+urls = ["https://www.usgs.gov/3d-elevation-program"]
+coverage = "United States"
+resolution = "1 m to 10 m"
+format = "COG"
+licence = "U.S. public domain"
+licence_url = "https://www.usgs.gov/information-policies-and-instructions/copyrights-and-credits"
+commercial = "yes"
+modification = "yes"
+redistribution = "yes"
+attribution = "Elevation data courtesy of the U.S. Geological Survey."
+screening = "GREEN"
+licence_checked = ""
+consumers = ["ed_data"]

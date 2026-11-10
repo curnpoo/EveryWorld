@@ -1,0 +1,17 @@
+id = "mola"
+name = "Mars Orbiter Laser Altimeter elevation"
+organisation = "NASA GSFC / USGS Astrogeology"
+kind = "data"
+urls = ["https://astrogeology.usgs.gov/search/map/mars_mgs_mola_dem_463m"]
+coverage = "Mars"
+resolution = "463 m"
+format = "GeoTIFF"
+licence = "NASA PDS (public domain)"
+licence_url = "https://pds.nasa.gov/datastandards/citing/"
+commercial = "yes"
+modification = "yes"
+redistribution = "yes"
+attribution = "NASA MGS MOLA science team, USGS Astrogeology."
+screening = "GREEN"
+licence_checked = ""
+consumers = ["ed_assets"]

@@ -1,0 +1,14 @@
+[package]
+name = "ed_assets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ed_geo = { path = "../ed_geo" }
+ed_data = { path = "../ed_data" }
+ed_world = { path = "../ed_world" }
+ed_pack = { path = "../ed_pack" }

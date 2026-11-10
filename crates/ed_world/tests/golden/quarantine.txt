@@ -1,0 +1,2 @@
+# Subsystems whose hashes are known to differ, one per line, as `place/subsystem` or
+# `subsystem`. Each line needs a reason and the phase that fixes it.

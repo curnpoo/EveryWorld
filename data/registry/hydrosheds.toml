@@ -1,0 +1,13 @@
+id = "hydrosheds"
+name = "HydroSHEDS"
+organisation = "WWF / HydroSHEDS"
+kind = "data"
+urls = ["https://www.hydrosheds.org/"]
+licence = "HydroSHEDS licence"
+licence_url = "https://www.hydrosheds.org/products/hydrosheds"
+commercial = "conditions"
+modification = "conditions"
+redistribution = "no"
+screening = "RED"
+review_notes = "Commercial redistribution restricted. Rivers come from OSM/Overture water and our own flow routing on the elevation model."
+licence_checked = ""

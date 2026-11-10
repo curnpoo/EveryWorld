@@ -1,0 +1,17 @@
+id = "lola"
+name = "Lunar Orbiter Laser Altimeter elevation"
+organisation = "NASA GSFC / PDS"
+kind = "data"
+urls = ["https://pds-geosciences.wustl.edu/missions/lro/lola.htm"]
+coverage = "Moon"
+resolution = "118 m global; finer at poles"
+format = "IMG / GeoTIFF"
+licence = "NASA PDS (public domain)"
+licence_url = "https://pds.nasa.gov/datastandards/citing/"
+commercial = "yes"
+modification = "yes"
+redistribution = "yes"
+attribution = "NASA LRO LOLA science team."
+screening = "GREEN"
+licence_checked = ""
+consumers = ["ed_assets"]

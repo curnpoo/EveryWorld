@@ -1,0 +1,17 @@
+id = "nasa-black-marble"
+name = "NASA Black Marble night lights (VIIRS)"
+organisation = "NASA GSFC"
+kind = "data"
+urls = ["https://blackmarble.gsfc.nasa.gov/"]
+coverage = "global"
+resolution = "15 arc-second"
+format = "HDF5 / GeoTIFF"
+licence = "NASA open data (no restrictions)"
+licence_url = "https://www.earthdata.nasa.gov/engage/open-data-services-software-policies/data-use-guidance"
+commercial = "yes"
+modification = "yes"
+redistribution = "yes"
+attribution = "NASA Black Marble, NASA Goddard Space Flight Center."
+screening = "GREEN"
+licence_checked = ""
+consumers = ["ed_assets"]

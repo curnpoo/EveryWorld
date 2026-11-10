@@ -1,0 +1,14 @@
+id = "box3d"
+name = "Box3D"
+organisation = "Erin Catto"
+kind = "code"
+urls = ["https://github.com/erincatto/box3d"]
+licence = "MIT"
+licence_url = "https://github.com/erincatto/box3d/blob/main/LICENSE"
+commercial = "yes"
+modification = "yes"
+redistribution = "yes"
+attribution = "Copyright (c) Erin Catto."
+screening = "GREEN"
+licence_checked = ""
+consumers = ["ed_sim"]

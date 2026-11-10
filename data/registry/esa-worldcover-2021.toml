@@ -1,0 +1,17 @@
+id = "esa-worldcover-2021"
+name = "ESA WorldCover 2021"
+organisation = "ESA WorldCover consortium"
+kind = "data"
+urls = ["https://esa-worldcover.org/"]
+coverage = "global land"
+resolution = "10 m"
+format = "COG"
+licence = "CC BY 4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+commercial = "yes"
+modification = "yes"
+redistribution = "yes"
+attribution = "© ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data (2021) processed by ESA WorldCover consortium."
+screening = "GREEN"
+licence_checked = ""
+consumers = ["ed_data", "ed_world"]

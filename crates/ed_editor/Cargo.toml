@@ -1,0 +1,16 @@
+[package]
+name = "ed_editor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ed_geo = { path = "../ed_geo" }
+ed_pack = { path = "../ed_pack" }
+ed_planet = { path = "../ed_planet" }
+ed_render = { path = "../ed_render" }
+ed_world = { path = "../ed_world" }
+ed_sim = { path = "../ed_sim" }

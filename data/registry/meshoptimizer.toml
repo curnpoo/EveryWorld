@@ -1,0 +1,14 @@
+id = "meshoptimizer"
+name = "meshoptimizer"
+organisation = "Arseny Kapoulkine"
+kind = "code"
+urls = ["https://github.com/zeux/meshoptimizer"]
+licence = "MIT"
+licence_url = "https://github.com/zeux/meshoptimizer/blob/master/LICENSE.md"
+commercial = "yes"
+modification = "yes"
+redistribution = "yes"
+attribution = "Copyright (c) Arseny Kapoulkine."
+screening = "GREEN"
+licence_checked = ""
+consumers = ["ed_assets"]
