@@ -5,7 +5,8 @@ use std::f64::consts::FRAC_PI_4;
 type V = [f64; 3];
 fn norm(p: V) -> V {
     let l = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
-    [p[0] / l, p[1] / l, p[2] / l]
+    // `+ 0.0` turns -0.0 into 0.0: faces that negate an axis would otherwise disagree in the sign bit.
+    [p[0] / l + 0.0, p[1] / l + 0.0, p[2] / l + 0.0]
 }
 fn dot(a: V, b: V) -> f64 { a[0] * b[0] + a[1] * b[1] + a[2] * b[2] }
 fn cross(a: V, b: V) -> V { [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]] }
@@ -27,7 +28,7 @@ fn warp(m: Map, i: u64, n: u64) -> f64 {
     match m {
         Map::Gnomonic => s,
         Map::Tangent => (s * FRAC_PI_4).tan(),
-        Map::S2Quadratic => { let t = 0.5 * (s + 1.0); -(1.0 / 3.0) * (1.0 - 4.0 * t * t) }
+        Map::S2Quadratic => { let t = 0.5 * (s + 1.0); (1.0 / 3.0) * (1.0 - 4.0 * (1.0 - t) * (1.0 - t)) }
     }
 }
 
