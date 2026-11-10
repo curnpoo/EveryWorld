@@ -1,427 +1,246 @@
-# Phase 1 — Engine skeleton (detailed)
+# Phase 1 — Engine base and editor shell
 
-Status: next phase (starts when Phase 0's exit gate is green). Phase doc; roadmap summary in
-`docs/ROADMAP.md`, plan in `docs/plans/rearchitecture.md`, goals in `docs/VISION.md`, Phase 0
-in `docs/phases/phase-0.md`.
+Status: next, after Phase 0. Roadmap row: `../ROADMAP.md`. Decisions referenced by id are in
+`../DECISIONS.md`; this file holds the detail for the P1-D series. Inputs are the Phase 0
+contracts in `../contracts/`.
 
-Timebox: **~3 weeks**. Exit gate: **a real Metal window renders the test scene at budget, and
-the headless harness can measure it** — not a triangle, not a screenshot of a triangle.
+## 1. Goal
 
----
+A running engine with no planet in it yet: a window, a GPU-driven renderer drawing a large
+field of instanced parts with LOD, a pack format and bake tool, a fixed-step simulation, the
+world's addressing and layer types, and the first stage of the editor. Everything later is
+added to this base without restructuring it.
 
-## 1. Philosophy — why Phase 1 exists
+## 2. What Phase 1 proves
 
-### 1.1 Build the spine before the body
-
-Every expensive thing we want later hangs off four cheap things:
-
-1. a window that presents,
-2. a frame loop that submits work to the GPU,
-3. a **fixed-step simulation** with an explicit boundary to rendering,
-4. an **asset pipeline** that turns authored content into data the renderer can stream.
-
-If any of those four is shaped wrong, everything above it is wrong: the planet renderer inherits
-the frame graph, the vehicles inherit the step model, the world inherits the asset format, the
-server inherits the determinism boundary. Phase 1 is where those seams are cast. Later phases
-fill them in; they do not re-cut them.
-
-### 1.2 The smallest honest vertical slice
-
-Phase 1 is deliberately **thin but complete**: for each subsystem, the smallest version that is
-still *the real subsystem* and can fail in a way we can measure. One textured PBR mesh (not a
-triangle). One cluster-LOD asset with visible cut transitions (not a placeholder cube). One
-simulated body with a replay hash (not a moving box with no determinism story). One bake CLI
-that produces a versioned, content-addressed pack (not a loader hack).
-
-"Thin but complete" is the whole point: a triangle proves nothing, and a half-built renderer
-proves the wrong things.
-
-### 1.3 Retire the last two engineering unknowns
-
-Phase 0 retires the *dependency* bets (Box3D, Solstice techniques, import paths). Phase 1 retires
-the *engineering* bets:
-
-- **Can our own Metal RHI express what the renderer needs?** Bindless/argument buffers,
-  transient resources, GPU timestamps, HDR presentation, a visibility-buffer-capable pipeline,
-  shader hot reload. If the RHI cannot, we find out in week 1, not in Phase 3.
-- **Can a bake pipeline turn real authored assets into the cluster DAG and materials the
-  renderer expects, deterministically and fast?** If baking a Megascans-converted asset takes
-  ten minutes or produces nondeterministic clusters, the art plan is wrong.
-
-### 1.4 Prove the rules, not just the code
-
-Phase 1 is the first place the standing rules (`ROADMAP.md`) become executable:
-
-- measure first → harness exists before features;
-- determinism → replay hash + bake hash from day one;
-- sim/render separation → `ed_sim` cannot name a render type, enforced by CI;
-- licensed data → bake packs carry provenance, and the test scene uses cleared assets only;
-- every feature has an off switch → caps/tier flags wired into the first pass.
-
----
-
-## 2. What Phase 1 is not
-
-- Not the planet (Phase 2), not GI or shadows (Phase 3), not vehicles/physics gameplay
-  (Phase 4), not multiplayer (Phase 6).
-- Not the final material system: PBR v0 + the toon interface only, no layered graphs, no
-  wetness/subsurface yet.
-- Not the final UI: egui is a dev tool, the game HUD stays a later authored layer.
-- Not the D3D12/Vulkan backends: the RHI must *allow* them, but only Metal ships now.
-- Not performance tuning: Phase 1 sets budgets and instrumentation; it does not chase them.
-
----
-
-## 3. Key decisions
-
-These are the decisions Phase 1 has to make. Each lists the alternatives, the choice this plan
-recommends, the reason it follows from the locked decisions, and when it can be revisited.
-A decision that turns out wrong here is cheap now and expensive in Phase 3 — that is why each
-is explicit rather than emergent.
-
-### P1-D1 — Shader authoring and pipeline
-
-| | |
+| Question | Proof |
 |---|---|
-| **Options** | (a) MSL first, HLSL/SPIR-V written separately later · (b) **Slang** single source → MSL/HLSL/SPIR-V · (c) WGSL/WESL via naga → MSL |
-| **Choice** | **Slang as the primary language, with an MSL escape hatch.** `ed_gpu` accepts precompiled MSL or SPIR-V/HLSL, so the language is a toolchain detail, not an architectural lock. |
-| **Why** | We are building one renderer over three backends, with bindless, atomics, subgroups and tier-gated features. Duplicating shaders per backend is a maintenance tax we cannot afford; WGSL/naga cannot express the Metal-specific paths cleanly. The alpha's WESL shaders stay as reference, not as the new pipeline. |
-| **Revisit** | If Slang's toolchain blocks CI or debugging, fall back to MSL-first behind the same interface; portable shaders can be translated later. |
+| Does the instance-based design fix the alpha's frame cost? | 100k instances of mixed parts at 60 fps on High, per-pass timings recorded |
+| Is the RHI the right shape for more than Metal? | The same scene renders on the minimal second backend |
+| Can geometry be a slot? | The renderer draws through the provider interface; a stub second provider can be registered |
+| Can the editor exist on this engine? | Pick an instance, move it with a gizmo, save the layer, restart, and it is where it was left |
+| Is the loop sound? | Fixed-step sim with replay hash; render interpolates |
+| Is the content path sound? | Blender glTF → `ew-bake` → `.ewpack` → on screen, deterministic, hot-reloadable |
 
-### P1-D2 — Metal binding layer
+## 3. What Phase 1 does not do
 
-| | |
-|---|---|
-| **Options** | `objc2`/`objc2-metal` · `metal-rs` · hand-written Objective-C shim |
-| **Choice** | **`objc2`-based bindings inside a private `ed_gpu_metal` backend crate**; the public RHI never exposes Metal types. |
-| **Why** | Fastest safe path to a working device/queue/layer; the crate boundary means binding problems never leak into the renderer. Phase 0 already established that `ed_metal` is a salvage reference, not a foundation. |
-| **Revisit** | If a needed API (argument-buffer tiers, counter sample buffers, capture) is missing or unsound, add a narrow C shim inside the same crate. |
+No planet, terrain or atmosphere (Phase 2). No world generation (Phase 3). No VSM or GI
+(Phase 4). No vehicles (Phase 5). No networking (Phase 7). No cluster rendering on the
+critical path (Track G may start).
 
-### P1-D3 — Frame graph vs manual passes
+## 4. Decisions in detail
 
-| | |
-|---|---|
-| **Options** | Manual encoder order per frame · explicit render graph with barriers/aliasing |
-| **Choice** | **Explicit render graph** (declared passes, read/write resources, automatic hazards and transient aliasing) with a manual escape hatch. |
-| **Why** | Phase 3 lands culling → shadow → visbuffer → resolve → GI → atmosphere → post; that is 15–25 passes with transient targets on a fixed memory budget. Hand-ordering that is how holes and leaks happen. The graph also gives us per-pass timers for free (P1-D15). |
-| **Revisit** | Keep the escape hatch: a pass may own its encoders directly where the graph gets in the way (e.g. Metal capture, compute barriers). |
+### P1-D1 — Shaders
+Slang as the single source, compiled at build time to each backend; `ed_gpu` also accepts
+precompiled backend shaders as an escape hatch. *Why:* one renderer over three APIs.
+*Revisit:* if the Slang toolchain blocks debugging on Metal, write MSL first behind the same
+interface.
 
-### P1-D4 — Frames in flight, pacing and presentation
+### P1-D2 — Metal bindings
+`objc2-metal` inside a private backend module. The public RHI exposes no Metal types.
+*Revisit:* add a narrow Objective-C shim inside the module if an API is missing.
 
-- **Choice:** 2–3 frames in flight, mailbox-style present, vsync toggle, uncapped mode for
-  measurement, one swapchain, resize without stalling more than one frame.
-- **Why:** latency and determinism are unrelated to presentation depth, but input latency and
-  throughput are. Uncapped + timestamps is what makes the harness meaningful.
-- **Revisit:** frame pacing/latency work belongs to Phase 3/7, after there is enough GPU work to
-  pace.
+### P1-D3 — Frame graph
+Passes declare the resources they read and write and in which state. The graph orders
+passes, aliases transient targets, emits state transitions for backends that need them, and
+gives every pass a GPU timer. A pass may take manual control where needed.
 
-### P1-D5 — Threading model
+### P1-D4 — Frames in flight and pacing
+Two to three frames in flight; vsync toggle; uncapped mode for measurement; resize without
+a stall longer than one frame.
 
-| | |
-|---|---|
-| **Options** | Single main thread · dedicated render thread · job graph across both |
-| **Choice** | **Main thread orchestrates (input → sim → submit), `ed_runtime` worker pool for IO, baking and upload staging; one graphics queue + one copy queue; no dedicated render thread yet.** |
-| **Why** | Simplicity now buys determinism and low input latency; the GPU-driven renderer in Phase 3 removes most CPU submission cost anyway. A render thread is a performance tool, not an architecture. |
-| **Revisit** | Add a render thread only if CPU submission is measured as the bottleneck on the High tier. |
+### P1-D5 — Threading
+The main thread runs input → sim → frame build → submit. `ed_runtime` pools do IO, decode,
+generation and upload staging. No render thread until CPU submission is measured as a
+bottleneck; with GPU-driven drawing it should not be.
 
-### P1-D6 — Scene/entity representation (no general ECS)
+### P1-D6 — Scene representation
+Our own generational entity index and typed arrays. The render path consumes flat instance
+pools built per frame, never entity queries. Gameplay may adopt a general ECS later, behind
+the sim boundary.
 
-| | |
-|---|---|
-| **Options** | Adopt `hecs`/`bevy_ecs` · own generational entity index + typed SoA stores |
-| **Choice** | **Own minimal entity index + typed stores.** Gameplay may adopt a general ECS later; the **render path consumes flat, frame-built draw data, never an ECS query.** |
-| **Why** | Bevy's ECS was never the bottleneck; the renderer was. Deterministic sim wants explicit, ordered, contiguous arrays; the GPU wants flat buffers; streaming wants ownership it can count. A general ECS adds reflection/dynamic dispatch we do not need yet. |
-| **Revisit** | Phase 4 can introduce `hecs` for gameplay entities if systems get numerous — behind the sim/scene boundary, never in the renderer. |
+### P1-D7 — Precision
+f64 body-fixed truth. Chunks and instances store positions relative to their node origin.
+Each view computes one camera-relative f32 origin per frame. *Never revisited.*
 
-### P1-D7 — Precision and transform model
-
-- **Choice:** truth is **f64 body-fixed**; assets and sim store f64 node transforms; the render
-  boundary computes **one camera-relative f32 origin per view per frame**; nothing in an asset
-  or a shader stores a world-space f32 position.
-- **Why:** this is the decision that lets Phase 2 orbit ground geometry and Phase 5 Moon
-  geometry share one renderer. If Phase 1 bakes f32 world positions into the asset format, the
-  planet spike inherits a precision bug it cannot fix.
-- **Revisit:** never — this is a one-way door.
-
-### P1-D8 — Depth and projection convention
-
-- **Choice:** reverse-Z, infinite far plane, 32-bit depth, documented clip-space convention,
-  one shared `ed_gpu` view-projection helper. Alpha already proved this works; Phase 1 makes it
-  the only path.
-- **Why:** orbit-scale depth ranges are impossible with a forward-Z near/far pair; the alpha's
-  switch existed partly to hide that.
+### P1-D8 — Depth
+Reverse-Z, infinite far plane, 32-bit float depth, one shared projection helper.
 
 ### P1-D9 — Binding model
+Bindless tables owned by `ed_gpu`: Metal argument buffers, descriptor indexing on Vulkan,
+descriptor heaps on D3D12. Instances and materials carry indices.
 
-- **Choice:** **Metal 3 argument-buffer bindless where the tier supports it**, with a
-  descriptor-index fallback; resource tables owned by `ed_gpu`; caps queried at startup
-  (P1-D10).
-- **Why:** cluster DAG, instancing and visbuffer resolve all want large, dynamic bind sets. If
-  Phase 1 ships a per-draw `setTexture` style API, Phase 3 rewrites it.
-- **Revisit:** tier 1 (no argument buffers) is a Low-tier path, decided by caps, not code forks.
+### P1-D10 — Capabilities and tiers
+A `Caps` struct probed at startup (argument-buffer tier, 64-bit atomics, timers, HDR, table
+sizes, ray tracing, memory). Tiered features are gated by named flags the harness can force.
 
-### P1-D10 — Capability probe and tier gating
+### P1-D11 — Pack format and geometry slot
+`.ewpack`: a container of content-addressed chunks with a manifest (`contracts/pack.md`).
+A mesh chunk holds a **required discrete LOD chain** (meshoptimizer simplification, with
+error per level) and an **optional cluster-DAG chunk** (F3). Bakes are deterministic and
+tested. Every chunk carries provenance and licence ids.
 
-- **Choice:** a `Caps` struct probed at startup: argument-buffer tier, **64-bit integer
-  atomics**, counter sample buffers, EDR, max bindless table sizes, optional ray tracing, and
-  GPU family. Every feature below `Ultra` is gated by a named flag the harness can force on/off.
-- **Why:** the visibility buffer wants a 64-bit packed depth+id; if the hardware cannot, the
-  32-bit packed path is a *design branch decided by probe*, not a Phase 3 emergency. Same for
-  GI and upscalers later.
-- **Revisit:** caps are data; adding a cap is cheap. Guessing a cap is not.
+### P1-D12 — Materials v0
+One material interface, two models: PBR (GGX) and toon, both reading the same lighting
+inputs. Materials are data files with hot reload.
 
-### P1-D11 — Asset format and cluster builder
+### P1-D13 — Textures
+BC7 on desktop, ASTC later for mobile; mips at bake; colour space per role; textures are
+addressed as pages with stable ids so virtual texturing in Phase 2 needs no material changes.
 
-| | |
+### P1-D14 — Developer UI and editor UI
+egui, drawn by a small painter written on `ed_gpu`, is used for developer overlays and for
+the editor (F6). The game's HUD and menus are a separate authored layer later.
+
+### P1-D15 — Harness
+`ew --headless` renders offscreen along a scripted camera path and writes PNG and CSV (frame
+times, p99, per-pass GPU time, memory, instance counts). Hosted CI runs CPU tests only. GPU
+smoke and perf runs are local or on a self-hosted Mac, and are labelled as such.
+
+### P1-D16 — Sim loop
+Fixed 60 Hz with an accumulator, a step clamp and render interpolation. Box3D behind
+`ed_sim` with a minimal world: ground, a stack of boxes, a character-mover probe. Replay hash
+test in CI (F10).
+
+### P1-D17 — Time boundary
+The sim reads only (fixed dt, input snapshot, seed, data version, UTC). Rendering, UI and
+audio may read the wall clock. Interpolation uses the accumulator fraction.
+
+### P1-D18 — Salvage from the alpha Metal path
+The alpha's Metal renderer is the **look reference**, using the Phase 0 captures. Its
+structure (entity mirror, merged meshes, per-tile draws) is not reused. Pure shader maths
+(atmosphere, clouds, tone mapping, terrain material, MetalFX setup) is ported with a test
+that compares against the reference capture. The ocean FFT, probe GI and shadow caching are
+not ported (D13, D14).
+
+### P1-D19 — Proving-ground scene
+Described the way the world will be: a few nodes, a pack, a layer file. Contents: a ground
+patch; a PBR material grid; one scanned asset; **100,000 instances of 20 to 50 distinct
+parts** (windows, doors, wall panels, props, trees) laid out as blocks with long sight lines
+and occluders; a skinned character; sun and analytic sky; a scripted camera path.
+
+### P1-D20 — Budgets (M3 Pro, 1440p, High)
+
+| Item | Target |
 |---|---|
-| **Options** | Load glTF at runtime · adopt Solstice's format wholesale · own container + own DAG |
-| **Choice** | **Own versioned `.ewpack` container** (binary header + TOML/JSON manifest + content-hashed blobs: clusters, meshes, textures, materials, collision, provenance/licence) and a **DAG builder using `meshoptimizer` primitives** (meshlets, simplification, partitioning) with our own grouping/cut rules and determinism tests. |
-| **Why** | The renderer needs clusters and cuts, not glTF; the asset pack is also where licence/provenance and version pinning live (`docs/data/README.md`). Solstice's builder is a reference for the algorithm, not a format to inherit. `meshoptimizer` is mature, fast and deterministic enough to be tested. |
-| **Revisit** | If the builder cannot hit bake-time budgets on real Megascans meshes, add offline parallel bake shards — not a different format. |
+| Empty frame, GPU | under 2 ms |
+| Proving ground, 100k instances | 60 fps; no frame over 25 ms after warm-up |
+| Culling pass | under 1 ms |
+| CPU frame build with 100k instances | under 1 ms (nothing per-instance on the CPU) |
+| Bake 100 MB of glTF | deterministic hash across runs |
+| Sim replay, 60 s, 1,000 bodies | identical hash across runs and processes |
+| Shader or material hot reload | no restart, no leak |
 
-### P1-D12 — Material model v0 (PBR + toon interface)
+Numbers are recorded by the harness. A missed number is reported with its diagnosis.
 
-- **Choice:** one material interface with two implementations: **PBR/GGX** (base colour,
-  metal/rough, normal, AO, emissive, transmission later) and **Toon** (banded response +
-  outlines) sampling the *same* lighting inputs. Material graphs are **data** (schema + hot
-  reload), not code. One material system, no second renderer.
-- **Why:** VISION §5/§6 — realistic lighting everywhere, cel as an opt-in character material,
-  NPCs PBR-only. Phase 1 exists to prove the interface can express both before either is
-  polished.
-- **Revisit:** the node-graph editor is later; Phase 1 only needs the schema + a fixed set of
-  nodes the test scene uses.
+### P1-D21 — Geometry-provider interface (F3)
+`ed_render` draws opaque geometry only through `GeometryProvider`
+(`../plans/renderer.md` §3). Provider 1 (discrete LOD, compute culling, indirect draws,
+dithered LOD cross-fade) is the Phase 1 gate. The shared inputs are built now: instance
+pools with stable ids and previous-frame transforms, the depth pyramid, visibility targets.
 
-### P1-D13 — Texture pipeline and virtual-texture readiness
+### P1-D22 — Minimal second backend (F7)
+The backend chosen in Phase 0 (W4f) renders the proving ground: resources with states,
+bindless, indirect draws, compute culling, present. No performance target.
 
-- **Choice:** BC7 for desktop (ASTC for mobile later), mips generated at bake, explicit colour
-  space per texture role, and **texture pages addressed the way virtual texturing will need**
-  (stable page ids + indirection table) even though the VT streaming is Phase 2.
-- **Why:** Phase 2's imagery VT cannot be bolted onto a "one texture per material, bound
-  directly" assumption. Naming pages now costs nothing; renaming them later touches every
-  material.
+### P1-D23 — Addressing and layers before the planet (F1, F5)
+`NodeId`, `ObjectId`, the pack manifest keyed by node, and the override-layer reader and
+writer exist and are used by the proving ground. Phase 2 adds a planet under these types; it
+does not introduce them.
 
-### P1-D14 — Dev UI vs game UI
+### P1-D24 — Multi-view and picking
+A `View` abstraction (camera, target, flags) used by the main camera, shadow cascades and
+editor viewports. An id target and a readback path return the `ObjectId` under a pixel.
 
-- **Choice:** **egui** for dev overlays (stats, culling, pass timers, material tweaks); the
-  game HUD/menu stays a separate authored layer (`ed_ui`, later) that consumes game state.
-- **Why:** debug UI must be fast to change and must never define the game's look. Coupling them
-  is how a shipped game ends up looking like an editor.
+## 5. Workstreams
 
-### P1-D15 — Headless harness and CI GPU strategy
+### W1 — `ew` shell
+winit window, input mapping, configuration, game and editor modes, fixed-step main loop,
+clean shutdown. *Done when:* the loop runs sim and render at independent rates with the
+interpolation fraction exposed.
 
-- **Choice:** `--headless` renders offscreen with a deterministic camera path, writes PNG +
-  CSV (frame times, p99, per-pass GPU timestamps), and can trigger a Metal capture; CI compiles
-  and runs CPU-only tests (bake determinism, loop math, asset validation); **GPU smoke and perf
-  gates run on a self-hosted macOS runner or locally via `xtask gpu-smoke`** as an explicit,
-  documented step.
-- **Why:** "measure first" is a standing rule, and hosted macOS CI is not a reliable Metal GPU.
-  Pretending CI measures GPU performance would corrupt every later number.
+### W2 — `ed_gpu`
+Public interface from `contracts/rhi.md`. Metal backend: device, resources, bindless
+tables, pipelines from Slang output, compute, indirect draws, timers, capability probe, HDR
+presentation. Then the minimal second backend. *Done when:* both backends pass the same RHI
+test suite subset and render the proving ground.
 
-### P1-D16 — Sim loop and Box3D integration depth
+### W3 — `ed_render` base
+Frame graph; views; instance pools; compute culling (frustum, depth pyramid); provider 1;
+visibility buffer and material resolve; PBR and toon v0; baseline lighting (cascaded
+shadows, sky ambient, GTAO); tone mapping ported from the alpha and compared to the
+reference capture; skinned mesh path (basic); id target and picking. *Done when:* the
+proving ground meets P1-D20.
 
-| | |
+### W4 — `ed_pack` and `ew-bake`
+Container, chunk kinds for mesh, texture, material, collision, prefab and instances;
+manifest keyed by `NodeId`; glTF import; LOD chain build; texture compression; prefab
+manifests; watch mode for hot reload; determinism tests. *Done when:* a Blender export
+appears in the running proving ground after save, and the bake hash is stable.
+
+### W5 — `ed_sim`
+Box3D integration in the form chosen in Phase 0; fixed step; snapshots; replay record and
+hash; debug draw through the overlay pass. *Done when:* the replay test is green in CI.
+
+### W6 — Editor stage E1 (`ed_editor`)
+egui painter on `ed_gpu`; free camera with wide speed range; stats and pass-timing panels;
+pick and inspect; transform gizmo; layer file load and save; undo for transform edits; hot
+reload wiring. *Done when:* the pick-move-save-restart check passes.
+
+### W7 — Harness and CI
+Headless mode, scripted paths, CSV and PNG output, perf comparison script, the first
+`CHANGES.md` entry with real numbers; dependency check and licence gate running on packs.
+
+### Track G (optional start)
+Cluster-DAG bake as the optional chunk and a stub provider 2 that draws the DAG's coarsest
+cut. Does not gate Phase 1.
+
+## 6. Order
+
+```
+W1 ─┬─> W2 (Metal) ─┬─> W3 ──> W6 ──> exit
+    │               └─> W2 (second backend, after W3's needs are known)
+    ├─> W4 ───────────────┘ (feeds W3 with real content)
+    ├─> W5
+    └─> W7 (from the first frame on)
+```
+
+W4 and W5 do not depend on the GPU work and can proceed in parallel sessions against the
+contracts.
+
+## 7. Exit gate
+
+- [ ] `ew` opens a Metal window; resize, HDR and shutdown are clean.
+- [ ] Proving ground renders through the public RHI at the P1-D20 budgets, with per-pass
+      timings in the harness output.
+- [ ] No per-instance CPU work in the frame; culling and LOD selection are on the GPU.
+- [ ] LOD cross-fades are free of popping on the scripted path.
+- [ ] The same scene renders on the second backend.
+- [ ] PBR and toon materials render under the same lighting; tone mapping matches the
+      alpha reference capture within the agreed tolerance.
+- [ ] `ew-bake` output is deterministic, carries provenance, and passes the licence gate.
+- [ ] Blender export → on screen without restarting.
+- [ ] Sim replay hash is stable across runs and processes; CI green on macOS and Windows
+      for CPU tests.
+- [ ] Editor E1: pick, inspect, move, save layer, restart, object is in place.
+- [ ] `NodeId`, `ObjectId`, pack manifest and layer files are the proving ground's actual
+      data path.
+- [ ] `CHANGES.md` has the Phase 1 numbers.
+
+## 8. Failure branches
+
+| If | Then |
 |---|---|
-| **Choice** | **Fixed 60 Hz sim with accumulator, max-steps clamp, interpolated render, input sampled at step boundaries, and a replay hash.** Box3D is integrated behind `ed_sim` with a **minimal** world: a heightfield ground, a stack of boxes, and a character-mover probe — **no vehicles**. |
-| **Why** | Phase 0 proved the backend; Phase 1 proves the *plumbing* (fixed step, replay, sim→render interpolation, determinism boundary) on the cheapest possible content. Vehicles in Phase 4 then inherit a trusted loop, and a replay that desyncs is caught in week 2, not month 4. |
-| **Revisit** | Step rate (60 vs 120 Hz) is a data-driven choice after Phase 4 feel tests; the loop must allow both. |
+| Slang blocks progress on Metal | MSL first behind the shader interface; add Slang when the second backend starts |
+| The second backend exposes an RHI flaw | Fix the interface now; this is the intended outcome |
+| 100k instances miss budget | Diagnose with pass timers: culling, vertex cost, overdraw or bandwidth. Adjust LOD error thresholds and part budgets before touching architecture |
+| Box3D integration destabilises the loop | Ship the loop with a kinematic stub behind `ed_sim`; integrate Box3D at the start of Phase 5 |
+| egui painter on the RHI is costly | Keep it; it is developer UI. Limit redraw rate |
+| Picking readback stalls | Read back asynchronously, one frame late |
 
-### P1-D17 — Time and determinism boundaries
+## 9. What Phase 2 receives
 
-- **Choice:** sim consumes only `(fixed dt, input snapshot, world seed, pinned data version,
-  UTC)`; render, UI, audio and logging may use wall-clock freely. Render interpolation uses an
-  explicit `alpha` from the accumulator, never wall-clock.
-- **Why:** the network model depends on replayable sim; anything that reads the wall clock in
-  sim is a desync. Making the boundary explicit in Phase 1 means Phase 6 does not have to hunt
-  for it.
-
-### P1-D18 — Salvage policy from `ed_metal` (provisional)
-
-- **Choice:** **reimplement** device/layer/passes/timers against the new RHI and **copy with
-  tests** only pure, self-contained shader/helper maths. **Do not port** the ocean FFT, the
-  probe-GI bake or the cached-shadow scheme: those were Metal/Bevy-era bandaids and are
-  replaced by a from-scratch water model (`docs/plans/water.md`), **voxel/Lumen-class dynamic
-  GI** and **virtual shadow maps**. Never copy the Bevy↔Metal entity mirror.
-- **Why:** the mirror is the reason the alpha had three renderers (S1). Salvage the knowledge,
-  not the coupling — and for the three systems the owner has explicitly rejected, the
-  "knowledge" is the list of failure modes, not the code.
-- **Revisit:** D18 is deliberately **soft** right now. If Phase 3's GI/shadow/water design
-  lands better by reusing a specific proven routine (e.g. an FFT for small local wave detail),
-  that is a fresh decision with new evidence, not a default salvage.
-
-### P1-D19 — Test scene definition
-
-- **Choice:** procedural **"renderer proving ground"**: ground plane, PBR material grid
-  (dielectric/metal/roughness sweep), one Megascans-converted scanned asset (from Phase 0 W4c),
-  one cluster-LOD asset shown at three distances with cut transitions, a simple sun + analytic
-  sky, a moving camera path, and an egui overlay. No planet, no city, no gameplay.
-- **Why:** isolates renderer validation from world generation; every future renderer change can
-  be A/B'd on a scene that never changes except when we mean it to.
-
-### P1-D20 — Phase 1 budgets (numbers to hold the phase to)
-
-| Item | Target (M3 Pro, 1440p, High) |
-|---|---|
-| Empty frame (clear + UI) GPU time | < 2 ms |
-| Test scene, 1M tris + 100 clusters | 60 fps, no frame > 25 ms after warm-up |
-| Loop overhead (sim + submit, no GPU wait) | < 0.5 ms/frame |
-| Bake: 100 MB source glTF → pack | < 60 s, deterministic hash across runs |
-| Sim replay: 60 s, 1k boxes | state hash identical across runs/processes |
-| Shader hot reload | < 1.5 s, no restart, no leak |
-| Asset hot reload | < 2 s for a material/texture change |
-
-Budgets are recorded in the harness output, not asserted in prose.
-
----
-
-## 4. Workstreams
-
-### W1 — `ew` app shell (window, input, loop, config)
-
-**Steps:** winit window + macOS layer wiring; CLI/config (`--headless`, `--scene`, `--frames`,
-`--capture`, `--no-vsync`, tier flags); logging/tracing; input abstraction; fixed-step
-accumulator + interpolation; pause/time-scale; clean shutdown; panic handling that still frees
-GPU resources.
-**Artifact:** `ew` opens a Metal window, runs the loop, resizes and closes cleanly.
-**Done when:** loop determinism tests pass (step counts independent of frame rate) and input is
-sampled at step boundaries.
-
-### W2 — `ed_gpu` Metal backend
-
-**Steps:** device/queue/layer; swapchain + resize + EDR/colour-space; buffers/textures with
-staging + residency; pipeline cache (render/compute); argument-buffer bindless + fallback;
-samplers; fence/semaphore model with N frames in flight; timers (counter sample buffers with
-CPU fallback); capture hooks; debug labels; caps probe; shader compile + hot reload (P1-D1/D2
-toolchain).
-**Artifact:** a backend that can run a trivial lit pass and a compute pass with timestamps.
-**Done when:** caps print correctly on the M3 Pro and the test scene can be rendered through
-the public RHI without Metal types outside `ed_gpu_metal`.
-
-### W3 — `ed_render` bootstrap (frame graph, passes, test scene)
-
-**Steps:** render graph with transient aliasing + per-pass timers; depth/reverse-Z helpers;
-mesh + cluster upload path; PBR v0 + toon interface; analytic sky/sun and a simple shadow map
-(placeholder for the Phase 3 virtual shadow map system); egui overlay; the proving-ground
-scene (P1-D19).
-**Artifact:** the test scene at budget with an egui stats panel and per-pass timings.
-**Done when:** budgets P1-D20 hold or the gap is documented with a plan.
-
-### W4 — `ed_assets` bake CLI v1
-
-**Steps:** glTF (and FBX→glTF converted) ingestion with errors that name the asset; meshlet
-clustering + simplification + DAG grouping; cut generation + watertightness check; material
-extraction into the schema; texture compression BC7 + mips; collision placeholder; `.ewpack`
-writer with manifest, content hash, provenance/licence fields; deterministic bake test in CI.
-**Artifact:** `ew-bake asset.gltf -o asset.ewpack` + a validation report.
-**Done when:** the Phase 0 Megascans sample and a synthetic 1M-tri mesh both bake, load and
-render with stable hashes.
-
-### W5 — `ed_sim` loop integration
-
-**Steps:** `ed_sim` public API (world, bodies, step, snapshot, replay record/play); Box3D
-backend behind it with the minimal Phase 1 scene (heightfield + box stack + character mover
-probe); determinism/replay tests across runs and processes; sim→render interpolation data.
-**Artifact:** replay hash test in CI + a box stack that falls identically every run.
-**Done when:** CI proves identical hashes on macOS and Windows (CPU-only), and the renderer can
-draw the interpolated state.
-
-### W6 — Observability and the harness
-
-**Steps:** `--headless` offscreen path; deterministic camera path; CSV schema (frame, cpu, gpu,
-passes, memory, draws, tris); p99 and hitch detection; PNG snapshot; Metal capture trigger;
-`xtask gpu-smoke` and `xtask bake-check`; documented local/self-hosted GPU CI procedure.
-**Artifact:** one command produces the Phase 1 performance report.
-**Done when:** the same command reproduces numbers within noise across two runs.
-
-### W7 — Contracts implemented, CI wired
-
-**Steps:** implement the Phase 0 contracts at the seam (asset manifest, sim API, generation
-placeholder that emits part instances, persistence stub not yet used); enforce dependency rules
-in CI (`ed_sim` must not depend on `ed_gpu`/`ed_render`; server crates must not depend on GPU
-crates); license gate active on every pack; `CHANGES.md` entry with the first real numbers.
-**Artifact:** green CI matrix + failing check demonstrated for a forbidden edge.
-**Done when:** the rules from `ROADMAP.md` are executable, not aspirational.
-
----
-
-## 5. Week by week (indicative)
-
-| Week | Focus | Checkpoint |
-|---|---|---|
-| 1 | W1 + W2: window, loop, device, swapchain, one lit pass, timers, caps probe | A textured mesh presents at 60 fps with timestamps |
-| 2 | W3 + W4 start: frame graph, test scene, bake CLI ingestion/clustering | Test scene renders; a glTF bakes to a pack and loads |
-| 3 | W4 finish + W5 + W6 + W7: textures/DAG cuts, Box3D loop, harness, CI | Exit gate + first performance report |
-
-If W2 (RHI) is late, W4 (bake) proceeds in parallel because it has no GPU dependency — the two
-halves of the phase are deliberately decoupled so a backend problem cannot stall the asset
-pipeline.
-
----
-
-## 6. Exit gate (all must be true)
-
-- [ ] `ew` presents a Metal window; resize, EDR/colour management and clean shutdown work.
-- [ ] The proving-ground scene renders through the public RHI at the P1-D20 budgets, with
-      per-pass timestamps and an egui stats panel.
-- [ ] Frame graph owns transient resources; no pass leaks, no manual barrier bugs on resize.
-- [ ] Cluster-LOD asset renders with visible, watertight cuts at three distances.
-- [ ] PBR v0 and the toon interface both render on the same scene and the same lighting inputs.
-- [ ] `ew-bake` produces a deterministic `.ewpack` with manifest, content hash and licence
-      provenance; validated by a CI test.
-- [ ] Fixed-step loop + Box3D replay hash is identical across runs and processes; CI green on
-      macOS + Windows for the CPU parts.
-- [ ] Headless harness writes PNG + CSV with p99, per-pass GPU time and memory; capture works.
-- [ ] Dependency rules enforced by a failing check; licence gate runs on packs.
-- [ ] `docs/CHANGES.md` has the first real Phase 1 numbers; Phase 2 tasks are unblocked.
-
----
-
-## 7. Failure branches (decided in advance)
-
-| If… | Then… |
-|---|---|
-| Slang integration blocks CI/debugging | Ship MSL-first behind the `ed_gpu` shader interface; add Slang when the toolchain is proven. No renderer code changes. |
-| `objc2`/`metal-rs` lacks a needed API or is unsound | Add a narrow Objective-C shim inside `ed_gpu_metal`; never widen the public RHI. |
-| 64-bit atomics unavailable on target GPUs | Use the 32-bit packed visibility buffer path (probe-gated), and record the quality/perf trade in the caps matrix. |
-| Frame graph over-engineers early passes | Keep manual pass escape hatch; ship the graph with the subset the test scene needs, grow it in Phase 3. |
-| Cluster builder too slow on Megascans meshes | Parallel bake shards + aggressive simplification pre-pass; keep the format. |
-| Metal capture/timestamps unreliable in CI | CPU frame timing remains authoritative for CI; GPU timings are local/self-hosted and labelled as such. |
-| Box3D integration destabilises the loop | Keep the loop's step/replay interface, ship Phase 1 with a stub backend (kinematic boxes), integrate Box3D in Phase 4 — the determinism plumbing is what Phase 1 must prove. |
-| Test-scene budgets are missed | Do not tune features that Phase 3 replaces; record the gap, identify whether it is submission, bandwidth or the RHI, and gate the phase on the *diagnosis*, not the number. |
-
----
-
-## 8. How Phase 1 serves the goals (`docs/VISION.md`)
-
-| Goal | What Phase 1 does for it |
-|---|---|
-| §2 north-star loop | Delivers the loop skeleton (window → fixed step → submit → interpolate) that the whole loop will run on |
-| §3 one continuous planet | Casts the f64-camera-relative seam and reverse-Z depth the planet renderer will live inside; no f32 world positions in assets |
-| §4 shared universe | Executable determinism boundary + replay hash + licence-stamped bake packs |
-| §5 photoreal + optional cel | Material interface proven for both PBR and toon; BC7/pages ready for the VT imagery of Phase 2 |
-| §6 avatars/NPCs | Asset pipeline ingests the owner's GLB and skinned content; the render path accepts skinned meshes (basic) |
-| §7 vehicles/destruction | Box3D behind `ed_sim` with a trusted fixed-step/replay loop before any vehicle exists |
-| §8 handcrafted + procedural | Bake pipeline treats authored assets as first-class content; part-instance contract scaffolded |
-| §9 stations/Moon/fourth world | Body-agnostic asset/transform contracts; no Earth-specific assumptions in the RHI |
-| §10 data licensing | Every pack carries provenance; the licence gate runs on the first pack |
-| §12 interiors | Asset/material contracts support interior parts; no architectural decision blocks them |
-| §11 locked decisions | Metal-first RHI, no Bevy/wgpu, deterministic sim, own formats — all become code |
-
-**One sentence:** Phase 1 builds the spine — window, frame, fixed step, bake pack — thin enough
-to finish in three weeks and real enough that every later phase is an extension rather than a
-rewrite.
-
----
-
-## 9. Handoff to Phase 2 (what Phase 2 may rely on)
-
-- A camera-relative f32 renderer with f64 truth, reverse-Z, and a frame graph that can add
-  planet passes without restructuring.
-- A working RHI with bindless, timers, caps probing and HDR presentation.
-- A deterministic bake pipeline and asset format that can carry planet tiles, imagery pages and
-  materials.
-- A fixed-step sim with replay hashes and an explicit render interpolation seam.
-- A harness that measures every later claim.
-
-**What Phase 1 must *not* pre-empt:** the planet quadtree and virtual-texturing *internals*
-(Phase 2), the occlusion/visbuffer/GI design (Phase 3), vehicle models (Phase 4), the netcode
-(Phase 6). The seams exist; the implementations belong to their phases.
+A renderer that accepts new passes and new instance sources without restructuring; an RHI
+proven on two APIs; a chunk format and bake tool; node and object ids in use; a harness that
+measures load time and frame time; an editor that Phase 2 extends with go-to and node
+overlays.

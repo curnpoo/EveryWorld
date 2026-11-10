@@ -1,28 +1,31 @@
 # Goals — status board
 
-The goals themselves now live in **`docs/VISION.md`** (owner's words, verbatim, with the
-systems that deliver each). This file is only the status tracker; it exists so older links
-keep working. Update statuses as phases land (`docs/ROADMAP.md`).
+The goals are in `VISION.md` (owner's words). This file tracks where each one is delivered.
+Phases are those in `ROADMAP.md`.
 
-| Vision section | Goal | Status (2026-11-08) |
+| Vision section | Goal | Delivered in |
 |---|---|---|
-| §1 | Guided freedom, merit-based progression, home bases | Not built; `ed_store` + missions service in Phases 5–6 |
-| §2 | North-star session loop, solo then multiplayer | Phases 5 and 6 respectively |
-| §3 | One continuous planet, no flat-plane/globe switch | Phase 2 spike; alpha had the hard switch at ~200 km |
-| §4 | Persistent shared universe, visible distant launches, NPC life | Phase 6 (shards, sky events), Phase 7 (NPC schedules) |
-| §5 | Photoreal world + expressive characters (cel optional) + solarpunk built world | Phase 3 (renderer + Megascans + PBR/Toon material models) |
-| §6 | Owner GLB → VRM custom avatars (toon or PBR); NPCs max-realism PBR humans + robots | `ed_anim` Phase 3–4; avatar platform Phase 7; NPC fidelity Phase 7 |
-| §7 | Real-feeling vehicles, destruction, knockable trees | Phase 4 (Box3D + car signoff), Phase 7 (destruction) |
-| §8 | Handcrafted + guided procedural, authored hubs | Ongoing; kit + placements in Phases 1–4 |
-| §9 | Stations, Moon/Mars civilizations, lanes, fourth world | Phase 7+; fourth world is a later design exploration |
-| §12 | Building interiors — procedural floor plans + authored interiors, no door-teleports | Kit contract from Phase 3; full interiors Phase 7 |
-| §10 | Twin-Earth data library, licensed and pinned | Phase 0 registry; WorldClim + EOX replacements are P0 |
-| §11 | Custom engine, Box3D, Ubuntu server, all-in reboot | Decided; `alpha-early` preserves the Bevy alpha |
+| §1 | Guided freedom, merit-based progression, home bases | Phase 6 (plot, saves), Phase 8 (progression depth) |
+| §2 | North-star session loop | Phase 6 solo, Phase 7 shared |
+| §3 | One continuous planet, no switch | Phase 2 |
+| §4 | Persistent shared universe, visible distant launches, NPC life | Phase 7 (shards, sky events), Phase 8 (NPCs) |
+| §5 | Photoreal world, expressive characters, solarpunk built world | Phase 3 (kit on the ladder), Phase 4 (lighting, materials) |
+| §6 | Owner's character, VRM avatars, realistic NPCs | Phase 1 (skinned import), Phase 5 (animation), Phase 8 (avatars, NPC fidelity) |
+| §7 | Real-feeling vehicles, destruction | Phase 5 (vehicles), Phase 8 (destruction) |
+| §8 | Handcrafted plus guided procedural | Phase 3 (override layers, prefabs), every later phase |
+| §9 | Stations, Moon and Mars settlements, fourth world | Phase 2 (Moon as a body), Phase 6 (landing), Phase 8 onward |
+| §10 | Licensed, pinned twin-Earth data | Phase 0 (registry, gate), Phases 2–3 (acquisition) |
+| §11 | Technical decisions | `DECISIONS.md` |
+| §12 | Building interiors | Kit contract from Phase 3; interiors in Phase 8 |
+| §13 | Engine with editor; far-field view distance; streets understood; cluster geometry in parallel | Editor stages E1–E5 across Phases 1–7; far field Phase 2–3; streets Phase 3; Track G |
 
-Explicitly **not** goals (recorded to prevent scope creep in agent sessions):
+Status as of 2026-11-10: Phase 0 in progress; nothing above is delivered on `main` yet.
 
-- No currency-dependent core loop, no violence-required gameplay (VISION §1).
-- No generative-AI NPC simulation on the server (VISION §4).
-- No live ground physics from orbit — parked records (VISION §7 / architecture).
-- No separate globe renderer, no loading screens between bodies (VISION §3).
-- No further Bevy feature development; the alpha is frozen on `alpha-early`.
+Not goals:
+
+- No currency-dependent core loop; no violence-required gameplay.
+- No generative-AI NPC simulation on the server.
+- No live ground physics seen from orbit (parked records).
+- No separate globe renderer; no loading screens between bodies.
+- No further Bevy development; no engine swap (D1).
+- No in-engine mesh or material-graph editor; Blender is the asset tool (F6).

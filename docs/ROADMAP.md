@@ -1,127 +1,84 @@
 # Roadmap
 
-Updated 2026-11-08. Aligned with **`docs/VISION.md`** (what we're building, verbatim goals)
-and **`docs/plans/rearchitecture.md`** (audit + full technical plan). This file supersedes
-the old Stages A–H roadmap; the mapping and alpha history are at the bottom.
+The order of work and the gate each phase must pass. Gates, not dates (D18). Goals are in
+`VISION.md`, decisions in `DECISIONS.md`, the design in `ARCHITECTURE.md`.
 
 ## Where we are
 
-- The playable Bevy alpha is frozen on branch **`alpha-early`** (crash fixes only).
-- **`main` is now the custom-engine reboot.** All-in; no parallel Bevy feature work.
-- **Current phase: 0 — freeze and prepare.** Next: Phase 1 (engine skeleton) and Phase 2
-  (planet spike) in parallel.
-- The north star is the full session loop in `VISION.md` §2: forest drive → city → friend +
-  co-op mission → rocketport → Moon → back → your car → home → log off. Solo first
-  (Phase 5), then multiplayer (Phase 6).
+- `main` is the custom-engine rebuild. The Bevy alpha is frozen on `alpha-early`.
+- **Current phase: 0 — Prepare.** Detail: `phases/phase-0.md`.
+- Next: Phase 1 — Engine base and editor shell. Detail: `phases/phase-1.md`.
+
+## Why this order
+
+The alpha looked good, ran badly, loaded slowly and had gaps. Those are foundation problems,
+so the foundation is built first and in dependency order: the engine base (1), then the
+planet with far-field and streaming (2), then world content on the ladder (3). Rendering
+quality (4) comes after there is a complete world to light. Cluster geometry runs alongside
+as Track G and never blocks a gate. The editor grows a stage in each phase.
 
 ## Phases
 
-| # | Name | Goal | Exit gate | Status |
-|---|---|---|---|---|
-| 0 | Freeze & prepare | Determinism tests, baselines, vendor study, crate skeleton, data registry started | Repo ready for parallel engine work | **Now** |
-| 1 | Engine skeleton | `ew` app + `ed_gpu` Metal backend + fixed-step loop + bake CLI | Test scene renders natively; headless perf harness works | Next |
-| 2 | Planet spike | One continuous cube-sphere Earth; ground↔orbit with no switch; procedural Moon | Unbroken ground→orbit→ground recording at budget | Next (parallel) |
-| 3 | Renderer core | Cluster DAG + GPU cull + visbuffer + VSM shadows + voxel/Lumen-class GI + from-scratch water + geometric foliage + cel material | Forest + city 60 fps High tier, fixed memory, no streaming holes | |
-| 4 | Sim & vehicles | Box3D, character mover + boots, real car, driveable roads v2, parked records | Forest→city drive signoff; park→orbit→return works | |
-| 5 | Golden path solo | Rocket, Moon landing, save/load, housing plot | Whole north-star loop solo, recorded | |
-| 6 | Multiplayer | Directory + region shards, prediction, shared vehicles, co-op mission, sky events | Two clients share car + mission; launch seen cross-region; 8-player hub | |
-| 7 | Living world & polish | NPC schedules, traffic, dialogue, mission variety, destruction, hardware RT reflections, GI/water polish, weather, MotionBricks eval | World feels populated on a gaming-PC server | Ongoing |
-| 8 | Platforms & ship | Windows D3D12, then iOS/Android tiers, packaging, perf gates | Ships on macOS + Windows; mobile tier proven | Later |
+| # | Name | Builds | Exit gate |
+|---|---|---|---|
+| 0 | **Prepare** | Frozen alpha with look and perf baselines; determinism harness; spikes; data registry and licence gate; crate skeletons and CI; contracts | Every later phase can start without an unanswered foundation question (`phases/phase-0.md` §5) |
+| 1 | **Engine base + editor shell** | `ew`, `ed_gpu` (Metal + minimal second backend), frame graph, GPU instance renderer with the discrete-LOD provider, `ed_pack` and `ew-bake`, fixed-step loop with Box3D, addressing and layer types, editor stage E1, harness | 100k mixed instances at 60 fps on High with per-pass timings; same scene on the second backend; pick and move a prefab and reload it from its layer file |
+| 2 | **Planet, far field and streaming** | `ed_planet` quadtree, horizon culling, virtual-textured terrain, atmosphere, cloud shell, ocean surface v0, R3/R4 bake and globe pack, `ew-tiles` v1, staged uploads, Moon as a body, editor stage E2 | One unbroken recording street-level → orbit → Moon view → back with no holes or representation switch; city lights visible from orbit; spawn-to-complete-view within the budget set in Phase 0 |
+| 3 | **World content on the ladder** | `ed_world` refactor to R0–R2 output, streets pipeline, buildings from Overture with the height rule, foliage ladder, override layers applied in generation, deltas, editor stage E3 | Fly from orbit into three reference cities with no pops at 60 fps on High and fixed memory; drive three routes with no road gaps; a landmark placed in the editor is visible from 50 km and survives a re-bake |
+| 4 | **Rendering quality** | VSM, voxel GI, full water, volumetric clouds, material library and Megascans, foliage shading, hardware RT on Ultra | Reference scenes match or beat the Phase 0 look captures at the High budget |
+| 5 | **Simulation and vehicles** | Character mover and rocket boots, car model, planes, boats, parked records, traffic on the nav graph, editor stage E4 (markers, spawners) | Car feel sign-off on a forest road and a city street; park a car, go to orbit, return, and it is there |
+| 6 | **Golden path, solo** | Rocket, Moon landing, saves, housing plot, first missions authored in the editor | The whole north-star loop (`VISION.md` §2) played solo in one recording |
+| 7 | **Multiplayer and persistence** | Directory and shards, QUIC protocol, prediction, shared vehicles, co-op mission, sky events, server-side deltas, editor stage E5 | Two clients share a car and a mission; a launch is seen from another region; eight players in a hub on the first server |
+| 8 | **Living world** | NPC schedules and dialogue, interiors, destruction, weather, mission variety, polish | The world feels populated on the gaming-PC server |
+| 9 | **Platforms and ship** | Full Windows D3D12, iOS Low tier, Android, packaging, attribution, performance gates | Ships on macOS and Windows; mobile tier proven |
+| G | **Track G: cluster geometry** (parallel from Phase 1) | Cluster DAG bake, cut selection, compute raster, cluster streaming (`plans/renderer.md` §3) | Adopted per content type when it beats the discrete-LOD provider on the reference scenes |
 
-Phases overlap; every phase ends playable. Do not start Phase 6 before Phase 5 passes.
+Rules: every phase ends runnable. Do not start Phase 7 before Phase 6 passes. Phases 4 and 5
+may overlap. A failed gate is recorded with its diagnosis; the gate is not edited to pass.
 
-**Pacing (owner, 2026-11-09):** this is deliberately a multi-month project — expect roughly
-**6–10 months to the full vision**, and that is fine. For calibration: everything in the
-`alpha-early` alpha was built in **4 days** with AI coding models, so velocity is high, but
-the phase gates exist so speed never strands the project in an unplayable state. Do not
-compress the gates to chase dates.
+## Reference scenes and routes
 
-## Phase 0 tasks (this week)
+Used by every perf and look comparison from Phase 0 on: Shibuya (dense city), Manhattan
+(tall city), Aix-en-Provence (old town), Marrakech (arid), Zermatt (alpine), a dense forest,
+open ocean and coast, low flight, the ascent to orbit, and the golden-path route.
 
-Full detail — philosophy, workstreams, pass criteria, exit gate, failure branches and the
-goal mapping — is in **`docs/phases/phase-0.md`**. Summary:
+## Standing rules
 
-| # | Workstream | Artifact |
-|---|---|---|
-| W1 | Branch & repo hygiene | Tagged `alpha-early`, clean `main`, untracked triage |
-| W2 | Forensic alpha baseline | Dated six-scene + golden-path perf report (fps/p99/VRAM/draws/tris) |
-| W3 | Determinism harness | Per-subsystem golden-hash tests, macOS + Windows CI, triaged failures |
-| W4 | Dependency spikes | Box3D determinism/perf decision · Solstice port map · GLB+VRM+Megascans import proven |
-| W5 | Data registry & licence gate | `data/registry/*.toml`, CI gate, generated `CREDITS.md`, WorldClim/EOX decisions |
-| W6 | Crate skeletons & CI | Documented empty crates, enforced dependency edges, green CI matrix |
-| W7 | Interface contracts | Generation · sim · asset · persistence contracts in `docs/contracts/` |
+1. **No holes, no switches.** One planet renderer from ground to other bodies.
+2. **Measure first.** Every phase records frame time, p99, per-pass GPU time, memory and
+   load times on the reference scenes. Every feature has a cost per tier and an off switch.
+3. **Deterministic generation.** Pure function of (seed, pinned data version, node, rung).
+4. **One address, one height truth.** `NodeId` everywhere above `ed_data`.
+5. **Authored content is layers.** Never edit generated output.
+6. **Licensing is a shipping gate.** RED data never ships.
+7. **Docs stay current.** A `CHANGES.md` entry per landed piece of work; decisions change
+   only in `DECISIONS.md`.
 
-Rules: W1 before W2; no feature work; a failed spike takes its pre-written fallback rather than
-blocking the week. Exit gate is the checklist in `phase-0.md` §5.
+## Backlog by area (pulled into phases as they open)
 
-## Phase 1 in detail
+- **World fidelity:** lane-level roads, canopy-height forests, landmarks from tags, bridges
+  and tunnels, bathymetry, crops and food systems, soil-driven ground.
+- **Living world:** NPC home and work schedules, authored dialogue, wildlife, ambient
+  launches, population from open population grids.
+- **Interiors:** procedural floor plans and authored interiors with their own streaming tier.
+- **Progression:** ranks, trust and merit unlocks; housing plots; activity director.
+- **Space:** stations, surface bases, Moon and Mars settlements, travel lanes, the fourth
+  world, time compression.
+- **Characters:** VRM avatars, customization, realistic and robot NPCs.
+- **Rendering:** rain, snow and wet roads, motion blur, caustics, smoke.
 
-Full detail — philosophy, the 20 Phase 1 decisions (shader language, Metal bindings, frame
-graph, entity model, asset format and cluster builder, material v0, threading, caps/tiers,
-budgets), workstreams, week plan, exit gate and failure branches — is in
-**`docs/phases/phase-1.md`**. Shape: a real Metal window rendering the proving-ground scene at
-budget, a deterministic bake CLI, a fixed-step Box3D replay loop, and a headless harness that
-produces the first honest numbers.
+## Mapping from the previous roadmap (Phases 0–8 of 2026-11-08)
 
-## Phases
-
-## Standing engineering rules
-
-1. **Seamless is non-negotiable.** No loading screens or representation switches between
-   ground, orbit and other bodies. One planet renderer, one atmosphere, one cloud field.
-2. **Measure first.** Every phase records fps/p99/GPU-pass numbers on the reference scenes
-   (city, forest, mountains, ocean, low flight, ascent) plus the golden-path route. Every
-   feature declares its cost per tier and has an off switch.
-3. **Multiplayer-safe from now on.** Generation is a pure function of (seed, pinned data
-   version, UTC). Only deltas and entity state travel. Sim and render state stay separate;
-   fixed-step sim, interpolated render.
-4. **Deterministic sim.** Box3D replay tests in CI; server authoritative; no lockstep.
-5. **Data licensing is a shipping gate.** RED never ships; attribution generated
-   (`docs/data/README.md`).
-6. **Docs stay current.** `docs/CHANGES.md` entry per landed work; tick this roadmap;
-   `VISION.md` changes only when the owner changes the goals.
-
-## Feature backlog by area (pull into phases)
-
-- **World fidelity:** Overture/MS footprints + heights, lane-level roads, canopy-height
-  forests, orthophoto ground, landmarks from OSM tags, interiors, bridges/tunnels, bathymetry
-  and underwater, real crop/food systems, SoilGrids-driven ground.
-- **Living world:** NPC home/work schedules, authored dialogue and lore, traffic, wildlife
-  (start with urban birds), ambient launches, spaceport schedules, population from WorldPop.
-- **Interiors:** procedural floor plans + authored interiors, instanced interior parts with
-  their own streaming tier, walk-in buildings with no door-teleports (VISION §12).
-- **Progression:** ranks/trust/merit unlocks for tech and transport; housing plots and
-  building; activity director (guided, never overwhelming). No currency in the core loop.
-- **Space:** space stations, surface bases, Moon/Mars civilizations, travel lanes with
-  beacons and scheduled traffic, **a fourth human-manufactured industrial world** (concept
-  TBD), procedural planets and a seeded galaxy (later), time compression.
-- **Characters:** VRM avatar import, avatar material sandbox, customization, MotionBricks
-  evaluation, realistic + robot NPCs.
-- **Rendering:** hardware RT reflections/upscalers, GI and water polish, rain/snow/wet roads,
-  motion blur, night lights, destruction effects and budget-gated smoke.
-- **Platforms:** Windows D3D12 + DLSS/FSR3/RTX, iOS then Android, signing/packaging.
-
-## Mapping to the old Stages A–H
-
-| Old | New |
+| Previous | Now |
 |---|---|
-| A stabilize/measure | Phase 0 (baseline + determinism only; Bevy bug-fixing dropped) |
-| B fast (M1/M2 wgpu) | Replaced by Phases 1–3 (no wgpu detour) |
-| C together | Phase 6 (+ `ed_store` in Phase 5) |
-| D native + Nanite-like | Phases 1 + 3 |
-| E lighting | Phases 3 + 7 |
-| F play | Phases 4 + 7 |
-| G space | Phases 2 + 5 (+ Phase 7 for stations/civilizations) |
-| H platforms | Phase 8 |
+| 0 Freeze & prepare | 0, with look baseline, far-field and streets spikes, and more contracts |
+| 1 Engine skeleton | 1, plus editor shell, instance renderer, second backend, addressing types |
+| 2 Planet spike | 2, widened to far field and streaming |
+| 3 Renderer core | Split: 3 (world on the ladder), 4 (lighting and water), Track G (cluster geometry) |
+| 4 Sim & vehicles | 5 |
+| 5 Golden path solo | 6 |
+| 6 Multiplayer | 7 |
+| 7 Living world & polish | 8 |
+| 8 Platforms & ship | 9 |
 
-## Alpha history (summary, preserved on `alpha-early`)
-
-Playable real-Earth world: WGS84/ECEF math, slippy streaming, Mapterhorn elevation,
-OpenFreeMap vectors, procedural terrain/buildings/trees with 17 regions, roads v2 solver,
-robot courier with rocket boots/skydive/wingsuit, cars and planes as prototypes, engine
-audio port, volumetric clouds, atmosphere, FFT ocean, native Metal renderer with GTAO/SSR/
-probe GI/MetalFX, ghost multiplayer (protocol v5), delivery mission planner, lookdev and
-headless perf tooling. Known alpha measurements: Shibuya street level 27–32 fps settled,
-unplayable during streaming; GPU-bound with per-tile merged geometry. Those numbers are the
-baseline the new renderer must beat, not a target to keep tuning. The alpha's probe GI, FFT
-ocean and cached-shadow scheme are **not** salvage targets (VISION §11).
+The older Stages A–H and milestones M0–M10 appear only in `docs/alpha/`.

@@ -1,181 +1,218 @@
 # Architecture (target)
 
-This describes the **target** architecture for the custom-engine reboot on `main`
-(`docs/plans/rearchitecture.md`, `docs/VISION.md`). The shipped Bevy alpha and its docs are
-preserved on branch `alpha-early`; where the alpha differs, this file wins for new work.
+The target design of the custom engine on `main`. Locked choices are in `DECISIONS.md` and are
+referred to here by id (D1, F2, P1-D7). Per-system detail is in the briefs under `plans/`.
+The frozen Bevy alpha (`alpha-early`) is described in `plans/rearchitecture.md`.
 
-## The one-sentence version
+## 1. The design in one paragraph
 
-**Real data decides what is there. Authored assets and procedural rules decide how it looks.
-One continuous planet renderer covers pebble to orbit to other worlds; a deterministic
-fixed-step simulation and region-sharded servers make it one persistent, shared universe.**
+Real data decides what is there; authored assets and rules decide how it looks. The planet is
+a cube-sphere quadtree whose nodes share **one address** (F1). Each node can be shown at any
+rung of a **ladder of representations**, from individual building parts down to night lights
+seen from the Moon (F2). Node content arrives as **content-addressed chunks** from a shipped
+globe pack, our tile service, or local generation (F4). Authored content is **override
+layers** on top of deterministic generation (F5), edited in the engine's own **editor mode**
+(F6). A GPU-driven renderer draws instances through a **geometry-provider slot** (F3). A
+fixed-step simulation and region servers make it one persistent shared world.
 
-## Stack
+## 2. Stack
 
-| Layer | Choice | Why |
+| Layer | Choice | Decision |
 |---|---|---|
-| Language | Rust (2024) | One toolchain for client, server and tools |
-| Engine | **Custom (`ew`)** — winit, own scene/sim core | Bevy's entity model and renderer were the ceiling |
-| GPU | **`ed_gpu` RHI**: Metal first, D3D12 + Vulkan later | 64-bit atomics, bindless, tile memory, MetalFX/DLSS/FSR, optional HW RT |
-| Renderer | **`ed_render`**: cluster-LOD DAG, GPU culling, visibility buffer, software raster, voxel/Lumen-class dynamic GI, virtual shadow maps | Photoreal density (Solstice geometry/occlusion/GI techniques ported; MIT) |
-| Planet | **`ed_planet`**: cube-sphere quadtree per body | No flat-plane/globe switch; poles work |
-| Physics | **Box3D** (C17, MIT) behind **`ed_sim`** | Cross-platform determinism, replay, character mover, CCD |
-| Net | **`ed_net`** + **`ed_server`**: directory + region shards, prediction/interpolation, sky-event bus | One persistent universe on a gaming-PC host |
-| Persistence | **`ed_store`**: SQLite → Postgres; same format for SP saves | Plots, parked vessels, ranks, missions, NPC lives |
-| Server OS | Ubuntu LTS (headless) | Owner's host; cheap to scale later |
-| Data | `ed_data` + `data/registry/` + baked packs (`docs/data/`) | Licensed, pinned, shippable without live APIs |
+| Language | Rust 2024 for client, server and tools | D1 |
+| App | `ew`: winit window, input, main loop, game and editor modes | D1, F6 |
+| GPU | `ed_gpu`: Metal first; D3D12 and Vulkan later, one of them minimal in Phase 1 | D1, F7 |
+| Shaders | Slang, with a backend-native escape hatch | P1-D1 |
+| Renderer | `ed_render`: frame graph, GPU instance culling, geometry providers, visibility buffer, lighting tiers | F3, F9, D14 |
+| Geometry tools | meshoptimizer (simplification, meshlets, cluster LOD) | P1-D11 |
+| Planet | `ed_planet`: cube-sphere quadtree per body | D2, F1 |
+| Packs | `ed_pack`: `.ewpack` content-addressed chunk container | F4, P1-D11 |
+| Physics | Box3D behind `ed_sim` | D4, F10 |
+| Developer UI and editor | egui drawn through `ed_gpu` | P1-D14, F6 |
+| Network | QUIC (`quinn`) in `ed_net` | F11 |
+| Persistence | `ed_store`: SQLite, then Postgres; same schema for solo saves | D6 |
+| Source data | `ed_data` + `data/registry/`; DuckDB/GeoParquet in bake tools | F8, F13 |
+| Asset authoring | Blender → glTF → `ew-bake` | F6 |
 
-## Crates
+Every component above exists today as a released library or a documented API. The two young
+ones are Box3D (v0.1.0, mid-2026) and Solstice (reference only, F12); both are tested in
+Phase 0 before anything depends on them.
+
+## 3. Crates
 
 ```
-SURVIVE FROM THE ALPHA (engine-free, unit-tested)
-  ed_geo           f64 WGS84/ECEF/ENU, TileId, sun
-  ed_data          HTTP+cache, elevation, MVT, imagery providers, registry-driven sources
-  ed_flight        ISA atmosphere, drag, Mach, rocket stages
-  ed_space         ephemeris, body catalog
-  ed_engine_audio / ed_audio   engine sound kit + mixer
-  ed_runtime       job pools, budgets, LRU, scheduler
-  ed_world         world RULES: regions, biomes, archkit, roads v2, foliage placement,
-                   missions. Emits PART INSTANCES + heightfields + placements (refactored:
-                   no more merged per-tile vertex soups)
+KEPT FROM THE ALPHA (engine-free, unit-tested)
+  ed_geo           f64 WGS84/ECEF/ENU maths, sun; gains cube-sphere and NodeId maths
+  ed_data          source-data readers: elevation, land cover, climate, Overture, OSM tags.
+                   Slippy TileId lives only here
+  ed_world         world RULES: regions, biomes, archkit, streets, buildings, foliage placement.
+                   Output changes from merged meshes to instances, shells, proxies and layers
+  ed_flight        atmosphere, drag, Mach, rocket stages
+  ed_space         ephemeris, body catalog, body frames
+  ed_engine_audio, ed_audio
+  ed_runtime       job pools, budgets, residency (LRU), scheduling
 
 NEW
-  ed_planet        cube-sphere quadtree; slippy→planet sampling; virtual texturing;
-                   body frames (Earth ECEF, Moon/Mars frames); projected-error LOD
-  ed_assets        bake CLI + library: glTF/FBX (Megascans, VRM) → cluster DAG, BC7/ASTC,
-                   collision, kit manifests, data bake packs
-  ed_gpu           RHI: device, passes, bindless tables, heaps, timers, caps, upscaler + AS
-  ed_render        cull + visbuffer + software raster, VSM shadows, voxel/Lumen-class GI,
-                   atmosphere/clouds, water, post, TAA/MetalFX/DLSS/FSR, skinning,
-                   cel/toon + PBR materials
-  ed_sim           fixed-step deterministic sim: Box3D, character mover, vehicles, ragdolls,
-                   destruction, parked records, sim-LOD tiers. No render types
-  ed_anim          skeletons, retargeting, clips, motion matching, cloth/jiggle,
-                   (optional) MotionBricks client layer
-  ed_store         accounts, plots, parked vessels, ranks/trust/merit, missions, NPC lives
-  ed_net           protocol, interest management, prediction/reconciliation, sky events
-  ed_server        region shards, directory, hubs, missions service, NPC scheduler
-  ew               the app: winit, input, UI (egui debug; game UI), audio, main loop
+  ed_pack          .ewpack format: chunk kinds, content hashes, manifests, reader/writer
+  ed_assets        ew-bake: glTF → meshes (LOD chain, optional clusters), textures, collision,
+                   prefabs; world bake: node chunks for any ladder rung
+  ed_planet        quadtree selection, horizon culling, node residency, height truth,
+                   virtual texture pages, chunk requests
+  ed_gpu           RHI: device, resources with states, bindless tables, frame graph support,
+                   timers, capability probe. Backends are private modules
+  ed_render        instance pools, GPU culling, geometry providers, visibility/shading,
+                   shadows, GI, atmosphere, clouds, water, post, upscalers, picking
+  ed_sim           fixed-step sim: Box3D, character mover, vehicles, water query. No render types
+  ed_anim          skeletons, retargeting, clips, cloth
+  ed_editor        editor mode: tools, gizmos, overlays, override-layer editing, undo
+  ed_store         accounts, plots, parked vessels, progression, missions, world deltas
+  ed_net           protocol, interest by NodeId, prediction, sky events
+  ed_tiles         ew-tiles: the tile service (bake on request, cache, serve chunks)
+  ed_server        directory, region shards, missions, NPC scheduler
+  ew               the app
 ```
 
-Dependency direction: sim never imports render; server never imports `ed_gpu`/`ed_render`;
-client and server share `ed_world` + `ed_planet` generation with pinned data versions.
+Dependency rules, enforced by a CI check:
 
-## Coordinates (the big-world problem)
+- `ed_sim` and `ed_server` never depend on `ed_gpu`, `ed_render`, `ed_anim` or `ed_editor`.
+- Only `ed_data` knows slippy tiles. Everything above it speaks `NodeId`.
+- Client, tile service and server share `ed_world`, `ed_planet` and `ed_pack`, so a node
+  generated in any of the three places is the same bytes.
+- New renderer code targets `ed_gpu` only.
 
-- Truth is **f64 body-fixed** (Earth ECEF; Moon/Mars their own frames). Render is **f32
-  camera-relative**, computed from f64 node transforms. Never do far-from-origin math in f32.
-- A **floating origin** still exists for physics and local frames — precision requires it —
-  but there is no *visual* switch between representations at any altitude.
-- Reverse-Z infinite projection; far plane huge on purpose. Moving entities are carried
-  across rebases; parked/static things store f64 placements.
+## 4. Coordinates and addressing
 
-## Planet rendering
+- Truth is **f64 body-fixed** (Earth ECEF; Moon and Mars their own frames). Rendering is
+  **f32 relative to the camera**, computed once per view per frame (P1-D7). No asset, chunk or
+  shader stores a world-space f32 position; chunks store positions relative to their node.
+- Bodies sit in an explicit **frame tree** (Sun → Earth → Moon; stations under their parent).
+  Crossing between bodies changes the camera's parent frame; it does not change the renderer.
+- Reverse-Z with an infinite far plane (P1-D8). A local origin still exists for physics.
+- **`NodeId`** is the one address (F1). Node level `L` corresponds roughly to slippy zoom
+  `L + 2`: L6 nodes are about 150 km across, L12 about 2.4 km, L15 about 300 m.
+- **`ObjectId`** names one generated or authored object and survives regeneration (F5).
 
-- Six cube-sphere faces, quadtree per face; a node is a heightfield patch positioned on the
-  ellipsoid, with geomorphing between levels. Curvature lives in the vertex transform, so
-  ground, horizon, limb and orbit are the same mesh.
-- **Slippy tiles remain the data layer** (`TileId`, caches, Mapterhorn/OpenFreeMap); the
-  planet samples them. Render geometry and data addressing are decoupled.
-- **Imagery is virtual texturing** over the planet (orthophotos + raw Sentinel-2, colour
-  matched), one mip chain from orbit to boots — no satellite "layer" that turns off.
-- One **atmosphere** (Hillaire-style tables) for ground and orbital views; one **cloud
-  field** (volumetric near, 2D shell far, same climate source); **night lights** on the dark
-  side; **ocean** as a seamless planet-scale shell with a from-scratch wave/reflection/foam
-  model (brief: `docs/plans/water.md`) — the alpha FFT is not ported.
-- Moon/Mars/fourth world use the same code with different body constants; stations and the
-  manufactured world are instanced structure worlds in orbit/body frames.
+Detail: `plans/world.md` §1 and §4.
 
-## World generation pipeline
+## 5. World: ladder, streaming, authored layers
+
+| Rung | What a node shows | Indicative use |
+|---|---|---|
+| R0 | Part instances from the kit, props, individual trees | On foot, driving |
+| R1 | One shell mesh per building; tree clusters | Across a district |
+| R2 | One merged, simplified proxy mesh per node with a small atlas | Skyline from kilometres away |
+| R3 | No meshes: features baked into the node's terrain layers (height bump, albedo, emissive) | From aircraft and low orbit |
+| R4 | Imagery and night lights only | Orbit and beyond |
+
+Rungs are chosen by projected screen error, not fixed distances. A parent node draws until
+its children are resident, so there are no holes. Every rung can be baked straight from
+source data, which is why a city can be visible from 100 km without generating its interiors.
+
+Chunks for a node come from three places behind one interface (F4): the shipped **globe
+pack** (L0 to L6, all rungs that apply), the **tile service** (L7 to L12), and **local
+generation** (L13 to L15, from regional source extracts the service also delivers). Because
+generation is deterministic, a chunk's content hash is the same wherever it was produced.
+
+The world a player sees is **base generation + override layers + live deltas** (F5).
+Override layers are text files in the repo, grouped by node. Deltas are rows in `ed_store`.
+
+Detail: `plans/world.md`. Streets: `plans/streets.md`.
+
+## 6. Renderer
+
+- **GPU-driven from the start.** Instances live in GPU-resident pools with stable ids and
+  previous-frame transforms. Culling (frustum, horizon, hierarchical depth) runs in compute.
+  The CPU never loops over visible objects.
+- **Geometry providers** (F3). Provider 1 picks a discrete LOD per instance and emits
+  indirect draws. Provider 2 (Track G) selects cluster cuts and rasterises small triangles in
+  compute. Both write the same visibility and depth targets.
+- **Lighting tiers** (F9, D14). Baseline: cascaded shadows, sky ambient, GTAO. Target: virtual
+  shadow maps and voxel dynamic GI on High and Ultra; hardware ray tracing on Ultra.
+- **Planet passes:** terrain nodes with virtual-textured layers, one atmosphere model valid
+  from ground to orbit, one cloud field, ocean as a layer of the planet surface (D13).
+- **Multi-view and picking are core** (P1-D24): the editor, shadow views and reflection views
+  all use the same view abstraction; an id buffer answers "what is under the cursor".
+- **The alpha Metal renderer is the look reference** (P1-D18). Its atmosphere, clouds,
+  tone-mapping and MetalFX integration are re-implemented on the new structure and compared
+  against reference captures taken in Phase 0.
+
+Quality tiers: Ultra (desktop RTX-class), High (M3 Pro, 1440p), Low (mobile-class). Every
+feature declares its cost per tier and has an off switch.
+
+Detail: `plans/renderer.md`. Water: `plans/water.md`.
+
+## 7. Editor
+
+Editor mode runs inside `ew` (F6): free camera, go-to by coordinate or place name, time of
+day, debug overlays for nodes and rungs, picking that reports the source feature and
+generator of any object, prefab placement with gizmos and undo, markers, mission volumes,
+play-from-here, and hot reload of materials, shaders, rules and prefabs. Everything the
+editor writes is an override layer.
+
+Detail: `plans/editor.md`.
+
+## 8. Generation pipeline
 
 ```
-reference data (pinned) ──> ed_data decode ──> ed_planet sampling (height/imagery)
-                                   │
-              biome + region + settlement rules (ed_world)
-                                   │
-        terrain heights | water | road plans | PART INSTANCES | plant placements
-                                   │
-        authored kit + Megascans assets (ed_assets bakes: cluster DAG, collision, LOD)
-                                   │
-        state 03: climate/weather/ecosystem simulation (seed, UTC) + persisted deltas
+pinned source data (registry) ──> ed_data readers ──> regional extracts
+                                        │
+                 ed_world rules: region, biome, streets, buildings, foliage
+                                        │
+        per node, per rung: terrain layers | instances | shells | proxy | nav graph
+                                        │
+                       + override layers (authored)   + deltas (live)
+                                        │
+                          .ewpack chunks keyed by NodeId
 ```
 
-- One height truth per node, sampled identically by render, placement and collision.
-- Generators emit **placements of authored parts** (solarpunk kit, `docs/solarpunk/spec.md`),
-  enabling GPU instancing, destruction and interiors. Handcrafted hubs/landmarks/missions are
-  first-class content inserted into the generated world (VISION §8).
-- Deterministic from (seed, pinned data version, UTC); golden-hash CI.
+- One height truth per node, sampled identically by rendering, placement and collision.
+- Generators emit placements of authored parts (`solarpunk/spec.md`), never merged meshes,
+  at R0. Higher rungs are produced by dedicated, cheaper generators from the same inputs.
+- Generation is a pure function of (seed, pinned data version, node, rung). Time-dependent
+  state (weather, NPC schedules) additionally takes UTC and is never baked.
 
-## Rendering
+## 9. Simulation, characters, vehicles
 
-- **Geometry:** offline cluster-LOD DAG (128-tri clusters, watertight cuts), per-frame GPU cut
-  selection, two-phase occlusion culling, software raster for small clusters, one visibility
-  buffer, material resolve shades each pixel once.
-- **Streaming:** paged geometry/textures with fixed GPU memory; a parent draws until its
-  children are resident — no holes.
-- **Lighting:** one physically based model for the whole game — atmosphere + sun, **virtual
-  shadow maps (VSM)** for consistent high-resolution shadow detail at every distance,
-  **voxel/Lumen-class dynamic GI** (voxel/SDF scene traces, multi-bounce, screen-space
-  fallback), GTAO, **real reflections (screen trace first, hardware ray tracing where
-  available)**, physical exposure and filmic/ACES tone mapping, HDR + TAA/upscalers.
-- **Water:** from-scratch design (`docs/plans/water.md`): seamless planet-scale shell,
-  distance-scaled waves, shoaling from scene depth, reflections, foam/whitecaps, buoyancy
-  hand-off to `ed_sim`, and an underwater path. The alpha FFT ocean is explicitly retired.
-- **Materials:** data-driven, hot-reloadable, all energy-consistent. **PBR/GGX is the default
-  everywhere** (world, foliage, vehicles, realistic characters/NPCs). **Toon/cel is an
-  optional second material model** for characters that opt in: bandwidth/outline shading that
-  samples the *same* sun, GI and reflection data — never an unlit or separate-pass look.
-  Cel is a per-material/per-avatar choice, not a global style switch. Plus translucency,
-  emissives and wet/subsurface variants on the PBR side.
-- **Foliage:** geometric leaves/blades with cluster thinning near; billboard clusters inside
-  the same DAG far; lush ground cover near, shaded detail far.
-- **Tiers:** Ultra (desktop RTX), High (M3 Pro, 60 fps at 1440p), Low (mobile). Every feature
-  has a cost per tier and an off switch; perf gates on the reference scenes + golden path.
+- Fixed 60 Hz step with interpolation (P1-D16); the sim reads only its declared inputs
+  (P1-D17). Replay tests run in CI from Phase 1; bit-exact cross-machine results are measured
+  and reported but do not gate phases (F10).
+- Vehicles are our models over Box3D queries: raycast suspension, tyre model and gearbox for
+  cars; per-surface aerodynamics for planes; buoyancy from the water query; staged rockets
+  from `ed_flight`.
+- Sim detail tiers: full bodies near players → kinematic → parked records (f64 body-fixed) →
+  statistical. Parked vehicles and houses are `ed_store` rows keyed by `NodeId`.
+- Characters: glTF/VRM import, retargeting to one standard humanoid, clips and motion
+  matching. Players choose toon or PBR; NPCs are PBR (D10).
 
-## Characters, vehicles, physics
+## 10. Multiplayer and persistence
 
-- **Characters:** glTF/VRM skinned import + retargeting onto a standard humanoid; clips +
-  motion matching; cloth/jiggle per `character-spec.md`; avatar material sandbox for player
-  self-expression (toon **or** PBR). **NPCs are max-realism PBR only** — high-fidelity humans
-  and robots with full facial/eye/cloth/hair animation, never cel; fidelity scales with
-  distance via sim-LOD, not art style. MotionBricks is an optional NVIDIA-only client-side
-  layer; the wire carries inputs/target poses, never neural state.
-- **Vehicles:** custom models over Box3D queries — raycast suspension + Pacejka-style tires +
-  gearbox for cars (Assetto-grade feel), per-surface aero for planes, buoyancy for boats,
-  staged rockets from `ed_flight`. Simcade tuning: faster than life, signoff-gated.
-- **Sim-LOD:** full bodies near players → kinematic f64 tier → parked records (f64 body-fixed
-  state) → statistical population. Parked vessels/houses persist in `ed_store`; no live
-  ground physics from orbit.
-- **Destruction:** pre-fractured buildings and hinged trees become dynamic only inside player
-  bubbles, server-owned, persisted as deltas. Smoke is tier-gated GPU particles.
+- Global directory plus region shards. Shards start as regions inside one server process and
+  split into processes when load requires it.
+- Interest management, shard ownership and chunk requests all key on `NodeId` (F1).
+- QUIC transport (F11): streams for reliable state, chunks and override layers; datagrams
+  for entity updates. Prediction and reconciliation for owned entities, interpolation for
+  others. A sky-event channel replicates launches globally at low rate.
+- Terrain, buildings, trees and weather are never sent as geometry. Clients receive chunk
+  hashes, override layers and deltas.
+- `ed_store` holds accounts, progression, plots, parked vessels, missions, NPC assignments
+  and world deltas. The same schema is the solo save.
 
-## Multiplayer, persistence, living world
+## 11. Platforms
 
-- **Topology:** global directory + region shards (geographic cells with handoff), always-on
-  hubs, separate Moon/Mars processes; single-process multi-region on the first Ubuntu host.
-- **Sky-event bus:** coarse global replication of launches/trajectories so distant takeoffs
-  are visible anywhere.
-- **Netcode:** interest by speed/altitude (~20/5/1 Hz tiers), prediction + reconciliation for
-  owned entities, interpolation otherwise; seats + authority transfer for shared vehicles.
-  Determinism aids replay/reconciliation; no lockstep.
-- **Persistence:** accounts, ranks/trust/merit progression (no currency in the core loop),
-  housing plots, parked vessels, inventories, mission state, NPC home/work assignments.
-- **NPC life:** scripted schedules seeded by (npc id, UTC), authored dialogue/lore, traffic
-  on the road nav graph, ambient spaceport launches. Statistical → kinematic → full →
-  rendered tiers keep a gaming-PC server inside budget.
+macOS and Metal first. Windows D3D12 second (its minimal form arrives in Phase 1, F7). iOS on
+the Low tier later. Android Vulkan last. Input, UI and audio are cross-platform from the start.
 
-## Platforms
+## 12. Invariants
 
-macOS/Metal first; Windows D3D12 (DLSS/FSR3, RTX) second; iOS Metal Low tier later (ASTC,
-tile memory); Android Vulkan last. Input/UI/audio are cross-platform in `ew` from day one.
-
-## Invariants (carried forward, still binding)
-
-1. Truth is f64; render is camera-relative f32. No far-from-origin f32 math.
-2. One height truth per node; nothing floats or sinks.
-3. Generation deterministic from (seed, pinned data version, UTC); no hash-order/float-
-   reduction/thread-order nondeterminism; golden-hash CI.
-4. Terrain/buildings/trees/weather are never sent over the network — only deltas and entity
-   state. Sim and render state are separate; fixed-step sim, interpolated render.
-5. Every rendering feature declares cost per tier and has an off switch.
-6. Data licensing: RED never ships; attribution is generated (`docs/data/README.md`).
+1. Truth is f64; rendering is camera-relative f32.
+2. One address (`NodeId`) and one height truth per node. Nothing floats or sinks.
+3. Generation is deterministic from (seed, pinned data version, node, rung). No hash-order,
+   thread-order or wall-clock dependence. Golden hashes in CI.
+4. Geometry is never sent over the network; only chunk hashes, override layers, deltas and
+   entity state.
+5. A parent node draws until its children are resident. No holes, at any altitude.
+6. Authored content is override layers keyed by `ObjectId` and `NodeId`. Nothing authored is
+   edited into generated output.
+7. Sim and render state are separate. `ed_sim` and `ed_server` build without a GPU.
+8. Every rendering feature declares its cost per tier and has an off switch.
+9. RED-licensed data never ships; attribution is generated (`data/README.md`).

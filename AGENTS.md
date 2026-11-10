@@ -1,71 +1,56 @@
 # EveryWorld — Agent Guide & Project Index
 
-Drop anywhere on real Earth; walk, drive, fly, rocket to the Moon. Real data
-(OSM vector tiles, elevation, weather) decides **what** is there; procedural
-rules decide **how it looks**.
+A persistent solarpunk universe on a twin of the real Earth, on a custom Rust engine with
+its own editor. Real data decides **what** is there; authored assets and rules decide **how
+it looks**.
 
-This file is the map of the repository. Read **`docs/VISION.md` first** (the
-owner's goals, verbatim, with the systems that deliver them), then
-`docs/ROADMAP.md` (Phases 0-8), `docs/ARCHITECTURE.md` (target design) and
-`docs/plans/rearchitecture.md` (audit + full plan). `CLAUDE.md` is the short
-working memory; `docs/CHANGES.md` lists recent changes and open checks;
-`docs/data/` is the geospatial source catalog + licensing rules;
-`docs/alpha/plans/` holds the older plans (several superseded — check their banners).
+`CLAUDE.md` is the short working memory; this file adds the index of the existing code.
 
-**Branch state:** `main` is the custom-engine reboot. The playable Bevy alpha
-is frozen on branch `alpha-early` (crash fixes only). Most of the crate index
-below describes the alpha codebase, which survives as reference and as the
-engine-free crates; new work follows `docs/ARCHITECTURE.md`.
+## Direction (read before planning any work)
 
----
+`main` is the custom-engine rebuild. The Bevy alpha is frozen on branch `alpha-early`.
+**Current phase: 0 — Prepare** (`docs/phases/phase-0.md`). Read in this order:
+`docs/MASTER.md` (overview and document map) → `docs/VISION.md` (goals) →
+`docs/DECISIONS.md` (locked decisions, by id) → `docs/ARCHITECTURE.md` → `docs/ROADMAP.md`
+→ the brief in `docs/plans/` for the system you are touching.
 
-## Direction and goals (read before planning any work)
+Rules for every session:
 
-Goal: the game in `docs/VISION.md` — a persistent, social, solarpunk universe:
-photoreal Earth (and Moon/Mars), expressive cartoon characters (cel shading optional per
-avatar; the lighting, materials and reflections stay realistic everywhere), real-feeling
-vehicles, merit-based progression, home bases, dense scripted NPC life, and a
-seamless ground → orbit → Moon → back loop with no loading screens.
-
-The roadmap is **Phases 0-8** in `docs/ROADMAP.md`. **Current phase: 0
-(freeze and prepare)**, then Phase 1 (custom engine skeleton) and Phase 2
-(cube-sphere planet spike) in parallel. The north-star acceptance test is the
-full session loop in `VISION.md` §2.
-
-Rules for every agent and session:
-
-1. **All-in on the custom engine.** No new Bevy features and no visual-bug
-   fixes on the alpha renderer (crash fixes on `alpha-early` only). Do not
-   spend effort optimizing per-tile triangle counts or the Bevy↔Metal mirror;
-   those subsystems are being replaced, not tuned.
-2. **Renderer end state:** our own `ed_gpu` RHI (Metal first, D3D12/Vulkan
-   later) + `ed_render` with cluster-LOD DAG, GPU culling, visibility buffer,
-   software raster, **virtual shadow maps** and **voxel/Lumen-class dynamic GI**
-   (Solstice geometry/occlusion/GI techniques ported, MIT — credit in CREDITS;
-   its cached shadow scheme is not ported). Water is a **from-scratch design**
-   (`docs/plans/water.md`), not a port of the alpha FFT. Planet geometry is a
-   **cube-sphere quadtree** (`ed_planet`); slippy tiles survive only as the data
-   layer. New renderer code targets `ed_gpu` only, never wgpu or Metal directly.
-   Physics is **Box3D** behind `ed_sim` (deterministic, replay-tested); Avian is gone.
-3. **Use the GPU fully, and measure first.** Tools: `tools/perf_headless.sh`,
-   `EW_BISECT`, `EW_GPU_WAIT`, `EW_POST`, `EW_TILE_STATS`, `--perf`. Add a dated
-   `docs/CHANGES.md` entry with before/after numbers. Every feature declares its
-   cost per quality tier and has an off switch.
-4. **Multiplayer-safe from now on.** Every player sees the same world:
-   generation is a pure function of (world seed, pinned data version, UTC time).
-   Avoid `HashMap` iteration order, thread-order float reductions, unseeded RNG,
-   wall-clock reads and platform-dependent hashing in generators and weather.
-   Terrain, buildings, trees and weather are never sent over the network; only
-   world deltas and entity state are. Keep simulation state separate from render
-   state. Avian physics is not deterministic across machines.
-5. **Materials and shaders** are data-driven and hot-reloadable, shaped for a
-   visibility-buffer resolve (shade each pixel once).
-6. **Keep the docs current.** When work lands, add a `docs/CHANGES.md` entry
-   (what changed, what needs a Mac check) and update `docs/ROADMAP.md`.
-   `docs/alpha/plans/engine.md` still uses the old M0-M10 names; the mapping is at the
-   bottom of the roadmap.
+1. **Custom engine only (D1, D9).** No Bevy, no wgpu, no engine swap. No feature or visual
+   work on the alpha; crash fixes only, on `alpha-early`.
+2. **One address (F1).** Everything above `ed_data` keys on `NodeId`. Slippy `TileId` stays
+   inside `ed_data`. Objects have stable `ObjectId`s.
+3. **Far field is designed in (F2).** Generators emit per-rung output (parts, shells, node
+   proxy, terrain-baked layers, imagery). Never merged per-tile meshes. Any rung must be
+   producible straight from source data.
+4. **Chunks, not ad-hoc loading (F4).** Content reaches the game as `.ewpack` chunks keyed
+   by `NodeId`. A parent node draws until its children are resident.
+5. **Authored content is override layers (F5, F6).** Never edit generated output. The
+   editor is a mode of `ew`; assets come from Blender as glTF.
+6. **Renderer (F3, F7, F9).** New GPU code targets `ed_gpu` only. Drawing is GPU-driven
+   through the geometry-provider interface; discrete LOD is the base, cluster geometry is
+   the parallel Track G. Baseline lighting always works; VSM and voxel GI are the High and
+   Ultra targets (D14). Water is a from-scratch design (`docs/plans/water.md`).
+7. **Deterministic generation.** A pure function of (seed, pinned data version, node, rung).
+   No map-iteration order, thread-order float reductions, unseeded randomness, wall-clock
+   reads or platform-dependent hashing in generators. Geometry is never sent over the
+   network.
+8. **Sim is separate.** `ed_sim` and `ed_server` never depend on GPU, render, animation or
+   editor crates. Fixed step; the sim never reads the wall clock.
+9. **Measure first.** Changes that claim a performance or loading gain record before and
+   after numbers in `docs/CHANGES.md`. Every rendering feature has a cost per tier and an
+   off switch.
+10. **Data licensing.** Registry entry before use; RED never ships (`docs/data/README.md`).
+11. **Docs.** Decisions change only in `docs/DECISIONS.md`. Plans carry gates, not dates
+    (D18). Add a `docs/CHANGES.md` entry when work lands. Do not commit or push unless asked.
 
 ---
+
+# Alpha codebase index
+
+Everything from here to the end describes the alpha code: the engine-free crates that carry
+over and the Bevy app that does not. Use it to find and read existing code. It is not
+direction for new work; what happens to each piece is in `docs/plans/rearchitecture.md` §4.
 
 ## Quick start
 
@@ -358,22 +343,15 @@ artifacts as source.
 
 ---
 
-## Current status / known issues
+## Current status
 
-- **Reboot in progress.** `main` = custom engine (Phase 0); `alpha-early` =
-  playable Bevy alpha with all known issues frozen. `docs/alpha/BUGS.md` is now a
-  list of *replacement criteria*, not a fix list for the old renderer.
-- Read `docs/VISION.md`, `docs/ROADMAP.md` and `docs/plans/rearchitecture.md`
-  before planning anything. Older plan docs carry superseded banners where
-  their direction changed; unmarked ones (roads, flora, beamng lessons,
-  buildings) are still valid design references.
-- **P0 data licensing:** WorldClim (baked climate) is redistribution-restricted
-  and must be replaced; the EOX Sentinel-2 mosaic is CC BY-NC-SA and must be
-  replaced or licensed before any commercial build. See `docs/data/README.md`.
-- Uncommitted alpha WIP at the time of the reboot: impostors/loading/player/
-  vehicles/tilegen edits + untracked `assets/`; review before carrying forward.
-- Always check `git status` first; parallel sessions keep edits scoped to
-  different crates/files.
+- **Phase 0 — Prepare** on `main`; `alpha-early` holds the playable alpha.
+  `docs/alpha/BUGS.md` is a list of replacement criteria, not a fix list.
+- Older plan docs are in `docs/alpha/plans/`. Roads, flora, buildings and the BeamNG.Earth
+  lessons are still valid design references; the rest carry superseded banners.
+- **Data licensing:** WorldClim and the EOX Sentinel-2 mosaic cannot ship; Overture and
+  OpenStreetMap data are ODbL. See `docs/data/README.md`.
+- Always check `git status` first; parallel sessions keep edits scoped to different crates.
 
-## Native Metal renderer (alpha only — salvage source for `ed_gpu`/`ed_render`)
+## Native Metal renderer (alpha; the look reference for the new renderer)
 `ed_game::native` mirrors Bevy `Mesh3d` entities into `ed_metal::world::WorldRenderer` (own CAMetalLayer under a transparent Bevy window). `EW_NATIVE=0` returns to the Bevy renderer. Headless check: `./target/release/earthdrop --headless --fly --lat .. --lon .. --alt .. --heading .. --pitch .. --hour 15 --width 1600 --height 900 --frames N --no-wait --screenshot out.png`, filter log with `grep "native: [0-9]* fps"`. Switches: `EW_NATIVE_NOSSR/NOBOUNCE/NOAO/NOBLOOM/NOGROUND/NOWATER/NOFFT`, `EW_HOLD_SPACE=1`, `EW_NATIVE_DBG`. Full state, switches (incl. `EW_CONTACT`, `EW_PROBE_GI`, `EW_NATIVE_SCALE`, `EW_NATIVE_NOAA`, `EW_WEATHER`) and prioritised open work: `docs/alpha/HANDOFF.md`; water: the new design brief is `docs/plans/water.md` (the alpha `ultra-water-port.md` is a superseded post-mortem); per-change detail in `docs/CHANGES.md`.

@@ -1,3 +1,43 @@
+## 2026-11-10: foundation review and documentation refactor
+
+No code changed. The plan documents were reworked after a review of the rebuild plan against
+the owner's requirements (persistent streaming world, LOD and culling, far-field view
+distance from street to Moon, structured street data, an editor, cluster geometry in
+parallel) and the owner's report on the alpha's Metal path ("runs not great, but looks
+pretty good, loads slowly, has gaps").
+
+- **Stack confirmed:** custom Rust engine, own GPU interface, Metal first (D1). Every
+  component exists; Box3D (v0.1) and Solstice (single author, days old, untested on Apple
+  GPUs) are tested in Phase 0, and Solstice is reference only (F12).
+- **New `docs/DECISIONS.md`:** the only list of locked decisions. Owner decisions D1–D18,
+  foundation decisions F1–F13, Phase 1 decisions P1-D1–D24. `VISION.md` §11, `MASTER.md` and
+  `plans/rearchitecture.md` no longer carry their own copies.
+- **Foundation decisions added:** one node address (F1); a ladder of representations per
+  node for far-field views (F2); geometry as a slot with discrete LOD as the base and
+  cluster geometry as parallel Track G (F3); streaming from a globe pack, a tile service and
+  local generation in one chunk format (F4); stable object ids and override layers (F5); the
+  editor as a mode of `ew` from Phase 1 (F6); a minimal second GPU backend in Phase 1 (F7);
+  streets from Overture and OSM tags (F8); a baseline lighting path under the VSM and GI
+  targets (F9); sim replay tested but not phase-gating (F10); QUIC transport (F11); data
+  corrections (F13). F9, F10 and F11 are flagged for owner confirmation.
+- **New briefs:** `plans/world.md`, `plans/renderer.md`, `plans/streets.md`,
+  `plans/editor.md`.
+- **Rewritten:** `ARCHITECTURE.md`, `ROADMAP.md`, `MASTER.md` (now an overview and document
+  map), `plans/rearchitecture.md` (now the alpha audit and migration map),
+  `phases/phase-0.md`, `phases/phase-1.md`, `data/README.md`, `GOALS.md`, `README.md`, and
+  the direction sections of `CLAUDE.md` and `AGENTS.md`.
+- **Phases renumbered**, with gates and no dates (D18): 0 Prepare · 1 Engine base + editor
+  shell · 2 Planet, far field, streaming · 3 World content on the ladder · 4 Rendering
+  quality · 5 Simulation and vehicles · 6 Golden path solo · 7 Multiplayer and persistence ·
+  8 Living world · 9 Platforms and ship · G cluster geometry (parallel). Mapping from the
+  previous numbering is at the end of `ROADMAP.md`. **Entries below this one use the
+  previous phase numbers.**
+- **Data corrections:** Overture buildings and transportation are ODbL; Google
+  Photorealistic 3D Tiles are excluded; GlobalBuildingAtlas is RED until verified; imagery
+  is far-field only (`data/README.md`, banner in `data/registry.md`).
+- **Updated:** `VISION.md` (new §13 with the owner's 2026-11-10 requirements; §11 now points
+  to the decisions log; sections put in numeric order), `plans/water.md` (phase numbers).
+
 ## 2026-11-09: rendering direction — VSM, voxel/Lumen GI, new water
 
 - **Owner correction applied across the docs:** the alpha's probe GI, FFT ocean and

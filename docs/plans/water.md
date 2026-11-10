@@ -1,15 +1,15 @@
 # Water — design brief (from scratch)
 
-Status: **design brief, not implemented.** Target: first real water in Phase 2 (planet shell),
-full system Phase 3, buoyancy/boats Phase 4, polish Phase 7. Supersedes
+Status: **design brief, not implemented.** Target: first real water in Phase 2 (planet surface),
+full system Phase 4, buoyancy and boats Phase 5, polish Phase 8 (`docs/ROADMAP.md`). Supersedes
 `docs/alpha/plans/ultra-water-port.md` (the alpha FFT port is a post-mortem, not a plan).
 
 Owner direction (2026-11-09): *"i want to rethink and redo the water because it sucks right
 now… i dont want to pull all of those things since those systems were bandaids on
 metal/bevy."* The alpha ocean is therefore a **list of failure modes**, not a code source.
 
-Related: `docs/VISION.md` §5/§11, `docs/ARCHITECTURE.md` (planet + rendering),
-`docs/MASTER.md` §5.2, `docs/phases/phase-0.md` W4b, `docs/phases/phase-1.md` D18.
+Related: `docs/VISION.md` §5, `docs/DECISIONS.md` D13, `docs/ARCHITECTURE.md` §6,
+`docs/plans/renderer.md`, `docs/phases/phase-1.md` P1-D18.
 
 ---
 
@@ -83,7 +83,7 @@ input** at the same time.
 ### 2.5 Performance
 
 Every feature has a cost per tier and an off switch. No water pass may allocate per frame.
-Targets (M3 Pro, 1440p, High): water shading + reflection pass within the Phase 3 frame budget;
+Targets (M3 Pro, 1440p, High): water shading + reflection pass within the Phase 4 frame budget;
 Low tier degrades to cheap normals + sky reflection + no refraction. Water must never be the
 reason a scene misses 60 fps without appearing in the profiling breakdown by name.
 
@@ -103,19 +103,19 @@ reason a scene misses 60 fps without appearing in the profiling breakdown by nam
 
 ---
 
-## 4. Candidate techniques to evaluate (Phase 0/1 spike)
+## 4. Candidate techniques to evaluate (decided at the start of Phase 2)
 
 The spike chooses a concrete set; this list is the menu, with a recommended default.
 
 | Concern | Candidates | Recommendation |
 |---|---|---|
 | **Surface geometry** | Flat clipmap quads on the ellipsoid · screen-space projected grid · planet-node water patches with geomorphing | **Planet-node water patches** (reuse `ed_planet` LOD) + a small camera-local detail grid; projected grid only if node seams fight us |
-| **Wave model** | Sum of Gerstner waves · tiling wave-spectrum atlas (FFT-baked offline or at runtime) · stochastic tiling normals · hybrid | **Gerstner low-frequency set + tiling spectrum detail**. A fresh FFT may be used as an *offline-baked detail atlas* if proven; this is a new decision under D18, not salvage |
+| **Wave model** | Sum of Gerstner waves · tiling wave-spectrum atlas (FFT-baked offline or at runtime) · stochastic tiling normals · hybrid | **Gerstner low-frequency set + tiling spectrum detail**. A fresh FFT may be used as an *offline-baked detail atlas* if proven; this is a new decision under P1-D18, not salvage |
 | **Deterministic gameplay field** | Analytic Gerstner sum · precomputed spectrum LUT sampled by UTC | **Analytic low-frequency Gerstner sum** shared by render and `ed_sim`; cheap and exact on both sides |
 | **Reflections** | SSR + sky fallback · hardware RT · planar for lakes | **SSR + atmosphere sky fallback** now; **RT on Ultra**; planar only for authored calm water |
 | **Refraction** | Scene colour + depth buffer · refraction pass with roughness-aware blur | **Scene colour + depth**, roughness-aware; no separate full-res pass |
 | **Foam** | Texture masks · procedural steepness + shore distance · wake render targets | **Procedural steepness + shore + wind**, with a small wake buffer later |
-| **Underwater** | Fullscreen volume + fog · per-pixel absorption · caustic projection | **Absorption/scattering volume + fog**; caustics Phase 7 |
+| **Underwater** | Fullscreen volume + fog · per-pixel absorption · caustic projection | **Absorption/scattering volume + fog**; caustics Phase 8 |
 | **Rivers** | Spline ribbon mesh · terrain-carved channel + flow map | **Flow-map ribbon on the `ed_world` river plan**, depth/foam from slope |
 | **Buoyancy** | Height query only · height + velocity + pressure | **Height + normal + velocity** from the analytic field; enough for boats and swimmers |
 
@@ -149,12 +149,11 @@ sees.
 
 | Phase | Water work | Gate |
 |---|---|---|
-| **0** | Technique spike + decision (this brief), no code | Chosen geometry/wave/reflection/foam set with pass criteria |
-| **1** | Interface stubs: `ed_sim::WaterField`, `ed_render::water` module, test scene flat-water patch | A flat lit water patch with correct sun reflection in the proving ground |
-| **2** | Planet-shell water, orbit→shore continuity, sea level, horizon | **Recording: orbit → coast → surface with no representation pop** |
-| **3** | Full shading, SSR + sky fallback, refraction/absorption, foam, lakes/rivers v1, underwater v1 | High-tier forest/coast scene at budget; water visible from orbit |
-| **4** | Buoyancy + boats/wakes, deterministic float replay | Boat floats identically client/server; parked-boat record survives reload |
-| **7** | Storms, caustics, RT reflections, wake polish | Storm and calm read clearly; Ultra water at 60 fps |
+| **1** | Interface stubs: `ed_sim` water query, `ed_render` water module, flat lit patch in the proving ground | Correct sun reflection on a flat patch |
+| **2** | Technique choice from §4; ocean as a layer of the planet surface; orbit → shore continuity; sea level; horizon | **Recording: orbit → coast → surface with no representation pop** |
+| **4** | Full shading, screen-space reflections with sky fallback, refraction and absorption, foam, lakes and rivers v1, underwater v1 | Coast scene at the High budget; water reads correctly from orbit |
+| **5** | Buoyancy, boats and wakes, float replay test | A boat floats the same on client and server; a parked boat survives reload |
+| **8** | Storms, caustics, ray-traced reflections on Ultra, wake polish | Storm and calm read clearly |
 
 ---
 
@@ -182,6 +181,6 @@ sees.
    the orbit→shore recording clean with the least custom code.
 3. **Rivers**: ribbon mesh vs carved channel + flow map for the first playable version.
 4. **Bathymetry**: is real bathymetry worth a dataset, or is terrain-below-sea-level enough?
-5. **Underwater caustics**: projected texture vs compute in Phase 7; likely tier-gated.
+5. **Underwater caustics**: projected texture vs compute in Phase 8; likely tier-gated.
 6. **Boat wake model**: render-only for v1, sim-visible later only if gameplay needs it.
 7. **Moon/Mars/fourth world**: which bodies get water/liquid, and with what constants?

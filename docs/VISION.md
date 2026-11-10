@@ -4,9 +4,9 @@ This is the source of truth for **what** the game is. Every section pairs the ow
 **verbatim** statements (2026-11-08 session) with an explanation and the concrete systems
 that deliver it. When this and an older doc disagree, this file wins.
 
-- How we build it: `docs/plans/rearchitecture.md`
-- When: `docs/ROADMAP.md`
-- Target architecture: `docs/ARCHITECTURE.md`
+- Locked decisions: `docs/DECISIONS.md`
+- Target design: `docs/ARCHITECTURE.md` and the briefs in `docs/plans/`
+- Order of work: `docs/ROADMAP.md`
 - World data: `docs/data/README.md` + `docs/data/registry.md`
 - Art/asset contract: `docs/solarpunk/spec.md`, `docs/solarpunk/character-spec.md`
 
@@ -48,9 +48,9 @@ title of the contributed data registry, not as a chosen name.)
   No currency table in the core schema.
 - *Home base* → **housing plots + building**: persistent plot records (f64 body-fixed),
   assembly from the modular solarpunk kit (`docs/solarpunk/spec.md`), or claiming/adapting an
-  existing generated structure. Persisted like parked vehicles (`rearchitecture.md` §3.7).
+  existing generated structure. Persisted like parked vehicles (`ARCHITECTURE.md` §10).
 - *Learn the world from NPCs* → authored dialogue/lore line pools attached to places,
-  schedules and missions (`rearchitecture.md` §3.5, §3.7). NPCs are the world's narrators.
+  schedules and missions (`ARCHITECTURE.md` §10). NPCs are the world's narrators.
 
 ---
 
@@ -72,9 +72,8 @@ title of the contributed data registry, not as a chosen name.)
 *order of work*: the seamless ground → orbit → Moon → back path is the foundation; visual
 quality and multiplayer grow on that skeleton together, not years apart.
 
-**Real systems.** The beat-by-beat requirements table lives in
-`docs/plans/rearchitecture.md` §1; the phases that deliver it are in `docs/ROADMAP.md`.
-The solo version must be playable (Phase 5) before multiplayer lands (Phase 6).
+**Real systems.** The phases that deliver it are in `docs/ROADMAP.md`. The solo version
+must be playable (Phase 6) before multiplayer lands (Phase 7).
 
 ---
 
@@ -93,7 +92,7 @@ stay; the separate representations go.
 
 **Real systems.** `ed_planet`: cube-sphere quadtree per body, camera-relative f64→f32,
 elevation + imagery sampled from the slippy data sources onto the same geometry at every
-altitude, one atmosphere, one cloud field. See `rearchitecture.md` §3.2. Acceptance is a
+altitude, one atmosphere, one cloud field. See `plans/world.md` and `plans/renderer.md` §4. Acceptance is a
 single unbroken ground → orbit → ground recording (ROADMAP Phase 2 gate).
 
 ---
@@ -125,7 +124,7 @@ a gaming PC (Ubuntu LTS) until traction forces an upgrade.
 **Real systems.** Region shards + directory, the **sky-event bus** (coarse global replication
 of launches/trajectories), `ed_store` persistence for plots/vehicles/NPC assignments, NPC
 schedule system seeded by (npc id, UTC) with four sim tiers (statistical → kinematic → full
-body → rendered). Details and budgets: `rearchitecture.md` §3.4, §3.7. Netcode: prediction
+body → rendered). Details: `ARCHITECTURE.md` §9 and §10. Netcode: prediction
 for owned entities, interpolation for the rest; vehicles support seats and authority transfer.
 
 ---
@@ -182,8 +181,8 @@ for the whole game.
 cluster-LOD geometric foliage with far billboards inside the same DAG; **two material models
 in one lighting pipeline** — `PBR` (world, vehicles, realistic characters) and `Toon` (cel
 characters, sun/GI/reflection-aware) — selected per material/avatar, not per build; the
-modular solarpunk kit with region tables and vegetation dressing. See `rearchitecture.md`
-§3.3, §3.5, §3.6.
+modular solarpunk kit with region tables and vegetation dressing. See `plans/renderer.md`
+and `ARCHITECTURE.md` §8.
 
 ---
 
@@ -218,10 +217,10 @@ themselves however they like beside them.
   CC0/MakeHuman-based pipelines, or purpose-built scans) — plus procedural robots with real
   materials, wear and emissives. They share `ed_anim`, full skeletal animation, facial/
   eye animation and cloth/hair, and the same skin/eye/hair shading models as realistic player
-  avatars. Fidelity is tiered by distance (sim-LOD in `rearchitecture.md` §3.4, §3.7), not by
+  avatars. Fidelity is tiered by distance (sim tiers in `ARCHITECTURE.md` §9), not by
   art style: an NPC is never "downgraded to cartoon" to save cost.
 - MotionBricks is an optional NVIDIA-only client-side motion layer, never a server dependency
-  (`rearchitecture.md` §3.5). It is most valuable on NPC crowds.
+  (`ARCHITECTURE.md` §9). It is most valuable on NPC crowds.
 
 ---
 
@@ -245,7 +244,7 @@ budget-gated.
 **Real systems.** `ed_sim` (Box3D C17 behind an abstraction; cross-platform determinism +
 replay), custom tire/suspension/aero/buoyancy/rocket models, sim-LOD + parked records,
 pre-fractured buildings and hinged trees activated only near players, server-owned.
-`rearchitecture.md` §3.4. Car feel is an explicit Phase 4 signoff.
+`ARCHITECTURE.md` §9. Car feel is an explicit Phase 5 sign-off.
 
 ---
 
@@ -285,7 +284,7 @@ concept TBD) — and is the first world not bound to real Earth data.
 LOLA/MOLA). Stations and the fourth world are **instanced structure worlds** in body/orbit
 frames using the same renderer, sim and persistence — not a separate game. Lanes = persistent
 route records + nav beacons + sky-event traffic. Settlements reuse the solarpunk kit plus new
-industrial asset families (authored, §8). Scheduled in ROADMAP Phase 7+; the fourth world is
+industrial asset families (authored, §8). Scheduled in ROADMAP Phase 8 onward; the fourth world is
 a design exploration after the golden path works.
 
 ---
@@ -309,6 +308,16 @@ before selling.
 
 ---
 
+## 11. Technical decisions
+
+The locked technical decisions are kept in one place, **`docs/DECISIONS.md`**, so they cannot
+drift between documents. In short: a custom Rust engine with its own GPU interface and an
+editor; one cube-sphere planet; Box3D physics; region servers on Ubuntu; water designed from
+scratch; virtual shadow maps and voxel dynamic GI as lighting targets; the Bevy alpha frozen
+on `alpha-early`; a private repo and a packaged commercial game. The name is undecided.
+
+---
+
 ## 12. Building interiors
 
 > "also one more note is building interiors of course" (2026-11-09)
@@ -322,27 +331,42 @@ align by construction, `docs/solarpunk/spec.md`), authored interiors for hubs an
 instanced interior parts with their own streaming/LOD tier (interior detail loads only when
 near/inside), collision == visual, and interior lighting that works with the GI system.
 Home-base building (VISION §1) uses the same interior assembly. Scheduled in ROADMAP
-Phase 7, with the kit's door/window/wall contract enforced from Phase 3 so exteriors never
+Phase 8, with the kit's door/window/wall contract enforced from Phase 3 so exteriors never
 have to be rebuilt to admit interiors.
 
 ---
 
-## 11. Technical decisions (locked 2026-11-08)
+## 13. The engine itself: editor, far field, streets (owner, 2026-11-10)
 
-1. **Custom engine, own GPU abstraction** — Metal first, D3D12/Vulkan later; Bevy removed.
-   Solstice's techniques ported, not adopted as an engine.
-2. **Cube-sphere render geometry; slippy tiles stay as the data layer.**
-3. **Physics: Box3D (C17, MIT) behind `ed_sim`; deterministic; custom vehicle models.**
-4. **All-in on the new engine.** The playable Bevy alpha is preserved on branch
-   **`alpha-early`**; `main` becomes the new engine.
-5. **Server: Ubuntu LTS**, headless, region shards, `ed_store` persistence.
-6. **Repo private; packaged commercial game**; asset licensing tracked in `docs/data/`.
-7. **Characters:** owner's GLB first → VRM/custom avatars later; realistic + robot NPCs.
-8. **Water is redesigned from scratch** (planet-scale seamless ocean, rivers/lakes, buoyancy,
-   reflections, foam, underwater) — the alpha FFT is not ported.
-9. **Shadows are virtual shadow maps; GI is voxel/Lumen-class dynamic GI.** The alpha's probe
-   GI, FFT ocean and cached-shadow scheme were Metal/Bevy-era bandaids and are **not** salvage
-   targets (owner, 2026-11-09; see `docs/plans/water.md` for the water brief).
-10. **Name TBD.**
+> "What I ultimately want is to make sure that we have a persistent streaming world. I want
+> to be able to do LOD culling so that I can reduce the amount of triangles on screen. I want
+> to make sure we can have near infinite view distance so I can see the moon. I can see the
+> Earth, so I can see Zimbabwe from space. I want to be able to see city structures from
+> very, very, very far away."
 
-Rationale and full target architecture: `docs/plans/rearchitecture.md`.
+> "I want to be able to procedurally understand the street data that we're using... I want
+> to choose the right data sources."
+
+> "I would like a game engine editor like thing... I want to be able to go into the game
+> engine. I want to be able to load the world, place specific buildings, markers, missions,
+> all that stuff."
+
+> "Nanite system can be figured out in parallel to the engine. The engine needs to be built
+> with far field distance in mind, nanite helps with far cities, but also we can do LOD
+> options... I want to make sure the foundation is correct."
+
+> "What is currently built for metal runs not great, but looks pretty good, loads slowly,
+> has gaps... What I want is a very solid base to build off of... a game engine with editor."
+
+**What this means.** The engine is a product goal in its own right, not only a means. It
+must stream a persistent world without gaps, keep triangle counts under control with LOD and
+culling, show everything from a street to another planet in one view, understand streets as
+structured data, and include an editor for placing authored content on the generated world.
+The alpha's look is the bar; its speed, loading and gaps are what the rebuild fixes.
+
+**Real systems.** One node address and a ladder of representations per node for far-field
+views; chunk streaming from a globe pack, a tile service and local generation
+(`plans/world.md`). A GPU-driven instance renderer with discrete LOD as the base and cluster
+geometry as a parallel track (`plans/renderer.md`). Streets from Overture and OpenStreetMap
+tags (`plans/streets.md`). Editor mode with stable object ids and override layers
+(`plans/editor.md`). Decisions D15–D18 and F1–F13 in `DECISIONS.md`.

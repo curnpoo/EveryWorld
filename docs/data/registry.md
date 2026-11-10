@@ -6,6 +6,24 @@ catalog. The GREEN/YELLOW/RED statuses are **screening categories, not legal det
 every dataset must be checked against its actual release version and terms before packaging.
 Our implementation rules, current-source audit and acquisition plan: `docs/data/README.md`.
 
+> **Corrections (2026-11-10).** The catalogue below is kept as provided. These points
+> override it; the working rules and chosen sources are in `docs/data/README.md`.
+>
+> - **Overture Maps** buildings and transportation themes are **ODbL** (they include
+>   OpenStreetMap data), not CDLA Permissive. Baked road and building chunks are probably
+>   derivative databases; see `README.md` §4.
+> - **Google Photorealistic 3D Tiles** are excluded: the Map Tiles API policies prohibit
+>   caching, storing and offline use. (Google *Open Buildings* footprints are a separate
+>   dataset and remain YELLOW.)
+> - **GlobalBuildingAtlas** offers global building heights but is listed as CC BY-NC; treat
+>   as RED until verified.
+> - **Roads** come from Overture transportation plus raw OpenStreetMap tags, not from
+>   OpenMapTiles vector tiles (`docs/plans/streets.md`).
+> - **Imagery** is used for far-field views only; near-field ground is synthesized.
+> - "Priority: Microsoft + OSM + PLATEAU + Overture" for buildings is replaced by: Overture
+>   buildings as the base (stable ids), PLATEAU and 3D BAG for hero cities, heights inferred
+>   elsewhere by the rule in `README.md` §2.
+
 Starting point (as provided): the project has OpenStreetMap and satellite imagery. Everything
 below is a proposed expansion of the world-data library. Two jobs for the data:
 1. Reconstruct the real Earth's physical geography as the foundation.
@@ -101,7 +119,7 @@ Priority: GEBCO first, then regional bathymetry to improve detail.
 |---|---|---|
 | Microsoft Global ML Building Footprints | Global satellite-derived building footprints, some height estimates | GREEN |
 | Google Open Buildings | Building footprint data, particularly in underrepresented regions | YELLOW |
-| Overture Maps | Global building geometry, addresses, places and transportation features | YELLOW |
+| Overture Maps | Global building geometry, addresses, places and transportation features | YELLOW (ODbL for buildings and transportation) |
 | OpenStreetMap Buildings | Community-mapped buildings, types, heights and attributes | YELLOW |
 | Project PLATEAU | Detailed Japanese 3D city models, buildings and urban features | YELLOW |
 | 3D BAG | Detailed 3D building models for the Netherlands | YELLOW |
@@ -120,7 +138,7 @@ architecture.
 | Dataset | Description | License |
 |---|---|---|
 | OpenStreetMap | Global roads, footpaths, trails, railways and transport infrastructure | YELLOW |
-| Overture Transportation | Harmonized global road and transportation network | YELLOW |
+| Overture Transportation | Harmonized global road and transportation network | YELLOW (ODbL) |
 | Geofabrik | Regional OSM extracts for convenient downloading | YELLOW |
 | GRIP | Global Roads Inventory Project road network | YELLOW |
 | gROADS | Global road network data | YELLOW |

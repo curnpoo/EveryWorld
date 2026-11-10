@@ -6,5 +6,7 @@ measurements and designs that still apply (roads v2, BeamNG lessons, flora, buil
 shadows, water, engine/netcode discussions).
 
 Cross-links inside these files reflect the old layout and may be stale; they are archived
-as-is. **Current direction:** `../VISION.md`, `../ROADMAP.md`, `../ARCHITECTURE.md`,
-`../plans/rearchitecture.md`, and the single-file overview `../MASTER.md`.
+as-is. **Current direction:** start at `../MASTER.md` (overview and document map). What carries
+over from the alpha, and what does not, is in `../plans/rearchitecture.md`. Phase and stage
+names inside these archived files (Stages A–H, M0–M10, the 2026-11-08 Phases 0–8) are the
+old ones; the current phases are in `../ROADMAP.md`.
