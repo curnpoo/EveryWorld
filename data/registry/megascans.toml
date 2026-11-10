@@ -11,5 +11,5 @@ redistribution = "conditions"
 attribution = "Megascans assets used under the Fab Standard License."
 screening = "YELLOW"
 review_notes = "Assets may ship only inside the packaged game, never as loose source files or in the public repository. Keep originals outside the repo; record the Fab asset id per converted asset."
-licence_checked = ""
+licence_checked = "2026-11-10"
 consumers = ["ed_assets"]

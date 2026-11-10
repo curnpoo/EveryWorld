@@ -10,5 +10,5 @@ modification = "yes"
 redistribution = "conditions"
 screening = "DEV"
 review_notes = "Development only. Replaced by the simulated climate and the packaged gazetteer."
-licence_checked = ""
+licence_checked = "2026-11-10"
 consumers = ["ed_data"]

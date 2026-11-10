@@ -82,7 +82,7 @@ pub fn load(root: &Path) -> Result<BTreeMap<String, Dataset>> {
 
 /// Fails if any data version (the list of datasets a pack may be built from) names an unknown,
 /// RED or DEV dataset, or a YELLOW one without review notes. With `EW_GATE_SHIP=1` it also
-/// fails on any dataset whose licence text has not been checked by a person, and on "unpinned".
+/// fails on any dataset whose licence has not been checked against its source, and on "unpinned".
 pub fn gate(root: &Path) -> Result<()> {
     let reg = load(root)?;
     let ship = std::env::var("EW_GATE_SHIP").is_ok();
@@ -106,7 +106,7 @@ pub fn gate(root: &Path) -> Result<()> {
             }
             let soft = if ship { &mut errors } else { &mut warnings };
             if d.licence_checked.is_empty() {
-                soft.push(format!("{tag}: licence text not yet checked by a person"));
+                soft.push(format!("{tag}: licence not yet checked against its source"));
             }
             if pin == "unpinned" {
                 soft.push(format!("{tag}: release not pinned"));

@@ -14,5 +14,5 @@ redistribution = "yes"
 attribution = "Source: MLIT PLATEAU."
 screening = "YELLOW"
 review_notes = "Used for measured building heights in Japanese hero cities only. Confirm per-city licence; a few city datasets differ."
-licence_checked = ""
+licence_checked = "2026-11-10"
 consumers = ["ed_data"]

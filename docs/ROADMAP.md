@@ -33,6 +33,8 @@ as Track G and never blocks a gate. The editor grows a stage in each phase.
 | 9 | **Platforms and ship** | Full Windows D3D12, iOS Low tier, Android, packaging, attribution, performance gates | Ships on macOS and Windows; mobile tier proven |
 | G | **Track G: cluster geometry** (parallel from Phase 1) | Cluster DAG bake, cut selection, compute raster, cluster streaming (`plans/renderer.md` §3) | Adopted per content type when it beats the discrete-LOD provider on the reference scenes |
 
+Phases 1 to 6 are broken into fifteen runnable milestones in `plans/path-to-solo.md`.
+
 Rules: every phase ends runnable. Do not start Phase 7 before Phase 6 passes. Phases 4 and 5
 may overlap. A failed gate is recorded with its diagnosis; the gate is not edited to pass.
 

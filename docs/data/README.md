@@ -24,14 +24,14 @@ file and the catalogue disagree, this file wins. Decisions: F8, F13 in `../DECIS
 | Need | Source | Screening | Notes |
 |---|---|---|---|
 | Elevation | Copernicus GLO-30 via Mapterhorn; USGS 3DEP and other open national models where present | YELLOW per provider | Record provider per area |
-| Bathymetry | GEBCO | YELLOW | Verify terms for redistribution of derivatives |
+| Bathymetry | GEBCO 2026 grid | GREEN (public domain) | Acknowledgement requested |
 | Far-field imagery | A Sentinel-2 composite: Copernicus global mosaics, or our own from Level-2A scenes | YELLOW | Replaces the EOX mosaic. Verify mosaic terms |
 | Land cover | ESA WorldCover 2021 | GREEN (CC BY 4.0) | Drives near-field ground synthesis and vegetation |
 | Roads | **Overture transportation** (pinned release) + raw OSM tags | YELLOW (**ODbL**) | `../plans/streets.md` |
 | Buildings | **Overture buildings** (pinned release) | YELLOW (**ODbL**) | Stable GERS ids are used in `ObjectId` |
 | Building heights | Overture where present; PLATEAU (Japan) and 3D BAG (Netherlands) for hero cities; otherwise the inference rule below | per source | |
 | Canopy height | A global canopy-height product | YELLOW | Licence to verify before use |
-| Climate normals | CHELSA or TerraClimate | YELLOW | Replaces WorldClim. Choose in Phase 0 with licence URL |
+| Climate normals | CHELSA v2.1 | GREEN (CC0 1.0) | Replaces WorldClim. Chosen in Phase 0 |
 | Geology | Macrostrat | YELLOW (CC BY 4.0) | |
 | Night lights | NASA Black Marble (VIIRS) | GREEN (NASA open data) | Feeds R3/R4 emissive |
 | Place names | GeoNames, Natural Earth | GREEN / CC BY | Packaged gazetteer for go-to and labels |
@@ -50,7 +50,7 @@ written in `../contracts/generation.md` and are deterministic.
 |---|---|---|
 | WorldClim 2.1 | RED | Redistribution and commercial use restricted. Currently baked into `ed_data`; development only until replaced |
 | EOX Sentinel-2 cloudless | RED | CC BY-NC-SA |
-| HydroSHEDS | RED | Licence restricts commercial redistribution |
+| HydroSHEDS | YELLOW, not used | Corrected 2026-11-10: commercial use is allowed; distribution only inside derivative works under an end-user licence at least as protective. Not needed for data version 1 |
 | Google Photorealistic 3D Tiles | RED | Map Tiles API policies prohibit caching, storing and offline use |
 | GlobalBuildingAtlas | RED until verified | Listed as CC BY-NC |
 | OpenMapTiles vector tiles as the road source | Retired | Clipped and simplified, tags dropped (F8). May remain for the 2D map view |
@@ -69,6 +69,12 @@ legal review before any public build (the full note for the reviewer is
   not drawn into the share-alike scope.
 
 ## 5. Registry and gate
+
+Licences were checked against each source's own statement on 2026-11-10 for 25 of the 31
+entries (`licence_checked` in each file). Not yet confirmed from a primary statement: the
+NASA PDS Moon and Mars products, the JPL element table, and three development-only or
+excluded sources. Releases are pinned when a dataset is acquired; the strict gate
+(`EW_GATE_SHIP=1`) fails a pack built from an unpinned or unchecked dataset.
 
 One TOML file per dataset in `data/registry/` (created in Phase 0): id, name, organisation,
 URLs, coverage, resolution, format, licence name and URL, commercial / modification /

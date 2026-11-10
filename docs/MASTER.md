@@ -22,6 +22,8 @@ detail; where two documents seem to disagree, the owner listed below wins.
 | Street data and road generation | `plans/streets.md` |
 | Editor | `plans/editor.md` |
 | Water | `plans/water.md` |
+| Milestones from here to the playable solo loop | `plans/path-to-solo.md` |
+| Gameplay: core loop, missions, trust | `plans/solastra-core-loop.md` |
 | What the alpha was, what carries over | `plans/rearchitecture.md` |
 | Data sources, licensing, acquisition | `data/README.md`, `data/registry.md` |
 | Art and asset specifications | `solarpunk/spec.md`, `solarpunk/character-spec.md`, `ui/` |

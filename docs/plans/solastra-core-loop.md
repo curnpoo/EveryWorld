@@ -2,6 +2,11 @@
 
 Gameplay plan, added Nov 9–10, 2026. Built from the EveryWorld docs as of Nov 8, 2026 (commit `7cea773`) plus curren's own words from Nov 9–10. Where the docs already say something, the source is named. Everything else is a proposal to shoot at. Ping radius updated to ~1,000 km Nov 9 (vehicles travel fast).
 
+> Note, 2026-11-10: section 1 quotes the documents as they were at commit `7cea773`. The
+> plans were reworked since; the old files it names are under `docs/alpha/`. Persistence is
+> now `docs/contracts/persistence.md`, authored content `docs/contracts/layers.md`, and the
+> part of this loop that is in the solo version is listed in `path-to-solo.md` §1.
+
 ---
 
 ## 1. What the repo already says about gameplay

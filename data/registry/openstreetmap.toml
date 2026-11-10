@@ -14,5 +14,5 @@ redistribution = "conditions"
 attribution = "© OpenStreetMap contributors."
 screening = "YELLOW"
 review_notes = "Raw tags joined to Overture segments (lanes, surface, lit, sidewalk, bridge and tunnel details). Share-alike position in docs/data/odbl-position.md."
-licence_checked = ""
+licence_checked = "2026-11-10"
 consumers = ["ed_data", "ed_world"]

@@ -10,5 +10,5 @@ modification = "conditions"
 redistribution = "no"
 screening = "RED"
 review_notes = "Currently baked into ed_data (climate table). Development only until the CHELSA re-bake."
-licence_checked = ""
+licence_checked = "2026-11-10"
 consumers = ["ed_data"]

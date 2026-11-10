@@ -14,5 +14,5 @@ redistribution = "yes"
 attribution = "Macrostrat and its contributing map sources."
 screening = "YELLOW"
 review_notes = "Underlying regional maps carry their own citations; include the Macrostrat source list in credits."
-licence_checked = ""
+licence_checked = "2026-11-10"
 consumers = ["ed_data"]

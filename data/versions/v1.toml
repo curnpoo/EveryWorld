@@ -6,7 +6,7 @@ description = "First pinned set for the new engine (Phases 2-3)."
 [datasets]
 copernicus-glo30 = "unpinned"
 mapterhorn = "unpinned"
-gebco = "unpinned"
+gebco = "GEBCO_2026"
 sentinel2-composite = "unpinned"
 esa-worldcover-2021 = "v200"
 overture-transportation = "2026-10-21.0"

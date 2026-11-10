@@ -18,7 +18,8 @@ Built on a custom Rust engine with its own editor.
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Phases and gates |
 | [docs/phases/phase-0.md](docs/phases/phase-0.md) | Current phase |
 | [docs/phases/phase-1.md](docs/phases/phase-1.md) | Next phase |
-| [docs/plans/](docs/plans/) | System briefs: world, renderer, streets, editor, water, alpha migration |
+| [docs/plans/path-to-solo.md](docs/plans/path-to-solo.md) | Milestones from here to the playable solo loop |
+| [docs/plans/](docs/plans/) | System briefs: world, renderer, streets, editor, water, gameplay, alpha migration |
 | [docs/data/](docs/data/README.md) | Data sources and licensing |
 | [docs/solarpunk/](docs/solarpunk/) | Asset and character specifications |
 | [docs/alpha/](docs/alpha/README.md) | Archived alpha docs |
