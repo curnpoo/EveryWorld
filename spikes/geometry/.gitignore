@@ -1,0 +1,5 @@
+solstice/
+meshoptimizer/
+build/
+*.bin
+clusterlod_spike
