@@ -8,9 +8,10 @@ here with a date, and the old text is struck through, not deleted.
 - How the decisions fit together: `ARCHITECTURE.md`
 - Order of work: `ROADMAP.md`
 
-Three groups: **D** = owner decisions about the product and direction, **F** = foundation
-decisions about how the engine is shaped (2026-11-10 review), **P1-D** = Phase 1 engineering
-choices (detail and alternatives in `phases/phase-1.md`).
+Four groups: **D** = owner decisions about the product and direction, **F** = foundation
+decisions about how the engine is shaped (2026-11-10 review), **P0-R** = choices settled by
+Phase 0 measurements, **P1-D** = Phase 1 engineering choices (detail and alternatives in
+`phases/phase-1.md`).
 
 ---
 
@@ -63,6 +64,22 @@ detail is in the linked brief.
 | F11 | **Network transport is QUIC** (`quinn`): reliable streams for state and chunks, datagrams for entity updates. *Proposed; flagged for owner.* The previous plan named no transport. | One library, encrypted, works through NAT, and has both delivery modes. | `ARCHITECTURE.md` §10 |
 | F12 | **External renderers are references, not dependencies.** Solstice is a single-author project published 2026-11-07 and untested on Apple GPUs. We read it, measure it on the M3 Pro in Phase 0, and port ideas that survive measurement. | A plan must not depend on a week-old repository behaving as advertised. | `phases/phase-0.md` W4 |
 | F13 | **Data corrections.** Overture buildings and transportation are ODbL. Google Photorealistic 3D Tiles are excluded (no caching or offline use). Imagery is a far-field source only; near-field ground is synthesized from land cover and materials. Building heights are inferred where missing, by a written rule. | Licence errors are one-way doors. Present-day orthophotos up close would show parking lots in a solarpunk world. | `data/README.md` |
+
+---
+
+## P0-R — Settled by Phase 0 measurement (2026-11-10)
+
+Engineering choices made from spike results. Each is reversible behind its contract.
+
+| ID | Choice | Measurement | Record |
+|---|---|---|---|
+| P0-R1 | **Cube mapping is the tangent warp**, evaluated from integer lattice indices with a software `tan`. | Node area ratio 1.40 (gnomonic 5.03, S2 quadratic 2.02); shared edges bit-identical across faces | `reference/spikes/w4d-addressing.md`, `contracts/addressing.md` |
+| P0-R2 | **Globe pack ships levels 0–6** (32,766 nodes). | About 1.2 GiB with JPEG-class colour, 2.1 GiB estimated with BC7; height is dominated by ocean bathymetry | `reference/spikes/w4d-addressing.md`, `contracts/pack.md` |
+| P0-R3 | **Box3D is used as vendored C at a pinned commit behind our own binding in `ed_sim`**, built with double-precision positions. | Identical state hashes across three processes and across SIMD and scalar builds; about 0.5 ms per step for 1,100 bodies. Cross-machine not yet run | `reference/spikes/w4a-box3d.md`, `contracts/sim.md` |
+| P0-R4 | **Roads come from Overture release 2026-10-21.0**; connectors are junction nodes; segments are split at rule boundaries; lane counts come from OSM tags. | Dangling road ends fall from 44% (vector tiles) to 7% in Shibuya | `reference/spikes/w4e-streets.md` |
+| P0-R5 | **The Phase 1 second backend is Vulkan through `ash`**, developed on the Mac with MoltenVK and validation layers. D3D12 follows in Phase 9. | The interface draft was walked against Metal, Vulkan and D3D12; Vulkan is the only one of the two that can be run and validated on the development machine | `contracts/rhi.md` |
+| P0-R6 | **Cluster geometry (Track G) starts from meshoptimizer's `clusterlod`**; Solstice stays a reading reference. | About 1 M triangles per second build, 2.0× stored triangles, deterministic; M3 Pro compiles 64-bit atomics. Solstice ran on the M3 Pro but its frame rate was not measured | `reference/spikes/w4b-geometry.md` |
+| P0-R7 | **Asset import must handle WebP textures and `KHR_texture_transform`**, and retargeting cannot assume neck and head bones. | The owner's character: 16 joints, 15 of 17 humanoid bones matched, no animations | `reference/spikes/w4c-asset-import.md` |
 
 ---
 

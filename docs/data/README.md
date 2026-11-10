@@ -59,7 +59,8 @@ written in `../contracts/generation.md` and are deterministic.
 
 OpenStreetMap, and Overture's buildings and transportation themes, are ODbL. Our baked road
 and building chunks are probably derivative databases. Working position, to be confirmed by
-legal review before any public build:
+legal review before any public build (the full note for the reviewer is
+`odbl-position.md`):
 
 - Attribute in the credits and in the game.
 - Keep the bake pipeline able to publish the derived road and footprint data, separately

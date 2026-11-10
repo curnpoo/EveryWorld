@@ -26,7 +26,8 @@ Built on a custom Rust engine with its own editor.
 
 ## Status
 
-**Phase 0 — Prepare.** Plans carry gates, not dates.
+**Phase 0 — Prepare**, mostly complete on the `phase-0` branch; the open items are listed
+in [docs/phases/phase-0.md](docs/phases/phase-0.md) §5. Plans carry gates, not dates.
 
 | Branch | Contents |
 |---|---|

@@ -40,7 +40,7 @@ the new structure (P1-D18). The ocean FFT, probe GI and shadow caching are not p
 - **Bindless by default** (P1-D9): one table of textures and one of buffers per frame, indexed
   from instance and material data.
 - **Capability probe** (P1-D10) decides tiers and feature flags at startup.
-- **Second backend in Phase 1** (F7): the smallest D3D12 or Vulkan backend that renders the
+- **Second backend in Phase 1** (F7): the smallest Vulkan backend (P0-R5) that renders the
   proving-ground scene. It need not be fast or complete; it exists to fail early wherever the
   interface assumed Metal.
 - Shaders: Slang source compiled to each backend at build time (P1-D1).
@@ -144,7 +144,7 @@ the harness writes per-pass times.
 
 ## 8. Open questions
 
-1. D3D12 or Vulkan for the Phase 1 second backend (D3D12 serves the Windows target directly;
-   Vulkan can be developed on the Mac through MoltenVK).
+1. ~~D3D12 or Vulkan for the Phase 1 second backend.~~ Settled: Vulkan through MoltenVK
+   (P0-R5); D3D12 in Phase 9.
 2. Visibility-buffer format on GPUs without 64-bit atomics (only matters for Track G step 3).
 3. Whether voxel GI on High needs a reduced update rate; decided by Phase 4 measurement.

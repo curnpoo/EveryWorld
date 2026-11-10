@@ -33,7 +33,7 @@ NodeId (64 bits) = body:8 | face:3 | level:5 | x:24 | y:24
 | L10–L12 | 10–2.4 km | z12–z14 | Districts, skylines, road network |
 | L13–L15 | 1.2 km–300 m | z15–z17 | Streets, buildings, parts |
 
-The cube-to-sphere mapping is an area-balanced one (chosen and tested in Phase 0) so nodes at
+The cube-to-sphere mapping is the tangent warp (P0-R1, `../contracts/addressing.md`) so nodes at
 one level have similar size everywhere, including the poles.
 
 ### 1.2 What keys on NodeId

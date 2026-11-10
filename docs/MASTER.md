@@ -28,7 +28,8 @@ detail; where two documents seem to disagree, the owner listed below wins.
 | Goal status board | `GOALS.md` |
 | Change log | `CHANGES.md` |
 | Alpha archive | `alpha/` |
-| Interface contracts (written in Phase 0) | `contracts/` |
+| Interface contracts | `contracts/` |
+| Phase 0 spike results | `reference/spikes/`, `reference/determinism.md` |
 
 ## 2. The game
 

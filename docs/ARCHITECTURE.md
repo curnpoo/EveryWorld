@@ -21,7 +21,7 @@ fixed-step simulation and region servers make it one persistent shared world.
 |---|---|---|
 | Language | Rust 2024 for client, server and tools | D1 |
 | App | `ew`: winit window, input, main loop, game and editor modes | D1, F6 |
-| GPU | `ed_gpu`: Metal first; D3D12 and Vulkan later, one of them minimal in Phase 1 | D1, F7 |
+| GPU | `ed_gpu`: Metal first; a minimal Vulkan backend in Phase 1; D3D12 later | D1, F7, P0-R5 |
 | Shaders | Slang, with a backend-native escape hatch | P1-D1 |
 | Renderer | `ed_render`: frame graph, GPU instance culling, geometry providers, visibility buffer, lighting tiers | F3, F9, D14 |
 | Geometry tools | meshoptimizer (simplification, meshlets, cluster LOD) | P1-D11 |
@@ -199,8 +199,8 @@ pinned source data (registry) ──> ed_data readers ──> regional extracts
 
 ## 11. Platforms
 
-macOS and Metal first. Windows D3D12 second (its minimal form arrives in Phase 1, F7). iOS on
-the Low tier later. Android Vulkan last. Input, UI and audio are cross-platform from the start.
+macOS and Metal first. A minimal Vulkan backend arrives in Phase 1 (F7, P0-R5) and later
+serves Android. Windows D3D12 in Phase 9. iOS on the Low tier later. Input, UI and audio are cross-platform from the start.
 
 ## 12. Invariants
 

@@ -19,7 +19,9 @@ Phases are those in `ROADMAP.md`.
 | §12 | Building interiors | Kit contract from Phase 3; interiors in Phase 8 |
 | §13 | Engine with editor; far-field view distance; streets understood; cluster geometry in parallel | Editor stages E1–E5 across Phases 1–7; far field Phase 2–3; streets Phase 3; Track G |
 
-Status as of 2026-11-10: Phase 0 in progress; nothing above is delivered on `main` yet.
+Status as of 2026-11-10: Phase 0 spikes, contracts, registry and workspace are done on the
+`phase-0` branch; the alpha baseline is open (`phases/phase-0.md` §5). Nothing above is
+delivered yet.
 
 Not goals:
 

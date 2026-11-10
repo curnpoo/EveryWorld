@@ -1,3 +1,21 @@
+## 2026-11-10: Phase 0 work (branch `phase-0`)
+
+- **Workspace:** eleven new empty crates and `xtask`; the alpha renderer moved to
+  `reference/alpha_metal/`; `ed_game` and the vendored `bevy_pbr` removed from this branch.
+  `cargo xtask check-deps` enforces the crate dependency rules in CI.
+- **Determinism:** golden-hash suite over 8 places and 9 subsystems (72 hashes) with
+  committed fixtures and an offline guard in `ed_data`. It found one nondeterminism
+  (`HashMap` iteration order in far-building massing), now fixed.
+- **Data:** 31 registry entries, licence gate, generated `CREDITS.md`, data version 1 with
+  Overture pinned to 2026-10-21.0. Licence terms are not yet verified against their sources.
+- **Spikes:** Box3D, cluster geometry, asset import, addressing and globe pack, Overture
+  streets, GPU interface. Results in `reference/spikes/`; the choices they settle are
+  P0-R1 to P0-R7 in `DECISIONS.md`.
+- **Contracts:** addressing, generation, pack, layers, GPU interface, simulation,
+  persistence in `contracts/`. `ed_gpu` holds the interface draft (types and traits only).
+- **Open:** alpha tag and baseline captures, Windows CI run, licence verification. See
+  `phases/phase-0.md` §5.
+
 ## 2026-11-10: foundation review and documentation refactor
 
 No code changed. The plan documents were reworked after a review of the rebuild plan against
