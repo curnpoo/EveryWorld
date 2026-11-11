@@ -1,3 +1,42 @@
+## 2026-11-11: Phase 1, milestone M2 (100,000 instances)
+
+Measured by the conductor on the M3 Pro at 2560x1440, 600-frame scripted path.
+
+- **Provider 1 (discrete LOD)** behind a `GeometryProvider` trait: GPU instance pools
+  (node-relative f32 transforms, f64 node origins on the CPU, previous transform, ObjectId),
+  dirty-range uploads only. Two-phase occlusion: last frame's visible set is drawn, a min-depth
+  pyramid is built, the rest is tested against it. LOD by projected error (1 px, hysteresis
+  0.75), 16-frame dithered cross-fade. Indirect draws binned per mesh x LOD x fade x phase.
+- **Visibility buffer** (`Rg32Uint`: instance, LOD + primitive) and one full-screen resolve that
+  shades each pixel once; PBR (GGX) and toon under the same sun and sky.
+- **Proving ground:** 100,050 instances of 27 procedural parts (3-4 LODs each from meshopt),
+  city blocks with towers to 118 m and 1.6 km sight lines. Windowed `ew` starts in it with the
+  fly camera; right click picks. Captures: `captures/phase-1/m2-street.png`, `m2-rooftop.png`.
+
+| Item | Result | Budget (P1-D20) |
+|---|---|---|
+| GPU frame | mean 1.49 ms, p99 2.40 ms, 0 frames over 25 ms | 16.7 ms |
+| Culling (both phases + pyramid) | mean 0.39 ms; p99 0.64 ms with per-pass submission timers | 1 ms |
+| CPU frame build | mean 0.087 ms, p99 0.114 ms | 1 ms |
+| Draw loop on the CPU (392 indirect draws) | 0.023 ms | |
+| Instances per frame | 100,050 -> 32k after frustum -> 1.4k after occlusion | |
+| Triangles drawn | mean 0.59 M, max 1.17 M | |
+| Memory growth over 600 frames | 0 B | |
+
+- **Timer note:** with the default counter-sample timers, culling p99 reads 1.18 ms. In those
+  11 of 569 frames one pass reads up to 0.99 ms while the whole frame takes 1.25 ms of wall
+  time; the per-pass submission timers (`ED_GPU_TIMERS=submission`) show p99 0.64 ms. The
+  spikes are gaps between passes charged to the next pass, not culling work.
+- **Pops:** with a static camera nothing changes; at walking speed tiles with an LOD transition
+  change less (p99 0.037) than tiles without one (p99 0.069, mostly the unfiltered checker
+  ground aliasing).
+- **Metal multi-draw** stays a CPU loop: at 0.023 ms an indirect command buffer is not needed.
+
+**Open:** right-click picking not tried by hand; a reused instance slot inherits the old LOD
+state for one frame; the visible list grows with a `wait_idle` on scene load (load hitch);
+some coarsest LODs from meshopt's sloppy simplifier understate their error; no texture
+filtering or TAA yet, so the checker ground aliases in motion.
+
 ## 2026-11-11: Phase 1, milestone M1 (first frame through the new engine)
 
 All numbers on the M3 Pro, measured by the conductor's own runs, not only the workers'.

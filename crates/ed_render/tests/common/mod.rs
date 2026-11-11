@@ -16,7 +16,16 @@ pub struct Rig {
 }
 
 impl Rig {
+    /// A rig with the test scene loaded.
     pub fn new() -> Self {
+        let mut rig = Self::bare();
+        let dev = &*rig.dev;
+        TestScene::load(rig.renderer.as_mut().unwrap(), dev).expect("test scene");
+        rig
+    }
+
+    /// A rig with an empty renderer.
+    pub fn bare() -> Self {
         let dev = create_device(Backend::Metal, &DeviceDesc { validation: true, frames_in_flight: 2 }).expect("Metal device");
         let renderer = Renderer::new(&*dev).expect("renderer");
         let target = dev
@@ -52,8 +61,15 @@ impl Rig {
 
     /// Renders one frame; with `read`, copies the output to the readback buffer.
     pub fn frame(&mut self, camera: Camera, mode: SceneMode, read: bool) {
-        let view = self.view(camera);
         let params = FrameParams { mode, readback: read.then_some(self.readback), ..Default::default() };
+        self.frame_with(camera, &params);
+    }
+
+    /// Renders one frame with explicit parameters (uploads flushed first).
+    pub fn frame_with(&mut self, camera: Camera, params: &FrameParams) {
+        let view = self.view(camera);
+        let params = *params;
+        self.renderer.as_mut().unwrap().flush_uploads(&*self.dev).expect("flush");
         let mut e = self.dev.begin_frame().unwrap();
         self.renderer.as_mut().unwrap().render(&*self.dev, &mut *e, &view, &params).expect("render");
         self.dev.end_frame(e).expect("end_frame (validation)");
@@ -61,7 +77,12 @@ impl Rig {
 
     /// Renders the test scene and returns its W x H RGBA8 (sRGB) pixels.
     pub fn image(&mut self, camera: Camera) -> Vec<[u8; 4]> {
-        self.frame(camera, SceneMode::TestScene, true);
+        self.frame(camera, SceneMode::Scene, true);
+        self.read_image()
+    }
+
+    /// Waits for the GPU and returns the readback buffer as W x H RGBA8 pixels.
+    pub fn read_image(&mut self) -> Vec<[u8; 4]> {
         self.dev.wait_idle();
         let mut raw = Vec::new();
         self.dev.read_buffer(self.readback, &mut raw).unwrap();
@@ -74,6 +95,16 @@ impl Rig {
             }
         }
         px
+    }
+
+    /// Waits for the GPU and reads back every finished frame's results.
+    pub fn settle(&mut self) {
+        self.dev.wait_idle();
+        self.renderer.as_mut().unwrap().poll(&*self.dev);
+    }
+
+    pub fn r(&mut self) -> &mut Renderer {
+        self.renderer.as_mut().unwrap()
     }
 
     pub fn destroy(mut self) {

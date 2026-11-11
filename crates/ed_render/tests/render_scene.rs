@@ -38,7 +38,7 @@ fn image_is_identical_across_runs() {
     let ha = hash(&a.image(TestScene::test_camera()));
     // Same device, more frames in between, then the same view again.
     for _ in 0..5 {
-        a.frame(TestScene::test_camera(), SceneMode::TestScene, false);
+        a.frame(TestScene::test_camera(), SceneMode::Scene, false);
     }
     let ha2 = hash(&a.image(TestScene::test_camera()));
     a.destroy();
@@ -66,15 +66,16 @@ fn camera_position_keeps_f64_precision() {
 fn per_pass_timers_return_every_declared_pass() {
     let mut rig = Rig::new();
     for _ in 0..4 {
-        rig.frame(TestScene::test_camera(), SceneMode::TestScene, false);
+        rig.frame(TestScene::test_camera(), SceneMode::Scene, false);
     }
     rig.dev.wait_idle();
     let t = rig.renderer.as_mut().unwrap().timings(&*rig.dev).expect("timings after wait_idle");
-    for name in Renderer::pass_names(SceneMode::TestScene) {
+    let names = rig.r().pass_names(&FrameParams::default());
+    for name in &names {
         assert!(t.pass_ms(name).is_some(), "no timing row for {name}: {t:?}");
     }
-    assert_eq!(t.passes.len(), Renderer::pass_names(SceneMode::TestScene).len());
-    let scene = t.pass_ms("scene").unwrap();
+    assert_eq!(t.passes.len(), names.len());
+    let scene = t.pass_ms("raster_late").unwrap() + t.pass_ms("raster_early").unwrap() + t.pass_ms("resolve").unwrap();
     assert!(t.frame_ms > 0.0 && t.frame_ms < 100.0, "frame {} ms", t.frame_ms);
     assert!(scene >= 0.0 && scene <= t.frame_ms + 0.01, "scene {scene} ms within frame {} ms", t.frame_ms);
     println!("timings: {t:?}");
@@ -84,7 +85,7 @@ fn per_pass_timers_return_every_declared_pass() {
     }
     rig.dev.wait_idle();
     let t = rig.renderer.as_mut().unwrap().timings(&*rig.dev).unwrap();
-    for name in Renderer::pass_names(SceneMode::Empty) {
+    for name in rig.r().pass_names(&FrameParams { mode: SceneMode::Empty, ..Default::default() }) {
         assert!(t.pass_ms(name).is_some(), "empty frame: no timing row for {name}");
     }
     rig.destroy();

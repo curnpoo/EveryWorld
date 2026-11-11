@@ -4,10 +4,10 @@ use crate::camera::PathKind;
 use std::path::PathBuf;
 
 pub const USAGE: &str = "\
-ew: EveryWorld engine shell (Phase 1, M1b)
+ew: EveryWorld engine shell (Phase 1, M2)
 
 USAGE:
-  ew [OPTIONS]                 open a window with the test scene
+  ew [OPTIONS]                 open a window in the proving ground (fly camera)
   ew --headless [OPTIONS]      render offscreen, no window, write PNG + CSV + summary
 
 OPTIONS:
@@ -17,14 +17,32 @@ OPTIONS:
   --vsync on|off               windowed: vsync on (default) or off (uncapped). V toggles it
   --headless                   offscreen harness (P1-D15)
   --out DIR                    headless output directory (default target/headless)
-  --path orbit|static          headless camera path (default orbit)
+  --path orbit|static|proving  headless camera path (default orbit; proving implies
+                               --scene proving)
+  --scene test|proving         what to load (windowed default proving; headless default
+                               test, or proving with --path proving)
+  --speed X                    camera path speed multiplier (default 1)
+  --lod-px PX                  LOD threshold, projected error in pixels (default 1)
+  --lod-fade N                 LOD cross-fade length in frames, 0 = hard switch (default 16)
+  --no-occlusion               frustum culling only (no depth-pyramid occlusion test)
+  --pop                        headless: run the pop detector (per-tile luminance change)
   --empty                      clear + tonemap only (the empty-frame budget)
   --validation                 GPU validation on (default in debug builds)
   --frames-in-flight 2|3       default 2
   -h, --help
 
 KEYS (windowed):
-  W A S D move, Q/E down/up, Shift faster, hold left mouse to look, V vsync, Esc quit";
+  W A S D move, Q/E down/up, Shift faster, hold left mouse to look, right click picks,
+  V vsync, Esc quit";
+
+/// What the renderer is given.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SceneKind {
+    /// The six-box test scene.
+    Test,
+    /// The 100k-instance city ([`crate::proving`]).
+    Proving,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Args {
@@ -38,6 +56,34 @@ pub struct Args {
     pub empty: bool,
     pub validation: bool,
     pub frames_in_flight: u32,
+    /// `None`: the default for the mode (see [`Args::scene`]).
+    pub scene: Option<SceneKind>,
+    pub speed: f64,
+    pub lod_px: Option<f32>,
+    pub lod_fade: Option<u32>,
+    pub no_occlusion: bool,
+    pub pop: bool,
+}
+
+impl Args {
+    /// The scene to load: explicit `--scene`, else proving for windowed runs and for
+    /// `--path proving`, else the test scene.
+    pub fn scene(&self) -> SceneKind {
+        self.scene.unwrap_or(if !self.headless || self.path == PathKind::Proving { SceneKind::Proving } else { SceneKind::Test })
+    }
+
+    /// Applies the LOD flags to a provider config.
+    pub fn apply_lod(&self, c: &mut ed_render::provider::LodConfig) {
+        if let Some(px) = self.lod_px {
+            c.lod_px = px;
+        }
+        if let Some(f) = self.lod_fade {
+            c.fade_frames = f;
+        }
+        if self.no_occlusion {
+            c.occlusion = false;
+        }
+    }
 }
 
 impl Default for Args {
@@ -53,6 +99,12 @@ impl Default for Args {
             empty: false,
             validation: cfg!(debug_assertions),
             frames_in_flight: 2,
+            scene: None,
+            speed: 1.0,
+            lod_px: None,
+            lod_fade: None,
+            no_occlusion: false,
+            pop: false,
         }
     }
 }
@@ -71,6 +123,24 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Option<Args>, Str
             "--headless" => a.headless = true,
             "--empty" => a.empty = true,
             "--validation" => a.validation = true,
+            "--no-occlusion" => a.no_occlusion = true,
+            "--pop" => a.pop = true,
+            "--speed" => a.speed = num(&arg, it.next())?,
+            "--lod-px" => a.lod_px = Some(num(&arg, it.next())?),
+            "--lod-fade" => {
+                let f: u32 = num(&arg, it.next())?;
+                if f > 63 {
+                    return Err("--lod-fade: at most 63 frames".into());
+                }
+                a.lod_fade = Some(f);
+            }
+            "--scene" => {
+                a.scene = Some(match it.next().as_deref() {
+                    Some("test") => SceneKind::Test,
+                    Some("proving") => SceneKind::Proving,
+                    v => return Err(format!("--scene: expected test|proving, got {v:?}")),
+                })
+            }
             "--width" => a.width = num(&arg, it.next())?,
             "--height" => a.height = num(&arg, it.next())?,
             "--frames" => a.frames = Some(num(&arg, it.next())?),
@@ -87,7 +157,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Option<Args>, Str
                 a.path = match it.next().as_deref() {
                     Some("orbit") => PathKind::Orbit,
                     Some("static") => PathKind::Static,
-                    v => return Err(format!("--path: expected orbit|static, got {v:?}")),
+                    Some("proving") => PathKind::Proving,
+                    v => return Err(format!("--path: expected orbit|static|proving, got {v:?}")),
                 }
             }
             other => return Err(format!("unknown argument {other:?} (see --help)")),
@@ -114,6 +185,17 @@ mod tests {
         assert_eq!((a.width, a.height, a.frames), (2560, 1440, Some(300)));
         assert_eq!(a.out, PathBuf::from("x/y"));
         assert_eq!(a.path, PathKind::Static);
+    }
+
+    #[test]
+    fn parses_m2_flags_and_picks_the_scene() {
+        let a = p("--headless --path proving --lod-fade 0 --no-occlusion --pop --speed 0.25 --lod-px 2").unwrap().unwrap();
+        assert_eq!((a.path, a.scene(), a.lod_fade, a.no_occlusion, a.pop, a.speed, a.lod_px), (PathKind::Proving, SceneKind::Proving, Some(0), true, true, 0.25, Some(2.0)));
+        assert_eq!(p("--headless").unwrap().unwrap().scene(), SceneKind::Test);
+        assert_eq!(p("").unwrap().unwrap().scene(), SceneKind::Proving);
+        assert_eq!(p("--scene test").unwrap().unwrap().scene(), SceneKind::Test);
+        assert!(p("--lod-fade 64").is_err());
+        assert!(p("--scene moon").is_err());
     }
 
     #[test]

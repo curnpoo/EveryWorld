@@ -83,11 +83,16 @@ pub enum PathKind {
     Orbit,
     /// The image-test camera, not moving.
     Static,
+    /// The M2 proving ground ([`crate::proving::path_pose`]): street level, rooftop pass, long
+    /// sight line; 10 s at speed 1, then repeats.
+    Proving,
 }
 
 #[derive(Clone, Debug)]
 pub struct ScriptedPath {
     pub kind: PathKind,
+    /// Path time per real second (1 = authored speed).
+    pub speed: f64,
     pub step: u64,
     pub prev: Pose,
     pub cur: Pose,
@@ -95,11 +100,20 @@ pub struct ScriptedPath {
 
 impl ScriptedPath {
     pub fn new(kind: PathKind) -> Self {
-        let p = Self::pose(kind, 0);
-        Self { kind, step: 0, prev: p, cur: p }
+        Self::with_speed(kind, 1.0)
+    }
+
+    pub fn with_speed(kind: PathKind, speed: f64) -> Self {
+        let p = Self::pose_at(kind, 0, speed);
+        Self { kind, speed, step: 0, prev: p, cur: p }
     }
 
     pub fn pose(kind: PathKind, step: u64) -> Pose {
+        Self::pose_at(kind, step, 1.0)
+    }
+
+    /// Pose after `step` fixed steps (60 Hz) at `speed`.
+    pub fn pose_at(kind: PathKind, step: u64, speed: f64) -> Pose {
         let focus = TestScene::ORIGIN + TestScene::FOCUS.as_dvec3();
         match kind {
             PathKind::Static => Pose::from_camera(&TestScene::test_camera()),
@@ -108,6 +122,7 @@ impl ScriptedPath {
                 let pos = focus + DVec3::new(24.0 * a.sin(), 8.0, 24.0 * a.cos());
                 Pose::from_camera(&Camera::look_at(pos, focus))
             }
+            PathKind::Proving => crate::proving::path_pose(step as f64 / 60.0 * speed),
         }
     }
 
@@ -121,7 +136,7 @@ impl Simulation for ScriptedPath {
     fn step(&mut self, _: &(), _dt: f64) {
         self.step += 1;
         self.prev = self.cur;
-        self.cur = Self::pose(self.kind, self.step);
+        self.cur = Self::pose_at(self.kind, self.step, self.speed);
     }
 }
 

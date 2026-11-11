@@ -14,6 +14,7 @@ pub mod camera;
 pub mod fixed_step;
 pub mod headless;
 pub mod perf;
+pub mod proving;
 pub mod windowed;
 
 /// One line describing the device capabilities (summary files and logs).

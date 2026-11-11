@@ -11,14 +11,14 @@ fn three_hundred_frames_without_growth() {
     let mut rig = Rig::new();
     let mut cam = TestScene::test_camera();
     for _ in 0..30 {
-        rig.frame(cam, SceneMode::TestScene, false);
+        rig.frame(cam, SceneMode::Scene, false);
     }
     rig.dev.wait_idle();
     let base = rig.dev.allocated_bytes();
     let created = rig.renderer.as_ref().unwrap().transient_textures_created();
     for i in 0..300 {
         cam.yaw += 0.01;
-        rig.frame(cam, SceneMode::TestScene, i % 50 == 0);
+        rig.frame(cam, SceneMode::Scene, i % 50 == 0);
     }
     rig.dev.wait_idle();
     let after = rig.dev.allocated_bytes();

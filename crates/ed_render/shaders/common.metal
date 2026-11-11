@@ -1,19 +1,106 @@
-// Shared declarations for the ed_render v0 shaders (MSL-first fallback, P1-D1).
-// Prepended after ed_gpu::shader_abi::MSL_PRELUDE. Layouts mirror `FrameData` in
-// crates/ed_render/src/lib.rs; change both together.
+// Shared declarations for the ed_render shaders (MSL-first fallback, P1-D1).
+// Prepended after ed_gpu::shader_abi::MSL_PRELUDE. Layouts mirror crates/ed_render/src/gpu.rs
+// (`FrameData`, instance, mesh, material and vertex words); change both together.
+
+// Typed views of the bindless texture table that the ed_gpu prelude does not define.
+struct EdDepth2D { depth2d<float> t; };
+struct EdTex2DU { texture2d<uint> t; };
+#define ed_depth2d(i) (reinterpret_cast<constant EdDepth2D*>(ed_textures)[(i)].t)
+#define ed_tex2d_uint(i) (reinterpret_cast<constant EdTex2DU*>(ed_textures)[(i)].t)
 
 // Per-view data, one cpu_write buffer read through the bindless buffer table.
+struct HzbLevel { uint offset; uint width; uint height; uint pad; };
 struct FrameData {
     float4x4 view_proj;     // camera-relative: rotation and projection only (P1-D7)
     float4x4 inv_view_proj;
+    float4x4 view;          // camera-relative world -> view (rotation only), view looks down -Z
+    float4 planes[5];       // left, right, bottom, top, near: xyz inward normal, w distance
     float4 sun_dir;         // xyz: unit vector towards the sun
     float4 sun_color;       // rgb: sun radiance scale (linear)
     float4 sky_zenith;      // rgb
     float4 sky_horizon;     // rgb
     float4 ground_color;    // rgb: below-horizon colour and bounce light
     float4 viewport;        // x, y, w, h in output pixels
-    float4 params;          // x: exposure
+    float4 params;          // x: exposure, y: LOD threshold (px), z: near (m), w: LOD hysteresis
+    float4 proj;            // x: P00, y: P11, z: target width, w: target height
+    uint4 cull;             // x: HZB levels (0 = no occlusion test), y: fade frames, z: frame, w: flags
+    HzbLevel hzb[16];       // depth pyramid levels inside the HZB buffer (floats)
 };
+
+// One instance (128 bytes). Transform rows are a 3x4 affine matrix relative to the node origin.
+struct GpuInstance {
+    float4 m[3];
+    float4 prev[3];         // previous frame's transform (motion vectors; not read yet)
+    uint mesh;
+    uint material;
+    uint object_lo;         // ObjectId low 32 bits (picking)
+    uint node_flags;        // node index (bits 0-15), flags (bits 16-31)
+    uint pad[4];
+};
+constant uint INSTANCE_ALIVE = 1u << 16;
+
+// One mesh with its LOD chain (96 bytes).
+struct GpuMesh {
+    float4 sphere;          // xyz: centre (mesh space), w: radius
+    uint lod_count;
+    uint bin_base;          // first bin of this mesh (LOD 0) in each kind/phase range
+    uint capacity;          // visible-list slots per bin
+    uint pad;
+    uint first_index[4];
+    uint index_count[4];
+    int base_vertex[4];
+    float error[4];         // geometric error of each level, mesh units (metres)
+};
+
+// One material (48 bytes). Both models read the same lighting inputs.
+struct GpuMaterial {
+    float4 base;            // rgb: base colour (linear), w: model (0 PBR, 1 toon)
+    float4 params;          // x: metallic, y: roughness, z: toon bands, w: pattern (1 = checker)
+    float4 shade;           // rgb: toon shadow colour, w: toon rim strength
+};
+
+// Mesh vertex (16 bytes): position, octahedral normal (snorm16 x2).
+struct Vtx { float px; float py; float pz; uint n; };
+
+// Draw argument entry (DrawIndexedArgs in ed_gpu), 5 words.
+constant uint ARGS_WORDS = 5;
+
+// Visible-list entry: instance (bits 0-19), LOD (20-21), dither coverage (22-29), side (30).
+constant uint ENTRY_INSTANCE_MASK = 0xFFFFFu;
+
+// Instance state (cull): cur LOD (0-1), prev LOD (2-3), fade frames left (4-9), flags.
+constant uint ST_FADE_SHIFT = 4;
+constant uint ST_VISIBLE = 1u << 10;
+constant uint ST_INIT = 1u << 11;
+constant uint ST_CHANGED = 1u << 12;
+
+inline float3 oct_decode(uint packed) {
+    float2 e = unpack_snorm2x16_to_float(packed);
+    float3 n = float3(e.x, e.y, 1.0 - abs(e.x) - abs(e.y));
+    float t = saturate(-n.z);
+    n.x += n.x >= 0.0 ? -t : t;
+    n.y += n.y >= 0.0 ? -t : t;
+    return normalize(n);
+}
+
+inline float3 xform_point(thread const GpuInstance& i, float3 p) {
+    return float3(dot(i.m[0].xyz, p) + i.m[0].w, dot(i.m[1].xyz, p) + i.m[1].w, dot(i.m[2].xyz, p) + i.m[2].w);
+}
+
+// Normals transform with the cofactor matrix (inverse transpose times determinant).
+inline float3 xform_normal(thread const GpuInstance& i, float3 n) {
+    float3 a0 = float3(i.m[0].x, i.m[1].x, i.m[2].x);
+    float3 a1 = float3(i.m[0].y, i.m[1].y, i.m[2].y);
+    float3 a2 = float3(i.m[0].z, i.m[1].z, i.m[2].z);
+    return cross(a1, a2) * n.x + cross(a2, a0) * n.y + cross(a0, a1) * n.z;
+}
+
+inline float max_scale(thread const GpuInstance& i) {
+    float3 a0 = float3(i.m[0].x, i.m[1].x, i.m[2].x);
+    float3 a1 = float3(i.m[0].y, i.m[1].y, i.m[2].y);
+    float3 a2 = float3(i.m[0].z, i.m[1].z, i.m[2].z);
+    return sqrt(max(max(length_squared(a0), length_squared(a1)), length_squared(a2)));
+}
 
 struct FsOut {
     float4 pos [[position]];
@@ -44,4 +131,9 @@ inline float3 sky_radiance(device const FrameData& f, float3 d) {
     float mu = saturate(dot(d, f.sun_dir.xyz));
     sky += f.sun_color.rgb * 0.06 * pow(mu, 8.0);
     return sky;
+}
+
+// ACES fit (Narkowicz 2015), shared by tonemap and the pop detector. PLACEHOLDER (P1-D18).
+inline float3 aces_fit(float3 x) {
+    return saturate((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14));
 }

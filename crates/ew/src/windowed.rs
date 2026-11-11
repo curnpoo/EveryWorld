@@ -1,15 +1,16 @@
-//! Windowed shell (W1): winit window, Metal surface through `ed_gpu`, free camera.
+//! Windowed shell (W1): winit window, Metal surface through `ed_gpu`, free camera. Starts in
+//! the M2 proving ground (`--scene test` for the six-box scene). Right click picks.
 //!
 //! Loop per redraw: gather input -> fixed 60 Hz steps (accumulator, clamped) -> build the
 //! frame with the interpolation fraction -> acquire, render, present.
 //! Resize is applied between frames with `configure_surface` (no `wait_idle`): the frame
 //! graph allocates new-size transients and evicts the old ones a few frames later.
 
-use crate::args::Args;
+use crate::args::{Args, SceneKind};
 use crate::camera::{CameraInput, FreeCamera, Pose};
 use crate::fixed_step::FixedStep;
 use ed_gpu::{Backend, Device, DeviceDesc, Format, ResourceState, SurfaceConfig, SurfaceId, WindowHandle};
-use ed_render::{FrameParams, Renderer, SceneMode, TestScene, View, ViewTarget, Viewport};
+use ed_render::{FrameParams, Renderer, TestScene, View, ViewTarget, Viewport};
 use glam::{Vec2, Vec3};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::collections::BTreeSet;
@@ -52,6 +53,9 @@ struct App {
     result: Result<(), String>,
     done: bool,
     resize_test: bool,
+    cursor: (f64, f64),
+    pick: Option<(u32, u32)>,
+    last_pick_frame: u64,
 }
 
 pub fn run(args: Args) -> Result<(), String> {
@@ -61,7 +65,13 @@ pub fn run(args: Args) -> Result<(), String> {
     let event_loop = EventLoop::new().map_err(|e| format!("event loop: {e}"))?;
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = App {
-        camera: FreeCamera::new(Pose::from_camera(&TestScene::test_camera())),
+        camera: match args.scene() {
+            SceneKind::Test => FreeCamera::new(Pose::from_camera(&TestScene::test_camera())),
+            SceneKind::Proving => FreeCamera { speed: 12.0, fast_speed: 120.0, ..FreeCamera::new(Pose::from_camera(&crate::proving::street_camera())) },
+        },
+        cursor: (0.0, 0.0),
+        pick: None,
+        last_pick_frame: u64::MAX,
         fixed: FixedStep::default(),
         keys: BTreeSet::new(),
         look: Vec2::ZERO,
@@ -90,7 +100,7 @@ pub fn run(args: Args) -> Result<(), String> {
 impl App {
     fn create_gpu(&mut self, el: &ActiveEventLoop) -> Result<(), String> {
         let attrs = Window::default_attributes()
-            .with_title("ew (EveryWorld, M1b)")
+            .with_title("ew (EveryWorld, M2)")
             .with_inner_size(PhysicalSize::new(self.args.width, self.args.height));
         let window = el.create_window(attrs).map_err(|e| format!("window: {e}"))?;
         let ns_view = match window.window_handle().map_err(|e| format!("window handle: {e}"))?.as_raw() {
@@ -111,7 +121,17 @@ impl App {
             if config.vsync { "on" } else { "off (uncapped)" },
             window.scale_factor()
         );
-        let renderer = Renderer::new(&*self.dev).map_err(|e| format!("renderer: {e}"))?;
+        let mut renderer = Renderer::new(&*self.dev).map_err(|e| format!("renderer: {e}"))?;
+        self.args.apply_lod(renderer.lod_config());
+        match self.args.scene() {
+            SceneKind::Test => {
+                TestScene::load(&mut renderer, &*self.dev).map_err(|e| format!("test scene: {e}"))?;
+            }
+            SceneKind::Proving => {
+                let l = crate::proving::load(&mut renderer, &*self.dev)?;
+                println!("ew: proving ground: {} instances, {} part meshes, built in {:.0} ms", l.instances.len(), l.meshes.len(), l.build_ms);
+            }
+        }
         self.gpu = Some(Gpu { renderer: Some(renderer), surface, config, window });
         Ok(())
     }
@@ -173,6 +193,14 @@ impl App {
 
         let Some(gpu) = &mut self.gpu else { return };
         let dev = &*self.dev;
+        // Uploads land at the start of the next frame: flush before begin_frame.
+        let tf = Instant::now();
+        let renderer = gpu.renderer.as_mut().expect("renderer lives until shutdown");
+        if let Err(e) = renderer.flush_uploads(dev) {
+            eprintln!("ew: flush_uploads: {e}");
+            self.errors += 1;
+        }
+        let flush_ms = tf.elapsed().as_secs_f64() * 1e3;
         let mut enc = match dev.begin_frame() {
             Ok(e) => e,
             Err(e) => {
@@ -204,7 +232,8 @@ impl App {
             target: ViewTarget { texture: tex, format: gpu.config.format, width: w, height: h, initial: ResourceState::Undefined, final_state: Some(ResourceState::Present) },
         };
         let renderer = gpu.renderer.as_mut().expect("renderer lives until shutdown");
-        if let Err(e) = renderer.render(dev, &mut *enc, &view, &FrameParams { mode: SceneMode::TestScene, ..Default::default() }) {
+        let pick = self.pick.take().filter(|&(x, y)| x < w && y < h);
+        if let Err(e) = renderer.render(dev, &mut *enc, &view, &FrameParams { pick, ..Default::default() }) {
             eprintln!("ew: render: {e}");
             self.errors += 1;
         }
@@ -215,19 +244,37 @@ impl App {
                 self.errors += 1;
             }
         }
-        self.log_cpu_ms += t0.elapsed().as_secs_f64() * 1e3;
+        self.log_cpu_ms += flush_ms + t0.elapsed().as_secs_f64() * 1e3;
+        if let Some(p) = renderer.pick_result()
+            && p.frame != self.last_pick_frame
+        {
+            self.last_pick_frame = p.frame;
+            println!(
+                "ew: pick ({}, {}): instance {:?}, object {}, lod {}",
+                p.x,
+                p.y,
+                p.instance,
+                p.object.map(|o| format!("{:#x}", o.0)).unwrap_or_else(|| "none (sky)".into()),
+                p.lod
+            );
+        }
         self.log_frames += 1;
 
         let since = self.log_t.elapsed().as_secs_f64();
         if since >= 1.0 {
             let gpu_ms = renderer.timings(dev).map(|t| format!("{:.3}", t.frame_ms)).unwrap_or_else(|| "-".into());
+            let cull = renderer
+                .cull_stats()
+                .map(|c| format!(", instances {} / frustum {} / occlusion {} / drawn {}, {} tris", c.total, c.after_frustum, c.after_occlusion, c.drawn(), c.triangles))
+                .unwrap_or_default();
             println!(
-                "ew: {:.1} fps, cpu {:.3} ms/frame, gpu {gpu_ms} ms (last retired frame), {} presented, steps {}",
+                "ew: {:.1} fps, cpu {:.3} ms/frame, gpu {gpu_ms} ms (last retired frame), {} presented, steps {}{cull}",
                 self.log_frames as f64 / since,
                 self.log_cpu_ms / self.log_frames.max(1) as f64,
                 self.presented,
                 self.fixed.steps()
             );
+            let _ = renderer.take_cull_history();
             self.log_t = Instant::now();
             self.log_frames = 0;
             self.log_cpu_ms = 0.0;
@@ -314,6 +361,10 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::MouseInput { button: MouseButton::Left, state, .. } => self.looking = state == ElementState::Pressed,
+            WindowEvent::MouseInput { button: MouseButton::Right, state: ElementState::Pressed, .. } => {
+                self.pick = Some((self.cursor.0.max(0.0) as u32, self.cursor.1.max(0.0) as u32));
+            }
+            WindowEvent::CursorMoved { position, .. } => self.cursor = (position.x, position.y),
             WindowEvent::Focused(false) => {
                 self.keys.clear();
                 self.looking = false;

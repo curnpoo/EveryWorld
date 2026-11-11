@@ -3,39 +3,59 @@
 //! Allowed workspace dependencies: `ed_geo`, `ed_gpu`, `ed_pack`, `ed_planet`. The list is enforced by
 //! `cargo xtask check-deps` (rules in `xtask/deps.toml`).
 //!
-//! Status: v0 (Phase 1, M1b). [`graph`] is the frame graph (P1-D3). [`Renderer`] draws one
-//! [`View`] through it: `sky` (or `clear`) -> `scene` -> `tonemap` -> `overlay`, into an HDR
-//! `Rgba16Float` target with reverse-Z `Depth32Float` depth (P1-D8), then into the view's
-//! output target (a surface texture or an offscreen texture). The scene is a fixed test scene
-//! (ground and a few boxes) whose instances are read from a bindless buffer.
+//! Status: M2 (Phase 1, instances at scale). [`graph`] is the frame graph (P1-D3). [`Renderer`]
+//! draws one [`View`] through it:
+//!
+//! `cull_early` -> `raster_early` -> `hzb` -> `cull_late` -> `raster_late` (provider 1,
+//! [`provider::DiscreteLod`]) -> `resolve` -> `tonemap` -> `overlay`
+//!
+//! The rasters write reverse-Z `Depth32Float` depth (P1-D8) and an `Rg32Uint` visibility
+//! buffer (instance + 1, LOD << 28 | primitive). `resolve` shades each pixel once from it
+//! (sky where nothing was drawn) into an `Rgba16Float` HDR target, reading materials from a
+//! bindless buffer indexed by material id. Optional `pop_stats` and `pick` passes read the
+//! visibility buffer for the pop detector and for picking.
+//!
+//! Inputs ([`scene`]): meshes with LOD chains in one shared vertex and index buffer,
+//! materials, and [`scene::InstancePools`] (f32 transforms relative to f64 node origins, stable
+//! ids, dirty-range uploads). Call [`Renderer::flush_uploads`] before `begin_frame`; the data
+//! lands at the start of that frame.
 //!
 //! Shaders are MSL source (`shaders/*.metal`, the MSL-first fallback of P1-D1), each file
 //! prefixed with `ed_gpu::shader_abi::MSL_PRELUDE` and `shaders/common.metal`.
 
 pub mod graph;
+mod gpu;
+pub mod provider;
+pub mod scene;
 
+use ed_geo::ObjectId;
 use ed_gpu::{
-    BindlessBuffer, Blend, BufferDesc, BufferId, CommandEncoder, Compare, Cull, DRAW_CONSTANTS_BYTES, DepthDesc, Device, Format, LoadOp,
+    BindlessBuffer, Blend, BufferDesc, BufferId, CommandEncoder, ComputePipelineDesc, ComputePipelineId, Cull, Device, Format, LoadOp,
     RenderPipelineDesc, RenderPipelineId, ResourceState, ShaderCode, ShaderDesc, ShaderId, ShaderStage, StoreOp, Subresource, Timing,
     Topology, Usage,
 };
-use glam::{DVec3, Mat4, Quat, Vec3};
+use glam::{Affine3A, DVec3, Mat4, Quat, Vec3, Vec4};
+use gpu::{FD_PARAMS, FD_PLANES, FD_PROJ, FD_SUN_DIR, FD_VIEWPORT, FRAME_WORDS, INSTANCE_WORDS, MATERIAL_WORDS, VERTEX_WORDS, constants};
 use graph::{FrameGraph, FrameTimings, GraphError, PassKind, TextureInfo, TransientPool};
+use provider::{CullStats, DiscreteLod, GeometryProvider, LodConfig, MeshRecord, Ring, SharedInputs, VisTargets};
+use scene::{InstanceDesc, InstancePools, MAX_LODS, Material, MaterialId, MeshAsset, MeshId};
 
 /// HDR scene colour format.
 pub const HDR_FORMAT: Format = Format::Rgba16Float;
 /// Scene depth format (reverse-Z, P1-D8).
 pub const DEPTH_FORMAT: Format = Format::Depth32Float;
+/// Visibility buffer: x = instance + 1 (0 = sky), y = LOD << 28 | primitive id.
+pub const VIS_FORMAT: Format = Format::Rg32Uint;
 
 const PRELUDE_COMMON: &str = include_str!("../shaders/common.metal");
-const SKY_SRC: &str = include_str!("../shaders/sky.metal");
-const SCENE_SRC: &str = include_str!("../shaders/scene.metal");
+const RESOLVE_SRC: &str = include_str!("../shaders/resolve.metal");
 const TONEMAP_SRC: &str = include_str!("../shaders/tonemap.metal");
+const DEBUG_SRC: &str = include_str!("../shaders/debug.metal");
 
-/// Pass names of a full frame, in run order (also the timer labels).
-pub const PASSES_FULL: [&str; 4] = ["sky", "scene", "tonemap", "overlay"];
 /// Pass names of an empty frame (`clear` + `tonemap` + `overlay`).
 pub const PASSES_EMPTY: [&str; 3] = ["clear", "tonemap", "overlay"];
+/// Pop-detector tile size in pixels.
+pub const POP_TILE: u32 = 8;
 
 // ---------------------------------------------------------------------------------------------
 // Camera and projection
@@ -88,10 +108,22 @@ impl Camera {
     pub fn right(&self) -> Vec3 {
         self.rotation() * Vec3::X
     }
+    /// Rotation-only view matrix (camera-relative world to view).
+    pub fn relative_view(&self) -> Mat4 {
+        Mat4::from_quat(self.rotation().inverse())
+    }
     /// Projection times the rotation-only view matrix: camera-relative positions to clip.
     pub fn relative_view_proj(&self, aspect: f32) -> Mat4 {
-        reverse_z_projection(self.fov_y, aspect, self.near) * Mat4::from_quat(self.rotation().inverse())
+        reverse_z_projection(self.fov_y, aspect, self.near) * self.relative_view()
     }
+}
+
+/// Frustum planes (left, right, bottom, top, near; inward normals, unit length) of a
+/// camera-relative reverse-Z infinite projection. There is no far plane.
+pub fn frustum_planes(view_proj: &Mat4) -> [Vec4; 5] {
+    let r = |i| view_proj.row(i);
+    let planes = [r(3) + r(0), r(3) - r(0), r(3) + r(1), r(3) - r(1), r(3) - r(2)];
+    planes.map(|p| p / p.truncate().length())
 }
 
 /// A pixel rectangle in the output target.
@@ -128,8 +160,8 @@ pub struct View {
 /// What to draw this frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SceneMode {
-    /// Sky, test scene, tonemap, overlay.
-    TestScene,
+    /// The scene (instances through the geometry provider), resolve, tonemap, overlay.
+    Scene,
     /// Clear, tonemap, overlay: the "empty frame" budget.
     Empty,
 }
@@ -143,32 +175,53 @@ pub struct FrameParams {
     /// Copy the output target into this `cpu_read` buffer (rows `Format::copy_row_pitch`
     /// apart) after the overlay pass. The output target needs `copy_src` usage.
     pub readback: Option<BufferId>,
+    /// Read the visibility buffer at this pixel (viewport coordinates); the answer arrives in
+    /// [`Renderer::pick_result`] once the frame has finished.
+    pub pick: Option<(u32, u32)>,
+    /// Run the pop detector's per-tile pass ([`Renderer::take_pop_frames`]).
+    pub pop_stats: bool,
 }
 
 impl Default for FrameParams {
     fn default() -> Self {
-        Self { mode: SceneMode::TestScene, sun_dir: Vec3::new(0.45, 0.62, 0.35).normalize(), exposure: 1.0, readback: None }
+        Self { mode: SceneMode::Scene, sun_dir: Vec3::new(0.45, 0.62, 0.35).normalize(), exposure: 1.0, readback: None, pick: None, pop_stats: false }
     }
+}
+
+/// The answer to a [`FrameParams::pick`] request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PickResult {
+    pub frame: u64,
+    pub x: u32,
+    pub y: u32,
+    /// GPU instance slot under the pixel (`None`: sky).
+    pub instance: Option<u32>,
+    /// The instance's object; `None` for sky or when the slot changed hands since.
+    pub object: Option<ObjectId>,
+    pub lod: u32,
+    pub primitive: u32,
+}
+
+/// One frame of pop-detector tiles: per [`POP_TILE`]-square tile, the mean display luminance
+/// (tonemapped, 0..1) and the number of pixels on an instance in a LOD transition.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PopFrame {
+    pub frame: u64,
+    pub tiles_x: u32,
+    pub tiles_y: u32,
+    pub luma: Vec<f32>,
+    pub transition_px: Vec<f32>,
 }
 
 // ---------------------------------------------------------------------------------------------
 // Test scene
 // ---------------------------------------------------------------------------------------------
 
-/// One box instance of the test scene (layout mirrors `Instance` in `scene.metal`).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct BoxInstance {
-    /// Position relative to the scene's node origin.
-    pub position: Vec3,
-    pub yaw: f32,
-    pub scale: Vec3,
-    /// Linear albedo.
-    pub color: Vec3,
-    pub checker: bool,
-}
+/// One test-scene box: position, yaw, scale, colour, checker.
+pub type TestBox = ([f32; 3], f32, [f32; 3], [f32; 3], bool);
 
 /// The fixed test scene: node origin (far from 0 on purpose, to exercise camera-relative
-/// rendering), a ground slab and five boxes.
+/// rendering), a ground slab and five boxes, all instances of one cube mesh.
 pub struct TestScene;
 
 impl TestScene {
@@ -177,22 +230,35 @@ impl TestScene {
     /// Centre of the red box, relative to the origin (the default look-at point).
     pub const FOCUS: Vec3 = Vec3::new(0.0, 1.0, 0.0);
 
-    pub fn instances() -> Vec<BoxInstance> {
-        let b = |p: [f32; 3], yaw: f32, s: [f32; 3], c: [f32; 3]| BoxInstance {
-            position: Vec3::from(p),
-            yaw,
-            scale: Vec3::from(s),
-            color: Vec3::from(c),
-            checker: false,
-        };
+    /// (position, yaw, scale, colour, checker) of the six boxes.
+    pub fn boxes() -> Vec<TestBox> {
         vec![
-            BoxInstance { checker: true, ..b([0.0, -0.25, 0.0], 0.0, [400.0, 0.5, 400.0], [0.32, 0.36, 0.30]) }, // ground
-            b([0.0, 1.0, 0.0], 0.0, [2.0, 2.0, 2.0], [0.75, 0.08, 0.06]),                                        // red, the focus
-            b([6.0, 0.75, -4.0], 0.4, [1.5, 1.5, 1.5], [0.10, 0.55, 0.12]),                                      // green
-            b([-6.0, 1.5, -3.0], 0.6, [3.0, 3.0, 3.0], [0.08, 0.18, 0.70]),                                      // blue
-            b([4.0, 0.5, 5.0], 0.2, [1.0, 1.0, 1.0], [0.80, 0.70, 0.10]),                                        // yellow
-            b([-8.0, 4.0, -12.0], 0.0, [1.5, 8.0, 1.5], [0.80, 0.80, 0.78]),                                     // white tower
+            ([0.0, -0.25, 0.0], 0.0, [400.0, 0.5, 400.0], [0.32, 0.36, 0.30], true), // ground
+            ([0.0, 1.0, 0.0], 0.0, [2.0, 2.0, 2.0], [0.75, 0.08, 0.06], false),       // red, the focus
+            ([6.0, 0.75, -4.0], 0.4, [1.5, 1.5, 1.5], [0.10, 0.55, 0.12], false),     // green
+            ([-6.0, 1.5, -3.0], 0.6, [3.0, 3.0, 3.0], [0.08, 0.18, 0.70], false),     // blue
+            ([4.0, 0.5, 5.0], 0.2, [1.0, 1.0, 1.0], [0.80, 0.70, 0.10], false),       // yellow
+            ([-8.0, 4.0, -12.0], 0.0, [1.5, 8.0, 1.5], [0.80, 0.80, 0.78], false),    // white tower
         ]
+    }
+
+    /// Adds the scene to `r` (one node, one mesh, six materials, six instances).
+    pub fn load(r: &mut Renderer, dev: &dyn Device) -> Result<Vec<scene::InstanceId>, ed_gpu::Error> {
+        let mesh = r.add_mesh(dev, &cube_mesh())?;
+        let node = r.instances().add_node(Self::ORIGIN).ok_or_else(|| ed_gpu::Error::Invalid("node table full".into()))?;
+        let mut ids = Vec::new();
+        for (i, (p, yaw, s, c, checker)) in Self::boxes().into_iter().enumerate() {
+            let mut m = Material::pbr(Vec3::from(c), 0.0, 0.7);
+            m.checker = checker;
+            let mat = r.add_material(m).ok_or_else(|| ed_gpu::Error::Invalid("material table full".into()))?;
+            let t = Affine3A::from_scale_rotation_translation(Vec3::from(s), Quat::from_rotation_y(yaw), Vec3::from(p));
+            let id = r
+                .instances()
+                .add(&InstanceDesc { node, transform: t, mesh, material: mat, object: ObjectId(0x7E57_0000 + i as u128), flags: 0 })
+                .ok_or_else(|| ed_gpu::Error::Invalid("instance pool full".into()))?;
+            ids.push(id);
+        }
+        Ok(ids)
     }
 
     /// The camera the image tests use: south of the focus, looking at it.
@@ -202,9 +268,8 @@ impl TestScene {
     }
 }
 
-/// Unit cube, 24 vertices (position, normal; each padded to 16 bytes), 36 indices, CCW
-/// seen from outside.
-fn cube_mesh() -> (Vec<f32>, Vec<u32>) {
+/// Unit cube, 24 vertices, 36 indices, CCW seen from outside, one LOD.
+pub fn cube_mesh() -> MeshAsset {
     let faces: [([f32; 3], [f32; 3], [f32; 3]); 6] = [
         ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]),
         ([-1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]),
@@ -213,97 +278,138 @@ fn cube_mesh() -> (Vec<f32>, Vec<u32>) {
         ([0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
         ([0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]),
     ];
-    let mut verts = Vec::with_capacity(24 * 8);
+    let mut m = MeshAsset::default();
     let mut idx = Vec::with_capacity(36);
     for (fi, (n, u, v)) in faces.iter().enumerate() {
         let (n, u, v) = (Vec3::from(*n), Vec3::from(*u), Vec3::from(*v));
         debug_assert!(u.cross(v).abs_diff_eq(n, 1e-6));
         for (su, sv) in [(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)] {
-            let p = n * 0.5 + u * su + v * sv;
-            verts.extend_from_slice(&[p.x, p.y, p.z, 1.0, n.x, n.y, n.z, 0.0]);
+            m.positions.push((n * 0.5 + u * su + v * sv).to_array());
+            m.normals.push(n.to_array());
         }
         let b = fi as u32 * 4;
         idx.extend_from_slice(&[b, b + 1, b + 2, b, b + 2, b + 3]);
     }
-    (verts, idx)
+    m.lods.push(scene::MeshLod { indices: idx, error: 0.0 });
+    m
 }
-
-fn f32_bytes(v: &[f32]) -> Vec<u8> {
-    v.iter().flat_map(|f| f.to_ne_bytes()).collect()
-}
-
-fn u32_bytes(v: &[u32]) -> Vec<u8> {
-    v.iter().flat_map(|f| f.to_ne_bytes()).collect()
-}
-
-/// Packs 32-bit words into a draw-constant block.
-fn constants(words: &[u32]) -> [u8; DRAW_CONSTANTS_BYTES] {
-    let mut c = [0u8; DRAW_CONSTANTS_BYTES];
-    for (i, w) in words.iter().enumerate() {
-        c[i * 4..i * 4 + 4].copy_from_slice(&w.to_ne_bytes());
-    }
-    c
-}
-
-/// Size of `FrameData` in `common.metal`, in floats.
-const FRAME_DATA_FLOATS: usize = 16 * 2 + 4 * 7;
 
 // ---------------------------------------------------------------------------------------------
 // Renderer
 // ---------------------------------------------------------------------------------------------
 
-/// A persistent buffer and the state the last frame left it in.
-struct Tracked {
-    id: BufferId,
-    bindless: BindlessBuffer,
-    state: ResourceState,
+/// A persistent buffer, its bindless index and the state the last frame left it in.
+pub(crate) struct Tracked {
+    pub id: BufferId,
+    pub bindless: BindlessBuffer,
+    pub state: ResourceState,
+    pub size: u64,
 }
 
-/// Renderer v0. Create once per device; call [`Renderer::render`] between `begin_frame` and
-/// `end_frame`; [`Renderer::destroy`] before dropping the device.
-pub struct Renderer {
-    shaders: Vec<ShaderId>,
-    sky: RenderPipelineId,
-    scene: RenderPipelineId,
-    tonemap_vs: ShaderId,
-    tonemap_fs: ShaderId,
-    tonemap: Vec<(Format, RenderPipelineId)>,
-    vertices: Tracked,
-    indices: Tracked,
-    instances: Tracked,
-    frame_data: Tracked,
-    instance_count: u32,
-    index_count: u32,
-    pool: TransientPool,
-    scratch: Vec<Timing>,
+impl Tracked {
+    pub fn new(dev: &dyn Device, label: &str, size: u64, usage: Usage) -> Result<Self, ed_gpu::Error> {
+        let id = dev.create_buffer(&BufferDesc { label, size: size.max(16), usage })?;
+        Ok(Self { id, bindless: dev.bind_buffer(id)?, state: ResourceState::Undefined, size: size.max(16) })
+    }
+    pub fn destroy(self, dev: &dyn Device) {
+        dev.unbind_buffer(self.bindless);
+        dev.destroy_buffer(self.id);
+    }
 }
 
-fn shader(dev: &dyn Device, label: &str, stage: ShaderStage, entry: &str, body: &str) -> Result<ShaderId, ed_gpu::Error> {
+pub(crate) fn shader(dev: &dyn Device, label: &str, stage: ShaderStage, entry: &str, body: &str) -> Result<ShaderId, ed_gpu::Error> {
     let src = format!("{}\n{}\n{}", ed_gpu::shader_abi::MSL_PRELUDE, PRELUDE_COMMON, body);
     dev.create_shader(&ShaderDesc { label, stage, entry, code: ShaderCode::MslSource(&src) })
 }
 
-fn static_buffer(dev: &dyn Device, label: &str, data: &[u8]) -> Result<Tracked, ed_gpu::Error> {
-    let usage = Usage { shader_read: true, copy_dst: true, ..Default::default() };
-    let id = dev.create_buffer(&BufferDesc { label, size: data.len() as u64, usage })?;
-    dev.write_buffer(id, 0, data)?;
-    let bindless = dev.bind_buffer(id)?;
-    // The staged upload leaves the buffer in CopyDst; the first frame's graph moves it on.
-    Ok(Tracked { id, bindless, state: ResourceState::CopyDst })
+/// Capacities of a [`Renderer`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RendererDesc {
+    pub max_instances: u32,
+    pub max_vertices: u32,
+    pub max_indices: u32,
+    pub max_meshes: u32,
+    pub max_materials: u32,
+    pub max_nodes: u32,
+    pub lod: LodConfig,
+}
+
+impl Default for RendererDesc {
+    fn default() -> Self {
+        Self {
+            max_instances: 131_072,
+            max_vertices: 1 << 20,
+            max_indices: 1 << 22,
+            max_meshes: 256,
+            max_materials: 4096,
+            max_nodes: 256,
+            lod: LodConfig::default(),
+        }
+    }
+}
+
+/// What [`Renderer::flush_uploads`] sent.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UploadStats {
+    pub instance_ranges: u32,
+    pub instance_bytes: u64,
+    pub material_bytes: u64,
+}
+
+/// Renderer (M2). Create once per device; add meshes, materials and instances; call
+/// [`Renderer::flush_uploads`] before `begin_frame` and [`Renderer::render`] between
+/// `begin_frame` and `end_frame`; [`Renderer::destroy`] before dropping the device.
+pub struct Renderer {
+    desc: RendererDesc,
+    shaders: Vec<ShaderId>,
+    resolve: RenderPipelineId,
+    tonemap_vs: ShaderId,
+    tonemap_fs: ShaderId,
+    tonemap: Vec<(Format, RenderPipelineId)>,
+    pick_pipe: ComputePipelineId,
+    pop_pipe: ComputePipelineId,
+    vertices: Tracked,
+    indices: Tracked,
+    instance_buf: Tracked,
+    materials_buf: Tracked,
+    frame_data: Tracked,
+    nodes_buf: Tracked,
+    vertex_count: u32,
+    index_count: u32,
+    mesh_count: u32,
+    materials: Vec<Material>,
+    materials_dirty: bool,
+    pools: InstancePools,
+    /// Slots whose data has been flushed (the culling dispatch covers these).
+    slots_flushed: u32,
+    lod: DiscreteLod,
+    pick_ring: Ring,
+    pick_requests: [(u32, u32); provider::RING],
+    pick: Option<PickResult>,
+    pop_ring: Option<(Ring, u32, u32)>,
+    pop_frames: Vec<PopFrame>,
+    frame_counter: u32,
+    pool: TransientPool,
+    scratch: Vec<Timing>,
+    bytes_scratch: Vec<u8>,
 }
 
 impl Renderer {
     pub fn new(dev: &dyn Device) -> Result<Self, ed_gpu::Error> {
-        let sky_vs = shader(dev, "sky vs", ShaderStage::Vertex, "vs_fullscreen", SKY_SRC)?;
-        let sky_fs = shader(dev, "sky fs", ShaderStage::Fragment, "fs_sky", SKY_SRC)?;
-        let scene_vs = shader(dev, "scene vs", ShaderStage::Vertex, "vs_scene", SCENE_SRC)?;
-        let scene_fs = shader(dev, "scene fs", ShaderStage::Fragment, "fs_scene", SCENE_SRC)?;
+        Self::with_desc(dev, &RendererDesc::default())
+    }
+
+    pub fn with_desc(dev: &dyn Device, desc: &RendererDesc) -> Result<Self, ed_gpu::Error> {
+        let vs = shader(dev, "resolve vs", ShaderStage::Vertex, "vs_resolve", RESOLVE_SRC)?;
+        let fs = shader(dev, "resolve fs", ShaderStage::Fragment, "fs_resolve", RESOLVE_SRC)?;
         let tonemap_vs = shader(dev, "tonemap vs", ShaderStage::Vertex, "vs_fullscreen", TONEMAP_SRC)?;
         let tonemap_fs = shader(dev, "tonemap fs", ShaderStage::Fragment, "fs_tonemap", TONEMAP_SRC)?;
-        let sky = dev.create_render_pipeline(&RenderPipelineDesc {
-            label: "sky",
-            vertex: sky_vs,
-            fragment: Some(sky_fs),
+        let pick_cs = shader(dev, "pick", ShaderStage::Compute, "pick", DEBUG_SRC)?;
+        let pop_cs = shader(dev, "pop_stats", ShaderStage::Compute, "pop_stats", DEBUG_SRC)?;
+        let resolve = dev.create_render_pipeline(&RenderPipelineDesc {
+            label: "resolve",
+            vertex: vs,
+            fragment: Some(fs),
             color_formats: &[HDR_FORMAT],
             blend: Blend::Opaque,
             depth: None,
@@ -311,56 +417,173 @@ impl Renderer {
             topology: Topology::Triangles,
             samples: 1,
         })?;
-        let scene = dev.create_render_pipeline(&RenderPipelineDesc {
-            label: "scene",
-            vertex: scene_vs,
-            fragment: Some(scene_fs),
-            color_formats: &[HDR_FORMAT],
-            blend: Blend::Opaque,
-            depth: Some(DepthDesc { format: DEPTH_FORMAT, write: true, compare: Compare::GreaterEqual, bias: 0.0, slope_bias: 0.0 }),
-            cull: Cull::Back,
-            topology: Topology::Triangles,
-            samples: 1,
-        })?;
-        let (verts, idx) = cube_mesh();
-        let vertices = static_buffer(dev, "cube vertices", &f32_bytes(&verts))?;
-        let indices = static_buffer(dev, "cube indices", &u32_bytes(&idx))?;
-        let inst = TestScene::instances();
-        let mut words = Vec::with_capacity(inst.len() * 12);
-        for i in &inst {
-            words.extend_from_slice(&[i.position.x, i.position.y, i.position.z, i.yaw, i.scale.x, i.scale.y, i.scale.z, 0.0]);
-            words.extend_from_slice(&[i.color.x, i.color.y, i.color.z, if i.checker { 1.0 } else { 0.0 }]);
-        }
-        let instances = static_buffer(dev, "test scene instances", &f32_bytes(&words))?;
-        let fd = dev.create_buffer(&BufferDesc {
-            label: "frame data",
-            size: (FRAME_DATA_FLOATS * 4) as u64,
-            usage: Usage { shader_read: true, cpu_write: true, ..Default::default() },
-        })?;
-        let frame_data = Tracked { id: fd, bindless: dev.bind_buffer(fd)?, state: ResourceState::Undefined };
+        let pick_pipe = dev.create_compute_pipeline(&ComputePipelineDesc { label: "pick", shader: pick_cs, workgroup_size: [1, 1, 1] })?;
+        let pop_pipe = dev.create_compute_pipeline(&ComputePipelineDesc { label: "pop_stats", shader: pop_cs, workgroup_size: [8, 8, 1] })?;
+        let upload = Usage { shader_read: true, copy_dst: true, ..Default::default() };
+        let per_frame = Usage { shader_read: true, cpu_write: true, ..Default::default() };
+        let vertices = Tracked::new(dev, "vertices", desc.max_vertices as u64 * (VERTEX_WORDS * 4) as u64, upload)?;
+        let indices = Tracked::new(dev, "indices", desc.max_indices as u64 * 4, upload)?;
+        let instance_buf = Tracked::new(dev, "instances", desc.max_instances as u64 * (INSTANCE_WORDS * 4) as u64, upload)?;
+        let materials_buf = Tracked::new(dev, "materials", desc.max_materials as u64 * (MATERIAL_WORDS * 4) as u64, upload)?;
+        let frame_data = Tracked::new(dev, "frame data", (FRAME_WORDS * 4) as u64, per_frame)?;
+        let nodes_buf = Tracked::new(dev, "nodes", desc.max_nodes as u64 * 16, per_frame)?;
         Ok(Self {
-            shaders: vec![sky_vs, sky_fs, scene_vs, scene_fs],
-            sky,
-            scene,
+            desc: *desc,
+            shaders: vec![vs, fs, pick_cs, pop_cs],
+            resolve,
             tonemap_vs,
             tonemap_fs,
             tonemap: Vec::new(),
+            pick_pipe,
+            pop_pipe,
             vertices,
             indices,
-            instances,
+            instance_buf,
+            materials_buf,
             frame_data,
-            instance_count: inst.len() as u32,
-            index_count: idx.len() as u32,
+            nodes_buf,
+            vertex_count: 0,
+            index_count: 0,
+            mesh_count: 0,
+            materials: Vec::new(),
+            materials_dirty: false,
+            pools: InstancePools::new(desc.max_instances, desc.max_nodes),
+            slots_flushed: 0,
+            lod: DiscreteLod::new(dev, desc.max_instances, desc.max_meshes, desc.lod)?,
+            pick_ring: Ring::new(dev, "pick", 16)?,
+            pick_requests: [(0, 0); provider::RING],
+            pick: None,
+            pop_ring: None,
+            pop_frames: Vec::new(),
+            frame_counter: 0,
             pool: TransientPool::new(),
             scratch: Vec::new(),
+            bytes_scratch: Vec::new(),
         })
     }
 
-    /// Pass names (timer labels) of a frame in `mode`, in run order.
-    pub fn pass_names(mode: SceneMode) -> &'static [&'static str] {
-        match mode {
-            SceneMode::TestScene => &PASSES_FULL,
-            SceneMode::Empty => &PASSES_EMPTY,
+    pub fn desc(&self) -> &RendererDesc {
+        &self.desc
+    }
+
+    /// Adds a mesh and its LOD chain to the shared geometry buffers. The data lands at the
+    /// next frame start; call outside a frame.
+    pub fn add_mesh(&mut self, dev: &dyn Device, m: &MeshAsset) -> Result<MeshId, ed_gpu::Error> {
+        let bad = |s: &str| Err(ed_gpu::Error::Invalid(format!("add_mesh: {s}")));
+        if m.lods.is_empty() || m.lods.len() > MAX_LODS {
+            return bad("needs 1..=4 LODs");
+        }
+        if m.normals.len() != m.positions.len() {
+            return bad("normals and positions differ in length");
+        }
+        if self.mesh_count >= self.desc.max_meshes {
+            return bad("mesh table full");
+        }
+        let nv = m.positions.len() as u32;
+        let ni: u32 = m.lods.iter().map(|l| l.indices.len() as u32).sum();
+        if self.vertex_count + nv > self.desc.max_vertices || self.index_count + ni > self.desc.max_indices {
+            return bad("geometry buffers full");
+        }
+        let mut vw = Vec::with_capacity(nv as usize * VERTEX_WORDS);
+        for (p, n) in m.positions.iter().zip(&m.normals) {
+            vw.extend_from_slice(&[p[0].to_bits(), p[1].to_bits(), p[2].to_bits(), gpu::oct_encode(Vec3::from(*n))]);
+        }
+        let mut rec = MeshRecord {
+            sphere: Vec4::ZERO,
+            lod_count: m.lods.len() as u32,
+            first_index: [0; MAX_LODS],
+            index_count: [0; MAX_LODS],
+            base_vertex: self.vertex_count as i32,
+            error: [0.0; MAX_LODS],
+        };
+        let (c, r) = m.bounding_sphere();
+        rec.sphere = c.extend(r);
+        let mut iw = Vec::with_capacity(ni as usize);
+        let mut first = self.index_count;
+        for (l, lod) in m.lods.iter().enumerate() {
+            if lod.indices.len() % 3 != 0 || lod.indices.iter().any(|&i| i >= nv) {
+                return bad("indices must be triangles into the mesh's vertices");
+            }
+            rec.first_index[l] = first;
+            rec.index_count[l] = lod.indices.len() as u32;
+            rec.error[l] = lod.error;
+            first += lod.indices.len() as u32;
+            iw.extend_from_slice(&lod.indices);
+        }
+        dev.write_buffer(self.vertices.id, self.vertex_count as u64 * (VERTEX_WORDS * 4) as u64, &gpu::bytes(&vw))?;
+        dev.write_buffer(self.indices.id, self.index_count as u64 * 4, &gpu::bytes(&iw))?;
+        self.vertex_count += nv;
+        self.index_count += ni;
+        self.lod.add_mesh(rec);
+        self.mesh_count += 1;
+        Ok(MeshId(self.mesh_count - 1))
+    }
+
+    /// Adds a material row. `None` when the table is full.
+    pub fn add_material(&mut self, m: Material) -> Option<MaterialId> {
+        if self.materials.len() as u32 >= self.desc.max_materials {
+            return None;
+        }
+        self.materials.push(m);
+        self.materials_dirty = true;
+        Some(MaterialId(self.materials.len() as u32 - 1))
+    }
+    pub fn set_material(&mut self, id: MaterialId, m: Material) {
+        self.materials[id.0 as usize] = m;
+        self.materials_dirty = true;
+    }
+
+    /// The instance pools (add, move, remove instances; node origins).
+    pub fn instances(&mut self) -> &mut InstancePools {
+        &mut self.pools
+    }
+    pub fn instance_pools(&self) -> &InstancePools {
+        &self.pools
+    }
+    /// Provider 1 settings (LOD threshold, fade length, occlusion).
+    pub fn lod_config(&mut self) -> &mut LodConfig {
+        &mut self.lod.config
+    }
+
+    /// Sends changed instances (merged dirty ranges), materials and the provider's tables.
+    /// Call before `begin_frame`: the data lands at the start of that frame. Cost is
+    /// proportional to what changed.
+    pub fn flush_uploads(&mut self, dev: &dyn Device) -> Result<UploadStats, ed_gpu::Error> {
+        let mut st = UploadStats::default();
+        for r in self.pools.take_dirty_ranges() {
+            let b = gpu::bytes(self.pools.range_words(&r));
+            dev.write_buffer(self.instance_buf.id, r.start as u64 * (INSTANCE_WORDS * 4) as u64, &b)?;
+            st.instance_ranges += 1;
+            st.instance_bytes += b.len() as u64;
+        }
+        self.slots_flushed = self.pools.slots();
+        if self.materials_dirty {
+            let w: Vec<u32> = self.materials.iter().flat_map(|m| m.words()).collect();
+            let b = gpu::bytes(&w);
+            dev.write_buffer(self.materials_buf.id, 0, &b)?;
+            st.material_bytes = b.len() as u64;
+            self.materials_dirty = false;
+        }
+        self.lod.flush(dev, &self.pools)?;
+        Ok(st)
+    }
+
+    /// Pass names (timer labels) of a frame, in run order.
+    pub fn pass_names(&self, params: &FrameParams) -> Vec<&'static str> {
+        match params.mode {
+            SceneMode::Empty => PASSES_EMPTY.to_vec(),
+            SceneMode::Scene => {
+                let mut v = self.lod.pass_names().to_vec();
+                v.push("resolve");
+                if params.pop_stats {
+                    v.push("pop_stats");
+                }
+                if params.pick.is_some() {
+                    v.push("pick");
+                }
+                v.extend(["tonemap", "overlay"]);
+                v
+            }
         }
     }
 
@@ -383,81 +606,192 @@ impl Renderer {
         Ok(p)
     }
 
+    /// Reads finished frames' counters, pick answers and pop tiles.
+    pub fn poll(&mut self, dev: &dyn Device) {
+        self.lod.poll(dev);
+        let (reqs, pools, out) = (&self.pick_requests, &self.pools, &mut self.pick);
+        self.pick_ring.poll(dev, &mut self.bytes_scratch, |frame, b| {
+            let w = gpu::words(b);
+            let (x, y) = reqs[(frame % provider::RING as u64) as usize];
+            let instance = (w[0] != 0).then(|| w[0] - 1);
+            let object = instance.and_then(|i| pools.object(i)).filter(|o| o.0 as u32 == w[1]);
+            *out = Some(PickResult { frame, x, y, instance, object, lod: w[2] >> 28, primitive: w[2] & 0x0FFF_FFFF });
+        });
+        if let Some((ring, tx, ty)) = self.pop_ring.as_mut() {
+            let (tx, ty) = (*tx, *ty);
+            let frames = &mut self.pop_frames;
+            ring.poll(dev, &mut self.bytes_scratch, |frame, b| {
+                let w = gpu::words(b);
+                let n = (tx * ty) as usize;
+                let luma = (0..n).map(|i| f32::from_bits(w[i * 2])).collect();
+                let transition_px = (0..n).map(|i| f32::from_bits(w[i * 2 + 1])).collect();
+                frames.push(PopFrame { frame, tiles_x: tx, tiles_y: ty, luma, transition_px });
+            });
+        }
+    }
+
     /// Record one view into `enc`. Call between `begin_frame` and `end_frame`.
     pub fn render(&mut self, dev: &dyn Device, enc: &mut dyn CommandEncoder, view: &View, params: &FrameParams) -> Result<(), GraphError> {
+        self.poll(dev);
         let vp = view.viewport;
         let (w, h) = (vp.width.max(1), vp.height.max(1));
         let tonemap = self.tonemap_pipeline(dev, view.target.format)?;
+        let frame_index = enc.frame_index();
 
         // Per-view data, camera-relative (P1-D7).
         let cam = &view.camera;
-        let vpm = cam.relative_view_proj(w as f32 / h as f32);
-        let mut fd = [0f32; FRAME_DATA_FLOATS];
-        fd[0..16].copy_from_slice(&vpm.to_cols_array());
-        fd[16..32].copy_from_slice(&vpm.inverse().to_cols_array());
+        let proj = reverse_z_projection(cam.fov_y, w as f32 / h as f32, cam.near);
+        let view_m = cam.relative_view();
+        let vpm = proj * view_m;
+        let mut fd = [0u32; FRAME_WORDS];
+        let put = |fd: &mut [u32], at: usize, v: &[f32]| {
+            for (i, x) in v.iter().enumerate() {
+                fd[at + i] = x.to_bits();
+            }
+        };
+        put(&mut fd, 0, &vpm.to_cols_array());
+        put(&mut fd, 16, &vpm.inverse().to_cols_array());
+        put(&mut fd, 32, &view_m.to_cols_array());
+        for (i, p) in frustum_planes(&vpm).iter().enumerate() {
+            put(&mut fd, FD_PLANES + i * 4, &p.to_array());
+        }
         let s = params.sun_dir.normalize_or(Vec3::Y);
-        let rows: [[f32; 4]; 7] = [
+        let rows: [[f32; 4]; 5] = [
             [s.x, s.y, s.z, 0.0],
-            [3.0, 2.85, 2.6, 0.0],    // sun
-            [0.18, 0.36, 0.85, 0.0],  // zenith
-            [0.62, 0.72, 0.86, 0.0],  // horizon
-            [0.24, 0.21, 0.17, 0.0],  // ground
-            [vp.x as f32, vp.y as f32, w as f32, h as f32],
-            [params.exposure, 0.0, 0.0, 0.0],
+            [3.0, 2.85, 2.6, 0.0],   // sun
+            [0.18, 0.36, 0.85, 0.0], // zenith
+            [0.62, 0.72, 0.86, 0.0], // horizon
+            [0.24, 0.21, 0.17, 0.0], // ground
         ];
         for (i, r) in rows.iter().enumerate() {
-            fd[32 + i * 4..36 + i * 4].copy_from_slice(r);
+            put(&mut fd, FD_SUN_DIR + i * 4, r);
         }
-        let fd_bytes = f32_bytes(&fd);
+        put(&mut fd, FD_VIEWPORT, &[vp.x as f32, vp.y as f32, w as f32, h as f32]);
+        let cfg = self.lod.config;
+        put(&mut fd, FD_PARAMS, &[params.exposure, cfg.lod_px, cam.near, cfg.hysteresis]);
+        put(&mut fd, FD_PROJ, &[proj.x_axis.x, proj.y_axis.y, w as f32, h as f32]);
+        let scene = params.mode == SceneMode::Scene;
+        if scene {
+            self.lod.prepare(dev, &self.pools, w, h, &mut fd)?;
+        }
+        fd[gpu::FD_CULL + 2] = self.frame_counter;
+        self.frame_counter = self.frame_counter.wrapping_add(1);
+        let fd_bytes = gpu::bytes(&fd);
         dev.fill_frame_buffer(self.frame_data.id, &mut |dst| dst[..fd_bytes.len()].copy_from_slice(&fd_bytes))?;
-        // The only use of the f64 camera position: one camera-relative origin per view.
-        let origin_rel = (TestScene::ORIGIN - cam.position).as_vec3();
+        // The only use of the f64 camera position: one camera-relative origin per node.
+        let nodes: Vec<u32> = self
+            .pools
+            .nodes()
+            .iter()
+            .flat_map(|n| {
+                let r = (*n - cam.position).as_vec3();
+                [r.x.to_bits(), r.y.to_bits(), r.z.to_bits(), 0]
+            })
+            .collect();
+        let node_bytes = gpu::bytes(&nodes);
+        dev.fill_frame_buffer(self.nodes_buf.id, &mut |dst| dst[..node_bytes.len()].copy_from_slice(&node_bytes))?;
 
-        let fdi = self.frame_data.bindless.0;
-        let (sky, scene) = (self.sky, self.scene);
-        let (verts, inst, idx_buf) = (self.vertices.bindless.0, self.instances.bindless.0, self.indices.id);
-        let (instance_count, index_count) = (self.instance_count, self.index_count);
         let encode_srgb = !matches!(view.target.format, Format::Rgba8Srgb | Format::Bgra8Srgb | Format::Rgba16Float);
         let exposure = params.exposure;
-
         let mut g = FrameGraph::new();
         let hdr = g.create_texture("hdr", TextureInfo { format: HDR_FORMAT, width: w, height: h });
         let out_info = TextureInfo { format: view.target.format, width: view.target.width, height: view.target.height };
         let out = g.import_texture("output", view.target.texture, out_info, view.target.initial, view.target.final_state);
         let fd_res = g.import_buffer("frame data", self.frame_data.id, self.frame_data.state, None);
-        let mut statics = None;
-        match params.mode {
-            SceneMode::TestScene => {
-                let depth = g.create_texture("depth", TextureInfo { format: DEPTH_FORMAT, width: w, height: h });
-                let v = g.import_buffer("vertices", self.vertices.id, self.vertices.state, None);
-                let i = g.import_buffer("indices", self.indices.id, self.indices.state, None);
-                let n = g.import_buffer("instances", self.instances.id, self.instances.state, None);
-                statics = Some((v, i, n));
-                g.add_pass("sky", PassKind::Raster).read(fd_res, ResourceState::ShaderRead).color(hdr, LoadOp::Discard, StoreOp::Store).exec(
-                    move |ctx| {
-                        ctx.enc.set_render_pipeline(sky);
-                        ctx.enc.set_draw_constants(&constants(&[fdi]));
-                        ctx.enc.draw(0..3, 0..1);
-                    },
-                );
-                g.add_pass("scene", PassKind::Raster)
-                    .read(fd_res, ResourceState::ShaderRead)
-                    .read(v, ResourceState::ShaderRead)
-                    .read(i, ResourceState::ShaderRead)
-                    .read(n, ResourceState::ShaderRead)
-                    .color(hdr, LoadOp::Load, StoreOp::Store)
-                    .depth(depth, LoadOp::Clear([0.0; 4]), StoreOp::Discard, true)
+        let mut imports = Vec::new();
+        if scene {
+            let cd = Some(ResourceState::CopyDst);
+            let nodes_res = g.import_buffer("nodes", self.nodes_buf.id, self.nodes_buf.state, None);
+            let verts = g.import_buffer("vertices", self.vertices.id, self.vertices.state, cd);
+            let idx = g.import_buffer("indices", self.indices.id, self.indices.state, cd);
+            let inst = g.import_buffer("instances", self.instance_buf.id, self.instance_buf.state, cd);
+            let mats = g.import_buffer("materials", self.materials_buf.id, self.materials_buf.state, cd);
+            imports = vec![nodes_res, verts, idx, inst, mats];
+            let inputs = SharedInputs {
+                frame: (fd_res, self.frame_data.bindless.0),
+                instances: (inst, self.instance_buf.bindless.0),
+                nodes: (nodes_res, self.nodes_buf.bindless.0),
+                verts: (verts, self.vertices.bindless.0),
+                indices: (idx, self.indices.bindless.0, self.indices.id),
+                slots: self.slots_flushed,
+            };
+            let depth = g.create_texture("depth", TextureInfo { format: DEPTH_FORMAT, width: w, height: h });
+            let vis = g.create_texture("visibility", TextureInfo { format: VIS_FORMAT, width: w, height: h });
+            let po = self.lod.record(&mut g, frame_index, &inputs, VisTargets { depth, vis });
+            let rc = constants(&[
+                self.frame_data.bindless.0,
+                0, // vis: bindless index of a transient, known in the pass
+                self.instance_buf.bindless.0,
+                self.nodes_buf.bindless.0,
+                po.meshes.1,
+                self.materials_buf.bindless.0,
+                self.vertices.bindless.0,
+                self.indices.bindless.0,
+            ]);
+            let resolve = self.resolve;
+            g.add_pass("resolve", PassKind::Raster)
+                .read(fd_res, ResourceState::ShaderRead)
+                .read(vis, ResourceState::ShaderRead)
+                .read(inst, ResourceState::ShaderRead)
+                .read(nodes_res, ResourceState::ShaderRead)
+                .read(po.meshes.0, ResourceState::ShaderRead)
+                .read(mats, ResourceState::ShaderRead)
+                .read(verts, ResourceState::ShaderRead)
+                .read(idx, ResourceState::ShaderRead)
+                .color(hdr, LoadOp::Discard, StoreOp::Store)
+                .exec(move |ctx| {
+                    let mut c = rc;
+                    c[4..8].copy_from_slice(&ctx.bindless(vis).0.to_ne_bytes());
+                    ctx.enc.set_render_pipeline(resolve);
+                    ctx.enc.set_draw_constants(&c);
+                    ctx.enc.draw(0..3, 0..1);
+                });
+            if params.pop_stats {
+                let (tx, ty) = (w.div_ceil(POP_TILE), h.div_ceil(POP_TILE));
+                if self.pop_ring.as_ref().map(|p| (p.1, p.2)) != Some((tx, ty)) {
+                    if let Some((r, _, _)) = self.pop_ring.take() {
+                        r.destroy(dev);
+                    }
+                    self.pop_ring = Some((Ring::new(dev, "pop tiles", tx as u64 * ty as u64 * 8)?, tx, ty));
+                }
+                let ring = &mut self.pop_ring.as_mut().expect("just created").0;
+                let slot = ring.slot(frame_index);
+                let b = &ring.bufs[slot];
+                let res = g.import_buffer("pop tiles", b.id, b.state, Some(ResourceState::ShaderRead));
+                imports.push(res);
+                let (bi, pipe, state_bi) = (b.bindless.0, self.pop_pipe, po.state.1);
+                g.add_pass("pop_stats", PassKind::Compute)
+                    .read(hdr, ResourceState::ShaderRead)
+                    .read(vis, ResourceState::ShaderRead)
+                    .read(po.state.0, ResourceState::ShaderRead)
+                    .write(res, ResourceState::ShaderWrite)
                     .exec(move |ctx| {
-                        ctx.enc.set_render_pipeline(scene);
-                        ctx.enc.set_index_buffer(idx_buf, 0);
-                        let o = origin_rel;
-                        ctx.enc.set_draw_constants(&constants(&[fdi, inst, verts, 0, o.x.to_bits(), o.y.to_bits(), o.z.to_bits(), 0]));
-                        ctx.enc.draw_indexed(0..index_count, 0, 0..instance_count);
+                        let (hi, vi) = (ctx.bindless(hdr).0, ctx.bindless(vis).0);
+                        ctx.enc.set_compute_pipeline(pipe);
+                        ctx.enc.set_compute_constants(&constants(&[hi, vi, state_bi, bi, w, h, tx, ty, exposure.to_bits()]));
+                        ctx.enc.dispatch(tx.div_ceil(8), ty.div_ceil(8), 1);
                     });
             }
-            SceneMode::Empty => {
-                g.add_pass("clear", PassKind::Raster).color(hdr, LoadOp::Clear([0.62, 0.72, 0.86, 1.0]), StoreOp::Store).done();
+            if let Some((px, py)) = params.pick {
+                let slot = self.pick_ring.slot(frame_index);
+                self.pick_requests[slot] = (px, py);
+                let b = &self.pick_ring.bufs[slot];
+                let res = g.import_buffer("pick", b.id, b.state, Some(ResourceState::ShaderRead));
+                imports.push(res);
+                let (bi, pipe, inst_bi) = (b.bindless.0, self.pick_pipe, self.instance_buf.bindless.0);
+                g.add_pass("pick", PassKind::Compute)
+                    .read(vis, ResourceState::ShaderRead)
+                    .read(inst, ResourceState::ShaderRead)
+                    .write(res, ResourceState::ShaderWrite)
+                    .exec(move |ctx| {
+                        let vi = ctx.bindless(vis).0;
+                        ctx.enc.set_compute_pipeline(pipe);
+                        ctx.enc.set_compute_constants(&constants(&[vi, inst_bi, bi, px, py, w, h]));
+                        ctx.enc.dispatch(1, 1, 1);
+                    });
             }
+        } else {
+            g.add_pass("clear", PassKind::Raster).color(hdr, LoadOp::Clear([0.62, 0.72, 0.86, 1.0]), StoreOp::Store).done();
         }
         let full = vp.x == 0 && vp.y == 0 && vp.width == view.target.width && vp.height == view.target.height;
         let out_load = if full { LoadOp::Discard } else { LoadOp::Clear([0.0, 0.0, 0.0, 1.0]) };
@@ -492,12 +826,58 @@ impl Renderer {
         }
         let plan = g.execute(dev, enc, &mut self.pool)?;
         self.frame_data.state = plan.final_states[fd_res.index()];
-        if let Some((v, i, n)) = statics {
-            self.vertices.state = plan.final_states[v.index()];
-            self.indices.state = plan.final_states[i.index()];
-            self.instances.state = plan.final_states[n.index()];
+        if scene {
+            self.lod.finish(&plan);
+            let fs = |r: graph::Res| plan.final_states[r.index()];
+            self.nodes_buf.state = fs(imports[0]);
+            self.vertices.state = fs(imports[1]);
+            self.indices.state = fs(imports[2]);
+            self.instance_buf.state = fs(imports[3]);
+            self.materials_buf.state = fs(imports[4]);
+            let mut k = 5;
+            if params.pop_stats {
+                let slot = (frame_index % provider::RING as u64) as usize;
+                if let Some((r, _, _)) = self.pop_ring.as_mut() {
+                    r.bufs[slot].state = fs(imports[k]);
+                }
+                k += 1;
+            }
+            if params.pick.is_some() {
+                let slot = (frame_index % provider::RING as u64) as usize;
+                self.pick_ring.bufs[slot].state = fs(imports[k]);
+            }
         }
         Ok(())
+    }
+
+    /// GPU culling counters of the latest finished frame.
+    pub fn cull_stats(&self) -> Option<CullStats> {
+        self.lod.stats()
+    }
+    /// Draw calls recorded per scene frame: the provider's indirect draws plus resolve and
+    /// tonemap.
+    pub fn draw_calls(&self) -> u32 {
+        self.lod.draw_calls() + 2
+    }
+    /// CPU time of the last frame's multi-draw loops, ms.
+    pub fn draw_loop_ms(&self) -> f64 {
+        self.lod.draw_loop_ms()
+    }
+    /// Culling counters of every finished frame since the last call, oldest first.
+    pub fn take_cull_history(&mut self) -> Vec<CullStats> {
+        self.lod.take_history()
+    }
+    /// Provider 1, for its counters and settings.
+    pub fn lod_provider(&self) -> &DiscreteLod {
+        &self.lod
+    }
+    /// The latest pick answer.
+    pub fn pick_result(&self) -> Option<PickResult> {
+        self.pick
+    }
+    /// Pop-detector tiles of finished frames since the last call, oldest first.
+    pub fn take_pop_frames(&mut self) -> Vec<PopFrame> {
+        std::mem::take(&mut self.pop_frames)
     }
 
     /// Per-pass GPU timings of the most recent finished frame (results lag a few frames).
@@ -513,12 +893,17 @@ impl Renderer {
     /// Release every GPU object. Call after `wait_idle`, before dropping the device.
     pub fn destroy(mut self, dev: &dyn Device) {
         self.pool.destroy(dev);
-        for t in [&self.vertices, &self.indices, &self.instances, &self.frame_data] {
-            dev.unbind_buffer(t.bindless);
-            dev.destroy_buffer(t.id);
+        for t in [self.vertices, self.indices, self.instance_buf, self.materials_buf, self.frame_data, self.nodes_buf] {
+            t.destroy(dev);
         }
-        dev.destroy_render_pipeline(self.sky);
-        dev.destroy_render_pipeline(self.scene);
+        Box::new(self.lod).destroy(dev);
+        self.pick_ring.destroy(dev);
+        if let Some((r, _, _)) = self.pop_ring {
+            r.destroy(dev);
+        }
+        dev.destroy_render_pipeline(self.resolve);
+        dev.destroy_compute_pipeline(self.pick_pipe);
+        dev.destroy_compute_pipeline(self.pop_pipe);
         for (_, p) in self.tonemap.drain(..) {
             dev.destroy_render_pipeline(p);
         }
@@ -554,12 +939,26 @@ mod tests {
 
     #[test]
     fn cube_is_ccw_from_outside() {
-        let (v, idx) = cube_mesh();
-        let p = |i: u32| Vec3::new(v[i as usize * 8], v[i as usize * 8 + 1], v[i as usize * 8 + 2]);
-        for t in idx.chunks(3) {
-            let n = Vec3::new(v[t[0] as usize * 8 + 4], v[t[0] as usize * 8 + 5], v[t[0] as usize * 8 + 6]);
+        let m = cube_mesh();
+        let p = |i: u32| Vec3::from(m.positions[i as usize]);
+        for t in m.lods[0].indices.chunks(3) {
+            let n = Vec3::from(m.normals[t[0] as usize]);
             let face = (p(t[1]) - p(t[0])).cross(p(t[2]) - p(t[0]));
             assert!(face.dot(n) > 0.0);
         }
+    }
+
+    #[test]
+    fn frustum_planes_contain_the_view() {
+        let c = Camera { position: DVec3::ZERO, yaw: 0.3, pitch: -0.2, fov_y: 1.0, near: 0.1 };
+        let vp = c.relative_view_proj(16.0 / 9.0);
+        let pl = frustum_planes(&vp);
+        let inside = |p: Vec3, r: f32| pl.iter().all(|q| q.truncate().dot(p) + q.w >= -r);
+        assert!(inside(c.forward() * 50.0, 0.0));
+        assert!(!inside(-c.forward() * 50.0, 1.0), "behind");
+        assert!(!inside(c.forward() * 50.0 + c.right() * 500.0, 1.0), "far right");
+        assert!(inside(c.forward() * 50.0 + c.right() * 500.0, 600.0), "big sphere reaches in");
+        assert!(!inside(c.forward() * 0.05, 0.01), "closer than near");
+        assert!(inside(c.forward() * 1e7, 0.0), "no far plane");
     }
 }

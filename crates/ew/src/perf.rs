@@ -13,6 +13,12 @@ pub struct FrameRow {
     pub gpu_ms: Option<f32>,
     /// GPU ms per pass, in the order of [`PerfLog::passes`].
     pub pass_ms: Vec<Option<f32>>,
+    /// Part of `cpu_ms` spent in `Renderer::flush_uploads`.
+    pub flush_ms: f64,
+    /// Part of `cpu_ms` spent in the provider's multi-draw loops.
+    pub draw_loop_ms: f64,
+    /// GPU culling counters (arrive late, like the timings).
+    pub cull: Option<ed_render::provider::CullStats>,
 }
 
 pub struct PerfLog {
@@ -67,14 +73,20 @@ impl PerfLog {
         for p in &self.passes {
             let _ = write!(s, ",{p}_gpu_ms");
         }
-        s.push_str(",wall_frame_ms\n");
+        s.push_str(",wall_frame_ms,flush_ms,draw_loop_ms,instances,after_frustum,after_occlusion,drawn,triangles,fading\n");
         let opt = |v: Option<f32>| v.map(|x| format!("{x:.4}")).unwrap_or_default();
         for (i, r) in self.rows.iter().enumerate() {
             let _ = write!(s, "{i},{:.4},{}", r.cpu_ms, opt(r.gpu_ms));
             for k in 0..self.passes.len() {
                 let _ = write!(s, ",{}", opt(r.pass_ms.get(k).copied().flatten()));
             }
-            let _ = writeln!(s, ",{:.4}", r.wall_ms);
+            let _ = write!(s, ",{:.4},{:.4},{:.4}", r.wall_ms, r.flush_ms, r.draw_loop_ms);
+            match &r.cull {
+                Some(c) => {
+                    let _ = writeln!(s, ",{},{},{},{},{},{}", c.total, c.after_frustum, c.after_occlusion, c.drawn(), c.triangles, c.fading);
+                }
+                None => s.push_str(",,,,,,\n"),
+            }
         }
         s
     }
@@ -110,9 +122,87 @@ impl PerfLog {
     }
 }
 
+/// Pop detector result: per-tile change of mean display luminance between consecutive
+/// frames, split into tiles that had pixels of an instance in a LOD transition (in either
+/// frame) and all other tiles. Camera motion moves both; a LOD pop shows as a transition-tile
+/// tail well above the other tiles'.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PopStats {
+    pub pairs: usize,
+    pub transition_tiles: u64,
+    pub other_tiles: u64,
+    pub transition_max: f32,
+    pub transition_p99: f32,
+    pub other_max: f32,
+    pub other_p99: f32,
+}
+
+/// Histogram resolution of the p99 (|dL| in 0..1).
+const POP_BINS: usize = 4096;
+
+/// Pairs frames `f` and `f + 1` (both at or after `min_frame`). Max is exact, p99 from a
+/// 4096-bin histogram (resolution 1/4096).
+pub fn pop_stats(frames: &[ed_render::PopFrame], min_frame: u64) -> Option<PopStats> {
+    let mut hist = [vec![0u64; POP_BINS], vec![0u64; POP_BINS]];
+    let mut st = PopStats::default();
+    for w in frames.windows(2) {
+        let (a, b) = (&w[0], &w[1]);
+        if a.frame < min_frame || b.frame != a.frame + 1 || a.luma.len() != b.luma.len() {
+            continue;
+        }
+        st.pairs += 1;
+        for i in 0..a.luma.len() {
+            let d = (b.luma[i] - a.luma[i]).abs();
+            if !d.is_finite() {
+                continue;
+            }
+            let t = (a.transition_px[i] > 0.0 || b.transition_px[i] > 0.0) as usize;
+            hist[t][((d * POP_BINS as f32) as usize).min(POP_BINS - 1)] += 1;
+            if t == 1 {
+                st.transition_tiles += 1;
+                st.transition_max = st.transition_max.max(d);
+            } else {
+                st.other_tiles += 1;
+                st.other_max = st.other_max.max(d);
+            }
+        }
+    }
+    if st.pairs == 0 {
+        return None;
+    }
+    let p99 = |h: &[u64], n: u64, max: f32| {
+        if n == 0 {
+            return 0.0;
+        }
+        let rank = (0.99 * n as f64).ceil() as u64;
+        let mut acc = 0;
+        for (k, c) in h.iter().enumerate() {
+            acc += c;
+            if acc >= rank {
+                return ((k + 1) as f32 / POP_BINS as f32).min(max);
+            }
+        }
+        max
+    };
+    st.transition_p99 = p99(&hist[1], st.transition_tiles, st.transition_max);
+    st.other_p99 = p99(&hist[0], st.other_tiles, st.other_max);
+    Some(st)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pop_stats_split_transition_tiles() {
+        let f = |frame, luma: Vec<f32>, tr: Vec<f32>| ed_render::PopFrame { frame, tiles_x: 2, tiles_y: 1, luma, transition_px: tr };
+        let frames = vec![f(0, vec![0.5, 0.5], vec![0.0, 3.0]), f(1, vec![0.51, 0.7], vec![0.0, 0.0]), f(3, vec![0.0, 0.0], vec![0.0, 0.0])];
+        let s = pop_stats(&frames, 0).unwrap();
+        assert_eq!((s.pairs, s.transition_tiles, s.other_tiles), (1, 1, 1));
+        assert!((s.transition_max - 0.2).abs() < 1e-6 && (s.other_max - 0.01).abs() < 1e-6);
+        assert!(s.transition_p99 <= s.transition_max && s.transition_p99 > 0.19);
+        assert!(pop_stats(&frames, 1).is_none(), "frames 1 and 3 are not consecutive");
+    }
 
     #[test]
     fn percentiles_nearest_rank() {
@@ -135,8 +225,11 @@ mod tests {
         log.set_gpu(1, &t);
         let csv = log.csv();
         let lines: Vec<&str> = csv.lines().collect();
-        assert_eq!(lines[0], "frame,cpu_frame_ms,gpu_frame_ms,sky_gpu_ms,scene_gpu_ms,wall_frame_ms");
-        assert_eq!(lines[1], "0,1.0000,,,,2.0000");
-        assert_eq!(lines[2], "1,1.0000,0.5000,,0.2500,2.0000");
+        assert_eq!(
+            lines[0],
+            "frame,cpu_frame_ms,gpu_frame_ms,sky_gpu_ms,scene_gpu_ms,wall_frame_ms,flush_ms,draw_loop_ms,instances,after_frustum,after_occlusion,drawn,triangles,fading"
+        );
+        assert_eq!(lines[1], "0,1.0000,,,,2.0000,0.0000,0.0000,,,,,,");
+        assert_eq!(lines[2], "1,1.0000,0.5000,,0.2500,2.0000,0.0000,0.0000,,,,,,");
     }
 }

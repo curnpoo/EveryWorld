@@ -16,10 +16,6 @@ vertex FsOut vs_fullscreen(uint vid [[vertex_id]], ED_BINDLESS(ToneC)) {
     return fullscreen_vertex(vid);
 }
 
-inline float3 aces_fit(float3 x) {
-    return saturate((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14));
-}
-
 inline float3 srgb_encode(float3 c) {
     return select(1.055 * pow(c, 1.0 / 2.4) - 0.055, c * 12.92, c <= 0.0031308);
 }

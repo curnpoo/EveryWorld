@@ -1,4 +1,4 @@
-//! `ew`: the EveryWorld engine shell (Phase 1, M1b). See `ew --help`.
+//! `ew`: the EveryWorld engine shell (Phase 1, M2). See `ew --help`.
 
 use std::process::ExitCode;
 
@@ -18,6 +18,9 @@ fn main() -> ExitCode {
         ew::headless::run(&args).map(|r| {
             print!("{}", r.summary);
             println!("ew: wrote {} frames to {}", r.frames, args.out.display());
+            for (name, p) in &r.shots {
+                println!("ew: {name} screenshot {}", p.display());
+            }
         })
     } else {
         ew::windowed::run(args)

@@ -12,10 +12,19 @@
 //! - wraps every pass in a GPU timer scope and a debug group, and the whole frame in a
 //!   [`FRAME_SCOPE`] timer.
 //!
-//! Dependency rule: a pass that writes a resource runs after the passes declared earlier that
-//! also write it (so a clear pass and a later `LoadOp::Load` pass keep their order); a pass
-//! that reads a resource runs after *every* pass that writes it. A resource therefore has one
-//! final value per frame that all its readers see. Ping-pong patterns use two resources.
+//! Dependency rule (versions in declaration order):
+//!
+//! - A pass that writes a resource runs after the passes declared earlier that also write it
+//!   (so a clear pass and a later `LoadOp::Load` pass keep their order), and after the passes
+//!   that read the previous version (declared after that earlier writer and before this one):
+//!   a write-after-read edge.
+//! - A pass that reads a resource reads the version of the closest writer declared *before*
+//!   it, and runs after that writer and every earlier writer. A reader declared before any
+//!   writer of the resource reads the final version: it runs after *every* writer.
+//!
+//! So a frame can read a resource between two writes (two-phase occlusion culling: draw,
+//! build the depth pyramid from depth, draw more into the same depth), and a frame declared
+//! out of order (consumer first) still sees the final value.
 //!
 //! Roots (never culled): passes marked [`PassBuilder::side_effect`] and passes that write an
 //! imported resource. Everything else survives only if a root needs it.
@@ -313,20 +322,35 @@ impl<'a> FrameGraph<'a> {
                 }
             }
         }
+        // Readers of each version: (writer, reader) pairs, for write-after-read edges. (A
+        // reader of an earlier writer's version keeps the next writer waiting; it also keeps
+        // that reader alive whenever the next writer is needed.)
+        let mut version_readers: Vec<Vec<(usize, usize)>> = vec![Vec::new(); nr];
         // Dependencies.
         let mut deps: Vec<Vec<usize>> = vec![Vec::new(); np];
         for (pi, p) in self.passes.iter().enumerate() {
             for a in &p.accesses {
-                let w = &writers[a.res.0 as usize];
+                let r = a.res.0 as usize;
+                let w = &writers[r];
+                let prev = w.iter().take_while(|&&x| x < pi).last().copied();
                 if a.write {
-                    if let Some(&prev) = w.iter().take_while(|&&x| x < pi).last() {
+                    if let Some(prev) = prev {
                         deps[pi].push(prev);
+                        deps[pi].extend(version_readers[r].iter().filter(|&&(wr, rd)| wr == prev && rd != pi).map(|&(_, rd)| rd));
                     }
                 } else {
-                    if w.is_empty() && matches!(self.resources[a.res.0 as usize].kind, ResKind::Transient(_)) {
-                        return Err(GraphError::ReadBeforeWrite { pass: p.name, res: self.resources[a.res.0 as usize].name });
+                    if w.is_empty() && matches!(self.resources[r].kind, ResKind::Transient(_)) {
+                        return Err(GraphError::ReadBeforeWrite { pass: p.name, res: self.resources[r].name });
                     }
-                    deps[pi].extend(w.iter().copied().filter(|&x| x != pi));
+                    match prev {
+                        // Reads the version of the closest earlier writer.
+                        Some(prev) => {
+                            deps[pi].push(prev);
+                            version_readers[r].push((prev, pi));
+                        }
+                        // Declared before any writer: reads the final version.
+                        None => deps[pi].extend(w.iter().copied().filter(|&x| x != pi)),
+                    }
                 }
             }
             deps[pi].sort_unstable();
@@ -868,6 +892,26 @@ mod tests {
         g.add_pass("third", PassKind::Raster).color(out, LoadOp::Load, StoreOp::Store).done();
         let plan = g.compile().unwrap();
         assert_eq!(names(&g, &plan.order), ["first", "second", "third"]);
+    }
+
+    #[test]
+    fn read_between_two_writes_sees_the_first_version() {
+        // Two-phase occlusion: draw, read depth into a pyramid, draw more into the same depth.
+        // Declared in run order; the pyramid must run between the two draws, and the resolve
+        // (declared last) sees the second version.
+        let mut g = FrameGraph::new();
+        let depth2 = g.create_texture("depth", DEPTH);
+        let hzb2 = g.import_buffer("hzb", BufferId::from_parts(0, NonZeroU32::new(1).unwrap()), Undefined, None);
+        let out2 = g.import_texture("out", out_tex(), OUT, Undefined, None);
+        g.add_pass("early", PassKind::Raster).depth(depth2, LoadOp::Clear([0.0; 4]), StoreOp::Store, true).done();
+        g.add_pass("pyramid", PassKind::Compute).read(depth2, ShaderRead).write(hzb2, ShaderWrite).done();
+        g.add_pass("late", PassKind::Raster).read(hzb2, ShaderRead).depth(depth2, LoadOp::Load, StoreOp::Store, true).done();
+        g.add_pass("resolve", PassKind::Raster).read(depth2, ShaderRead).color(out2, LoadOp::Discard, StoreOp::Store).done();
+        let plan = g.compile().unwrap();
+        assert_eq!(names(&g, &plan.order), ["early", "pyramid", "late", "resolve"]);
+        let t = |res, from, to| PlannedTransition { res, from, to };
+        assert_eq!(plan.before[1], vec![t(depth2, DepthWrite, ShaderRead), t(hzb2, Undefined, ShaderWrite)]);
+        assert_eq!(plan.before[2], vec![t(hzb2, ShaderWrite, ShaderRead), t(depth2, ShaderRead, DepthWrite)]);
     }
 
     #[test]
