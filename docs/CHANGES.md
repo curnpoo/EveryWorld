@@ -1,6 +1,6 @@
 ## 2026-11-10: Phase 0 complete
 
-- **Alpha baseline** (`reference/alpha-baseline.md`, CSVs and look captures): the alpha's
+- **Alpha baseline** (`reference/alpha-baseline.md` and CSVs; look images still to take): the alpha's
   tile selector wants about 430 tiles at street level, but the default memory setting keeps
   200, so it rebuilds the same tiles forever: the view never completes (over 200 s), frame
   rate falls from about 40 to about 12 fps, and the missing tiles are the owner's "gaps".

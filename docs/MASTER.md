@@ -32,7 +32,7 @@ detail; where two documents seem to disagree, the owner listed below wins.
 | Alpha archive | `alpha/` |
 | Interface contracts | `contracts/` |
 | Phase 0 spike results | `reference/spikes/`, `reference/determinism.md` |
-| Alpha baseline and budgets | `reference/alpha-baseline.md`, `reference/look/` |
+| Alpha baseline and budgets | `reference/alpha-baseline.md` |
 
 ## 2. The game
 
@@ -118,8 +118,8 @@ Alpha lookdev, the baseline to beat (`lookdev/round2/`):
 |---|---|---|
 | ![Forest closeup](lookdev/round2/trees/trees_forest_closeup.png) | ![Clouds sunset](lookdev/round2/clouds/clouds_sunset.png) | ![Forest floor](lookdev/round2/ground/ground_forest_floor_stand.png) |
 
-Full-frame look-reference captures from the alpha's Metal renderer (Phase 0) are in
-`reference/look/`; its measured performance is in `reference/alpha-baseline.md`.
+The alpha's measured performance is in `reference/alpha-baseline.md`; its look-reference
+captures go in `reference/look/` (still to be taken).
 
 ## 7. Risks
 

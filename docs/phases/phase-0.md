@@ -183,8 +183,9 @@ went. Work is on the `phase-0` branch.
 - [x] Docs landed on `main`; alpha tagged; `main` clean. *Tag `alpha-freeze-0.15` is the
       last commit of `alpha-early` (cac7988). The owner's uncommitted crash fix in their
       checkout is not in the tag; it stays the owner's to commit.*
-- [x] Look-reference captures, performance, load-time and gap baselines committed; Phase 2
-      and 3 budgets set from them (`../reference/alpha-baseline.md`). *Main finding: a
+- [x] Performance, load-time and gap baselines committed; Phase 2 and 3 budgets set from
+      them (`../reference/alpha-baseline.md`). *The look-reference images are not captured
+      yet (carried below). Main finding: a
       200-tile residency cap below a 430-tile selection makes the alpha rebuild tiles
       forever. The orbit-to-street gap walk and per-pass GPU timings move to the Phase 1
       harness.*
@@ -219,6 +220,7 @@ went. Work is on the `phase-0` branch.
 | Character viewer, scan and prefab conversion | Phase 1, M3 | `phase-1.md` |
 | Gap walk and per-pass GPU timings, alpha and new renderer on one path | Phase 1 harness | `phase-1.md` |
 | Windows-only street and foliage hashes | Phase 3 generator refactor | `../reference/determinism.md` row 8 |
+| Alpha look-reference images (six places) | Owner, when the machine is free; needed before Phase 4 | `../reference/alpha-baseline.md` §4 |
 | Release pins for the remaining datasets | At acquisition, Phases 2 and 3 | `../data/README.md` §7 |
 
 ## 6. Failure branches

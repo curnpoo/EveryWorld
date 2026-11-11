@@ -65,10 +65,12 @@ the new renderer and, with the same path, for the alpha.
 
 ## 4. Look reference
 
-`look/<place>.png`, from `tools/shoot_places.sh` at the tag (1280×720, 60 frames minimum,
-captured when streaming is idle or after 480 s). Places and cameras are in that script.
-Under the 200-tile cap streaming is never idle, so these show the alpha as the owner
-sees it, gaps included.
+Not captured yet. `tools/shoot_places.sh` at the tag opens a window per place and waits for
+streaming to go idle, which never happens under the 200-tile cap, so each window stays open
+for up to 8 minutes. Run it when the machine is free, with `--no-wait` added to the alpha's
+arguments in the script so each place saves after 60 frames and quits; images go in
+`look/<place>.png`. Until then, Phase 4's "match or beat the look captures" gate has no
+images to compare against.
 
 ## 5. Budgets set from this baseline
 
