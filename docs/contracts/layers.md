@@ -108,3 +108,64 @@ anchor (`persistence.md`).
 | L8 | A delta applied after layers equals the same operation authored in a last layer |
 | L9 | Editor round trip: place, move, save, reload, undo, redo leave the file as expected |
 | L10 | `road_patch` add and remove produce a connected lane graph across a node edge |
+
+## Decisions made during implementation (`ed_pack::layers`)
+
+- **The section 3 example uses elided ids** (`8f3a...c1`), which are not valid `ObjectId`s, so
+  that block fails to parse with `InvalidId` on line 2 (this is tested). Below is the same
+  example with full ids, written in canonical form: it parses, and writing it back gives the
+  same bytes.
+
+```toml
+[[op]]
+id = "8f3a00000000000000000000000000c1"
+op = "place"
+prefab = "hubs/aix_market_hall"
+position = [4581204.118, 381377.902, 4407066.54]
+rotation = [0.0, 0.0, 0.3827, 0.9239]
+
+[[op]]
+id = "8f3a00000000000000000000000000c2"
+op = "marker"
+name = "aix_hall_spawn"
+kind = "spawn"
+position = [4581210.4, 381380.1, 4407070.2]
+```
+
+- **Canonical form** (the writer's output; reading it and writing it back gives the same bytes):
+  - File-level keys other than `op` come first, sorted, followed by a blank line.
+  - Operations are sorted by `id`. Each is `[[op]]`, then `id`, then `op`, then its fields in
+    the order of the section 3 table.
+  - `params`, `volume` and the fields of untyped operations are written as inline tables
+    with sorted keys; `volume` puts `shape` first.
+  - Floats use the shortest form that round-trips and always have a decimal point (`4.0`,
+    `4407066.54`). Integers given where a float is expected become floats.
+  - Operations are separated by one blank line, lines end in `\n`, and the file ends with a
+    newline.
+  - Hand-written files in any order and style parse fine; only the writer's output is
+    canonical.
+- **Typed operations**: `place`, `replace`, `suppress` and `marker`. `mission`, `road_patch` and
+  `terrain_patch` are kept as raw TOML values, written back with sorted keys, until their
+  appliers exist.
+- **Validation**:
+  - Unknown fields on typed operations are errors.
+  - `id` must be 32 hex digits and authored (top bit set).
+  - Ids must be unique within a file.
+  - Quaternions must have unit length within 1e-3.
+  - Numbers must be finite; `clear`, `radius` and `height` must not be negative.
+  - `replace` takes exactly one of `prefab` and `params`, and `params` must not be empty.
+  - `suppress` needs `targets`, `volume` or both.
+  - Every error carries a 1-based line number.
+- **`volume` shapes**:
+  - `{ shape = "box", centre, half_extents, rotation? }`
+  - `{ shape = "sphere", centre, radius }`
+  - `{ shape = "prism", points (at least 3 body-fixed points), height }`
+- **`scale`** is either a number (uniform) or `[x, y, z]`.
+- **`layers.toml`** is a list of `[[layer]]` entries with `name` (`[a-z0-9_-]+`, unique) and
+  `enabled`. List order is application order.
+- **Node file path**: `<body>/<face>/10/<x>/<y>.toml`, with canonical decimals only (no
+  leading zeros). Any other file in a layer directory is an error rather than being skipped
+  silently.
+- **Layer chunk**: a kind-32 chunk holds the canonical TOML text as UTF-8. Its pack key is
+  `(L10 node, layer)`, where the layer id is the first 8 bytes of the BLAKE3 hash of the layer
+  name (see the `pack.md` decisions).

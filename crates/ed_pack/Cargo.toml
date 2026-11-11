@@ -9,3 +9,11 @@ workspace = true
 
 [dependencies]
 ed_geo = { path = "../ed_geo" }
+# Content hash (pack.md: BLAKE3). CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception.
+blake3 = "1"
+# Memory-mapped pack files for zero-copy chunk access. MIT OR Apache-2.0.
+memmap2 = "0.9"
+# Override-layer TOML parsing (writing is our own canonical printer). MIT OR Apache-2.0.
+toml = "0.8"
+serde = { workspace = true }
+thiserror = { workspace = true }
