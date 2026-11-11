@@ -1,0 +1,32 @@
+//! `ew`: the EveryWorld engine shell (Phase 1, M1b). See `ew --help`.
+
+use std::process::ExitCode;
+
+fn main() -> ExitCode {
+    let args = match ew::args::parse(std::env::args().skip(1)) {
+        Ok(Some(a)) => a,
+        Ok(None) => {
+            println!("{}", ew::args::USAGE);
+            return ExitCode::SUCCESS;
+        }
+        Err(e) => {
+            eprintln!("ew: {e}\n\n{}", ew::args::USAGE);
+            return ExitCode::from(2);
+        }
+    };
+    let result = if args.headless {
+        ew::headless::run(&args).map(|r| {
+            print!("{}", r.summary);
+            println!("ew: wrote {} frames to {}", r.frames, args.out.display());
+        })
+    } else {
+        ew::windowed::run(args)
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("ew: error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}

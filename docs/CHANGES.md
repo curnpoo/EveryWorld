@@ -1,3 +1,48 @@
+## 2026-11-11: Phase 1, milestone M1 (first frame through the new engine)
+
+All numbers on the M3 Pro, measured by the conductor's own runs, not only the workers'.
+
+- **`ed_gpu` Metal backend** (e76de87): bindless tables for textures, buffers and samplers
+  (tier-2 argument buffers, one residency set, macOS 15+), generational pools, state tracking
+  with validation, staged uploads, per-pass GPU timers (counter samples, with a submission
+  fallback that agrees within ~1 ms on an 8 ms pass), multi-draw-indirect as a CPU loop of
+  indirect draws (cost unmeasured until M2). 17 tests, clean under the Metal debug layer.
+  API changes made during bring-up: `contracts/rhi.md` §6.
+- **`ed_pack`** (fa384ae): `.ewpack` v1, BLAKE3-addressed chunks, manifest keyed by
+  (NodeId, kind, rung), byte-identical output for any insertion order, mmap zero-copy reads,
+  typed kinds, canonical layer TOML. 32 tests. One chunk from a 210 MB pack reads 0.51% of
+  the file; 100k-key lookup ~131 ns. Departures recorded in `contracts/pack.md`, `layers.md`.
+- **`ed_sim`** (827f674): Box3D vendored (MIT, double precision, no FMA contraction), fixed
+  60 Hz, snapshot/restore, record/replay, our own capsule mover. 1,000-body 60 s replay hash
+  `13fdc36890e3ab8a` identical in process, across processes and across two release runs.
+  0.6 to 0.9 ms per step with 1,000 awake boxes, one thread. Departures: `contracts/sim.md`.
+- **`ed_render` frame graph + Renderer v0, `ew` shell and headless harness**: passes declare
+  reads and writes; the graph orders, culls, aliases transients, emits transitions and times
+  every pass. HDR target, reverse-Z, camera-relative f32 from an f64 camera 6,378 km from
+  the origin. `ew` opens a Metal window (resize, vsync toggle, clean shutdown, no
+  validation errors) and runs a fixed 60 Hz step with interpolation.
+  `ew --headless` writes `frame.png`, `perf.csv` (per-pass GPU ms) and `summary.txt`.
+  Capture: `captures/phase-1/m1-test-scene.png`.
+
+| Run (2560x1440, 300 frames) | GPU mean | GPU p99 | Memory growth |
+|---|---|---|---|
+| Empty frame (clear, tonemap, overlay) | 0.12 ms | 0.42 ms | 0 B |
+| Test scene (sky, ground, 5 boxes, tonemap) | 0.24 ms | 0.62 ms | 0 B |
+
+The empty frame is well inside its 2 ms budget (P1-D20). Two headless runs produce
+byte-identical images.
+
+**Not yet verified / open for M2-M4:**
+- In a window, uncapped mode stops at the display rate (~120 fps): the compositor releases
+  drawables at the refresh rate. Headless shows the real cost.
+- Resize "without a stall over one frame" is not proven per resize (worst interval over a
+  whole run with 50 resizes: 22 ms). Live mouse-drag resize not exercised.
+- The layer's `contentsScale` is not set for Retina (`ed_gpu` surface config).
+- Windowed input has not been checked by a person; the tone curve is a placeholder.
+- Only Metal on one Mac. Windows/Linux builds of `ed_pack` and `ed_sim`, cross-machine sim
+  hashes, and the second backend are open (M4).
+- ~1 to 3% of headless rows lack GPU timings when two frames retire between reads.
+
 ## 2026-11-10: Look target raised
 
 - **The alpha look is the floor, not the goal** (P1-D25, owner): Phase 4 must clearly exceed the
