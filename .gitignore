@@ -1,6 +1,8 @@
 /target
 *.png
 !docs/**/*.png
+# Golden-suite fixtures are recorded source data and must be committed (terrain tiles are PNG).
+!crates/*/tests/fixtures/**/*.png
 .earthdrop-cache/
 .DS_Store
 earthdrop.bundle
