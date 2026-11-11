@@ -26,3 +26,7 @@ ed_space = { path = "../ed_space" }
 ed_audio = { path = "../ed_audio" }
 ed_engine_audio = { path = "../ed_engine_audio" }
 ed_assets = { path = "../ed_assets" }
+glam = { workspace = true }
+png = "0.18"
+winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
+raw-window-handle = "0.6"

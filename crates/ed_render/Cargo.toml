@@ -12,3 +12,4 @@ ed_geo = { path = "../ed_geo" }
 ed_gpu = { path = "../ed_gpu" }
 ed_pack = { path = "../ed_pack" }
 ed_planet = { path = "../ed_planet" }
+glam = { workspace = true }
