@@ -157,8 +157,7 @@ this section wins.
 3. **Decay is slow:** several in-game days of ignoring a hub pass before the player notices
    they should do something. The exact rate is tuning.
 4. **Nothing is bought.** There is no money, so community cosmetics are earned.
-5. **Everyone who helps rebuild a house is thanked.** *(The owner's message was cut off
-   after "gets"; this reading is inferred and awaits confirmation.)*
+5. **Everyone who helps rebuild a house is thanked** (confirmed by the owner).
 
 ## 7. Still open
 
