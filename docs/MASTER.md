@@ -4,7 +4,7 @@ Working title; the final name is undecided. This page is the short version of th
 project and tells you which document owns each subject. It does not restate their content in
 detail; where two documents seem to disagree, the owner listed below wins.
 
-> **Status:** custom-engine rebuild, **Phase 0 (Prepare)**.
+> **Status:** custom-engine rebuild. Phase 0 (Prepare) complete; **Phase 1 (Engine base and editor shell)** next.
 > **Branches:** `main` = new engine and these docs. `alpha-early` = frozen Bevy alpha.
 
 ## 1. Document map
@@ -15,7 +15,7 @@ detail; where two documents seem to disagree, the owner listed below wins.
 | Locked decisions (D, F, P1-D ids) | `DECISIONS.md` |
 | Target design | `ARCHITECTURE.md` |
 | Order of work and gates | `ROADMAP.md` |
-| Current phase, in detail | `phases/phase-0.md` |
+| Current phase, in detail | `phases/phase-1.md` (Phase 0 exit record: `phases/phase-0.md` §5) |
 | Next phase, in detail | `phases/phase-1.md` |
 | Addressing, far-field ladder, streaming, authored layers | `plans/world.md` |
 | GPU interface, renderer, cluster-geometry track | `plans/renderer.md` |
@@ -32,6 +32,7 @@ detail; where two documents seem to disagree, the owner listed below wins.
 | Alpha archive | `alpha/` |
 | Interface contracts | `contracts/` |
 | Phase 0 spike results | `reference/spikes/`, `reference/determinism.md` |
+| Alpha baseline and budgets | `reference/alpha-baseline.md`, `reference/look/` |
 
 ## 2. The game
 
@@ -117,8 +118,8 @@ Alpha lookdev, the baseline to beat (`lookdev/round2/`):
 |---|---|---|
 | ![Forest closeup](lookdev/round2/trees/trees_forest_closeup.png) | ![Clouds sunset](lookdev/round2/clouds/clouds_sunset.png) | ![Forest floor](lookdev/round2/ground/ground_forest_floor_stand.png) |
 
-Phase 0 adds full-frame look-reference captures from the alpha's Metal renderer in
-`reference/look/`.
+Full-frame look-reference captures from the alpha's Metal renderer (Phase 0) are in
+`reference/look/`; its measured performance is in `reference/alpha-baseline.md`.
 
 ## 7. Risks
 

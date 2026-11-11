@@ -6,8 +6,10 @@ The order of work and the gate each phase must pass. Gates, not dates (D18). Goa
 ## Where we are
 
 - `main` is the custom-engine rebuild. The Bevy alpha is frozen on `alpha-early`.
-- **Current phase: 0 — Prepare.** Detail: `phases/phase-0.md`.
-- Next: Phase 1 — Engine base and editor shell. Detail: `phases/phase-1.md`.
+- Phase 0 — Prepare: **complete** (2026-11-10). Exit record and carried items:
+  `phases/phase-0.md` §5; budgets from the alpha: `reference/alpha-baseline.md`.
+- **Current phase: 1 — Engine base and editor shell.** Detail: `phases/phase-1.md`.
+- Milestones to the playable solo loop: `plans/path-to-solo.md`.
 
 ## Why this order
 

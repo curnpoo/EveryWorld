@@ -1,3 +1,23 @@
+## 2026-11-10: Phase 0 complete
+
+- **Alpha baseline** (`reference/alpha-baseline.md`, CSVs and look captures): the alpha's
+  tile selector wants about 430 tiles at street level, but the default memory setting keeps
+  200, so it rebuilds the same tiles forever: the view never completes (over 200 s), frame
+  rate falls from about 40 to about 12 fps, and the missing tiles are the owner's "gaps".
+  Before the cap, loading is fetch-bound. Phase 2 and 3 budgets are set from it: first
+  ground image 3 s, complete view 10 s (15 s in a city), no frame over 33 ms in flight, 60
+  fps on High, and a selector that never asks for more than it may keep.
+- **Determinism across platforms:** CI first ran the golden suite with every elevation
+  fixture missing (`*.png` in `.gitignore`); fixed. Windows then matched macOS on 65 of 72
+  hashes, all terrain included; 7 street and foliage hashes are quarantined to Phase 3
+  (platform maths library).
+- **Licences:** 28 of 31 checked against their sources. Further corrections: LOLA and MOLA
+  cite the NASA media guidelines; the JPL element table is YELLOW (JPL is run by Caltech)
+  and goes to legal review.
+- **Alpha tag:** `alpha-freeze-0.15` on the last `alpha-early` commit.
+- Carried items are listed in `phases/phase-0.md` §5. Next: Phase 1, and the milestone map
+  in `plans/path-to-solo.md`.
+
 ## 2026-11-10: Phase 0 work (branch `phase-0`)
 
 - **Workspace:** eleven new empty crates and `xtask`; the alpha renderer moved to
@@ -13,8 +33,6 @@
   P0-R1 to P0-R7 in `DECISIONS.md`.
 - **Contracts:** addressing, generation, pack, layers, GPU interface, simulation,
   persistence in `contracts/`. `ed_gpu` holds the interface draft (types and traits only).
-- **Open:** alpha tag and baseline captures, Windows CI run, licence verification. See
-  `phases/phase-0.md` §5.
 
 ## 2026-11-10: foundation review and documentation refactor
 

@@ -1,2 +1,16 @@
 # Subsystems whose hashes are known to differ, one per line, as `place/subsystem` or
 # `subsystem`. Each line needs a reason and the phase that fixes it.
+#
+# Windows CI (run 42944011196, 2026-11-10) matches macOS on 65 of 72 hashes, including all
+# terrain, surface and water. These 7 differ on Windows only. Likely cause: std f32/f64
+# transcendental functions call the platform maths library (Apple libm vs the Windows UCRT),
+# and road junction geometry and tree placement use them heavily. Neither is a Phase 2
+# dependency. Fix in Phase 3, when the street, building and forest generators are refactored:
+# route their maths through the `libm` crate (as ed_geo::node already does) and re-bless.
+city_shibuya/roads             # junction geometry differs; buildings and props below follow from it
+city_shibuya/buildings_far     # placed from the Shibuya road graph
+city_shibuya/buildings_lod     # placed from the Shibuya road graph
+city_shibuya/buildings_detail  # placed from the Shibuya road graph
+city_shibuya/props             # placed from the Shibuya road graph
+coast_amalfi/foliage           # tree placement (trees/mod.rs, 51 platform-maths calls)
+farmland_beauce/foliage        # tree placement (trees/mod.rs)

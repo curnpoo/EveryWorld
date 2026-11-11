@@ -190,6 +190,9 @@ reload wiring. *Done when:* the pick-move-save-restart check passes.
 ### W7 — Harness and CI
 Headless mode, scripted paths, CSV and PNG output, perf comparison script, the first
 `CHANGES.md` entry with real numbers; dependency check and licence gate running on packs.
+Carried from Phase 0: one fixed orbit-to-street path run on both the alpha tag and the new
+renderer, with screenshots of every hole, seam and pop and per-pass GPU timings
+(`../reference/alpha-baseline.md` §3).
 
 ### Track G (optional start)
 Cluster-DAG bake as the optional chunk and a stub provider 2 that draws the DAG's coarsest

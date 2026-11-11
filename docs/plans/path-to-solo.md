@@ -117,7 +117,9 @@ staged uploads; residency and memory budgets; editor stage E2 (world browser, go
 chunk inspector).
 *You can:* spawn anywhere and see a complete view at once that sharpens in place. *Gate:*
 the Phase 2 exit gate: one unbroken recording street → orbit → Moon view → back, no holes,
-spawn-to-complete-view inside the budget from the alpha baseline.
+spawn-to-complete-view inside the budget from the alpha baseline: first ground image in
+3 s, complete view in 10 s, no frame over 33 ms while flying (the alpha never completes the
+view; `../reference/alpha-baseline.md` §5).
 
 ### Phase 3 — World content on the ladder
 

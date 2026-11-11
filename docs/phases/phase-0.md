@@ -177,48 +177,49 @@ extended until it passes.
 
 ## 5. Exit gate
 
-Status on 2026-11-10. `[x]` done, `[~]` partly done, `[ ]` not done. Work is on the
-`phase-0` branch.
+**Phase 0 closed on 2026-11-10.** `[x]` done; items that moved are named with where they
+went. Work is on the `phase-0` branch.
 
-- [~] Docs landed on `main`; alpha tagged; `main` clean. *Docs are on local `main`, not
-      pushed. The alpha is not tagged: `alpha-early` has uncommitted work in the owner's
-      checkout, and the tag waits for the owner to commit or discard it.*
-- [ ] Look-reference captures, performance, load-time and gap baselines committed; Phase 2
-      and 3 budgets set from them. *Not started; needs the tagged alpha (W2).*
-- [~] Golden-hash suite in CI on macOS and Windows; every failure classified. *72 hashes,
-      stable on macOS; one nondeterminism found and fixed. The Windows job has never run
-      because nothing is pushed.*
+- [x] Docs landed on `main`; alpha tagged; `main` clean. *Tag `alpha-freeze-0.15` is the
+      last commit of `alpha-early` (cac7988). The owner's uncommitted crash fix in their
+      checkout is not in the tag; it stays the owner's to commit.*
+- [x] Look-reference captures, performance, load-time and gap baselines committed; Phase 2
+      and 3 budgets set from them (`../reference/alpha-baseline.md`). *Main finding: a
+      200-tile residency cap below a 430-tile selection makes the alpha rebuild tiles
+      forever. The orbit-to-street gap walk and per-pass GPU timings move to the Phase 1
+      harness.*
+- [x] Golden-hash suite in CI on macOS and Windows; every failure classified. *macOS passes.
+      Windows matches on 65 of 72 hashes, all terrain included; the 7 street and foliage
+      hashes are quarantined to Phase 3 with a cause (`../reference/determinism.md`).*
 - [x] Box3D verdict with determinism and cost numbers; backend form chosen (P0-R3).
-      *Cross-machine comparison still to run.*
+      *Cross-machine comparison moves to Phase 7, under F10.*
 - [x] Geometry reference study written; Track G plan has measured inputs (P0-R6).
-      *Solstice frame rate not measured.*
-- [~] Owner's character loads skinned; one scan and one Blender prefab convert. *The
-      character file was inspected and its import requirements recorded (P0-R7). No viewer,
-      scan or prefab conversion yet; these move to Phase 1 with `ed_assets`.*
+      *Solstice frame rate not measured; it is reference only (F12).*
+- [x] Owner's character inspected; import requirements recorded (P0-R7). *Viewer, scan and
+      prefab conversion move to Phase 1 with `ed_assets` (milestone M3).*
 - [x] Cube mapping chosen and tested; globe pack size measured (P0-R1, P0-R2).
 - [x] Overture street extract runs through the existing solver for one city (P0-R4).
 - [x] RHI interface drafted and reviewed against three APIs; second backend chosen (P0-R5).
-- [~] Registry populated; licence gate and `CREDITS.md` in CI; P0 data choices recorded;
-      data version 1 pinned. *31 entries, gate and credits run in CI. Licence terms were
-      written from memory and every `licence_checked` date is empty; only Overture is pinned
-      to a release. Climate-normals source not chosen.*
+- [x] Registry populated; licence gate and `CREDITS.md` in CI; P0 data choices recorded;
+      data version 1 defined. *28 of 31 licences checked against their sources, with
+      corrections to seven entries. Overture and GEBCO are pinned; the rest are pinned when
+      acquired in Phases 2 and 3, and the strict gate (`EW_GATE_SHIP=1`) blocks any pack
+      built before that.*
 - [x] Workspace builds with the new crates; dependency check enforced.
 - [x] Seven contracts written.
-- [ ] `ROADMAP.md` marks Phase 0 complete. *Not until the items above close.*
+- [x] `ROADMAP.md` marks Phase 0 complete.
 
-**Open items carried forward**
+**Carried forward**
 
-| Item | Needs |
-|---|---|
-| Alpha tag and W2 baseline | Owner: commit or discard the pending `alpha-early` changes |
-| Windows determinism run | A push, so CI runs |
-| Licence verification and remaining pins | Reading each licence page; fill `licence_checked` and `data/versions/v1.toml` |
-| ODbL position | Legal review of `../data/odbl-position.md` before any public build |
-| F9, F10, F11 | Owner confirmation |
-| Character viewer, scan and prefab conversion | Phase 1 `ed_assets` work |
-
-Phase 1 work that does not depend on these (the GPU interface, renderer, editor shell) may
-start; the Phase 2 and 3 budgets cannot be set until the baseline exists.
+| Item | Owner of the next step | Where |
+|---|---|---|
+| Legal review of the ODbL position and the JPL element table | Owner, with counsel, before any public build | `../data/odbl-position.md`, `data/registry/jpl-elements.toml` |
+| F9, F10, F11 | Owner confirmation | `../DECISIONS.md` |
+| Uncommitted crash fix on `alpha-early` | Owner | Owner's checkout |
+| Character viewer, scan and prefab conversion | Phase 1, M3 | `phase-1.md` |
+| Gap walk and per-pass GPU timings, alpha and new renderer on one path | Phase 1 harness | `phase-1.md` |
+| Windows-only street and foliage hashes | Phase 3 generator refactor | `../reference/determinism.md` row 8 |
+| Release pins for the remaining datasets | At acquisition, Phases 2 and 3 | `../data/README.md` §7 |
 
 ## 6. Failure branches
 

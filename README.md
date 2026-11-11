@@ -16,8 +16,9 @@ Built on a custom Rust engine with its own editor.
 | [docs/DECISIONS.md](docs/DECISIONS.md) | Every locked decision, in one list |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Target design |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Phases and gates |
-| [docs/phases/phase-0.md](docs/phases/phase-0.md) | Current phase |
-| [docs/phases/phase-1.md](docs/phases/phase-1.md) | Next phase |
+| [docs/phases/phase-1.md](docs/phases/phase-1.md) | Current phase |
+| [docs/phases/phase-0.md](docs/phases/phase-0.md) | Completed: exit record and carried items |
+| [docs/reference/alpha-baseline.md](docs/reference/alpha-baseline.md) | The alpha's measured performance and the budgets set from it |
 | [docs/plans/path-to-solo.md](docs/plans/path-to-solo.md) | Milestones from here to the playable solo loop |
 | [docs/plans/](docs/plans/) | System briefs: world, renderer, streets, editor, water, gameplay, alpha migration |
 | [docs/data/](docs/data/README.md) | Data sources and licensing |
@@ -27,8 +28,8 @@ Built on a custom Rust engine with its own editor.
 
 ## Status
 
-**Phase 0 — Prepare**, mostly complete on the `phase-0` branch; the open items are listed
-in [docs/phases/phase-0.md](docs/phases/phase-0.md) §5. Plans carry gates, not dates.
+**Phase 0 — Prepare** is complete (exit record: [docs/phases/phase-0.md](docs/phases/phase-0.md)
+§5). **Phase 1 — Engine base and editor shell** is next. Plans carry gates, not dates.
 
 | Branch | Contents |
 |---|---|

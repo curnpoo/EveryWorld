@@ -35,8 +35,8 @@ file and the catalogue disagree, this file wins. Decisions: F8, F13 in `../DECIS
 | Geology | Macrostrat | YELLOW (CC BY 4.0) | |
 | Night lights | NASA Black Marble (VIIRS) | GREEN (NASA open data) | Feeds R3/R4 emissive |
 | Place names | GeoNames, Natural Earth | GREEN / CC BY | Packaged gazetteer for go-to and labels |
-| Moon, Mars | LOLA and MOLA elevation, NASA mosaics | GREEN | |
-| Ephemeris | JPL elements, computed locally | GREEN | |
+| Moon, Mars | LOLA and MOLA elevation, NASA mosaics | GREEN (NASA content, not subject to U.S. copyright) | Acknowledge NASA; no implied endorsement |
+| Ephemeris | JPL elements (Standish and Williams 1992), computed locally | YELLOW | JPL is run by Caltech; confirm attribution-only use in legal review |
 | Weather, geocoding (development only) | Open-Meteo | not shipped | Replaced by the simulated climate and the packaged gazetteer |
 
 **Building-height inference rule.** Most footprints have no height. Order of preference:
@@ -70,11 +70,13 @@ legal review before any public build (the full note for the reviewer is
 
 ## 5. Registry and gate
 
-Licences were checked against each source's own statement on 2026-11-10 for 25 of the 31
-entries (`licence_checked` in each file). Not yet confirmed from a primary statement: the
-NASA PDS Moon and Mars products, the JPL element table, and three development-only or
-excluded sources. Releases are pinned when a dataset is acquired; the strict gate
-(`EW_GATE_SHIP=1`) fails a pack built from an unpinned or unchecked dataset.
+Licences were checked against each source's own statement on 2026-11-10 for 28 of the 31
+entries (`licence_checked` in each file), with corrections to CHELSA, GEBCO, HydroSHEDS,
+Black Marble, LOLA, MOLA and the JPL elements. Still unconfirmed: the JPL element table
+(its policy page refuses automated reads; in legal review) and two development-only or
+excluded sources. Releases are pinned when a dataset is acquired (Phases 2 and 3); the
+strict gate (`EW_GATE_SHIP=1`) fails a pack built from an unpinned or unchecked dataset, so
+no public build can skip that step.
 
 One TOML file per dataset in `data/registry/` (created in Phase 0): id, name, organisation,
 URLs, coverage, resolution, format, licence name and URL, commercial / modification /
