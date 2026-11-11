@@ -14,7 +14,7 @@ traffic, and persistence of parked vehicles through `ed_store`.
 
 | Question | Proof |
 |---|---|
-| Can custom vehicle models on Box3D casts feel good? | Owner sign-off of the car on a forest road and a city street |
+| Can custom vehicle models on Box3D casts feel good? | Owner sign-off of the car on a forest road (Town Mountain Road, Asheville; `phase-3.md` P3-D13) and a city street (downtown Asheville, where that road ends) |
 | Do the detail tiers of `sim.md` §5 hold? | Contract tests S6 and S7; a parked car costs no simulation |
 | Is persistence one schema? | Contract tests D1 to D9 that apply to solo; park, go to orbit, return, quit, restart |
 | Does the sim stay inside its step budget with vehicles and traffic? | S8 on the reference scene with 20 vehicles |

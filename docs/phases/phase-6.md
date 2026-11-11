@@ -69,10 +69,34 @@ can be extended. Trust changes only through mission outcomes in this phase.
 One `plot` row. A play-mode build UI reuses the editor's placement code with a restricted
 prefab list and writes deltas, not layers.
 
-### P6-D9 — Game UI layer
-HUD and menus are an authored layer separate from egui (P1-D14), drawn through `ed_gpu`
-from data-described layouts following `../ui/README.md`: compass, mode indicator, needs
-list, navigation display, map, pause and settings.
+### P6-D9 — The device: menus live on a phone and a tablet in the world
+Owner direction, 2026-11-10: in-game interaction menus are on a phone or tablet the
+character carries, in the manner of a wrist or hand-held device in a space sim, not on
+full-screen overlays.
+
+- **One UI, two bodies.** A phone the character raises (one hand, quick tasks, usable
+  while walking) and a tablet (two hands or docked in a vehicle; map, mission detail,
+  building). Both show the same apps at different layouts.
+- **It is an object in the scene.** The UI is drawn to a texture through `ed_gpu` and shown
+  on the device's screen mesh, lit and reflected like anything else. Raising it plays an
+  animation and eases the camera toward it; the world keeps running. Nothing pauses, which
+  is also what Phase 7 needs.
+- **Apps:** Needs (the ping list, P6-D6), Map and navigation, Missions, People and trust,
+  Vehicles (where things are parked, summon none), Home and build (P6-D8), Camera,
+  Settings. A notification is a sound and a glance at the device, never a modal.
+- **Interaction in the world.** Looking at something usable shows a small anchored prompt;
+  one press does the default action; holding opens the choices on the phone. Anything with
+  more than a few choices is a device screen.
+- **What stays off the device:** a minimal HUD (compass, speed and altitude in vehicles,
+  the navigation line) that can be switched off, and the title screen.
+- **Input:** pointer and keyboard, controller focus navigation, and touch. A touch screen
+  maps onto the device directly, which is what the mobile tier of Phase 9 wants.
+- **Vehicles** have a dock: the tablet becomes the centre display, so the same map is in
+  the car, the plane and the rocket.
+
+The UI layer stays separate from egui (P1-D14) and is described by data. The aero-glass
+tokens of `../ui/README.md` are kept for the HUD; the device screens need their own design
+pass, and the existing full-screen menu concept is superseded by this decision.
 
 ### P6-D10 — Saves and first run
 Saves are the store (P5-D7); there is no separate save format. A first-run sequence places
@@ -110,7 +134,7 @@ reachable), and play-from-here with a chosen mission state.
 | W5 | Mission runtime, needs list, generated delivery | new `mission` module in `ew` or `ed_sim` per `check-deps` | Five missions complete by script |
 | W6 | Trust and gates | `ed_store`, mission outcomes | Rocket refused before, lent after |
 | W7 | Home plot and build UI | `ew`, `ed_editor` placement code | A placed object survives restart |
-| W8 | Game UI layer | new `ed_ui` crate (inferred; subject to `check-deps`) | Every screen in `ui/README.md` needed by the loop |
+| W8 | Device UI: render-to-texture UI layer, phone and tablet models and animations, apps, world prompts, vehicle dock, minimal HUD | new `ed_ui` crate (inferred; subject to `check-deps`), `ed_anim`, `ew` | The whole loop is played with no full-screen menu after the title screen |
 | W9 | Editor E4 second half | `ed_editor` | A new mission authored and played without leaving `ew` |
 | W10 | Spaceport as a working place | `layers/`, prefabs | Pad, bay, parking, markers |
 | W11 | Loop harness | `ew` | The whole loop runs from a script, with a restart in the middle |
@@ -153,7 +177,7 @@ M14 = W1 to W4, W10. M15 = W5 to W9, W11 and the exit gate. W1, W5 and W8 start 
 | Spaceport, home and Moon-site prefabs (final) | Art |
 | Gazetteer, airports and launch sites, pinned and registered | Acquisition (`data/README.md` §7) |
 | Answers on trust (one or many, decay) if the owner wants them reflected | Owner |
-| UI art following `ui/` concepts | Art |
+| Phone and tablet models, a raise-and-hold animation set, and screen designs for the apps | Art and owner |
 
 ## 11. What Phase 7 receives
 

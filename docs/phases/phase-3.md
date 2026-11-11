@@ -53,6 +53,22 @@ real one from the start. Non-grid geometry (irregular footprint walls, pitched r
 emitted as a per-building shell mesh in the R0 chunk, shared with R1 where identical.
 *Why:* this is the structural fix for the alpha's vertex-bound frame.
 
+### P3-D2a — Sockets and living surfaces
+From the owner's architecture references (`../solarpunk/reference/README.md`): planting and
+energy are part of the building. Kit parts and prefabs declare **sockets** (planter, tree,
+climber, solar plane, wind mount) in their manifest; the building generator fills them by
+rule from the style row, emitting ordinary instances with `ObjectId`s derived from the
+building. Roof and wall surfaces may be flagged to take ground cover (turf roof, green
+wall), drawn by the same GPU-instanced cover as terrain. Trees on towers go through the
+foliage ladder (P3-D7), so a planted skyline has cluster and proxy rungs like a forest.
+
+### P3-D2b — Free-form hero prefabs
+Shells, domes, burrows and sculpted earth buildings do not fit the 2 m panel grid. They are
+authored whole in Blender as prefabs with a footprint, sockets and an optional terrain
+patch, and enter the world two ways: placed in the editor, or chosen by the generator for a
+parcel from a per-family list with a rarity. The grid kit remains the way ordinary streets
+are filled.
+
 ### P3-D3 — Rungs are independent functions
 `generate` dispatches on rung to separate code paths that share only inputs and the style
 row: R1 from footprint + height + style row; R2 from footprints extruded and simplified with
@@ -77,7 +93,11 @@ The lane graph and parcels are chunk kinds of their own.
 `archkit` variants and street kits move to data files (`data/styles/*.toml`) versioned in
 `GenVersion`, with hot reload in the editor. The five solarpunk families of
 `../solarpunk/spec.md` are rows over the existing region table; a region maps to a family
-and a variant set.
+and a variant set. Styling is two layers: the regional vernacular (what the place really
+looks like) and a **retrofit table** applied on top (solar planes, planted balconies,
+glazing bays, climbers, lot gardens), because the references show real buildings changed,
+not replaced. Each parcel also gets lot dressing by rule: garden, path, fence, fruit trees,
+and a pond where the terrain allows.
 
 ### P3-D7 — Foliage ladder
 Trees are instances of a bank of meshes per species (a fixed number of `Genome` variants
@@ -97,8 +117,9 @@ camera motion.
 `generate` receives the layers touching the node. Order: source → `road_patch` → street
 solve → `suppress` → building and foliage generation → `replace` → `place` → emit, for
 every rung. A placed prefab with a declared footprint suppresses generated buildings and
-parcel fill beneath it and contributes to R2 and R3. The bake reports overrides whose
-targets no longer exist.
+parcel fill beneath it and contributes to R2 and R3. A prefab may carry a `terrain_patch`
+(a berm, a terrace, a cut) that is applied with its `place`, so earth-sheltered buildings
+sit in the ground at every rung. The bake reports overrides whose targets no longer exist.
 
 ### P3-D10 — Deltas
 `ed_store` gets its first real use: SQLite with the single schema of
@@ -117,11 +138,24 @@ Collision chunks hold building footprints as extruded hulls, road and ground as 
 heightfield plus road patches, and trunk capsules. They are produced only at L13–L15 and
 only resident near dynamic bodies.
 
-### P3-D13 — Reference routes (proposed; the owner may substitute)
-1. Aix-en-Provence: old-town loop to the A8 junction (narrow streets, one-way, roundabouts).
+### P3-D13 — Reference routes
+1. **Town Mountain Road, Asheville, North Carolina** (owner, 2026-11-10): from the Blue
+   Ridge Parkway down the ridge into downtown Asheville. A winding two-lane forest road
+   with grade, tight curves and driveways that ends in a city grid. It is the forest-to-city
+   drive of the north-star loop in one real road, so it is also the Phase 5 forest-road
+   feel route and the proposed setting for the home area (P3-D14).
 2. Tokyo: Shibuya crossing onto the elevated expressway and back to grade (stacked levels,
-   ramps, tunnels).
-3. Zermatt valley road from Täsch (grades, tunnels, galleries, bridges).
+   ramps, tunnels). *Proposed.*
+3. Aix-en-Provence: old-town loop to the A8 junction (narrow streets, one-way,
+   roundabouts). *Proposed.*
+
+The Zermatt valley road (grades, tunnels, galleries) is run as a fourth, non-gating route.
+Asheville becomes a seventh reference region for source extracts and golden hashes.
+
+### P3-D14 — Home area (proposed)
+The first authored home plot is placed in the forest off Town Mountain Road, so that the
+solo loop's opening drive is reference route 1. The owner may place it elsewhere; the
+route stays a reference either way.
 
 ## 5. Budgets (M3 Pro, 1440p, High)
 
@@ -216,7 +250,8 @@ and the exit gate.
 | Overture buildings and transportation with OSM tags, canopy height, climate normals for the six regions, pinned | M8 (streets), M9 (buildings), M10 (canopy) | Acquisition; the owner approves each download |
 | First regional kit family as Blender prefabs | M9 if available; otherwise Phase 4 | Art |
 | Spaceport, home and Moon-site prefabs | M10 (placeholders acceptable) | Art |
-| Confirmation of the three reference routes (P3-D13) | M8 | Owner |
+| Confirmation of routes 2 and 3 and of the home area (P3-D13, P3-D14) | M8 | Owner |
+| Free-form hero prefabs per family, with sockets (P3-D2b) | M10 if available; otherwise Phase 4 | Art |
 | Legal review of baked ODbL chunks | Before any public build | Owner |
 
 ## 11. What Phase 4 receives

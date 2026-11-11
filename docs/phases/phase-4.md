@@ -104,7 +104,10 @@ ported in Phase 1; bloom. Night scenes must show emissive without crushing shado
 
 ### P4-D13 — Authored architecture
 The first regional kit family replaces the procedural kit by id through the kit pack
-(P3-D2). The architecture criterion of P4-D2 cannot pass on the procedural placeholders.
+(P3-D2), with its hero prefabs and sockets (P3-D2a, P3-D2b). The architecture criterion of
+P4-D2 is judged against the owner's references in `../solarpunk/reference/`: buildings
+that sit in the ground, planting on the building, visible energy, curves beside timber and
+glass. It cannot pass on the procedural placeholders.
 
 ## 5. Budgets (M3 Pro, 1440p output)
 
