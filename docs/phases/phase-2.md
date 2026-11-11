@@ -139,12 +139,15 @@ each frame under a byte budget and a time budget, both configurable and recorded
 harness. No upload happens outside the queue.
 
 ### P2-D17 — Simulation on a round world
-Box3D runs in double precision (P0-R3) in the body-fixed frame of the body the player is
-on. World gravity is zero; `ed_sim` applies gravity per body toward the body's centre from
-`ed_flight`. Static terrain collision is a heightfield shape per resident L13–L15 node
-near any dynamic body, created and destroyed with residency. *Riskiest item of M5:* it is
-tested first, on the equator, at 60° north and at a pole. *Failure branch:* simulate in a
-local tangent frame re-anchored per L10 node.
+As `../contracts/sim.md` §3 and §4 specify: Box3D in double precision (P0-R3) works in a
+**region frame** (f64 origin at a body-fixed point, axes east, north, up there), re-based
+on a tick boundary when players move more than 8 km from the origin. World gravity is zero;
+`ed_sim` applies gravity per body toward the body's centre. Static terrain collision is a
+height-field shape per resident L13–L15 node within the collision radius of any dynamic
+body, added and removed at tick boundaries in sorted `NodeId` order; a body approaching an
+unloaded node is frozen until its chunk arrives. Phase 2 implements re-basing and collision
+streaming and passes contract tests S5 and S6. *Riskiest item of M5:* it is tested first,
+on the equator, at 60° north and at a pole, and across a re-base.
 
 ### P2-D18 — Bodies
 A body catalog in `ed_space` (radius, datum, rotation, atmosphere constants, pack prefix).
@@ -240,7 +243,7 @@ M5 = W1, W2, W3, W10. M6 = W4, W5, W6, W7, W9. M7 = W8, W11, W12 and the exit ga
 | Jitter at high latitude or altitude | Move the remaining f32 terms into the per-node f64 CPU setup; the lattice mapping is already exact (P0-R1) |
 | Complete view misses 10 s | Read the load CSV: if decode-bound, lower page resolution for L7+; if upload-bound, raise the byte budget while watching worst frame |
 | Globe pack over budget | Ship L0–L5 and let the service start at L6 (Phase 0 branch) |
-| Box3D misbehaves in body-fixed coordinates | Local tangent frames re-anchored per L10 node (P2-D17) |
+| Re-basing disturbs resting contacts (S5 over 1 mm) | Re-base only when every dynamic body in the region is asleep or airborne, up to a hard limit of 16 km; record the diagnosis |
 | Node-paged texturing wastes memory on flat ocean | Share one constant page for uniform nodes; flag in the manifest |
 | Atmosphere tables too slow to update on time-of-day change | Amortise over frames; they change slowly |
 | A dataset cannot be pinned or is not GREEN/YELLOW | It does not enter the pack; use the next source in `../data/README.md` and record it |
