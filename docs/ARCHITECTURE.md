@@ -132,9 +132,10 @@ Detail: `plans/world.md`. Streets: `plans/streets.md`.
   from ground to orbit, one cloud field, ocean as a layer of the planet surface (D13).
 - **Multi-view and picking are core** (P1-D24): the editor, shadow views and reflection views
   all use the same view abstraction; an id buffer answers "what is under the cursor".
-- **The alpha Metal renderer is the look reference** (P1-D18). Its atmosphere, clouds,
-  tone-mapping and MetalFX integration are re-implemented on the new structure and compared
-  against reference captures taken in Phase 0.
+- **The alpha Metal renderer is the look floor** (P1-D18, P1-D25). Its atmosphere, clouds,
+  tone-mapping and MetalFX maths may be re-implemented on the new structure, but the target
+  is well beyond it: more detail and fidelity, better lighting and clouds, every building
+  filled in, and solarpunk architecture. The Phase 0 captures are the minimum to exceed.
 
 Quality tiers: Ultra (desktop RTX-class), High (M3 Pro, 1440p), Low (mobile-class). Every
 feature declares its cost per tier and has an off switch.

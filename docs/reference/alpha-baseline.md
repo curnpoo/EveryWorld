@@ -88,8 +88,11 @@ server sets the clock to real time and overrides `--hour`.
 | manhattan_aerial | 40.7000 | -74.0300 | 1500 | 30 | -22 | 14.0 | 45 s, `--quit-after 70` |
 
 The date was the capture day (November), so the sun is low; pass `--date 2026-11-10` to
-reproduce the same light. Phase 4's "match or beat the look captures" gate compares
-against these.
+reproduce the same light. These are a floor, not a target (P1-D25). Phase 4 must clearly exceed them in detail and
+fidelity, lighting, clouds and building fill, with solarpunk architecture in place of the
+alpha's plain boxes. What they show that must not survive: missing buildings and empty
+blocks, flat untextured facades, plain box massing, thin cloud layers, and flat ambient
+light in shadow.
 
 ## 5. Budgets set from this baseline
 

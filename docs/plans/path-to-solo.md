@@ -146,7 +146,7 @@ spaceport, the Moon site.
 
 **M11. Lighting and materials.** Baseline lighting hardened as the Low tier; virtual shadow
 maps; voxel GI; material library; foliage shading; volumetric clouds; full water.
-*Gate:* reference scenes match or beat the alpha look captures at the High budget
+*Gate:* reference scenes clearly exceed the alpha look captures at the High budget (detail, lighting, clouds, full building fill, solarpunk architecture; the alpha is the floor, P1-D25)
 (Phase 4 exit gate). Features that miss the budget stay on Ultra and do not block M14.
 
 **M12. Vehicles with feel.** Car model (suspension casts, tyres, drivetrain) tuned on a

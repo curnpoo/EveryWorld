@@ -9,7 +9,9 @@ cluster geometry on Track G (`../ROADMAP.md`).
 1. Hold 60 fps on the High tier (M3 Pro, 1440p) in a dense city and a dense forest with
    fixed memory, including while streaming.
 2. Draw everything from a pebble to the Moon in one frame with one renderer.
-3. Look at least as good as the alpha's Metal path in the same scenes.
+3. Look clearly better than the alpha's Metal path in the same scenes: more detail and
+   fidelity, better lighting and clouds, every building present, solarpunk architecture
+   (P1-D25). Matching the alpha is a failure, not a pass.
 4. Accept cluster ("Nanite-style") geometry later without restructuring.
 5. Run on a second GPU API without a rewrite.
 

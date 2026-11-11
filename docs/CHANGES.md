@@ -1,3 +1,9 @@
+## 2026-11-10: Look target raised
+
+- **The alpha look is the floor, not the goal** (P1-D25, owner): Phase 4 must clearly exceed the
+  alpha captures in detail, lighting, clouds and building fill, with solarpunk architecture.
+  ROADMAP, MASTER, VISION, ARCHITECTURE, renderer and rearchitecture plans updated.
+
 ## 2026-11-10: Phase 0 complete
 
 - **Alpha baseline** (`reference/alpha-baseline.md` and CSVs; look images for six places in `reference/look/`): the alpha's

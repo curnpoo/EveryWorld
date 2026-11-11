@@ -93,7 +93,7 @@ has a structural cause:
   M3 Pro, with fixed memory while streaming.
 - **Loading:** spawn-to-complete-view and time-to-full-detail within the budgets set from
   the Phase 0 baseline.
-- **Look:** equal to or better than the Phase 0 look captures.
+- **Look:** clearly better than the Phase 0 look captures, which are a floor (P1-D25).
 - **Authoring:** a building, a marker and a mission placed in the editor survive a re-bake
   and a data-version update.
 - **Persistence and multiplayer:** as in `../ROADMAP.md` Phases 6 and 7.

@@ -77,7 +77,7 @@ addressed differently by each layer. The causes and what carries over are in
 | 1 | Engine base + editor shell | 100k instances at 60 fps; second backend; pick-move-save in the editor |
 | 2 | Planet, far field, streaming | Unbroken street → orbit → Moon view → back; city lights from orbit |
 | 3 | World content on the ladder | Fly into reference cities with no pops; drive with no road gaps; placed landmark visible from 50 km |
-| 4 | Rendering quality | Matches or beats the alpha look captures at budget |
+| 4 | Rendering quality | Clearly exceeds the alpha look captures at budget; the alpha is the floor (P1-D25) |
 | 5 | Simulation and vehicles | Car feel sign-off; parked car persists |
 | 6 | Golden path, solo | The north-star loop in one recording |
 | 7 | Multiplayer and persistence | Shared car and mission; launch seen across regions |
@@ -119,7 +119,8 @@ Alpha lookdev, the baseline to beat (`lookdev/round2/`):
 | ![Forest closeup](lookdev/round2/trees/trees_forest_closeup.png) | ![Clouds sunset](lookdev/round2/clouds/clouds_sunset.png) | ![Forest floor](lookdev/round2/ground/ground_forest_floor_stand.png) |
 
 The alpha's measured performance is in `reference/alpha-baseline.md`; its look-reference
-captures are in `reference/look/`.
+captures are in `reference/look/`. They are the floor
+the new renderer must clearly exceed, not the target (P1-D25).
 
 ## 7. Risks
 

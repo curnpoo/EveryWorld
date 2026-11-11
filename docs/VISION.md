@@ -362,7 +362,9 @@ have to be rebuilt to admit interiors.
 must stream a persistent world without gaps, keep triangle counts under control with LOD and
 culling, show everything from a street to another planet in one view, understand streets as
 structured data, and include an editor for placing authored content on the generated world.
-The alpha's look is the bar; its speed, loading and gaps are what the rebuild fixes.
+The alpha's look is the floor, not the goal (P1-D25): the rebuild must look far better (more
+detail, better lighting and clouds, every building filled in, solarpunk architecture) as well
+as fix its speed, loading and gaps.
 
 **Real systems.** One node address and a ladder of representations per node for far-field
 views; chunk streaming from a globe pack, a tile service and local generation

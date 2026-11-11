@@ -113,3 +113,4 @@ Summary only. Alternatives, reasons and revisit conditions are in `phases/phase-
 | P1-D22 | Minimal second backend renders the proving ground (F7) |
 | P1-D23 | `NodeId`, `ObjectId` and the override-layer reader exist in Phase 1, before any planet (F1, F5) |
 | P1-D24 | Multi-view rendering and GPU picking are core renderer features (F6) |
+| P1-D25 | The alpha look captures are a floor, not the target (owner, 2026-11-10). Every reference scene must clearly exceed them in detail and fidelity, lighting, clouds and building fill (every building present, no empty blocks), and show the solarpunk architecture of `solarpunk/spec.md` instead of the alpha's plain boxes. Refines P1-D18: the alpha's shader maths may be ported, but its look is not the goal |
