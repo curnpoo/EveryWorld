@@ -118,3 +118,66 @@ drag and tyre grip use only these queries.
 | S8 | The step makes no allocation after warm-up and stays under 2 ms for the reference scene on the M3 Pro |
 | S9 | Mover: step-up, slope limit and ground snapping cases |
 | S10 | `ed_sim` builds with no render crate in its dependency graph (`check-deps`) |
+
+## Decisions made during implementation
+
+Phase 1, W5 (`ed_sim` on Box3D). Appended; sections above are unchanged.
+
+- **Backend binding.** Box3D is vendored at `3362633` in `vendor/box3d` (see `VENDORED.md`) and
+  compiled by `crates/ed_sim/build.rs` with `cc` (no CMake): `BOX3D_DOUBLE_PRECISION`,
+  `-ffp-contract=off` (`/fp:precise` on MSVC), C17, `-O3` in every profile, `wide8.c` with
+  `/arch:AVX2` on MSVC x86/x64. Rust never sees Box3D structs: a C shim
+  (`crates/ed_sim/csrc/ed_box3d_shim.c`) exposes flat functions over small boundary structs,
+  and `ffi::layout_guard` compares every size, alignment and offset against the C compiler.
+- **One worker, no task callbacks.** The step runs serially. Box3D's global world table makes
+  world creation and destruction non-thread-safe; `ed_sim` serialises them behind a mutex.
+  At most 128 worlds may exist at once (Box3D limit).
+- **Frame.** Public API is the region frame (x east, y north, z up), f64 positions, f32
+  velocities. Box3D is y-up; the shim boundary maps `(e, n, u) -> (e, u, -n)`, a proper rotation,
+  so quaternions convert by permuting components and mesh winding is preserved.
+- **Height fields.** Row 0 is the north edge, rows run south, columns run east, the body origin
+  is the north-west corner; heights are local z. Box3D quantises heights between the field's
+  own min and max.
+- **Meshes and height fields** are accepted on static bodies only and take no local offset;
+  everything else (box, sphere, capsule along local z, hull, compound = several shapes) on
+  any body kind.
+- **`step` signature.** `step(&SimInput) -> StepOutput`; `SimInput.tick` must equal
+  `World::tick()` and commands must be sorted, both asserted. `StepOutput` lists spawned
+  entities `(issuer, sequence, entity)` and rejected commands with a reason. The
+  `Environment` parameter is not added yet (no water, air or ground-material queries exist).
+- **Spawning.** During play, bodies and movers are created by `Spawn` / `SpawnMover`
+  commands (issuer may be `Entity::NONE`). `World::create_body` / `create_mover` exist for scene
+  setup before recording starts; calling them mid-recording would not be replayed.
+- **Entities.** Slot table with a LIFO free list; despawn bumps the generation. Deterministic
+  because commands are applied in sorted order.
+- **`state_hash`.** FNV-1a 64 over explicit little-endian bytes: tick, generator state, then in
+  entity index order each slot's generation, kind, and the backend's exact bits for position
+  (f64), rotation, linear and angular velocity (f32), plus mover state. Static bodies included.
+- **Snapshots.** Our tables are cloned; Box3D's world is captured with its own internal
+  serializer (`b3SerializeWorld`) and restored in place with `b3DeserializeIntoShell`, the path
+  Box3D's replay player uses for keyframes. That image includes solver sets, contacts with
+  warm-start impulses, islands, the constraint graph, broad-phase trees and sleep timers.
+  Mesh, height-field and compound data referenced by restored shapes is copied into a
+  per-world arena in the shim. `Snapshot::to_bytes` carries a build id (hash of the FFI
+  layout); Box3D's image carries its own layout hash and precision flag. **Limit:** a snapshot
+  restores only on the same build and architecture (raw struct images). Restore returns
+  `Result` (the contract sketch had no return value): malformed input leaves the world
+  untouched; a Box3D rejection after it began leaves the world unusable and stepping panics.
+- **Replay.** Bytes = magic, initial `Snapshot` (which carries `SimConfig`), then per tick
+  `(tick, utc, commands, hash after the tick)`. `Replay::run` reports the first diverging tick.
+  Re-base and collision add/remove records are not in the format yet (neither exists yet).
+- **Character mover.** Ours, on Box3D's mover queries: `b3World_CollideMover` planes, a Rust
+  port of `b3SolvePlanes` / `b3ClipVector`, `b3World_CastMover` for the swept move (5
+  iterations, as Box3D's sample). Step height: while grounded the collision capsule is lifted
+  by `step_height`; steep upward planes are made vertical. Ground: a 0.9 r sphere cast down from
+  the capsule's bottom sphere, then a ray down the capsule axis for the height and normal;
+  walkable if within `max_slope`; reach `step_height + snap_distance` while grounded. Airborne:
+  gravity integrates, steep planes may not lift the mover. The kinematic capsule body follows
+  with `b3Body_SetTargetTransform`, so dynamic bodies are pushed; movers use category
+  `layers::MOVER` and their queries exclude it, so movers do not block each other.
+- **Not built yet:** re-basing, per-body radial gravity (gravity is uniform from
+  `SimConfig`), collision streaming, detail tiers, parked records, joints, vehicles, the
+  `Environment` trait. The seeded generator exists in state and hash but nothing draws from it.
+- **Clock reads.** None in `ed_sim`. Box3D's internal profiler reads a timer during the step for
+  its own `b3Profile` numbers only; those never feed back into the simulation.
+- **Lockfile.** `ed_sim` gains `cc` (build), `glam` and `libm`, all already in the lock.
