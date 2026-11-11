@@ -55,15 +55,26 @@ text. No scripting language unless three of the five hand-written missions canno
 expressed (`editor.md` open question 1); if so that finding is recorded and the language
 chosen then. State is the `mission_state` table.
 
-### P6-D6 — Needs list
-The device shows needs within range, fed by the five authored missions and one generated
-type: a delivery between two real places chosen deterministically from the gazetteer. This
-is the solo form of the ping (`solastra-core-loop.md` §2).
+### P6-D6 — Messages: the needs log
+Owner, 2026-11-10: requests arrive as messages in a log on the device that the player opens
+when they choose. Only a message marked urgent raises a notification. Requests come from
+people within about 10 to 20 km, or from walking up to someone. In this phase the log is fed
+by the five authored missions and one generated type: a delivery between two real places
+chosen deterministically from the gazetteer.
 
 ### P6-D7 — Trust
-Stored per community in `progression` from the start, so either answer to the owner's open
-question (one score or many) fits. Two gates: the spaceport lends a rocket; the home plot
-can be extended. Trust changes only through mission outcomes in this phase.
+Owner, 2026-11-10: one **global** trust and one trust **per hub** (a hub is any very large
+city; other places count toward the nearest hub). Both are rows in `progression`. A played-
+time counter per save is stored from the start, because decay (Phase 8) runs on played time
+only and never on the wall clock. Two gates in this phase: the spaceport lends a rocket;
+the home plot can be extended. Trust changes only through mission outcomes in this phase.
+Hubs are listed in a data file derived from the gazetteer by population.
+
+### P6-D7a — Skills
+Owner, 2026-11-10: there are no classes. Actions feed **skill types** (driving, flying,
+repair, building, growing and others; the table is data and meant to be wide). Phase 6
+records skill progress from mission steps in `progression` and shows it on the device. What
+a higher skill changes is an open owner question, so nothing reads the values yet.
 
 ### P6-D8 — Home
 One `plot` row. A play-mode build UI reuses the editor's placement code with a restricted
@@ -81,9 +92,10 @@ full-screen overlays.
   on the device's screen mesh, lit and reflected like anything else. Raising it plays an
   animation and eases the camera toward it; the world keeps running. Nothing pauses, which
   is also what Phase 7 needs.
-- **Apps:** Needs (the ping list, P6-D6), Map and navigation, Missions, People and trust,
+- **Apps:** Messages (the needs log, P6-D6), Skills (P6-D7a), Map and navigation, Missions, People and trust,
   Vehicles (where things are parked, summon none), Home and build (P6-D8), Camera,
-  Settings. A notification is a sound and a glance at the device, never a modal.
+  Settings. A notification is a sound and a glance at the device, never a modal, and only
+  urgent messages raise one.
 - **Interaction in the world.** Looking at something usable shows a small anchored prompt;
   one press does the default action; holding opens the choices on the phone. Anything with
   more than a few choices is a device screen.
@@ -100,7 +112,7 @@ pass, and the existing full-screen menu concept is superseded by this decision.
 
 ### P6-D10 — Saves and first run
 Saves are the store (P5-D7); there is no separate save format. A first-run sequence places
-the player at the home plot with the first need already pinging. Restart resumes at the
+the player at the home plot with the first message already in the log. Restart resumes at the
 last consistent batch.
 
 ### P6-D11 — The five missions
@@ -176,7 +188,7 @@ M14 = W1 to W4, W10. M15 = W5 to W9, W11 and the exit gate. W1, W5 and W8 start 
 | Rocket model with a cargo bay and a cockpit | Art |
 | Spaceport, home and Moon-site prefabs (final) | Art |
 | Gazetteer, airports and launch sites, pinned and registered | Acquisition (`data/README.md` §7) |
-| Answers on trust (one or many, decay) if the owner wants them reflected | Owner |
+| What a higher skill changes; how global trust is derived (`solastra-core-loop.md` §6) | Owner |
 | Phone and tablet models, a raise-and-hold animation set, and screen designs for the apps | Art and owner |
 
 ## 11. What Phase 7 receives

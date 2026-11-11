@@ -49,7 +49,9 @@ The shell's openings and the interior's openings come from the same data, so the
 ### P8-D5 — Destruction and rebuilding
 Damage states are `replace` operations on an `ObjectId`; removal is `suppress`; both are
 deltas, so every rung reflects them (P3-D9). Hub cities reject such deltas server-side.
-A rebuild is a mission (category C) whose completion appends the inverse deltas. Debris is
+Destroying a building costs trust with the nearby hub and nothing else (owner, 2026-11-10).
+Nobody requests or signs off a rebuild: a building is rebuilt when its deltas return it to
+a complete state, and those who placed the work are thanked. Debris is
 short-lived local simulation, never persisted.
 
 ### P8-D6 — Weather
@@ -63,12 +65,16 @@ with tyre grip following through `ground_material`. Each has a tier cost and an 
 
 ### P8-D8 — Need generation
 Needs come from world state: storm damage, shortages in a community's statistical needs,
-stranded travellers. Category D (social) missions use NPC groups and schedules. The ping
-filter (range, urgency, the player's history) is data.
+stranded travellers. Category D (social) missions use NPC groups and schedules. Owner,
+2026-11-10: NPCs ask only when the player is within about 10 to 20 km, or when spoken to.
+Requests are written to the device's message log (P6-D6); the urgent flag, the radius and
+the filter are data. No request interrupts play unless it is urgent.
 
-### P8-D9 — Trust rules completed
-Loss, decay and gifts as the owner decides (`solastra-core-loop.md` §5); the storage has
-been per community since Phase 6.
+### P8-D9 — Trust and skill rules completed
+Owner, 2026-11-10: hub trust decays with **played time** in which the hub was ignored, never
+with time away; destruction costs trust with the nearby hub. Rates are data. Communities
+give items (including cosmetics that represent them) at trust thresholds. Skills gain their
+effects here once the owner has said what a higher skill changes.
 
 ### P8-D10 — Wildlife and ambient life
 Animals by biome on the same agent tiers; ambient launches as sky events.

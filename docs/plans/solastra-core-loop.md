@@ -118,15 +118,40 @@ There is no money. Trust is the only number that matters, and it works like this
 
 ---
 
-## 5. Open questions for curren
+## 5. Owner's answers (2026-11-10)
 
-1. **One trust score or many?** Per-community trust is proposed above, but a single global "standing" is simpler. Which feels right — or both (local trust + a global reputation that follows you)?
-2. **Does trust decay?** If you ignore a place for months, should your standing there fade, or is trust forever once earned?
-3. **Griefing limits.** Outside hub cities, anyone can destroy a house. Should there be a cost — trust loss, a cooldown, a "you break it, you're expected to help fix it" rule? Or is pure chaos the point?
-4. **Who calls a rebuild done?** The person who requested it, a vote of the helpers, or automatic when the materials and work are complete?
-5. **How do 1.5 billion NPCs ask for help without spamming the player?** Radius (~1,000 km) plus filters (only what fits your roles? only urgent?) — or is the ping itself part of the fun?
-6. **Roles: pick one or do everything?** Farmer, mechanic, builder, pilot, electrician — are these identities you choose, skills you grow, or just things you do when the moment calls for it?
-7. **Moon basketball — playable or spectator?** Is it a sport the player actually plays, an event they attend, or both?
-8. **The fourth planet.** Procedural? A real exoplanet stand-in? What makes it different from the Moon and Mars?
-9. **Cosmetics.** Free to play, cosmetics paid — what kinds? Outfits only, or also vehicle paint, trails, emotes? Anything that signals trust, or strictly looks?
-10. **Where does this doc live?** If you like it, it should go in the repo as a `docs/plans/` doc (gameplay plan) — but that's your call, and nothing gets pushed without you saying so.
+These settle most of the questions this draft ended with. Where a section above disagrees,
+this section wins.
+
+1. **Trust is two things.** One global trust that follows you everywhere, and one trust per
+   hub. A hub is any very large city. Smaller communities count toward the hub they are
+   nearest to.
+2. **Trust decays only in played time.** Time away from the game costs nothing. While you
+   are playing, a hub you ignore slowly forgets you.
+3. **Destroying a house** costs trust with the nearby hub. Nothing else: no cooldown, no
+   forced repair.
+4. **Nobody requests or signs off a rebuild.** A house counts as rebuilt when it is built
+   again. Whoever did the work is thanked.
+5. **NPCs ask for help only when you are near**, within about 10 to 20 km, or when you walk
+   up to them. This replaces the ~1,000 km ping of section 2.
+6. **No spam.** Requests go to a message log on the device (an inbox the player opens when
+   they want). Only urgent ones raise a notification.
+7. **Skills, not classes.** You never pick an identity. What you do feeds skill types, and
+   those make you a better farmer, mechanic, racer, pilot, electrician and so on. The list
+   is meant to be wide, well beyond the examples here.
+8. **Moon basketball is for later.**
+9. **The fourth world is a procedural exoplanet**: heavily built over, more industrial,
+   heavier work, fewer laws, more chaotic. To be workshopped.
+10. **Cosmetics:** vehicle paint, trails, emotes, outfits assembled from pieces, and items
+    given by a community you are involved with, so you can represent it.
+11. **Character:** the existing robot stands in as the player until character art exists.
+
+## 6. Still open
+
+1. How global trust is derived: its own number, or computed from hub trust?
+2. What the skill types are, and what a higher skill changes (speed, quality, access to
+   harder jobs), given that trust gates access and not power (section 4).
+3. How fast trust decays, and whether global trust decays at all.
+4. Whether cosmetics from a community are earned by trust only or can also be bought.
+5. Who is thanked for a rebuild when several players worked on it.
+6. The fourth world's design.

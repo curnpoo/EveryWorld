@@ -50,6 +50,7 @@ The Box3D mover from Phase 1 with step height, slope limit and ground snapping (
 rocket boots, skydive, parachute and wingsuit on `ed_flight`; a third-person camera with
 collision. Animation through `ed_anim`: locomotion blend, foot placement from the height
 query. The owner's rig has no neck or head bones (P0-R7); retargeting must not assume them.
+The alpha's robot is the player character until character art exists (owner, 2026-11-10).
 
 ### P5-D5 — Plane and boat
 Plane: aerodynamic surfaces and atmosphere from `ed_flight`, landing gear on the car's
