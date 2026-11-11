@@ -65,12 +65,31 @@ the new renderer and, with the same path, for the alpha.
 
 ## 4. Look reference
 
-Not captured yet. `tools/shoot_places.sh` at the tag opens a window per place and waits for
-streaming to go idle, which never happens under the 200-tile cap, so each window stays open
-for up to 8 minutes. Run it when the machine is free, with `--no-wait` added to the alpha's
-arguments in the script so each place saves after 60 frames and quits; images go in
-`look/<place>.png`. Until then, Phase 4's "match or beat the look captures" gate has no
-images to compare against.
+Six places, captured 2026-11-10 at the tag, in `look/<place>.png` (window capture at
+1280×720 logical, 2560×1440 on the Retina panel, plus the title bar). Each place opens a
+window, waits, takes the window image with `screencapture -l<window id>`, and quits. The
+alpha never reaches "streaming idle" under the 200-tile cap (finding 1), so a fixed wait
+replaces the alpha's own idle-triggered `--screenshot`: 15 s at street level, 45 s for the
+1500 m aerial, which needs far more tiles. The images show what the alpha draws after that
+wait, gaps included.
+
+Common arguments: `--fly --weather fair --no-hud --quit-after 30 --width 1280 --height 720`.
+`--quit-after` matters beyond closing the window: it marks the run as automated, which
+stops the alpha auto-joining the multiplayer server saved in the owner's settings. That
+server sets the clock to real time and overrides `--hour`.
+
+| Place | `--lat` | `--lon` | `--alt` | `--heading` | `--pitch` | `--hour` (solar) | Wait |
+|---|---|---|---|---|---|---|---|
+| central_park | 40.7700 | -73.9740 | 120 | 20 | -14 | 10.5 | 15 s |
+| zermatt | 46.0150 | 7.7400 | 300 | 230 | -6 | 11.0 | 15 s |
+| aix_en_provence | 43.5270 | 5.4450 | 90 | 340 | -18 | 14.5 | 15 s |
+| marrakech | 31.6260 | -7.9890 | 80 | 40 | -20 | 9.5 | 15 s |
+| shibuya | 35.6590 | 139.7000 | 110 | 300 | -16 | 15.0 | 15 s |
+| manhattan_aerial | 40.7000 | -74.0300 | 1500 | 30 | -22 | 14.0 | 45 s, `--quit-after 70` |
+
+The date was the capture day (November), so the sun is low; pass `--date 2026-11-10` to
+reproduce the same light. Phase 4's "match or beat the look captures" gate compares
+against these.
 
 ## 5. Budgets set from this baseline
 

@@ -119,7 +119,7 @@ Alpha lookdev, the baseline to beat (`lookdev/round2/`):
 | ![Forest closeup](lookdev/round2/trees/trees_forest_closeup.png) | ![Clouds sunset](lookdev/round2/clouds/clouds_sunset.png) | ![Forest floor](lookdev/round2/ground/ground_forest_floor_stand.png) |
 
 The alpha's measured performance is in `reference/alpha-baseline.md`; its look-reference
-captures go in `reference/look/` (still to be taken).
+captures are in `reference/look/`.
 
 ## 7. Risks
 
