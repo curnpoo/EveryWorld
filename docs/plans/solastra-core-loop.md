@@ -146,12 +146,24 @@ this section wins.
     given by a community you are involved with, so you can represent it.
 11. **Character:** the existing robot stands in as the player until character art exists.
 
-## 6. Still open
+## 6. Further answers (2026-11-10, second round)
 
-1. How global trust is derived: its own number, or computed from hub trust?
-2. What the skill types are, and what a higher skill changes (speed, quality, access to
-   harder jobs), given that trust gates access and not power (section 4).
-3. How fast trust decays, and whether global trust decays at all.
-4. Whether cosmetics from a community are earned by trust only or can also be bought.
-5. Who is thanked for a rebuild when several players worked on it.
-6. The fourth world's design.
+1. **What a higher skill gives:** better options, better upgrades, and access to more
+   vehicles, tools, kits and events. Skill widens what you are offered; it is not a stat
+   bonus. Trust says whether people let you; skill says what you are offered.
+2. **Global trust is computed from hub trust.** Being trusted by many hubs raises it, and
+   being deeply trusted by a single hub also gives a high global trust. It is never stored
+   as its own number.
+3. **Decay is slow:** several in-game days of ignoring a hub pass before the player notices
+   they should do something. The exact rate is tuning.
+4. **Nothing is bought.** There is no money, so community cosmetics are earned.
+5. **Everyone who helps rebuild a house is thanked.** *(The owner's message was cut off
+   after "gets"; this reading is inferred and awaits confirmation.)*
+
+## 7. Still open
+
+1. The global trust formula (proposed in `../phases/phase-6.md` P6-D7).
+2. The list of skill types.
+3. Whether there is a real-money cosmetics shop outside the game world (the first draft
+   said free to play with paid cosmetics; the answer above says nothing is bought).
+4. The fourth world's design.

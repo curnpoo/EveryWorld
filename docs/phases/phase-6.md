@@ -64,7 +64,11 @@ chosen deterministically from the gazetteer.
 
 ### P6-D7 — Trust
 Owner, 2026-11-10: one **global** trust and one trust **per hub** (a hub is any very large
-city; other places count toward the nearest hub). Both are rows in `progression`. A played-
+city; other places count toward the nearest hub). Hub trust is a row per hub in
+`progression`; global trust is **computed** from the hub rows and never stored. Proposed
+formula: the highest hub trust plus a diminishing share of each further hub in descending
+order (each counted at half the weight of the one before), so one deep relationship and
+many shallow ones both score high. A played-
 time counter per save is stored from the start, because decay (Phase 8) runs on played time
 only and never on the wall clock. Two gates in this phase: the spaceport lends a rocket;
 the home plot can be extended. Trust changes only through mission outcomes in this phase.
@@ -73,8 +77,10 @@ Hubs are listed in a data file derived from the gazetteer by population.
 ### P6-D7a — Skills
 Owner, 2026-11-10: there are no classes. Actions feed **skill types** (driving, flying,
 repair, building, growing and others; the table is data and meant to be wide). Phase 6
-records skill progress from mission steps in `progression` and shows it on the device. What
-a higher skill changes is an open owner question, so nothing reads the values yet.
+records skill progress from mission steps in `progression` and shows it on the device. A
+higher skill widens what the player is offered: options, upgrades, vehicles, tools, kits and
+events. It is an unlock list per skill level in data, never a stat multiplier. Phase 6 wires
+one such unlock (a better car offered at a driving level) to prove the path.
 
 ### P6-D8 — Home
 One `plot` row. A play-mode build UI reuses the editor's placement code with a restricted
@@ -188,7 +194,7 @@ M14 = W1 to W4, W10. M15 = W5 to W9, W11 and the exit gate. W1, W5 and W8 start 
 | Rocket model with a cargo bay and a cockpit | Art |
 | Spaceport, home and Moon-site prefabs (final) | Art |
 | Gazetteer, airports and launch sites, pinned and registered | Acquisition (`data/README.md` §7) |
-| What a higher skill changes; how global trust is derived (`solastra-core-loop.md` §6) | Owner |
+| Confirmation of the global trust formula; the list of skill types (`solastra-core-loop.md` §7) | Owner |
 | Phone and tablet models, a raise-and-hold animation set, and screen designs for the apps | Art and owner |
 
 ## 11. What Phase 7 receives

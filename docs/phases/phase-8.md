@@ -72,9 +72,11 @@ the filter are data. No request interrupts play unless it is urgent.
 
 ### P8-D9 — Trust and skill rules completed
 Owner, 2026-11-10: hub trust decays with **played time** in which the hub was ignored, never
-with time away; destruction costs trust with the nearby hub. Rates are data. Communities
-give items (including cosmetics that represent them) at trust thresholds. Skills gain their
-effects here once the owner has said what a higher skill changes.
+with time away; destruction costs trust with the nearby hub. Rates are data, tuned so that
+several in-game days of neglect pass before the loss is noticeable. Communities give items
+(including cosmetics that represent them) at trust thresholds; nothing is bought. Everyone
+who contributed to a rebuild is thanked. Skill unlock lists (P6-D7a) are filled out across
+vehicles, tools, kits and events.
 
 ### P8-D10 — Wildlife and ambient life
 Animals by biome on the same agent tiers; ambient launches as sky events.
