@@ -337,6 +337,121 @@ def column_timber_a():
     return p
 
 
+# ---------------------------------------------------------------------------
+# Round 2
+# ---------------------------------------------------------------------------
+def gable_infill_a():
+    p = Part("BIO_FOR_GABLE_INFILL_A", "other",
+             ((-1.0, -BAT_D, 0.0), (1.0, 0.2, RISE)), (2.0, 0.2, RISE),
+             "wall convention: bottom centre of the outer face; x in [-1,1], outer face "
+             "on y=0, interior +Y; z in [0, roof_rise_per_cell]",
+             notes="RECTANGULAR, one rise tall. The roof wedge already supplies the "
+                   "triangle of every cell, so what a deeper roof leaves open is the "
+                   "rectangle under row k: stack k panels (z = wall top + 0, 1, .. k-1 "
+                   "rises) under each row-k roof cell, on the gable wall line. A triangle "
+                   "would be coplanar with the wedge cheek and would need a mirrored twin")
+    p.box(-1.0, 1.0, 0.0, 0.2, 0.0, RISE, "timber_cladding")
+    for k in range(9):
+        c = -1.0 + 0.25 * k
+        p.box(max(c - BAT_W / 2, -1.0), min(c + BAT_W / 2, 1.0), -BAT_D, 0.0, 0.0, RISE - 0.12,
+              "timber_cladding")
+    # collar band: the battens stop here, the plain wedge cheek starts above it
+    p.box(-1.0, 1.0, -BAT_D, 0.0, RISE - 0.12, RISE, "timber_structure")
+    return p
+
+
+def entry_step_a():
+    tops = [0.0, -0.15, -0.30, -0.45]
+    edge = [0.0, -0.7, -1.0, -1.3, -1.6]
+    slab, nose, foot = 0.05, 0.02, -0.9
+    p = Part("BIO_FOR_ENTRY_STEP_A", "other",
+             ((-1.0, edge[-1] - nose, foot), (1.0, 0.0, 0.0)), (2.0, 1.62, 0.6),
+             "bottom centre of the wall's outer face line at floor level z=0 (same "
+             "transform as the door wall above it); steps project toward -Y",
+             notes="landing 0.7 deep at z=0 then three 0.3 treads, four 0.15 risers down "
+                   "to grade z=-0.6; the body runs 0.3 below grade for slopes")
+    prof = [(0.0, foot), (0.0, tops[0] - slab)]
+    for i, t in enumerate(tops):
+        prof.append((edge[i + 1], t - slab))
+        if i + 1 < len(tops):
+            prof.append((edge[i + 1], tops[i + 1] - slab))
+    prof.append((edge[-1], foot))
+    p.prism(prof, "x", -1.0, 1.0, "stone")
+    for i, t in enumerate(tops):
+        p.box(-1.0, 1.0, edge[i + 1] - nose, edge[i], t - slab, t, "stone")
+    p.socket("planter", (-0.8, -0.35, 0.0), (0.0, 0.0, 1.0))
+    p.socket("planter", (0.8, -0.35, 0.0), (0.0, 0.0, 1.0))
+    return p
+
+
+def roof_solar_eave_a():
+    over, t, proud = 0.6, 0.13, 0.012
+    p = Part("BIO_FOR_ROOF_SOLAR_EAVE_A", "roof_solar",
+             ((-1.0, -over, -over * SLOPE - 0.16), (1.0, 2.0, RISE + t)),
+             (2.0, 2.0 + over, RISE), CELL_ORIGIN + "; eave line on y=0 at the wall top (z=0)",
+             notes="ROOF_SOLAR_A with the 0.6 m eave of ROOF_PITCH_EAVE_A; 3 x 2 longer "
+                   "panels cover the overhang too. Use it for the eave row and "
+                   "ROOF_SOLAR_A for rows above")
+    _roof_base(p, -over, t)
+    gap = 0.06
+    w = (2.0 - 3 * gap) / 3
+    for i in range(3):
+        xa = -1.0 + gap / 2 + i * (w + gap)
+        for ya, yb in ((-over + 0.06, 0.67), (0.73, 1.94)):
+            p.shear_box(xa, xa + w, ya, yb, t, t + proud, SLOPE, "pv")
+    _eave_timber(p, over)
+    return p
+
+
+CORNER_NOTE = ("second finished edge is x=-1, the LEFT end of the outer edge seen from "
+               "outside. Rotation 0 (outer edge facing south) fits the SW corner, 90 "
+               "(east) the SE corner, 180 (north) the NE corner, 270 (west) the NW "
+               "corner: the same rule as BIO_FOR_CORNER_TIMBER_A")
+
+
+def floor_corner_a():
+    p = Part("BIO_FOR_FLOOR_CORNER_A", "other",
+             ((-1.05, -0.05, -0.25), (1.0, 2.0, 0.0)), (2.0, 2.0, 0.25), CELL_ORIGIN,
+             notes="FLOOR_A with the rim beam on two adjacent edges; " + CORNER_NOTE)
+    p.layer_stack(-1.0, 1.0, 0.0, 2.0, [(-0.25, -0.04, "timber_structure"),
+                                        (-0.04, 0.0, "timber_cladding")])
+    p.box(-1.05, 1.0, -0.05, 0.0, -0.25, 0.0, "timber_structure")
+    p.box(-1.05, -1.0, 0.0, 2.0, -0.25, 0.0, "timber_structure")
+    return p
+
+
+def roof_green_corner_a():
+    p = Part("BIO_FOR_ROOF_GREEN_CORNER_A", "other",
+             ((-1.04, -0.04, 0.0), (1.0, 2.0, 0.30)), (2.0, 2.0, 0.30),
+             CELL_ORIGIN + "; underside on the wall top (z=0)",
+             notes="ROOF_GREEN_A with the parapet on two adjacent edges; " + CORNER_NOTE)
+    p.box(-1.03, 1.0, -0.03, 0.06, 0.0, 0.27, "timber_cladding")
+    p.box(-1.03, -0.94, 0.06, 2.0, 0.0, 0.27, "timber_cladding")
+    p.box(-1.04, 1.0, -0.04, 0.07, 0.27, 0.30, "metal_dark")
+    p.box(-1.04, -0.93, 0.07, 2.0, 0.27, 0.30, "metal_dark")
+    p.layer_stack(-0.94, 1.0, 0.06, 2.0, [(0.0, 0.08, "timber_structure"),
+                                          (0.08, 0.19, "soil"), (0.19, 0.24, "sedum")])
+    p.socket("planter", (0.0, 1.0, 0.24), (0.0, 0.0, 1.0))
+    p.socket("vine", (0.0, -0.04, 0.27), (0.0, -1.0, 0.0))
+    p.socket("vine", (-1.04, 1.0, 0.27), (-1.0, 0.0, 0.0))
+    return p
+
+
+def verge_a():
+    p = Part("BIO_FOR_VERGE_A", "other",
+             ((-0.15, 0.0, -0.10), (0.15, 2.0, RISE + 0.19)), (0.30, 2.0, RISE),
+             "the point where a pitched cell's eave line meets the gable plane, at the "
+             "wall top: position = roof cell origin + R*(+-1, 0, 0), same rotation and "
+             "height as that roof cell; slope rises toward +Y",
+             notes="EXCEPTION to the x = +-1 limit: projects 0.15 m outside the gable "
+                   "plane (and 0.15 m back over the roof edge, so one part serves both "
+                   "gable ends without mirroring). Covers y in [0,2] of its cell only: "
+                   "the 0.6 m eave overhang beyond the wall has no verge")
+    p.shear_box(-0.13, 0.13, 0.0, 2.0, -0.10, 0.15, SLOPE, "timber_structure")
+    p.shear_box(-0.15, 0.15, 0.0, 2.0, 0.15, 0.19, SLOPE, "metal_dark")
+    return p
+
+
 PARTS = {
     "BIO_FOR_WALL_TIMBER_A": wall_timber_a,
     "BIO_FOR_WALL_TIMBER_WINDOW_A": wall_timber_window_a,
@@ -351,4 +466,10 @@ PARTS = {
     "BIO_FOR_ROOF_GREEN_A": roof_green_a,
     "BIO_FOR_BALCONY_A": balcony_a,
     "BIO_FOR_COLUMN_TIMBER_A": column_timber_a,
+    "BIO_FOR_GABLE_INFILL_A": gable_infill_a,
+    "BIO_FOR_ENTRY_STEP_A": entry_step_a,
+    "BIO_FOR_ROOF_SOLAR_EAVE_A": roof_solar_eave_a,
+    "BIO_FOR_FLOOR_CORNER_A": floor_corner_a,
+    "BIO_FOR_ROOF_GREEN_CORNER_A": roof_green_corner_a,
+    "BIO_FOR_VERGE_A": verge_a,
 }

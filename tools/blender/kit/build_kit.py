@@ -40,6 +40,9 @@ def write_toml(path, rows):
          "# In the .glb the same point (x, y, z) is stored as (x, z, -y) (+Y up).",
          "", "[kit]", 'family = "BIO_FOR"', 'units = "m"', "wall_module = [2.0, 0.2, 3.0]",
          "cell = [2.0, 2.0]", "storey_height = 3.0",
+         'ground_floor = "foundation top, z=0"',
+         'floor_parts = "BIO_FOR_FLOOR_A / BIO_FOR_FLOOR_CORNER_A are for upper storeys only"',
+         'x_limit_exception = "BIO_FOR_VERGE_A projects 0.15 m outside the gable plane (x = +-1 of its roof cell)"',
          f"roof_pitch_deg = {parts.PITCH_DEG}", f"roof_rise_per_cell = {parts.RISE:.5f}",
          f"blender = {tstr(bpy.app.version_string)}",
          'socket_orientation = "local +Z of the socket node points along `normal` (out of the surface)"',
@@ -114,7 +117,7 @@ def main():
                          budget=kitlib.TRI_BUDGET[part.category], **rep))
         if a.previews:
             lo, hi = rep["bbox_min"], rep["bbox_max"]
-            hz = -0.6 if "FOUNDATION" in name else 0.0
+            hz = -0.6 if ("FOUNDATION" in name or "ENTRY_STEP" in name) else 0.0
             eng = kitlib.render_preview(scene, os.path.join(out, "previews", name + ".png"),
                                         lo, hi, human_at=(lo[0] - 0.55, min(lo[1], 0.0) - 0.1, hz))
             print(f"KIT   preview {name} ({eng})")
