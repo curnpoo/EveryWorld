@@ -3,7 +3,7 @@
 //! Allowed workspace dependencies: `ed_geo`, `ed_data`, `ed_world`, `ed_pack`, `ed_planet`, `ed_gpu`, `ed_render`, `ed_sim`, `ed_anim`, `ed_editor`, `ed_store`, `ed_net`, `ed_runtime`, `ed_flight`, `ed_space`, `ed_audio`, `ed_engine_audio`, `ed_assets`. The list is enforced by
 //! `cargo xtask check-deps` (rules in `xtask/deps.toml`).
 //!
-//! Status: Phase 1, M1b. The `ew` binary (`src/main.rs`) opens a window with a Metal surface
+//! Status: Phase 1, M3 (content from packs, [`content`]). Earlier: M1b. The `ew` binary (`src/main.rs`) opens a window with a Metal surface
 //! ([`windowed`]) or renders offscreen with no window ([`headless`], P1-D15). Both run the
 //! main loop input -> fixed 60 Hz step ([`fixed_step`]) -> frame build -> submit, and render
 //! with the step fraction for interpolation (P1-D16, P1-D17). The simulation plugs in through
@@ -11,8 +11,10 @@
 
 pub mod args;
 pub mod camera;
+pub mod content;
 pub mod fixed_step;
 pub mod headless;
+pub mod hot;
 pub mod perf;
 pub mod proving;
 pub mod windowed;

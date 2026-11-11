@@ -1,0 +1,15 @@
+id = "everyworld-original"
+name = "EveryWorld original content"
+organisation = "EveryWorld project"
+kind = "asset"
+urls = ["https://github.com/curnpoo/EveryWorld"]
+licence = "MIT OR Apache-2.0 (workspace licence, original work)"
+licence_url = "https://github.com/curnpoo/EveryWorld/blob/main/Cargo.toml"
+commercial = "yes"
+modification = "yes"
+redistribution = "yes"
+attribution = ""
+screening = "GREEN"
+review_notes = "Content made by the project itself: the procedural proving-ground parts (ed_assets::proving), Blender prefab scripts in tools/blender, generated test fixtures."
+licence_checked = "2026-11-11"
+consumers = ["ed_assets"]

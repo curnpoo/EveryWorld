@@ -7,8 +7,38 @@ license.workspace = true
 [lints]
 workspace = true
 
+# `ew-bake` lives here as a [[bin]] rather than in its own crate: it is a thin argument parser
+# over this library, needs nothing the library does not already link, and one crate keeps the
+# dependency rules (xtask/deps.toml) and the licence surface in one place.
+[[bin]]
+name = "ew-bake"
+path = "src/bin/ew-bake.rs"
+
+# The full allowed list (xtask/deps.toml) also has ed_data and ed_world; the bake path needs
+# neither yet, so they are not linked (keeps ew-bake builds small).
 [dependencies]
 ed_geo = { path = "../ed_geo" }
-ed_data = { path = "../ed_data" }
-ed_world = { path = "../ed_world" }
 ed_pack = { path = "../ed_pack" }
+glam = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+# Material, source and registry files. MIT OR Apache-2.0.
+toml = "0.8"
+# BLAKE3 provenance hashes. CC0-1.0 OR Apache-2.0.
+blake3 = "1"
+# glTF 2.0 document model and accessor readers. MIT OR Apache-2.0. Its validation is skipped
+# (it rejects EXT_texture_webp); `extensionsRequired` is checked against our own allow-list.
+gltf = { version = "=1.4.1", default-features = false, features = ["utils", "names", "extras", "extensions", "KHR_texture_transform", "allow_empty_texture"] }
+# PNG and JPEG decoding (glTF images, Megascans sources). MIT OR Apache-2.0.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# WebP decoding (EXT_texture_webp, image/webp) and lossless encoding for fixtures. MIT OR Apache-2.0.
+image-webp = "0.2"
+# LOD chains (moved here from ew in M3). meshoptimizer is MIT (data/registry/meshoptimizer.toml).
+meshopt = "0.6.2"
+# BC7/BC5/BC4 encoding: Rust bindings (MIT OR Apache-2.0) over Intel's ISPC Texture
+# Compressor kernels (MIT; prebuilt static libraries ship in the crate, aarch64-apple-darwin
+# included; data/registry/ispc-texcomp.toml). Deterministic per block; we split work by block rows.
+intel_tex_2 = "0.5"
+# Data-parallel texture encoding. MIT OR Apache-2.0.
+rayon = "1"

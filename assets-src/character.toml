@@ -1,0 +1,12 @@
+# Solarcat: the owner's private character. The .glb is NEVER copied into the repository; its path
+# comes from the EW_SOLARCAT environment variable and the pack goes under target/.
+#   EW_SOLARCAT=/path/to/Solarcat.glb cargo run --release -p ed_assets --bin ew-bake -- \
+#       build assets-src/character.toml -o target/packs/character.ewpack
+[pack]
+name = "character"
+game_packaged = true   # registry `solarcat`: redistribution "packaged game only"
+
+[[gltf]]
+path_env = "EW_SOLARCAT"
+asset = "characters/solarcat"
+registry = "solarcat"

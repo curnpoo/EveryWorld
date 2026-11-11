@@ -1,3 +1,48 @@
+## 2026-11-11: Phase 1, milestone M3 (real content path) and editor core
+
+Measured by the conductor on the M3 Pro at 2560x1440, 600-frame scripted path.
+
+- **`ed_assets` and `ew-bake`** (`build`, `watch`, `verify`, `hash`): glTF import with skins,
+  WebP and `KHR_texture_transform` (P0-R7), unsupported required extensions rejected by name;
+  meshopt LOD chains with measured, non-decreasing error; BC7/BC5/BC4 textures with mips
+  (ISPC texcomp through `intel_tex_2`, bytes independent of thread count); materials as TOML;
+  Megascans surface folders; provenance and licence id on every chunk.
+- **The proving ground loads only from packs.** The generator moved to bake time; `ew` has no
+  procedural geometry path and names the bake command when a pack is missing.
+- **Skinned path:** compute pre-pass into the shared vertex stream, then the ordinary
+  visibility buffer and resolve. The owner's character (16 joints, 31k triangles) is on
+  screen, textured, with a procedural sway pose (its file has no clips). The file is read by
+  path and never enters the repo; its pack is flagged game-packaged.
+- **Hot reload** of shaders, materials and packs without restart. A Blender re-export
+  (`tools/blender/make_prefab.py`) reaches the running app through `ew-bake watch`: one
+  changed chunk applied, 2,604 pixels changed, none outside the prefab. Captures:
+  `captures/phase-1/m3-prefab-before.png`, `m3-prefab-after.png`.
+- **Editor core E1** (`ed_editor`, commit 35b2728): egui painter on `ed_gpu` (0.10 ms at
+  1440p), gizmo, undo, layer save. Not yet wired into `ew`.
+- **Kit:** the 19 forest parts (`tools/blender/kit/`) bake into a pack (55 meshes, 21 sockets
+  kept as prefab points). Battens are gone at LOD1 with a stored error of 0.03 m, so the
+  switch happens when they are under a pixel.
+
+| Item | M2 | M3 |
+|---|---|---|
+| GPU frame mean / p99 | 1.49 / 2.40 ms | 1.42 / 2.20 ms |
+| CPU frame build | 0.087 ms | 0.093 ms |
+| Culling mean / p99 | 0.39 / 0.64 ms | 0.38 / 0.43 ms |
+| Memory growth over 600 frames | 0 B | 0 B |
+| Scene load from packs | | 111 ms |
+| Empty frame, GPU (worker's figure) | 0.12 ms | 0.09 ms |
+
+- **Determinism:** proving pack baked in two processes is byte-identical (hash `2cb91eae...`).
+  Worker's figures, not re-run by the conductor: a 104.8 MB glTF corpus bakes to the same hash
+  twice in 15.8 s with 597 MB peak memory; 50 hot reloads leave memory flat.
+- **Tests:** 140 pass across `ed_assets`, `ed_pack`, `ed_render`, `ed_gpu`, `ew`, `ed_anim`;
+  23 in `ed_editor`. Licence gate passes on all four packs.
+
+**Open:** no real Megascans surface yet (needs a Fab download; the path is tested on a
+synthetic fixture); skinning writes its output in place, not double-buffered across frames in
+flight (no artefact seen); transmission is plain glass; displacement is baked but not
+sampled; windowed hot reload was exercised by the worker, not by a person; Windows untested.
+
 ## 2026-11-11: Phase 1, milestone M2 (100,000 instances)
 
 Measured by the conductor on the M3 Pro at 2560x1440, 600-frame scripted path.

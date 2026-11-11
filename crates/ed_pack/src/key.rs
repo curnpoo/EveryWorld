@@ -73,8 +73,8 @@ impl ChunkKind {
     pub fn schema(self) -> u16 {
         use ChunkKind::*;
         match self {
-            Instances | Collision | Mesh | Clusters | Texture | Material | Prefab | CollisionAsset | Layer => 1,
-            Terrain | Layers | Proxy | Shells | Nav | Ground | Source | Skeleton | Clip => 0,
+            Instances | Collision | Mesh | Clusters | Texture | Material | Skeleton | Prefab | CollisionAsset | Layer => 1,
+            Terrain | Layers | Proxy | Shells | Nav | Ground | Source | Clip => 0,
         }
     }
     pub fn is_reserved(self) -> bool {

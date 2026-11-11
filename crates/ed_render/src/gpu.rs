@@ -17,8 +17,17 @@ pub(crate) const INSTANCE_ALIVE: u32 = 1 << 16;
 /// `GpuMesh`: sphere, lod_count, bin_base, capacity, pad, first_index[4], index_count[4],
 /// base_vertex[4], error[4].
 pub(crate) const MESH_WORDS: usize = 24;
-/// `GpuMaterial`: base, params, shade (3 float4).
-pub(crate) const MATERIAL_WORDS: usize = 12;
+/// `GpuMaterial`: base, params, shade, tex (uint4: base, normal, orm, rotation bits), uv
+/// (offset.xy, scale.xy).
+pub(crate) const MATERIAL_WORDS: usize = 20;
+/// Material texture slot without a texture.
+pub(crate) const NO_TEXTURE: u32 = u32::MAX;
+/// `float2` texture coordinates, parallel to the vertex buffer.
+pub(crate) const UV_WORDS: usize = 2;
+/// `SkinVtx`: bind-pose position, octahedral normal, 4 x u16 joints (2 words), 4 weights.
+pub(crate) const SKIN_SRC_WORDS: usize = 10;
+/// One palette joint: 3x4 affine rows.
+pub(crate) const PALETTE_WORDS: usize = 12;
 /// `Vtx`: position + octahedral normal.
 pub(crate) const VERTEX_WORDS: usize = 4;
 /// `DrawIndexedArgs`.

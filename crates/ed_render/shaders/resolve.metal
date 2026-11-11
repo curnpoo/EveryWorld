@@ -2,6 +2,10 @@
 // (sky where nothing was drawn). The triangle is refetched, the view ray intersected with it
 // for perspective-correct barycentrics, and the material read from the bindless table.
 // Materials v0: PBR (GGX / Smith / Schlick, metallic-roughness) and toon, same light inputs.
+// M3: bindless textures (base colour, BC5 normal, ORM) sampled with ray-differential
+// gradients (the neighbouring pixels' rays hit the same triangle plane), a tangent frame
+// derived per triangle from position and UV deltas (no stored tangents), and the material's
+// UV transform.
 
 struct ResolveC {
     uint frame;
@@ -12,7 +16,9 @@ struct ResolveC {
     uint materials;
     uint verts;
     uint indices;
-    uint pad[8];
+    uint uvs;       // bindless: float2 per vertex, parallel to verts
+    uint sampler;   // bindless: linear, mipmapped, repeat, anisotropic
+    uint pad[6];
 };
 
 vertex FsOut vs_resolve(uint vid [[vertex_id]], ED_BINDLESS(ResolveC)) {
@@ -54,9 +60,9 @@ inline float3 ambient(device const FrameData& f, float3 n) {
     return mix(f.ground_color.rgb, sky, t);
 }
 
-inline float3 shade_pbr(device const FrameData& f, GpuMaterial m, float3 albedo, float3 n, float3 v) {
-    float metal = saturate(m.params.x);
-    float rough = clamp(m.params.y, 0.04, 1.0);
+inline float3 shade_pbr(device const FrameData& f, float3 albedo, float metal, float rough, float ao, float3 n, float3 v) {
+    metal = saturate(metal);
+    rough = clamp(rough, 0.04, 1.0);
     float a = rough * rough;
     float3 l = f.sun_dir.xyz;
     float3 h = normalize(l + v);
@@ -74,7 +80,7 @@ inline float3 shade_pbr(device const FrameData& f, GpuMaterial m, float3 albedo,
     float3 r = reflect(-v, n);
     float3 env = mix(sky_radiance(f, r), ambient(f, n), rough);
     float3 amb = diff_col * ambient(f, n) + env * (f0 * ab.x + ab.y);
-    return direct + amb;
+    return direct + amb * ao;
 }
 
 inline float3 shade_toon(device const FrameData& f, GpuMaterial m, float3 albedo, float3 n, float3 v) {
@@ -87,6 +93,27 @@ inline float3 shade_toon(device const FrameData& f, GpuMaterial m, float3 albedo
     float3 light = f.sun_color.rgb * 0.6 + ambient(f, n);
     float rim = pow(1.0 - saturate(dot(n, v)), 4.0) * m.shade.w * saturate(ndl + 0.3);
     return c * light * 0.5 + rim * f.sun_color.rgb * 0.3;
+}
+
+// Unclamped barycentrics (b1, b2) of the ray `dir` (from the camera) on the triangle plane.
+inline float2 ray_bary(float3 dir, float3 p0, float3 e1, float3 e2) {
+    float3 pv = cross(dir, e2);
+    float det = dot(e1, pv);
+    if (abs(det) <= 1e-12) {
+        return float2(1.0 / 3.0);
+    }
+    float inv = 1.0 / det;
+    float3 tv = -p0;
+    float3 qv = cross(tv, e1);
+    return float2(dot(tv, pv) * inv, dot(dir, qv) * inv);
+}
+
+inline float2 uv_xform(GpuMaterial m, float2 uv) {
+    float r = as_type<float>(m.tex.w);
+    float s = sin(r);
+    float c = cos(r);
+    float2 q = uv * m.uv.zw;
+    return float2(c * q.x + s * q.y, -s * q.x + c * q.y) + m.uv.xy;
 }
 
 fragment float4 fs_resolve(FsOut in [[stage_in]], ED_BINDLESS(ResolveC)) {
@@ -105,9 +132,12 @@ fragment float4 fs_resolve(FsOut in [[stage_in]], ED_BINDLESS(ResolveC)) {
     device const uint* idx = ed_buf(uint, ed_c.indices) + mesh.first_index[lod] + prim * 3u;
     device const Vtx* verts = ed_buf(Vtx, ed_c.verts);
     int bv = mesh.base_vertex[lod];
-    Vtx v0 = verts[int(idx[0]) + bv];
-    Vtx v1 = verts[int(idx[1]) + bv];
-    Vtx v2 = verts[int(idx[2]) + bv];
+    int i0 = int(idx[0]) + bv;
+    int i1 = int(idx[1]) + bv;
+    int i2 = int(idx[2]) + bv;
+    Vtx v0 = verts[i0];
+    Vtx v1 = verts[i1];
+    Vtx v2 = verts[i2];
     float3 node = ed_buf(float4, ed_c.nodes)[inst.node_flags & 0xFFFFu].xyz;
     float3 l0 = xform_point(inst, float3(v0.px, v0.py, v0.pz));
     float3 l1 = xform_point(inst, float3(v1.px, v1.py, v1.pz));
@@ -116,37 +146,76 @@ fragment float4 fs_resolve(FsOut in [[stage_in]], ED_BINDLESS(ResolveC)) {
     float3 p0 = node + l0;
     float3 e1 = l1 - l0;
     float3 e2 = l2 - l0;
-    float3 pv = cross(dir, e2);
-    float det = dot(e1, pv);
-    float b1 = 1.0 / 3.0;
-    float b2 = 1.0 / 3.0;
-    if (abs(det) > 1e-12) {
-        float inv = 1.0 / det;
-        float3 tv = -p0;
-        float3 qv = cross(tv, e1);
-        b1 = saturate(dot(tv, pv) * inv);
-        b2 = saturate(dot(dir, qv) * inv);
-        float s = b1 + b2;
-        if (s > 1.0) {
-            b1 /= s;
-            b2 /= s;
-        }
+    float2 bb = ray_bary(dir, p0, e1, e2);
+    float b1 = saturate(bb.x);
+    float b2 = saturate(bb.y);
+    float bs = b1 + b2;
+    if (bs > 1.0) {
+        b1 /= bs;
+        b2 /= bs;
     }
     float b0 = 1.0 - b1 - b2;
     float3 local = l0 * b0 + l1 * b1 + l2 * b2;  // node-local position
     float3 nm = oct_decode(v0.n) * b0 + oct_decode(v1.n) * b1 + oct_decode(v2.n) * b2;
     float3 n = normalize(xform_normal(inst, nm));
     float3 v = -dir;
+    GpuMaterial m = ed_buf(GpuMaterial, ed_c.materials)[inst.material];
+    float3 albedo = m.base.rgb;
+    float metal = m.params.x;
+    float rough = m.params.y;
+    float ao = 1.0;
+    bool textured = m.tex.x != NO_TEXTURE || m.tex.y != NO_TEXTURE || m.tex.z != NO_TEXTURE;
+    if (textured) {
+        device const float2* uvs = ed_buf(float2, ed_c.uvs);
+        float2 t0 = uvs[i0];
+        float2 t1 = uvs[i1];
+        float2 t2 = uvs[i2];
+        float2 d1 = t1 - t0;
+        float2 d2 = t2 - t0;
+        float2 uv = uv_xform(m, t0 + d1 * b1 + d2 * b2);
+        // Ray differentials: where the next pixel's rays meet the same plane.
+        float2 bx = ray_bary(view_dir(f, in.pos.xy + float2(1.0, 0.0)), p0, e1, e2);
+        float2 by = ray_bary(view_dir(f, in.pos.xy + float2(0.0, 1.0)), p0, e1, e2);
+        float2 ux = uv_xform(m, t0 + d1 * bx.x + d2 * bx.y) - uv;
+        float2 uy = uv_xform(m, t0 + d1 * by.x + d2 * by.y) - uv;
+        sampler smp = ed_smp(ed_c.sampler);
+        if (m.tex.x != NO_TEXTURE) {
+            albedo *= ed_tex2d(m.tex.x).sample(smp, uv, gradient2d(ux, uy)).rgb;
+        }
+        if (m.tex.z != NO_TEXTURE) {
+            float3 orm = ed_tex2d(m.tex.z).sample(smp, uv, gradient2d(ux, uy)).rgb;
+            ao = orm.r;
+            rough *= orm.g;
+            metal *= orm.b;
+        }
+        if (m.tex.y != NO_TEXTURE) {
+            // Tangent frame from the triangle's position and UV deltas (glTF: +V is down the
+            // image, normal-map green is up, so the bitangent is -dP/dV).
+            float det = d1.x * d2.y - d1.y * d2.x;
+            if (abs(det) > 1e-12) {
+                float r = 1.0 / det;
+                float3 tg = (e1 * d2.y - e2 * d1.y) * r;
+                float3 bt = (e2 * d1.x - e1 * d2.x) * r;
+                tg = tg - n * dot(n, tg);
+                if (length_squared(tg) > 1e-20) {
+                    tg = normalize(tg);
+                    float sgn = dot(cross(n, tg), bt) < 0.0 ? -1.0 : 1.0;
+                    float3 bn = cross(n, tg) * -sgn;
+                    float2 xy = ed_tex2d(m.tex.y).sample(smp, uv, gradient2d(ux, uy)).rg * 2.0 - 1.0;
+                    float z = sqrt(saturate(1.0 - dot(xy, xy)));
+                    n = normalize(tg * xy.x + bn * xy.y + n * z);
+                }
+            }
+        }
+    }
     if (dot(n, v) < 0.0) {
         n = normalize(n - 1.01 * dot(n, v) * v);  // grazing interpolated normals: keep them facing
     }
-    GpuMaterial m = ed_buf(GpuMaterial, ed_c.materials)[inst.material];
-    float3 albedo = m.base.rgb;
     if (m.params.w > 0.5) {
         float2 c = floor(local.xz * 0.5);
         float k = fmod(abs(c.x + c.y), 2.0);
         albedo *= mix(0.8, 1.15, k);
     }
-    float3 col = m.base.w > 0.5 ? shade_toon(f, m, albedo, n, v) : shade_pbr(f, m, albedo, n, v);
+    float3 col = m.base.w > 0.5 ? shade_toon(f, m, albedo, n, v) : shade_pbr(f, albedo, metal, rough, ao, n, v);
     return float4(col, 1.0);
 }

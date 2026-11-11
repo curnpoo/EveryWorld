@@ -38,6 +38,8 @@ pub struct Report {
     pub frame_png: PathBuf,
     /// Extra screenshots (name, path).
     pub shots: Vec<(&'static str, PathBuf)>,
+    /// Renderer instances the scene created.
+    pub instances: usize,
 }
 
 pub fn run(args: &Args) -> Result<Report, String> {
@@ -50,28 +52,35 @@ pub fn run(args: &Args) -> Result<Report, String> {
     args.apply_lod(renderer.lod_config());
     let scene = args.scene();
     let mut scene_lines = String::new();
+    let mut content: Option<crate::content::Content> = None;
+    let mut instance_count = 0usize;
     if !args.empty {
         match scene {
             SceneKind::Test => {
-                TestScene::load(&mut renderer, &*dev).map_err(|e| format!("test scene: {e}"))?;
+                instance_count = TestScene::load(&mut renderer, &*dev).map_err(|e| format!("test scene: {e}"))?.len();
                 scene_lines.push_str("scene: test (6 instances)\n");
             }
             SceneKind::Proving => {
-                let l = crate::proving::load(&mut renderer, &*dev)?;
+                let c = crate::content::Content::load(&mut renderer, &*dev, &args.packs)?;
                 let _ = writeln!(
                     scene_lines,
-                    "scene: proving ground, {} instances ({} city + ground + 49-sphere PBR grid), {} part meshes, {} materials, built in {:.0} ms",
-                    l.instances.len(),
-                    l.city_instances,
-                    l.meshes.len(),
-                    l.materials.len(),
-                    l.build_ms
+                    "scene: proving ground from packs, {} placements -> {} instances ({} skinned), {} meshes, {} materials, {} textures ({:.1} MiB), {} missing; loaded in {:.0} ms",
+                    c.placement_count(),
+                    c.instance_count(),
+                    c.skinned_parts(),
+                    c.mesh_count(),
+                    c.material_count(),
+                    c.texture_count(),
+                    c.stats.texture_bytes as f64 / (1 << 20) as f64,
+                    c.stats.missing,
+                    c.load_ms
                 );
-                let _ = writeln!(scene_lines, "part LODs (triangles/absolute error in m; s = sloppy simplifier):");
-                for (name, rep) in &l.lods {
-                    let levels: Vec<String> = rep.iter().map(|r| format!("{}/{:.4}{}", r.triangles, r.error, if r.sloppy { "s" } else { "" })).collect();
-                    let _ = writeln!(scene_lines, "  {name}: {}", levels.join("  "));
+                scene_lines.push_str(&c.describe());
+                for n in &c.notes {
+                    eprintln!("ew: {n}");
                 }
+                instance_count = c.instance_count();
+                content = Some(c);
             }
         }
     }
@@ -121,6 +130,10 @@ pub fn run(args: &Args) -> Result<Report, String> {
     let mut upload_bytes = 0u64;
 
     for i in 0..frames {
+        if let Some(c) = &content {
+            // Simulation time of this frame's pose: the fixed step count (deterministic).
+            c.animate(&mut renderer, (path.step + 1) as f64 / 60.0)?;
+        }
         let tf = Instant::now();
         let up = renderer.flush_uploads(&*dev).map_err(|e| format!("flush_uploads: {e}"))?;
         upload_bytes += up.instance_bytes + up.material_bytes;
@@ -141,8 +154,12 @@ pub fn run(args: &Args) -> Result<Report, String> {
         }
 
         let alpha = fixed.run(fixed.dt(), &mut path, |_| ());
+        let camera = match args.camera {
+            Some(p) => crate::camera::Pose { position: crate::proving::ORIGIN + glam::DVec3::new(p[0], p[1], p[2]), yaw: p[3] as f32, pitch: p[4] as f32 }.camera(),
+            None => path.interpolated(alpha),
+        };
         let view = View {
-            camera: path.interpolated(alpha),
+            camera,
             viewport: Viewport { x: 0, y: 0, width: w, height: h },
             target: ViewTarget { texture: target, format: OUT_FORMAT, width: w, height: h, initial: ResourceState::Undefined, final_state: None },
         };
@@ -233,6 +250,9 @@ pub fn run(args: &Args) -> Result<Report, String> {
     let summary = log.summary(warmup, &header, &footer);
     std::fs::write(args.out.join("summary.txt"), &summary).map_err(|e| format!("summary.txt: {e}"))?;
 
+    if let Some(mut c) = content {
+        c.clear(&mut renderer);
+    }
     renderer.destroy(&*dev);
     dev.destroy_texture(target);
     dev.destroy_buffer(readback);
@@ -243,7 +263,7 @@ pub fn run(args: &Args) -> Result<Report, String> {
     if let Some(e) = validation_error {
         return Err(format!("GPU validation error: {e}"));
     }
-    Ok(Report { summary, frames, alloc_after_warmup, alloc_end, frame_png, shots: shot_paths })
+    Ok(Report { summary, frames, alloc_after_warmup, alloc_end, frame_png, shots: shot_paths, instances: instance_count })
 }
 
 /// Moves finished frames' counters, pop tiles and pick answers out of the renderer.

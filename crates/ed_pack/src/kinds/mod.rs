@@ -38,6 +38,7 @@ mod material;
 mod mesh;
 mod opaque;
 mod prefab;
+mod skeleton;
 mod texture;
 
 pub use clusters::Clusters;
@@ -48,6 +49,7 @@ pub use material::{AlphaMode, Material, MaterialModel, Param};
 pub use mesh::{IndexFormat, Mesh, MeshLod, MeshSection, VertexAttribute, VertexFormat, VertexSemantic};
 pub use opaque::Opaque;
 pub use prefab::{Prefab, PrefabNode, PrefabPoint, PointKind};
+pub use skeleton::{Joint, Skeleton, MAX_JOINTS};
 pub use texture::{ColourRole, Texture, TextureFormat};
 
 /// Translation, rotation (quaternion `x, y, z, w`) and non-uniform scale. 40 bytes on the wire.

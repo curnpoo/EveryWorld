@@ -52,15 +52,22 @@ struct GpuMesh {
     float error[4];         // geometric error of each level, mesh units (metres)
 };
 
-// One material (48 bytes). Both models read the same lighting inputs.
+// One material (80 bytes). Both models read the same lighting inputs.
 struct GpuMaterial {
     float4 base;            // rgb: base colour (linear), w: model (0 PBR, 1 toon)
     float4 params;          // x: metallic, y: roughness, z: toon bands, w: pattern (1 = checker)
     float4 shade;           // rgb: toon shadow colour, w: toon rim strength
+    uint4 tex;              // bindless textures: x base colour, y normal (BC5), z ORM; NO_TEXTURE = none;
+                            // w: uv rotation (float bits)
+    float4 uv;              // xy: uv offset, zw: uv scale (KHR_texture_transform order)
 };
+constant uint NO_TEXTURE = 0xFFFFFFFFu;
 
 // Mesh vertex (16 bytes): position, octahedral normal (snorm16 x2).
 struct Vtx { float px; float py; float pz; uint n; };
+
+// Skinning source vertex (40 bytes): bind-pose position and normal, 4 joints (u16), 4 weights.
+struct SkinVtx { float px; float py; float pz; uint n; uint j01; uint j23; float w[4]; };
 
 // Draw argument entry (DrawIndexedArgs in ed_gpu), 5 words.
 constant uint ARGS_WORDS = 5;
@@ -81,6 +88,15 @@ inline float3 oct_decode(uint packed) {
     n.x += n.x >= 0.0 ? -t : t;
     n.y += n.y >= 0.0 ? -t : t;
     return normalize(n);
+}
+
+inline uint oct_encode(float3 n) {
+    n /= max(abs(n.x) + abs(n.y) + abs(n.z), 1e-20);
+    float2 e = n.xy;
+    if (n.z < 0.0) {
+        e = (1.0 - abs(e.yx)) * select(float2(-1.0), float2(1.0), e >= 0.0);
+    }
+    return pack_float_to_snorm2x16(e);
 }
 
 inline float3 xform_point(thread const GpuInstance& i, float3 p) {

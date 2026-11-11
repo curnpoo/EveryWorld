@@ -1,0 +1,10 @@
+# Planter bench prefab from Blender (tools/blender/make_prefab.py writes target/blender/).
+#   cargo run --release -p ed_assets --bin ew-bake -- build assets-src/bench.toml -o target/packs/bench.ewpack
+[pack]
+name = "bench"
+
+[[gltf]]
+path = "../target/blender/planter_bench.glb"
+asset = "prefabs/planter_bench"
+registry = "everyworld-original"
+manifest = "../target/blender/planter_bench.prefab.toml"

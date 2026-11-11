@@ -56,6 +56,8 @@ struct App {
     cursor: (f64, f64),
     pick: Option<(u32, u32)>,
     last_pick_frame: u64,
+    content: Option<crate::content::Content>,
+    hot: crate::hot::HotReload,
 }
 
 pub fn run(args: Args) -> Result<(), String> {
@@ -72,6 +74,8 @@ pub fn run(args: Args) -> Result<(), String> {
         cursor: (0.0, 0.0),
         pick: None,
         last_pick_frame: u64::MAX,
+        content: None,
+        hot: crate::hot::HotReload::new(),
         fixed: FixedStep::default(),
         keys: BTreeSet::new(),
         look: Vec2::ZERO,
@@ -100,7 +104,7 @@ pub fn run(args: Args) -> Result<(), String> {
 impl App {
     fn create_gpu(&mut self, el: &ActiveEventLoop) -> Result<(), String> {
         let attrs = Window::default_attributes()
-            .with_title("ew (EveryWorld, M2)")
+            .with_title("ew (EveryWorld, M3)")
             .with_inner_size(PhysicalSize::new(self.args.width, self.args.height));
         let window = el.create_window(attrs).map_err(|e| format!("window: {e}"))?;
         let ns_view = match window.window_handle().map_err(|e| format!("window handle: {e}"))?.as_raw() {
@@ -128,8 +132,19 @@ impl App {
                 TestScene::load(&mut renderer, &*self.dev).map_err(|e| format!("test scene: {e}"))?;
             }
             SceneKind::Proving => {
-                let l = crate::proving::load(&mut renderer, &*self.dev)?;
-                println!("ew: proving ground: {} instances, {} part meshes, built in {:.0} ms", l.instances.len(), l.meshes.len(), l.build_ms);
+                let c = crate::content::Content::load(&mut renderer, &*self.dev, &self.args.packs)?;
+                println!(
+                    "ew: proving ground from packs: {} placements -> {} instances ({} skinned), {} meshes, {} materials, {} textures, loaded in {:.0} ms",
+                    c.placement_count(),
+                    c.instance_count(),
+                    c.skinned_parts(),
+                    c.mesh_count(),
+                    c.material_count(),
+                    c.texture_count(),
+                    c.load_ms
+                );
+                print!("{}", c.describe());
+                self.content = Some(c);
             }
         }
         self.gpu = Some(Gpu { renderer: Some(renderer), surface, config, window });
@@ -196,6 +211,18 @@ impl App {
         // Uploads land at the start of the next frame: flush before begin_frame.
         let tf = Instant::now();
         let renderer = gpu.renderer.as_mut().expect("renderer lives until shutdown");
+        // Hot reload (shaders, packs) and the character pose, before the uploads.
+        let ev = self.hot.poll(renderer, dev, self.content.as_mut(), false);
+        crate::hot::report(&ev);
+        if matches!(ev.shaders, Some(Err(_))) || matches!(ev.packs, Some(Err(_))) {
+            self.errors += 1;
+        }
+        if let Some(c) = &self.content
+            && let Err(e) = c.animate(renderer, self.fixed.steps() as f64 / 60.0)
+        {
+            eprintln!("ew: {e}");
+            self.errors += 1;
+        }
         if let Err(e) = renderer.flush_uploads(dev) {
             eprintln!("ew: flush_uploads: {e}");
             self.errors += 1;

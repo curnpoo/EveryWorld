@@ -19,18 +19,16 @@
 use crate::gpu::{self, ARGS_WORDS, FD_CULL, FD_HZB, MAX_HZB_LEVELS, MESH_WORDS, STAT_WORDS, constants};
 use crate::graph::{FrameGraph, PassBuilder, PassKind, Plan, Res};
 use crate::scene::{InstancePools, MAX_LODS};
-use crate::{Tracked, VIS_FORMAT, shader};
+use crate::shaders::{Built, ShaderSources};
+use crate::{Tracked, VIS_FORMAT};
 use ed_gpu::{
-    BufferId, Compare, ComputePipelineDesc, ComputePipelineId, Cull, DepthDesc, Device, LoadOp, RenderPipelineDesc,
-    RenderPipelineId, ResourceState, ShaderId, ShaderStage, StoreOp, Topology, Transition, Usage,
+    BufferId, Compare, ComputePipelineId, Cull, DepthDesc, Device, LoadOp, RenderPipelineDesc,
+    RenderPipelineId, ResourceState, ShaderStage, StoreOp, Topology, Transition, Usage,
 };
 use glam::Vec4;
 use std::cell::Cell;
 use std::rc::Rc;
 
-const CULL_SRC: &str = include_str!("../shaders/cull.metal");
-const HZB_SRC: &str = include_str!("../shaders/hzb.metal");
-const VIS_SRC: &str = include_str!("../shaders/visibility.metal");
 
 /// Threads per culling workgroup.
 const CULL_GROUP: u32 = 64;
@@ -255,14 +253,7 @@ impl Ring {
 /// dithered LOD cross-fades.
 pub struct DiscreteLod {
     pub config: LodConfig,
-    shaders: Vec<ShaderId>,
-    cull_reset: ComputePipelineId,
-    cull_early: ComputePipelineId,
-    cull_late: ComputePipelineId,
-    hzb_first: ComputePipelineId,
-    hzb_down: ComputePipelineId,
-    vis_solid: RenderPipelineId,
-    vis_dither: RenderPipelineId,
+    p: LodPipelines,
     meshes: Vec<MeshRecord>,
     capacity: Vec<u32>,
     layout_dirty: bool,
@@ -309,25 +300,40 @@ fn cull_pass<'g, 'a>(g: &'g mut FrameGraph<'a>, name: &'static str, inp: &Shared
         .write(stats, sw)
 }
 
-fn compute(dev: &dyn Device, src: &str, entry: &str, group: [u32; 3], shaders: &mut Vec<ShaderId>) -> Result<ComputePipelineId, ed_gpu::Error> {
-    let s = shader(dev, entry, ShaderStage::Compute, entry, src)?;
-    shaders.push(s);
-    dev.create_compute_pipeline(&ComputePipelineDesc { label: entry, shader: s, workgroup_size: group })
+/// Provider 1's pipelines, rebuilt as a set on shader hot reload.
+pub(crate) struct LodPipelines {
+    built: Built,
+    cull_reset: ComputePipelineId,
+    cull_early: ComputePipelineId,
+    cull_late: ComputePipelineId,
+    hzb_first: ComputePipelineId,
+    hzb_down: ComputePipelineId,
+    vis_solid: RenderPipelineId,
+    vis_dither: RenderPipelineId,
 }
 
-impl DiscreteLod {
-    pub(crate) fn new(dev: &dyn Device, max_instances: u32, max_meshes: u32, config: LodConfig) -> Result<Self, ed_gpu::Error> {
-        let mut shaders = Vec::new();
+impl LodPipelines {
+    /// Compiles every pipeline; on any error nothing created so far is left behind.
+    pub(crate) fn new(dev: &dyn Device, src: &ShaderSources) -> Result<Self, ed_gpu::Error> {
+        let mut b = Built::default();
+        match Self::build(dev, src, &mut b) {
+            Ok(p) => Ok(p),
+            Err(e) => {
+                b.destroy(dev);
+                Err(e)
+            }
+        }
+    }
+    fn build(dev: &dyn Device, src: &ShaderSources, b: &mut Built) -> Result<Self, ed_gpu::Error> {
         let g = [CULL_GROUP, 1, 1];
-        let cull_reset = compute(dev, CULL_SRC, "cull_reset", g, &mut shaders)?;
-        let cull_early = compute(dev, CULL_SRC, "cull_early", g, &mut shaders)?;
-        let cull_late = compute(dev, CULL_SRC, "cull_late", g, &mut shaders)?;
-        let hzb_first = compute(dev, HZB_SRC, "hzb_first", [8, 8, 1], &mut shaders)?;
-        let hzb_down = compute(dev, HZB_SRC, "hzb_down", [8, 8, 1], &mut shaders)?;
-        let vs = shader(dev, "vs_vis", ShaderStage::Vertex, "vs_vis", VIS_SRC)?;
-        let fs = shader(dev, "fs_vis", ShaderStage::Fragment, "fs_vis", VIS_SRC)?;
-        let fsd = shader(dev, "fs_vis_dither", ShaderStage::Fragment, "fs_vis_dither", VIS_SRC)?;
-        shaders.extend([vs, fs, fsd]);
+        let cull_reset = b.compute(dev, src, &src.cull, "cull_reset", g)?;
+        let cull_early = b.compute(dev, src, &src.cull, "cull_early", g)?;
+        let cull_late = b.compute(dev, src, &src.cull, "cull_late", g)?;
+        let hzb_first = b.compute(dev, src, &src.hzb, "hzb_first", [8, 8, 1])?;
+        let hzb_down = b.compute(dev, src, &src.hzb, "hzb_down", [8, 8, 1])?;
+        let vs = b.shader(dev, src, &src.vis, "vs_vis", ShaderStage::Vertex, "vs_vis")?;
+        let fs = b.shader(dev, src, &src.vis, "fs_vis", ShaderStage::Fragment, "fs_vis")?;
+        let fsd = b.shader(dev, src, &src.vis, "fs_vis_dither", ShaderStage::Fragment, "fs_vis_dither")?;
         let rp = |label, fragment| RenderPipelineDesc {
             label,
             vertex: vs,
@@ -339,8 +345,18 @@ impl DiscreteLod {
             topology: Topology::Triangles,
             samples: 1,
         };
-        let vis_solid = dev.create_render_pipeline(&rp("vis solid", fs))?;
-        let vis_dither = dev.create_render_pipeline(&rp("vis dither", fsd))?;
+        let vis_solid = b.render(dev, &rp("vis solid", fs))?;
+        let vis_dither = b.render(dev, &rp("vis dither", fsd))?;
+        Ok(Self { built: std::mem::take(b), cull_reset, cull_early, cull_late, hzb_first, hzb_down, vis_solid, vis_dither })
+    }
+    pub(crate) fn destroy(self, dev: &dyn Device) {
+        self.built.destroy(dev);
+    }
+}
+
+impl DiscreteLod {
+    pub(crate) fn new(dev: &dyn Device, src: &ShaderSources, max_instances: u32, max_meshes: u32, config: LodConfig) -> Result<Self, ed_gpu::Error> {
+        let p = LodPipelines::new(dev, src)?;
         let rw = Usage { shader_read: true, shader_write: true, ..Default::default() };
         let mesh_table = Tracked::new(dev, "mesh table", (max_meshes as usize * MESH_WORDS * 4) as u64, Usage { shader_read: true, copy_dst: true, ..Default::default() })?;
         let mut state = Tracked::new(dev, "instance state", max_instances as u64 * 4, Usage { copy_dst: true, ..rw })?;
@@ -355,14 +371,7 @@ impl DiscreteLod {
         let stats_ring = Ring::new(dev, "cull stats", (STAT_WORDS * 4) as u64)?;
         Ok(Self {
             config,
-            shaders,
-            cull_reset,
-            cull_early,
-            cull_late,
-            hzb_first,
-            hzb_down,
-            vis_solid,
-            vis_dither,
+            p,
             meshes: Vec::new(),
             capacity: Vec::new(),
             layout_dirty: true,
@@ -388,6 +397,18 @@ impl DiscreteLod {
         self.meshes.push(m);
         self.capacity.push(0);
         self.layout_dirty = true;
+    }
+    /// Replaces a mesh slot's record (mesh replace, removal with an empty record, slot reuse).
+    pub(crate) fn set_mesh(&mut self, slot: usize, m: MeshRecord) {
+        self.meshes[slot] = m;
+        self.layout_dirty = true;
+    }
+    pub(crate) fn mesh_count(&self) -> usize {
+        self.meshes.len()
+    }
+    /// Swaps in a new pipeline set and returns the old one (destroy it once idle).
+    pub(crate) fn swap_pipelines(&mut self, p: LodPipelines) -> LodPipelines {
+        std::mem::replace(&mut self.p, p)
     }
 
     /// Latest finished frame's counters.
@@ -561,7 +582,7 @@ impl GeometryProvider for DiscreteLod {
         let (args_id, stats_id) = (self.args.id, self.stats_ring.bufs[slot].id);
         let groups = inp.slots.div_ceil(CULL_GROUP).max(1);
         let reset_groups = (s * 4 * ARGS_WORDS as u32).max(STAT_WORDS as u32).div_ceil(CULL_GROUP);
-        let (p_reset, p_early, p_late) = (self.cull_reset, self.cull_early, self.cull_late);
+        let (p_reset, p_early, p_late) = (self.p.cull_reset, self.p.cull_early, self.p.cull_late);
         let sw = ResourceState::ShaderWrite;
         let bufs = [meshes, state, args, visible, stats];
         cull_pass(g, "cull_early", inp, bufs).read(templ, ResourceState::ShaderRead).exec(move |ctx| {
@@ -578,7 +599,7 @@ impl GeometryProvider for DiscreteLod {
         });
 
         let vc = constants(&[inp.frame.1, inp.instances.1, inp.nodes.1, self.visible.bindless.0, inp.verts.1]);
-        let (solid, dither) = (self.vis_solid, self.vis_dither);
+        let (solid, dither) = (self.p.vis_solid, self.p.vis_dither);
         let idx_id = inp.indices.2;
         let raster = |g: &mut FrameGraph<'a>, name, phase: u32, first: bool| {
             let timer = self.draw_loop.clone();
@@ -611,7 +632,7 @@ impl GeometryProvider for DiscreteLod {
         raster(g, "raster_early", 0, true);
 
         if occlusion {
-            let (pf, pd) = (self.hzb_first, self.hzb_down);
+            let (pf, pd) = (self.p.hzb_first, self.p.hzb_down);
             let levels = self.hzb_levels.clone();
             g.add_pass("hzb", PassKind::Compute).read(out.depth, ResourceState::ShaderRead).write(hzb, sw).exec(move |ctx| {
                 let depth_bi = ctx.bindless(out.depth).0;
@@ -675,14 +696,7 @@ impl GeometryProvider for DiscreteLod {
             h.destroy(dev);
         }
         s.stats_ring.destroy(dev);
-        for p in [s.cull_reset, s.cull_early, s.cull_late, s.hzb_first, s.hzb_down] {
-            dev.destroy_compute_pipeline(p);
-        }
-        dev.destroy_render_pipeline(s.vis_solid);
-        dev.destroy_render_pipeline(s.vis_dither);
-        for sh in s.shaders {
-            dev.destroy_shader(sh);
-        }
+        s.p.destroy(dev);
     }
 }
 

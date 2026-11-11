@@ -4,6 +4,8 @@
 use ew::args::Args;
 use ew::camera::PathKind;
 
+mod common;
+
 fn run(out: &str) -> ew::headless::Report {
     let args = Args {
         headless: true,
@@ -12,6 +14,7 @@ fn run(out: &str) -> ew::headless::Report {
         frames: Some(130),
         path: PathKind::Proving,
         out: std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(out),
+        packs: common::packs(),
         ..Args::default()
     };
     ew::headless::run(&args).unwrap_or_else(|e| panic!("{out}: {e}"))

@@ -1,0 +1,14 @@
+id = "ispc-texcomp"
+name = "ISPC Texture Compressor (via intel_tex_2)"
+organisation = "Intel Corporation; intel_tex_2 by Graham Wihlidal and contributors"
+kind = "code"
+urls = ["https://github.com/GameTechDev/ISPCTextureCompressor", "https://github.com/Traverse-Research/intel-tex-rs-2"]
+licence = "MIT (kernels); MIT OR Apache-2.0 (Rust bindings)"
+licence_url = "https://github.com/GameTechDev/ISPCTextureCompressor/blob/master/license.txt"
+commercial = "yes"
+modification = "yes"
+redistribution = "yes"
+attribution = "Copyright 2017 Intel Corporation (ISPC Texture Compressor)."
+screening = "GREEN"
+licence_checked = "2026-11-11"
+consumers = ["ed_assets"]

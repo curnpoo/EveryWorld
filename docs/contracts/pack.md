@@ -283,3 +283,74 @@ trait ChunkSource: Send + Sync {
 
 **Limits.** A chunk is at most 4 GiB (the manifest's `len` is u32), and a pack holds at most
 2^32 - 1 keys.
+
+## Implementation (M3)
+
+Baker: `crates/ed_assets` (engine-free) with the `ew-bake` CLI (`build`, `watch`, `verify`,
+`hash`). Loader: `crates/ew/src/content.rs`. The asset kinds are filled as follows.
+
+**Asset ids.** `AssetId` = BLAKE3 of the asset path (`props/bench/albedo`,
+`prefabs/planter_bench/mesh0`, ...). The id is stable across content edits, so a rebake keeps
+the key and changes only the chunk hash. A texture's page id is the first 8 bytes of its
+AssetId.
+
+**Payloads written by the baker.**
+- `mesh`: vertex layout `Position F32x3 @0, Normal F32x3 @12`, then optional `Uv0 F32x2`, then
+  for skinned meshes `Joints U16x4, Weights F32x4`. Indices are U32. There is one index
+  section per LOD, each with its *measured* error (`ed_assets::lod`): the largest distance from
+  LOD 0 surface samples to the simplified surface. The chain is non-decreasing, and this is
+  tested.
+- `texture`: a full mip chain stored as BC7 (sRGB role for base colour, linear for ORM),
+  BC5 for normals (Z rebuilt in the shader) or BC4 for single-channel data. The encoder is
+  ISPC texcomp through `intel_tex_2`, run in bands of block rows. The bytes do not depend on
+  the thread count.
+- `material`: model (`pbr`/`toon`), a sorted parameter map and a texture-slot → AssetId map.
+  Parameter names are the `ed_assets::material::P_*` constants. `uv_offset_scale` and
+  `uv_rotation` carry a non-baked `KHR_texture_transform`. glTF transmission maps to
+  `transmission` on a plain glass material (no refraction yet).
+- `skeleton`: the mesh AssetId it deforms, joints sorted parents first, rest locals and
+  inverse binds.
+- `prefab`: a flattened node list (parent, transform, mesh, material). It also holds
+  `footprint` and `points` (named anchors and sockets; glTF `SOCKET_*` nodes with
+  `extras.socket_kind` become points). Prefab space is glTF space: metres, +Y up.
+- `instances` (node chunk at the proving node, rung 0): one entry per placement with object
+  id, an ENU transform, an asset (mesh or prefab) and an optional material override.
+- Pack info: an opaque `source` chunk at `licence::info_key()` holding the name,
+  `game_packaged` and `data_version`.
+
+**Provenance on every chunk:**
+- `src=<BLAKE3 of the source path as written, or env:<VAR>/<file name>>`;
+- `content=<BLAKE3 of the input bytes>`;
+- `tool=ew-bake <version>`;
+- `registry=<id>`;
+- for Megascans, `fab-id=<id>`.
+
+Private absolute paths never enter a pack.
+
+Because `content=` names the source file's bytes, re-exporting a glTF changes the hash of
+every chunk from it. Reload therefore compares a BLAKE3 of the *payload* and skips chunks
+whose only change is metadata. These are counted as "metadata-only" in the reload log.
+
+**Licence gate (`ew-bake verify`; `build` checks every chunk's licence id against the registry as it bakes).** It fails when:
+- a chunk has no licence, or an id that is not in `data/registry/*.toml`;
+- a licence is RED, YELLOW without review notes, or DEV in a game-packaged pack;
+- a licence is limited to "packaged game only" (Solarcat, `megascans`) and the pack is not
+  `game_packaged = true`;
+- a Megascans chunk lacks `fab-id=`;
+- a Megascans source folder lies inside the repository;
+- the pack-level licence list misses a chunk's licence.
+
+**Determinism.** Packs are written atomically. Chunks are sorted by key, maps are BTreeMaps
+and there is no RNG state. The same sources give a byte-identical pack across runs and
+processes; this is tested in-process and checked across processes for the ~100 MB corpus.
+
+**Runtime reload (`ew`).** Each mounted pack is polled by mtime and length. A change:
+- re-reads the manifest and diffs keys and hashes against the loaded set;
+- applies only changed and removed keys, in this order: textures, materials, skeletons and
+  meshes, prefabs, placements;
+- uses `replace_mesh` for static meshes, which defers the release of the old ranges;
+- removes old textures only after the materials that used them have moved.
+
+If the Instances chunk changed, every placement is respawned. Otherwise only the placements
+whose asset or material changed are respawned. `ew` has no procedural geometry path: a
+missing required pack is an error that names its `ew-bake build` command.

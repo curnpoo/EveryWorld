@@ -1,0 +1,99 @@
+# BIO_FOR building kit (tools/blender/kit/build_kit.py -- --out target/kit). Owner-made kit parts.
+[pack]
+name = "kit"
+
+[[gltf]]
+path = "../target/kit/glb/BIO_FOR_BALCONY_A.glb"
+asset = "kit/BIO_FOR_BALCONY_A"
+registry = "everyworld-original"
+
+[[gltf]]
+path = "../target/kit/glb/BIO_FOR_COLUMN_TIMBER_A.glb"
+asset = "kit/BIO_FOR_COLUMN_TIMBER_A"
+registry = "everyworld-original"
+
+[[gltf]]
+path = "../target/kit/glb/BIO_FOR_CORNER_TIMBER_A.glb"
+asset = "kit/BIO_FOR_CORNER_TIMBER_A"
+registry = "everyworld-original"
+
+[[gltf]]
+path = "../target/kit/glb/BIO_FOR_ENTRY_STEP_A.glb"
+asset = "kit/BIO_FOR_ENTRY_STEP_A"
+registry = "everyworld-original"
+
+[[gltf]]
+path = "../target/kit/glb/BIO_FOR_FLOOR_A.glb"
+asset = "kit/BIO_FOR_FLOOR_A"
+registry = "everyworld-original"
+
+[[gltf]]
+path = "../target/kit/glb/BIO_FOR_FLOOR_CORNER_A.glb"
+asset = "kit/BIO_FOR_FLOOR_CORNER_A"
+registry = "everyworld-original"
+
+[[gltf]]
+path = "../target/kit/glb/BIO_FOR_FOUNDATION_STONE_A.glb"
+asset = "kit/BIO_FOR_FOUNDATION_STONE_A"
+registry = "everyworld-original"
+
+[[gltf]]
+path = "../target/kit/glb/BIO_FOR_GABLE_INFILL_A.glb"
+asset = "kit/BIO_FOR_GABLE_INFILL_A"
+registry = "everyworld-original"
+
+[[gltf]]
+path = "../target/kit/glb/BIO_FOR_ROOF_GREEN_A.glb"
+asset = "kit/BIO_FOR_ROOF_GREEN_A"
+registry = "everyworld-original"
+
+[[gltf]]
+path = "../target/kit/glb/BIO_FOR_ROOF_GREEN_CORNER_A.glb"
+asset = "kit/BIO_FOR_ROOF_GREEN_CORNER_A"
+registry = "everyworld-original"
+
+[[gltf]]
+path = "../target/kit/glb/BIO_FOR_ROOF_PITCH_A.glb"
+asset = "kit/BIO_FOR_ROOF_PITCH_A"
+registry = "everyworld-original"
+
+[[gltf]]
+path = "../target/kit/glb/BIO_FOR_ROOF_PITCH_EAVE_A.glb"
+asset = "kit/BIO_FOR_ROOF_PITCH_EAVE_A"
+registry = "everyworld-original"
+
+[[gltf]]
+path = "../target/kit/glb/BIO_FOR_ROOF_SOLAR_A.glb"
+asset = "kit/BIO_FOR_ROOF_SOLAR_A"
+registry = "everyworld-original"
+
+[[gltf]]
+path = "../target/kit/glb/BIO_FOR_ROOF_SOLAR_EAVE_A.glb"
+asset = "kit/BIO_FOR_ROOF_SOLAR_EAVE_A"
+registry = "everyworld-original"
+
+[[gltf]]
+path = "../target/kit/glb/BIO_FOR_VERGE_A.glb"
+asset = "kit/BIO_FOR_VERGE_A"
+registry = "everyworld-original"
+
+[[gltf]]
+path = "../target/kit/glb/BIO_FOR_WALL_GLASS_A.glb"
+asset = "kit/BIO_FOR_WALL_GLASS_A"
+registry = "everyworld-original"
+
+[[gltf]]
+path = "../target/kit/glb/BIO_FOR_WALL_TIMBER_A.glb"
+asset = "kit/BIO_FOR_WALL_TIMBER_A"
+registry = "everyworld-original"
+
+[[gltf]]
+path = "../target/kit/glb/BIO_FOR_WALL_TIMBER_DOOR_A.glb"
+asset = "kit/BIO_FOR_WALL_TIMBER_DOOR_A"
+registry = "everyworld-original"
+
+[[gltf]]
+path = "../target/kit/glb/BIO_FOR_WALL_TIMBER_WINDOW_A.glb"
+asset = "kit/BIO_FOR_WALL_TIMBER_WINDOW_A"
+registry = "everyworld-original"
+

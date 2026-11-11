@@ -4,6 +4,8 @@
 use ed_gpu::*;
 use ed_render::*;
 
+pub mod m3;
+
 pub const W: u32 = 256;
 pub const H: u32 = 256;
 pub const OUT_FORMAT: Format = Format::Rgba8Srgb;

@@ -17,12 +17,66 @@ pub struct MeshLod {
 }
 
 /// A mesh with up to [`MAX_LODS`] levels sharing one vertex array. Triangles are CCW seen from
-/// outside.
+/// outside. `uvs` is empty (all zero) or one per vertex.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MeshAsset {
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
+    pub uvs: Vec<[f32; 2]>,
     pub lods: Vec<MeshLod>,
+}
+
+/// A skinned mesh: the bind-pose mesh plus up to four joint influences per vertex. Joint
+/// indices refer to the palette given to [`crate::Renderer::set_skin_pose`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SkinnedMeshAsset {
+    pub mesh: MeshAsset,
+    pub joints: Vec<[u16; 4]>,
+    pub weights: Vec<[f32; 4]>,
+    pub joint_count: u32,
+    /// Bounding-sphere radius multiplier covering every pose (culling uses the bind pose's
+    /// sphere scaled by this; 1.5 is safe for limbs that stay within half the bind extent).
+    pub pose_margin: f32,
+}
+
+/// Handle to a skinned mesh's per-instance output (its own vertex range, drawn as `mesh`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SkinId(pub u32);
+
+/// Texel data of one texture: block-compressed or RGBA8, every mip level from the top.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextureAsset {
+    pub format: ed_gpu::Format,
+    pub width: u32,
+    pub height: u32,
+    pub mips: Vec<Vec<u8>>,
+}
+
+/// Handle to a texture added with [`crate::Renderer::add_texture`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TextureHandle(pub u32);
+
+/// Textures a material samples (none: the factors alone). Base colour is sRGB, normal is a
+/// BC5 tangent-space XY map, ORM is linear R occlusion / G roughness / B metal (glTF layout).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MaterialTextures {
+    pub base: Option<TextureHandle>,
+    pub normal: Option<TextureHandle>,
+    pub orm: Option<TextureHandle>,
+}
+
+/// Texture-coordinate transform (KHR_texture_transform order: scale, rotate, offset).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UvTransform {
+    pub offset: glam::Vec2,
+    pub scale: glam::Vec2,
+    pub rotation: f32,
+}
+
+impl Default for UvTransform {
+    fn default() -> Self {
+        Self { offset: glam::Vec2::ZERO, scale: glam::Vec2::ONE, rotation: 0.0 }
+    }
 }
 
 impl MeshAsset {
@@ -75,20 +129,27 @@ pub struct Material {
     pub rim: f32,
     /// Node-space 2 m checker modulation.
     pub checker: bool,
+    pub textures: MaterialTextures,
+    pub uv: UvTransform,
 }
 
 impl Material {
     pub fn pbr(base_color: Vec3, metallic: f32, roughness: f32) -> Self {
-        Self { model: MaterialModel::Pbr, base_color, metallic, roughness, shade_color: Vec3::splat(0.45), bands: 3.0, rim: 0.0, checker: false }
+        Self { model: MaterialModel::Pbr, base_color, metallic, roughness, shade_color: Vec3::splat(0.45), bands: 3.0, rim: 0.0, checker: false, textures: MaterialTextures::default(), uv: UvTransform::default() }
     }
     pub fn toon(base_color: Vec3, shade_color: Vec3, bands: f32, rim: f32) -> Self {
-        Self { model: MaterialModel::Toon, base_color, metallic: 0.0, roughness: 1.0, shade_color, bands, rim, checker: false }
+        Self { model: MaterialModel::Toon, base_color, metallic: 0.0, roughness: 1.0, shade_color, bands, rim, checker: false, textures: MaterialTextures::default(), uv: UvTransform::default() }
     }
     pub fn with_checker(mut self) -> Self {
         self.checker = true;
         self
     }
-    pub(crate) fn words(&self) -> [u32; gpu::MATERIAL_WORDS] {
+    pub fn with_textures(mut self, t: MaterialTextures) -> Self {
+        self.textures = t;
+        self
+    }
+    /// GPU row; `tex` maps a handle to its bindless index (`NO_TEXTURE` when absent).
+    pub(crate) fn words(&self, tex: impl Fn(Option<TextureHandle>) -> u32) -> [u32; gpu::MATERIAL_WORDS] {
         let f = |v: f32| v.to_bits();
         let model = match self.model {
             MaterialModel::Pbr => 0.0,
@@ -107,6 +168,14 @@ impl Material {
             f(self.shade_color.y),
             f(self.shade_color.z),
             f(self.rim),
+            tex(self.textures.base),
+            tex(self.textures.normal),
+            tex(self.textures.orm),
+            f(self.uv.rotation),
+            f(self.uv.offset.x),
+            f(self.uv.offset.y),
+            f(self.uv.scale.x),
+            f(self.uv.scale.y),
         ]
     }
 }

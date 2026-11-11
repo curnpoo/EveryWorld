@@ -4,7 +4,7 @@ use crate::camera::PathKind;
 use std::path::PathBuf;
 
 pub const USAGE: &str = "\
-ew: EveryWorld engine shell (Phase 1, M2)
+ew: EveryWorld engine shell (Phase 1, M3)
 
 USAGE:
   ew [OPTIONS]                 open a window in the proving ground (fly camera)
@@ -27,6 +27,10 @@ OPTIONS:
   --no-occlusion               frustum culling only (no depth-pyramid occlusion test)
   --pop                        headless: run the pop detector (per-tile luminance change)
   --empty                      clear + tonemap only (the empty-frame budget)
+  --packs DIR                  pack folder (default target/packs): proving.ewpack (required),
+                               bench.ewpack and character.ewpack (optional)
+  --camera X,Y,Z,YAW,PITCH     headless: fixed camera (metres from the proving origin, y up;
+                               radians) instead of the path; the path still drives time
   --validation                 GPU validation on (default in debug builds)
   --frames-in-flight 2|3       default 2
   -h, --help
@@ -63,6 +67,10 @@ pub struct Args {
     pub lod_fade: Option<u32>,
     pub no_occlusion: bool,
     pub pop: bool,
+    /// Pack folder ([`crate::content`]).
+    pub packs: PathBuf,
+    /// Fixed headless camera: x, y, z (from the proving origin), yaw, pitch.
+    pub camera: Option<[f64; 5]>,
 }
 
 impl Args {
@@ -105,6 +113,8 @@ impl Default for Args {
             lod_fade: None,
             no_occlusion: false,
             pop: false,
+            packs: crate::content::default_pack_dir(),
+            camera: None,
         }
     }
 }
@@ -145,6 +155,15 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Option<Args>, Str
             "--height" => a.height = num(&arg, it.next())?,
             "--frames" => a.frames = Some(num(&arg, it.next())?),
             "--frames-in-flight" => a.frames_in_flight = num(&arg, it.next())?,
+            "--packs" => a.packs = PathBuf::from(it.next().ok_or("--packs needs a value")?),
+            "--camera" => {
+                let v = it.next().ok_or("--camera needs X,Y,Z,YAW,PITCH")?;
+                let n: Vec<f64> = v.split(',').map(|x| x.trim().parse::<f64>()).collect::<Result<_, _>>().map_err(|_| format!("--camera: bad value {v:?}"))?;
+                if n.len() != 5 || n.iter().any(|x| !x.is_finite()) {
+                    return Err(format!("--camera: expected 5 numbers X,Y,Z,YAW,PITCH, got {v:?}"));
+                }
+                a.camera = Some([n[0], n[1], n[2], n[3], n[4]]);
+            }
             "--out" => a.out = PathBuf::from(it.next().ok_or("--out needs a value")?),
             "--vsync" => {
                 a.vsync = match it.next().as_deref() {
@@ -206,5 +225,8 @@ mod tests {
         assert!(p("--bogus").is_err());
         assert!(p("--width 0").is_err());
         assert_eq!(p("--help").unwrap(), None);
+        assert_eq!(p("--camera 1,2,3,0.5,-0.1").unwrap().unwrap().camera, Some([1.0, 2.0, 3.0, 0.5, -0.1]));
+        assert!(p("--camera 1,2,3").is_err());
+        assert_eq!(p("--packs x/p").unwrap().unwrap().packs, PathBuf::from("x/p"));
     }
 }

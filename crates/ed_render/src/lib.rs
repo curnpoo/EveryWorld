@@ -23,22 +23,26 @@
 //! Shaders are MSL source (`shaders/*.metal`, the MSL-first fallback of P1-D1), each file
 //! prefixed with `ed_gpu::shader_abi::MSL_PRELUDE` and `shaders/common.metal`.
 
+mod alloc;
 pub mod graph;
 mod gpu;
 pub mod provider;
 pub mod scene;
+pub mod shaders;
 
 use ed_geo::ObjectId;
+use alloc::{Deferred, RangeAlloc, Release};
 use ed_gpu::{
-    BindlessBuffer, Blend, BufferDesc, BufferId, CommandEncoder, ComputePipelineDesc, ComputePipelineId, Cull, Device, Format, LoadOp,
-    RenderPipelineDesc, RenderPipelineId, ResourceState, ShaderCode, ShaderDesc, ShaderId, ShaderStage, StoreOp, Subresource, Timing,
-    Topology, Usage,
+    AddressMode, BindlessBuffer, BindlessSampler, BindlessTexture, Blend, BufferDesc, BufferId, CommandEncoder, ComputePipelineId, Cull, Device,
+    Filter, Format, LoadOp, RenderPipelineDesc, RenderPipelineId, ResourceState, SamplerDesc, SamplerId, ShaderId, ShaderStage, StoreOp,
+    Subresource, TextureDesc, TextureId, TextureKind, Timing, Topology, Transition, Usage,
 };
 use glam::{Affine3A, DVec3, Mat4, Quat, Vec3, Vec4};
-use gpu::{FD_PARAMS, FD_PLANES, FD_PROJ, FD_SUN_DIR, FD_VIEWPORT, FRAME_WORDS, INSTANCE_WORDS, MATERIAL_WORDS, VERTEX_WORDS, constants};
+use gpu::{FD_PARAMS, FD_PLANES, FD_PROJ, FD_SUN_DIR, FD_VIEWPORT, FRAME_WORDS, INSTANCE_WORDS, MATERIAL_WORDS, NO_TEXTURE, PALETTE_WORDS, SKIN_SRC_WORDS, UV_WORDS, VERTEX_WORDS, constants};
 use graph::{FrameGraph, FrameTimings, GraphError, PassKind, TextureInfo, TransientPool};
-use provider::{CullStats, DiscreteLod, GeometryProvider, LodConfig, MeshRecord, Ring, SharedInputs, VisTargets};
-use scene::{InstanceDesc, InstancePools, MAX_LODS, Material, MaterialId, MeshAsset, MeshId};
+use provider::{CullStats, DiscreteLod, GeometryProvider, LodConfig, LodPipelines, MeshRecord, Ring, SharedInputs, VisTargets};
+use scene::{InstanceDesc, InstancePools, MAX_LODS, Material, MaterialId, MeshAsset, MeshId, SkinId, SkinnedMeshAsset, TextureAsset, TextureHandle};
+use shaders::{Built, ShaderSources};
 
 /// HDR scene colour format.
 pub const HDR_FORMAT: Format = Format::Rgba16Float;
@@ -47,10 +51,6 @@ pub const DEPTH_FORMAT: Format = Format::Depth32Float;
 /// Visibility buffer: x = instance + 1 (0 = sky), y = LOD << 28 | primitive id.
 pub const VIS_FORMAT: Format = Format::Rg32Uint;
 
-const PRELUDE_COMMON: &str = include_str!("../shaders/common.metal");
-const RESOLVE_SRC: &str = include_str!("../shaders/resolve.metal");
-const TONEMAP_SRC: &str = include_str!("../shaders/tonemap.metal");
-const DEBUG_SRC: &str = include_str!("../shaders/debug.metal");
 
 /// Pass names of an empty frame (`clear` + `tonemap` + `overlay`).
 pub const PASSES_EMPTY: [&str; 3] = ["clear", "tonemap", "overlay"];
@@ -317,9 +317,88 @@ impl Tracked {
     }
 }
 
-pub(crate) fn shader(dev: &dyn Device, label: &str, stage: ShaderStage, entry: &str, body: &str) -> Result<ShaderId, ed_gpu::Error> {
-    let src = format!("{}\n{}\n{}", ed_gpu::shader_abi::MSL_PRELUDE, PRELUDE_COMMON, body);
-    dev.create_shader(&ShaderDesc { label, stage, entry, code: ShaderCode::MslSource(&src) })
+/// The renderer's own pipelines (provider 1 has its own set), rebuilt on shader hot reload.
+struct Pipelines {
+    built: Built,
+    resolve: RenderPipelineId,
+    tonemap_vs: ShaderId,
+    tonemap_fs: ShaderId,
+    /// Tonemap pipelines per output format, created on first use (not part of `built`).
+    tonemap: Vec<(Format, RenderPipelineId)>,
+    pick: ComputePipelineId,
+    pop: ComputePipelineId,
+    skin: ComputePipelineId,
+}
+
+impl Pipelines {
+    fn new(dev: &dyn Device, src: &ShaderSources) -> Result<Self, ed_gpu::Error> {
+        let mut b = Built::default();
+        match Self::build(dev, src, &mut b) {
+            Ok(p) => Ok(p),
+            Err(e) => {
+                b.destroy(dev);
+                Err(e)
+            }
+        }
+    }
+    fn build(dev: &dyn Device, src: &ShaderSources, b: &mut Built) -> Result<Self, ed_gpu::Error> {
+        let vs = b.shader(dev, src, &src.resolve, "resolve vs", ShaderStage::Vertex, "vs_resolve")?;
+        let fs = b.shader(dev, src, &src.resolve, "resolve fs", ShaderStage::Fragment, "fs_resolve")?;
+        let tonemap_vs = b.shader(dev, src, &src.tonemap, "tonemap vs", ShaderStage::Vertex, "vs_fullscreen")?;
+        let tonemap_fs = b.shader(dev, src, &src.tonemap, "tonemap fs", ShaderStage::Fragment, "fs_tonemap")?;
+        let resolve = b.render(
+            dev,
+            &RenderPipelineDesc {
+                label: "resolve",
+                vertex: vs,
+                fragment: Some(fs),
+                color_formats: &[HDR_FORMAT],
+                blend: Blend::Opaque,
+                depth: None,
+                cull: Cull::None,
+                topology: Topology::Triangles,
+                samples: 1,
+            },
+        )?;
+        let pick = b.compute(dev, src, &src.debug, "pick", [1, 1, 1])?;
+        let pop = b.compute(dev, src, &src.debug, "pop_stats", [8, 8, 1])?;
+        let skin = b.compute(dev, src, &src.skin, "skin", [SKIN_GROUP, 1, 1])?;
+        Ok(Self { built: std::mem::take(b), resolve, tonemap_vs, tonemap_fs, tonemap: Vec::new(), pick, pop, skin })
+    }
+    fn destroy(mut self, dev: &dyn Device) {
+        for (_, p) in self.tonemap.drain(..) {
+            dev.destroy_render_pipeline(p);
+        }
+        self.built.destroy(dev);
+    }
+}
+
+/// Threads per skinning workgroup.
+const SKIN_GROUP: u32 = 64;
+
+/// Where a mesh's data lives in the shared buffers.
+#[derive(Clone, Copy, Debug)]
+struct MeshSlot {
+    verts: (u32, u32),
+    indices: (u32, u32),
+}
+
+/// One skinned mesh output: bind-pose source range, its mesh (output vertex range) and
+/// palette range.
+#[derive(Clone, Copy, Debug)]
+struct Skin {
+    mesh: MeshId,
+    src: (u32, u32),
+    dst_base: u32,
+    palette: (u32, u32),
+}
+
+/// A texture added with [`Renderer::add_texture`].
+#[derive(Clone, Copy, Debug)]
+struct TexEntry {
+    id: TextureId,
+    bind: BindlessTexture,
+    bytes: u64,
 }
 
 /// Capacities of a [`Renderer`].
@@ -331,6 +410,10 @@ pub struct RendererDesc {
     pub max_meshes: u32,
     pub max_materials: u32,
     pub max_nodes: u32,
+    /// Bind-pose skinning source vertices (all skinned meshes).
+    pub max_skin_vertices: u32,
+    /// Joint matrices across all skinned meshes.
+    pub max_joints: u32,
     pub lod: LodConfig,
 }
 
@@ -343,6 +426,8 @@ impl Default for RendererDesc {
             max_meshes: 256,
             max_materials: 4096,
             max_nodes: 256,
+            max_skin_vertices: 1 << 18,
+            max_joints: 4096,
             lod: LodConfig::default(),
         }
     }
@@ -361,22 +446,35 @@ pub struct UploadStats {
 /// `begin_frame` and `end_frame`; [`Renderer::destroy`] before dropping the device.
 pub struct Renderer {
     desc: RendererDesc,
-    shaders: Vec<ShaderId>,
-    resolve: RenderPipelineId,
-    tonemap_vs: ShaderId,
-    tonemap_fs: ShaderId,
-    tonemap: Vec<(Format, RenderPipelineId)>,
-    pick_pipe: ComputePipelineId,
-    pop_pipe: ComputePipelineId,
+    pipes: Pipelines,
     vertices: Tracked,
+    uvs: Tracked,
     indices: Tracked,
     instance_buf: Tracked,
     materials_buf: Tracked,
     frame_data: Tracked,
     nodes_buf: Tracked,
-    vertex_count: u32,
-    index_count: u32,
-    mesh_count: u32,
+    skin_src: Tracked,
+    palette_buf: Tracked,
+    vert_alloc: RangeAlloc,
+    idx_alloc: RangeAlloc,
+    skin_alloc: RangeAlloc,
+    joint_alloc: RangeAlloc,
+    /// Mesh slots (index = MeshId); `None` = removed (reusable once its frames finished).
+    mesh_slots: Vec<Option<MeshSlot>>,
+    free_mesh_slots: Vec<u32>,
+    skins: Vec<Option<Skin>>,
+    free_skin_slots: Vec<u32>,
+    /// Joint palette rows (12 words per joint), uploaded every frame that has skins.
+    palette: Vec<u32>,
+    textures: Vec<Option<TexEntry>>,
+    free_tex_slots: Vec<u32>,
+    /// Textures uploaded since the last frame: moved CopyDst -> ShaderRead at frame start.
+    new_textures: Vec<TextureId>,
+    sampler: (SamplerId, BindlessSampler),
+    deferred: Deferred,
+    /// Frames recorded so far (`frame_index + 1` of the latest); releases wait for these.
+    frames_seen: u64,
     materials: Vec<Material>,
     materials_dirty: bool,
     pools: InstancePools,
@@ -394,62 +492,69 @@ pub struct Renderer {
     bytes_scratch: Vec<u8>,
 }
 
+fn invalid<T>(what: &str, s: &str) -> Result<T, ed_gpu::Error> {
+    Err(ed_gpu::Error::Invalid(format!("{what}: {s}")))
+}
+
 impl Renderer {
     pub fn new(dev: &dyn Device) -> Result<Self, ed_gpu::Error> {
         Self::with_desc(dev, &RendererDesc::default())
     }
 
     pub fn with_desc(dev: &dyn Device, desc: &RendererDesc) -> Result<Self, ed_gpu::Error> {
-        let vs = shader(dev, "resolve vs", ShaderStage::Vertex, "vs_resolve", RESOLVE_SRC)?;
-        let fs = shader(dev, "resolve fs", ShaderStage::Fragment, "fs_resolve", RESOLVE_SRC)?;
-        let tonemap_vs = shader(dev, "tonemap vs", ShaderStage::Vertex, "vs_fullscreen", TONEMAP_SRC)?;
-        let tonemap_fs = shader(dev, "tonemap fs", ShaderStage::Fragment, "fs_tonemap", TONEMAP_SRC)?;
-        let pick_cs = shader(dev, "pick", ShaderStage::Compute, "pick", DEBUG_SRC)?;
-        let pop_cs = shader(dev, "pop_stats", ShaderStage::Compute, "pop_stats", DEBUG_SRC)?;
-        let resolve = dev.create_render_pipeline(&RenderPipelineDesc {
-            label: "resolve",
-            vertex: vs,
-            fragment: Some(fs),
-            color_formats: &[HDR_FORMAT],
-            blend: Blend::Opaque,
-            depth: None,
-            cull: Cull::None,
-            topology: Topology::Triangles,
-            samples: 1,
-        })?;
-        let pick_pipe = dev.create_compute_pipeline(&ComputePipelineDesc { label: "pick", shader: pick_cs, workgroup_size: [1, 1, 1] })?;
-        let pop_pipe = dev.create_compute_pipeline(&ComputePipelineDesc { label: "pop_stats", shader: pop_cs, workgroup_size: [8, 8, 1] })?;
+        Self::with_shaders(dev, desc, &ShaderSources::builtin())
+    }
+
+    /// A renderer compiled from `src` (e.g. [`ShaderSources::load`] of a shader directory).
+    pub fn with_shaders(dev: &dyn Device, desc: &RendererDesc, src: &ShaderSources) -> Result<Self, ed_gpu::Error> {
+        let pipes = Pipelines::new(dev, src)?;
         let upload = Usage { shader_read: true, copy_dst: true, ..Default::default() };
         let per_frame = Usage { shader_read: true, cpu_write: true, ..Default::default() };
-        let vertices = Tracked::new(dev, "vertices", desc.max_vertices as u64 * (VERTEX_WORDS * 4) as u64, upload)?;
+        // Skinning writes into the shared vertex buffer.
+        let verts_usage = Usage { shader_write: true, ..upload };
+        let vertices = Tracked::new(dev, "vertices", desc.max_vertices as u64 * (VERTEX_WORDS * 4) as u64, verts_usage)?;
+        let uvs = Tracked::new(dev, "uvs", desc.max_vertices as u64 * (UV_WORDS * 4) as u64, upload)?;
         let indices = Tracked::new(dev, "indices", desc.max_indices as u64 * 4, upload)?;
         let instance_buf = Tracked::new(dev, "instances", desc.max_instances as u64 * (INSTANCE_WORDS * 4) as u64, upload)?;
         let materials_buf = Tracked::new(dev, "materials", desc.max_materials as u64 * (MATERIAL_WORDS * 4) as u64, upload)?;
         let frame_data = Tracked::new(dev, "frame data", (FRAME_WORDS * 4) as u64, per_frame)?;
         let nodes_buf = Tracked::new(dev, "nodes", desc.max_nodes as u64 * 16, per_frame)?;
+        let skin_src = Tracked::new(dev, "skin source", desc.max_skin_vertices as u64 * (SKIN_SRC_WORDS * 4) as u64, upload)?;
+        let palette_buf = Tracked::new(dev, "skin palette", desc.max_joints as u64 * (PALETTE_WORDS * 4) as u64, per_frame)?;
+        let smp = dev.create_sampler(&SamplerDesc { min_mag: Filter::Linear, mip: Filter::Linear, address: AddressMode::Repeat, anisotropy: 8, compare: None })?;
+        let sampler = (smp, dev.bind_sampler(smp)?);
         Ok(Self {
             desc: *desc,
-            shaders: vec![vs, fs, pick_cs, pop_cs],
-            resolve,
-            tonemap_vs,
-            tonemap_fs,
-            tonemap: Vec::new(),
-            pick_pipe,
-            pop_pipe,
+            lod: DiscreteLod::new(dev, src, desc.max_instances, desc.max_meshes, desc.lod)?,
+            pipes,
             vertices,
+            uvs,
             indices,
             instance_buf,
             materials_buf,
             frame_data,
             nodes_buf,
-            vertex_count: 0,
-            index_count: 0,
-            mesh_count: 0,
+            skin_src,
+            palette_buf,
+            vert_alloc: RangeAlloc::new(desc.max_vertices),
+            idx_alloc: RangeAlloc::new(desc.max_indices),
+            skin_alloc: RangeAlloc::new(desc.max_skin_vertices),
+            joint_alloc: RangeAlloc::new(desc.max_joints),
+            mesh_slots: Vec::new(),
+            free_mesh_slots: Vec::new(),
+            skins: Vec::new(),
+            free_skin_slots: Vec::new(),
+            palette: Vec::new(),
+            textures: Vec::new(),
+            free_tex_slots: Vec::new(),
+            new_textures: Vec::new(),
+            sampler,
+            deferred: Deferred::default(),
+            frames_seen: 0,
             materials: Vec::new(),
             materials_dirty: false,
             pools: InstancePools::new(desc.max_instances, desc.max_nodes),
             slots_flushed: 0,
-            lod: DiscreteLod::new(dev, desc.max_instances, desc.max_meshes, desc.lod)?,
             pick_ring: Ring::new(dev, "pick", 16)?,
             pick_requests: [(0, 0); provider::RING],
             pick: None,
@@ -466,57 +571,318 @@ impl Renderer {
         &self.desc
     }
 
-    /// Adds a mesh and its LOD chain to the shared geometry buffers. The data lands at the
-    /// next frame start; call outside a frame.
-    pub fn add_mesh(&mut self, dev: &dyn Device, m: &MeshAsset) -> Result<MeshId, ed_gpu::Error> {
-        let bad = |s: &str| Err(ed_gpu::Error::Invalid(format!("add_mesh: {s}")));
+    /// Recompiles every pipeline from `src`. All of them are built first; only when every one
+    /// compiles does the renderer wait for the GPU, swap them in and destroy the old set. On
+    /// error the running pipelines stay and the error (compiler message) is returned.
+    pub fn reload_shaders(&mut self, dev: &dyn Device, src: &ShaderSources) -> Result<(), ed_gpu::Error> {
+        let pipes = Pipelines::new(dev, src)?;
+        let lod = match LodPipelines::new(dev, src) {
+            Ok(l) => l,
+            Err(e) => {
+                pipes.destroy(dev);
+                return Err(e);
+            }
+        };
+        dev.wait_idle();
+        std::mem::replace(&mut self.pipes, pipes).destroy(dev);
+        self.lod.swap_pipelines(lod).destroy(dev);
+        Ok(())
+    }
+
+    /// Checks a mesh and builds its vertex, UV and index words (indices are mesh-local).
+    fn mesh_words(m: &MeshAsset) -> Result<(Vec<u32>, Vec<u32>, Vec<u32>), ed_gpu::Error> {
+        let bad = |s: &str| invalid("mesh", s);
         if m.lods.is_empty() || m.lods.len() > MAX_LODS {
             return bad("needs 1..=4 LODs");
         }
         if m.normals.len() != m.positions.len() {
             return bad("normals and positions differ in length");
         }
-        if self.mesh_count >= self.desc.max_meshes {
-            return bad("mesh table full");
+        if !m.uvs.is_empty() && m.uvs.len() != m.positions.len() {
+            return bad("uvs must be empty or one per vertex");
         }
         let nv = m.positions.len() as u32;
-        let ni: u32 = m.lods.iter().map(|l| l.indices.len() as u32).sum();
-        if self.vertex_count + nv > self.desc.max_vertices || self.index_count + ni > self.desc.max_indices {
-            return bad("geometry buffers full");
-        }
         let mut vw = Vec::with_capacity(nv as usize * VERTEX_WORDS);
         for (p, n) in m.positions.iter().zip(&m.normals) {
             vw.extend_from_slice(&[p[0].to_bits(), p[1].to_bits(), p[2].to_bits(), gpu::oct_encode(Vec3::from(*n))]);
         }
-        let mut rec = MeshRecord {
-            sphere: Vec4::ZERO,
-            lod_count: m.lods.len() as u32,
-            first_index: [0; MAX_LODS],
-            index_count: [0; MAX_LODS],
-            base_vertex: self.vertex_count as i32,
-            error: [0.0; MAX_LODS],
-        };
-        let (c, r) = m.bounding_sphere();
-        rec.sphere = c.extend(r);
-        let mut iw = Vec::with_capacity(ni as usize);
-        let mut first = self.index_count;
-        for (l, lod) in m.lods.iter().enumerate() {
+        let uw: Vec<u32> = if m.uvs.is_empty() { vec![0; nv as usize * UV_WORDS] } else { m.uvs.iter().flat_map(|u| [u[0].to_bits(), u[1].to_bits()]).collect() };
+        let mut iw = Vec::new();
+        for lod in &m.lods {
             if lod.indices.len() % 3 != 0 || lod.indices.iter().any(|&i| i >= nv) {
                 return bad("indices must be triangles into the mesh's vertices");
             }
+            iw.extend_from_slice(&lod.indices);
+        }
+        Ok((vw, uw, iw))
+    }
+
+    /// Allocates ranges for `m`, writes it and returns the slot and its record.
+    fn upload_mesh(&mut self, dev: &dyn Device, m: &MeshAsset, radius_scale: f32) -> Result<(MeshSlot, MeshRecord), ed_gpu::Error> {
+        let (vw, uw, iw) = Self::mesh_words(m)?;
+        let (nv, ni) = (m.positions.len() as u32, iw.len() as u32);
+        let Some(v0) = self.vert_alloc.alloc(nv) else { return invalid("mesh", "vertex buffer full") };
+        let Some(i0) = self.idx_alloc.alloc(ni) else {
+            self.vert_alloc.free(v0, nv);
+            return invalid("mesh", "index buffer full");
+        };
+        dev.write_buffer(self.vertices.id, v0 as u64 * (VERTEX_WORDS * 4) as u64, &gpu::bytes(&vw))?;
+        dev.write_buffer(self.uvs.id, v0 as u64 * (UV_WORDS * 4) as u64, &gpu::bytes(&uw))?;
+        dev.write_buffer(self.indices.id, i0 as u64 * 4, &gpu::bytes(&iw))?;
+        let (c, r) = m.bounding_sphere();
+        let mut rec = MeshRecord {
+            sphere: c.extend(r * radius_scale),
+            lod_count: m.lods.len() as u32,
+            first_index: [0; MAX_LODS],
+            index_count: [0; MAX_LODS],
+            base_vertex: v0 as i32,
+            error: [0.0; MAX_LODS],
+        };
+        let mut first = i0;
+        for (l, lod) in m.lods.iter().enumerate() {
             rec.first_index[l] = first;
             rec.index_count[l] = lod.indices.len() as u32;
             rec.error[l] = lod.error;
             first += lod.indices.len() as u32;
-            iw.extend_from_slice(&lod.indices);
         }
-        dev.write_buffer(self.vertices.id, self.vertex_count as u64 * (VERTEX_WORDS * 4) as u64, &gpu::bytes(&vw))?;
-        dev.write_buffer(self.indices.id, self.index_count as u64 * 4, &gpu::bytes(&iw))?;
-        self.vertex_count += nv;
-        self.index_count += ni;
-        self.lod.add_mesh(rec);
-        self.mesh_count += 1;
-        Ok(MeshId(self.mesh_count - 1))
+        Ok((MeshSlot { verts: (v0, nv), indices: (i0, ni) }, rec))
+    }
+
+    fn empty_record() -> MeshRecord {
+        MeshRecord { sphere: Vec4::ZERO, lod_count: 0, first_index: [0; MAX_LODS], index_count: [0; MAX_LODS], base_vertex: 0, error: [0.0; MAX_LODS] }
+    }
+
+    /// Adds a mesh and its LOD chain to the shared geometry buffers. The data lands at the
+    /// next frame start; call outside a frame.
+    pub fn add_mesh(&mut self, dev: &dyn Device, m: &MeshAsset) -> Result<MeshId, ed_gpu::Error> {
+        self.add_mesh_scaled(dev, m, 1.0)
+    }
+
+    fn add_mesh_scaled(&mut self, dev: &dyn Device, m: &MeshAsset, radius_scale: f32) -> Result<MeshId, ed_gpu::Error> {
+        let reuse = self.free_mesh_slots.last().copied();
+        if reuse.is_none() && self.lod.mesh_count() as u32 >= self.desc.max_meshes {
+            return invalid("add_mesh", "mesh table full");
+        }
+        let (slot, rec) = self.upload_mesh(dev, m, radius_scale)?;
+        let id = match reuse {
+            Some(i) => {
+                self.free_mesh_slots.pop();
+                self.mesh_slots[i as usize] = Some(slot);
+                self.lod.set_mesh(i as usize, rec);
+                i
+            }
+            None => {
+                self.mesh_slots.push(Some(slot));
+                self.lod.add_mesh(rec);
+                self.mesh_slots.len() as u32 - 1
+            }
+        };
+        Ok(MeshId(id))
+    }
+
+    /// Replaces a mesh's geometry in place (hot reload): instances keep drawing it. The old
+    /// ranges are released once the frames that may read them have finished.
+    pub fn replace_mesh(&mut self, dev: &dyn Device, id: MeshId, m: &MeshAsset) -> Result<(), ed_gpu::Error> {
+        let Some(Some(old)) = self.mesh_slots.get(id.0 as usize).copied() else { return invalid("replace_mesh", "no such mesh") };
+        if self.skins.iter().flatten().any(|s| s.mesh == id) {
+            return invalid("replace_mesh", "skinned meshes are replaced with remove_skinned_mesh + add_skinned_mesh");
+        }
+        let (slot, rec) = self.upload_mesh(dev, m, 1.0)?;
+        self.mesh_slots[id.0 as usize] = Some(slot);
+        self.lod.set_mesh(id.0 as usize, rec);
+        self.release_ranges(old);
+        Ok(())
+    }
+
+    /// Removes a mesh. It must have no live instances. Its ranges and id are reused once the
+    /// frames that may read them have finished.
+    pub fn remove_mesh(&mut self, id: MeshId) -> Result<(), ed_gpu::Error> {
+        let Some(Some(old)) = self.mesh_slots.get(id.0 as usize).copied() else { return invalid("remove_mesh", "no such mesh") };
+        if self.pools.mesh_alive(id.0 as usize) > 0 {
+            return invalid("remove_mesh", "mesh still has live instances");
+        }
+        self.mesh_slots[id.0 as usize] = None;
+        self.lod.set_mesh(id.0 as usize, Self::empty_record());
+        self.release_ranges(old);
+        self.deferred.push(self.frames_seen, Release::MeshSlot(id.0));
+        Ok(())
+    }
+
+    fn release_ranges(&mut self, s: MeshSlot) {
+        self.deferred.push(self.frames_seen, Release::Vertices(s.verts.0, s.verts.1));
+        self.deferred.push(self.frames_seen, Release::Indices(s.indices.0, s.indices.1));
+    }
+
+    /// Applies releases whose frames have completed.
+    fn collect_releases(&mut self, dev: &dyn Device) {
+        for r in self.deferred.ready(dev.completed_frames()) {
+            match r {
+                Release::Vertices(s, n) => self.vert_alloc.free(s, n),
+                Release::Indices(s, n) => self.idx_alloc.free(s, n),
+                Release::SkinSource(s, n) => self.skin_alloc.free(s, n),
+                Release::Palette(s, n) => self.joint_alloc.free(s, n),
+                Release::MeshSlot(i) => self.free_mesh_slots.push(i),
+                Release::SkinSlot(i) => self.free_skin_slots.push(i),
+                Release::TextureSlot(i) => self.free_tex_slots.push(i),
+            }
+        }
+    }
+
+    /// Adds a skinned mesh output: its own vertex range in the shared vertex buffer, written
+    /// every frame by the `skin` compute pass from the bind pose and the joint palette (set
+    /// with [`Renderer::set_skin_pose`], identity until then). Draw it like any mesh with the
+    /// returned [`MeshId`]; one output per skinned instance.
+    pub fn add_skinned_mesh(&mut self, dev: &dyn Device, m: &SkinnedMeshAsset) -> Result<(SkinId, MeshId), ed_gpu::Error> {
+        let nv = m.mesh.positions.len();
+        if m.joints.len() != nv || m.weights.len() != nv {
+            return invalid("add_skinned_mesh", "joints and weights must be one per vertex");
+        }
+        if m.joint_count == 0 || m.joints.iter().flatten().any(|&j| j as u32 >= m.joint_count) {
+            return invalid("add_skinned_mesh", "joint index out of range");
+        }
+        let Some(src) = self.skin_alloc.alloc(nv as u32) else { return invalid("add_skinned_mesh", "skin source buffer full") };
+        let Some(pal) = self.joint_alloc.alloc(m.joint_count) else {
+            self.skin_alloc.free(src, nv as u32);
+            return invalid("add_skinned_mesh", "joint palette full");
+        };
+        let mesh = match self.add_mesh_scaled(dev, &m.mesh, m.pose_margin.max(1.0)) {
+            Ok(id) => id,
+            Err(e) => {
+                self.skin_alloc.free(src, nv as u32);
+                self.joint_alloc.free(pal, m.joint_count);
+                return Err(e);
+            }
+        };
+        let mut w = Vec::with_capacity(nv * SKIN_SRC_WORDS);
+        for i in 0..nv {
+            let (p, n, j, wt) = (m.mesh.positions[i], m.mesh.normals[i], m.joints[i], m.weights[i]);
+            w.extend_from_slice(&[p[0].to_bits(), p[1].to_bits(), p[2].to_bits(), gpu::oct_encode(Vec3::from(n))]);
+            w.extend_from_slice(&[j[0] as u32 | (j[1] as u32) << 16, j[2] as u32 | (j[3] as u32) << 16]);
+            w.extend(wt.iter().map(|x| x.to_bits()));
+        }
+        dev.write_buffer(self.skin_src.id, src as u64 * (SKIN_SRC_WORDS * 4) as u64, &gpu::bytes(&w))?;
+        let end = (pal + m.joint_count) as usize * PALETTE_WORDS;
+        if self.palette.len() < end {
+            self.palette.resize(end, 0);
+        }
+        let ident = [1.0f32, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0].map(f32::to_bits);
+        for k in 0..m.joint_count as usize {
+            let at = (pal as usize + k) * PALETTE_WORDS;
+            self.palette[at..at + PALETTE_WORDS].copy_from_slice(&ident);
+        }
+        let dst_base = self.mesh_slots[mesh.0 as usize].expect("just added").verts.0;
+        let skin = Skin { mesh, src: (src, nv as u32), dst_base, palette: (pal, m.joint_count) };
+        let id = match self.free_skin_slots.pop() {
+            Some(i) => {
+                self.skins[i as usize] = Some(skin);
+                i
+            }
+            None => {
+                self.skins.push(Some(skin));
+                self.skins.len() as u32 - 1
+            }
+        };
+        Ok((SkinId(id), mesh))
+    }
+
+    /// Sets a skinned mesh's joint matrices (mesh space: joint global * inverse bind), one per
+    /// joint. Uploaded with the next frame.
+    pub fn set_skin_pose(&mut self, skin: SkinId, joints: &[Mat4]) -> Result<(), ed_gpu::Error> {
+        let Some(Some(s)) = self.skins.get(skin.0 as usize).copied() else { return invalid("set_skin_pose", "no such skin") };
+        if joints.len() != s.palette.1 as usize {
+            return invalid("set_skin_pose", "one matrix per joint");
+        }
+        for (k, m) in joints.iter().enumerate() {
+            let r = m.transpose().to_cols_array(); // rows of the 3x4 part
+            let at = (s.palette.0 as usize + k) * PALETTE_WORDS;
+            for (i, v) in r[..12].iter().enumerate() {
+                self.palette[at + i] = v.to_bits();
+            }
+        }
+        Ok(())
+    }
+
+    /// Removes a skinned mesh output and its mesh (no live instances may use it).
+    pub fn remove_skinned_mesh(&mut self, skin: SkinId) -> Result<(), ed_gpu::Error> {
+        let Some(Some(s)) = self.skins.get(skin.0 as usize).copied() else { return invalid("remove_skinned_mesh", "no such skin") };
+        self.remove_mesh(s.mesh)?;
+        self.skins[skin.0 as usize] = None;
+        self.deferred.push(self.frames_seen, Release::SkinSource(s.src.0, s.src.1));
+        self.deferred.push(self.frames_seen, Release::Palette(s.palette.0, s.palette.1));
+        self.deferred.push(self.frames_seen, Release::SkinSlot(skin.0));
+        Ok(())
+    }
+
+    /// Uploads a texture with all its mips (BC formats need `Caps::bc_textures`). Usable by
+    /// materials from the next frame.
+    pub fn add_texture(&mut self, dev: &dyn Device, t: &TextureAsset) -> Result<TextureHandle, ed_gpu::Error> {
+        if t.mips.is_empty() {
+            return invalid("add_texture", "no mip levels");
+        }
+        if matches!(t.format, Format::Bc4Unorm | Format::Bc5Unorm | Format::Bc6hUfloat | Format::Bc7Unorm | Format::Bc7Srgb) && !dev.caps().bc_textures {
+            return invalid("add_texture", "device has no BC texture support");
+        }
+        let id = dev.create_texture(&TextureDesc {
+            label: "material texture",
+            kind: TextureKind::D2,
+            format: t.format,
+            width: t.width,
+            height: t.height,
+            depth_or_layers: 1,
+            mips: t.mips.len() as u32,
+            samples: 1,
+            usage: Usage { shader_read: true, copy_dst: true, ..Default::default() },
+        })?;
+        let mut bytes = 0;
+        for (m, data) in t.mips.iter().enumerate() {
+            if let Err(e) = dev.write_texture(id, Subresource { mip: m as u32, layer: 0 }, data) {
+                dev.destroy_texture(id);
+                return Err(e);
+            }
+            bytes += data.len() as u64;
+        }
+        let bind = match dev.bind_texture(id) {
+            Ok(b) => b,
+            Err(e) => {
+                dev.destroy_texture(id);
+                return Err(e);
+            }
+        };
+        self.new_textures.push(id);
+        let e = TexEntry { id, bind, bytes };
+        let slot = match self.free_tex_slots.pop() {
+            Some(i) => {
+                self.textures[i as usize] = Some(e);
+                i
+            }
+            None => {
+                self.textures.push(Some(e));
+                self.textures.len() as u32 - 1
+            }
+        };
+        Ok(TextureHandle(slot))
+    }
+
+    /// Removes a texture. Materials still naming it sample nothing from the next upload on;
+    /// the GPU object itself is destroyed by the device once frames in flight finish.
+    pub fn remove_texture(&mut self, dev: &dyn Device, h: TextureHandle) {
+        if let Some(e) = self.textures.get_mut(h.0 as usize).and_then(Option::take) {
+            self.new_textures.retain(|t| *t != e.id);
+            dev.unbind_texture(e.bind);
+            dev.destroy_texture(e.id);
+            self.deferred.push(self.frames_seen, Release::TextureSlot(h.0));
+            self.materials_dirty = true;
+        }
+    }
+
+    /// Bytes of texel data in live textures.
+    pub fn texture_bytes(&self) -> u64 {
+        self.textures.iter().flatten().map(|t| t.bytes).sum()
+    }
+
+    /// Ranges in use: (vertices, indices) and pending deferred releases (for leak tests).
+    pub fn geometry_in_use(&self) -> (u32, u32, usize) {
+        (self.vert_alloc.used(), self.idx_alloc.used(), self.deferred.len())
     }
 
     /// Adds a material row. `None` when the table is full.
@@ -531,6 +897,9 @@ impl Renderer {
     pub fn set_material(&mut self, id: MaterialId, m: Material) {
         self.materials[id.0 as usize] = m;
         self.materials_dirty = true;
+    }
+    pub fn material(&self, id: MaterialId) -> Option<&Material> {
+        self.materials.get(id.0 as usize)
     }
 
     /// The instance pools (add, move, remove instances; node origins).
@@ -550,6 +919,7 @@ impl Renderer {
     /// proportional to what changed.
     pub fn flush_uploads(&mut self, dev: &dyn Device) -> Result<UploadStats, ed_gpu::Error> {
         let mut st = UploadStats::default();
+        self.collect_releases(dev);
         for r in self.pools.take_dirty_ranges() {
             let b = gpu::bytes(self.pools.range_words(&r));
             dev.write_buffer(self.instance_buf.id, r.start as u64 * (INSTANCE_WORDS * 4) as u64, &b)?;
@@ -558,7 +928,9 @@ impl Renderer {
         }
         self.slots_flushed = self.pools.slots();
         if self.materials_dirty {
-            let w: Vec<u32> = self.materials.iter().flat_map(|m| m.words()).collect();
+            let tex = &self.textures;
+            let index = |h: Option<TextureHandle>| h.and_then(|h| tex.get(h.0 as usize).copied().flatten()).map_or(NO_TEXTURE, |e| e.bind.0);
+            let w: Vec<u32> = self.materials.iter().flat_map(|m| m.words(index)).collect();
             let b = gpu::bytes(&w);
             dev.write_buffer(self.materials_buf.id, 0, &b)?;
             st.material_bytes = b.len() as u64;
@@ -573,7 +945,11 @@ impl Renderer {
         match params.mode {
             SceneMode::Empty => PASSES_EMPTY.to_vec(),
             SceneMode::Scene => {
-                let mut v = self.lod.pass_names().to_vec();
+                let mut v = Vec::new();
+                if self.skins.iter().any(Option::is_some) {
+                    v.push("skin");
+                }
+                v.extend_from_slice(self.lod.pass_names());
                 v.push("resolve");
                 if params.pop_stats {
                     v.push("pop_stats");
@@ -588,13 +964,13 @@ impl Renderer {
     }
 
     fn tonemap_pipeline(&mut self, dev: &dyn Device, format: Format) -> Result<RenderPipelineId, ed_gpu::Error> {
-        if let Some((_, p)) = self.tonemap.iter().find(|(f, _)| *f == format) {
+        if let Some((_, p)) = self.pipes.tonemap.iter().find(|(f, _)| *f == format) {
             return Ok(*p);
         }
         let p = dev.create_render_pipeline(&RenderPipelineDesc {
             label: "tonemap",
-            vertex: self.tonemap_vs,
-            fragment: Some(self.tonemap_fs),
+            vertex: self.pipes.tonemap_vs,
+            fragment: Some(self.pipes.tonemap_fs),
             color_formats: &[format],
             blend: Blend::Opaque,
             depth: None,
@@ -602,7 +978,7 @@ impl Renderer {
             topology: Topology::Triangles,
             samples: 1,
         })?;
-        self.tonemap.push((format, p));
+        self.pipes.tonemap.push((format, p));
         Ok(p)
     }
 
@@ -637,6 +1013,11 @@ impl Renderer {
         let (w, h) = (vp.width.max(1), vp.height.max(1));
         let tonemap = self.tonemap_pipeline(dev, view.target.format)?;
         let frame_index = enc.frame_index();
+        self.frames_seen = self.frames_seen.max(frame_index + 1);
+        if !self.new_textures.is_empty() {
+            let t: Vec<Transition> = self.new_textures.drain(..).map(|texture| Transition::Texture { texture, sub: None, from: ResourceState::CopyDst, to: ResourceState::ShaderRead }).collect();
+            enc.transition(&t);
+        }
 
         // Per-view data, camera-relative (P1-D7).
         let cam = &view.camera;
@@ -706,7 +1087,25 @@ impl Renderer {
             let idx = g.import_buffer("indices", self.indices.id, self.indices.state, cd);
             let inst = g.import_buffer("instances", self.instance_buf.id, self.instance_buf.state, cd);
             let mats = g.import_buffer("materials", self.materials_buf.id, self.materials_buf.state, cd);
-            imports = vec![nodes_res, verts, idx, inst, mats];
+            let uvs = g.import_buffer("uvs", self.uvs.id, self.uvs.state, cd);
+            imports = vec![nodes_res, verts, idx, inst, mats, uvs];
+            // Skinning: every skinned output's vertices, before anything reads them.
+            let live: Vec<Skin> = self.skins.iter().flatten().copied().collect();
+            if !live.is_empty() {
+                let pal_bytes = gpu::bytes(&self.palette);
+                dev.fill_frame_buffer(self.palette_buf.id, &mut |dst| dst[..pal_bytes.len()].copy_from_slice(&pal_bytes))?;
+                let src = g.import_buffer("skin source", self.skin_src.id, self.skin_src.state, cd);
+                let pal = g.import_buffer("skin palette", self.palette_buf.id, self.palette_buf.state, None);
+                imports.extend([src, pal]);
+                let (pipe, src_bi, dst_bi, pal_bi) = (self.pipes.skin, self.skin_src.bindless.0, self.vertices.bindless.0, self.palette_buf.bindless.0);
+                g.add_pass("skin", PassKind::Compute).read(src, ResourceState::ShaderRead).read(pal, ResourceState::ShaderRead).write(verts, ResourceState::ShaderWrite).exec(move |ctx| {
+                    ctx.enc.set_compute_pipeline(pipe);
+                    for s in &live {
+                        ctx.enc.set_compute_constants(&constants(&[src_bi, dst_bi, pal_bi, s.src.1, s.src.0, s.dst_base, s.palette.0]));
+                        ctx.enc.dispatch(s.src.1.div_ceil(SKIN_GROUP), 1, 1);
+                    }
+                });
+            }
             let inputs = SharedInputs {
                 frame: (fd_res, self.frame_data.bindless.0),
                 instances: (inst, self.instance_buf.bindless.0),
@@ -727,8 +1126,10 @@ impl Renderer {
                 self.materials_buf.bindless.0,
                 self.vertices.bindless.0,
                 self.indices.bindless.0,
+                self.uvs.bindless.0,
+                self.sampler.1.0,
             ]);
-            let resolve = self.resolve;
+            let resolve = self.pipes.resolve;
             g.add_pass("resolve", PassKind::Raster)
                 .read(fd_res, ResourceState::ShaderRead)
                 .read(vis, ResourceState::ShaderRead)
@@ -738,6 +1139,7 @@ impl Renderer {
                 .read(mats, ResourceState::ShaderRead)
                 .read(verts, ResourceState::ShaderRead)
                 .read(idx, ResourceState::ShaderRead)
+                .read(uvs, ResourceState::ShaderRead)
                 .color(hdr, LoadOp::Discard, StoreOp::Store)
                 .exec(move |ctx| {
                     let mut c = rc;
@@ -759,7 +1161,7 @@ impl Renderer {
                 let b = &ring.bufs[slot];
                 let res = g.import_buffer("pop tiles", b.id, b.state, Some(ResourceState::ShaderRead));
                 imports.push(res);
-                let (bi, pipe, state_bi) = (b.bindless.0, self.pop_pipe, po.state.1);
+                let (bi, pipe, state_bi) = (b.bindless.0, self.pipes.pop, po.state.1);
                 g.add_pass("pop_stats", PassKind::Compute)
                     .read(hdr, ResourceState::ShaderRead)
                     .read(vis, ResourceState::ShaderRead)
@@ -778,7 +1180,7 @@ impl Renderer {
                 let b = &self.pick_ring.bufs[slot];
                 let res = g.import_buffer("pick", b.id, b.state, Some(ResourceState::ShaderRead));
                 imports.push(res);
-                let (bi, pipe, inst_bi) = (b.bindless.0, self.pick_pipe, self.instance_buf.bindless.0);
+                let (bi, pipe, inst_bi) = (b.bindless.0, self.pipes.pick, self.instance_buf.bindless.0);
                 g.add_pass("pick", PassKind::Compute)
                     .read(vis, ResourceState::ShaderRead)
                     .read(inst, ResourceState::ShaderRead)
@@ -834,7 +1236,13 @@ impl Renderer {
             self.indices.state = fs(imports[2]);
             self.instance_buf.state = fs(imports[3]);
             self.materials_buf.state = fs(imports[4]);
-            let mut k = 5;
+            self.uvs.state = fs(imports[5]);
+            let mut k = 6;
+            if self.skins.iter().any(Option::is_some) {
+                self.skin_src.state = fs(imports[6]);
+                self.palette_buf.state = fs(imports[7]);
+                k = 8;
+            }
             if params.pop_stats {
                 let slot = (frame_index % provider::RING as u64) as usize;
                 if let Some((r, _, _)) = self.pop_ring.as_mut() {
@@ -893,23 +1301,21 @@ impl Renderer {
     /// Release every GPU object. Call after `wait_idle`, before dropping the device.
     pub fn destroy(mut self, dev: &dyn Device) {
         self.pool.destroy(dev);
-        for t in [self.vertices, self.indices, self.instance_buf, self.materials_buf, self.frame_data, self.nodes_buf] {
+        for t in [self.vertices, self.uvs, self.indices, self.instance_buf, self.materials_buf, self.frame_data, self.nodes_buf, self.skin_src, self.palette_buf] {
             t.destroy(dev);
         }
+        for e in self.textures.drain(..).flatten() {
+            dev.unbind_texture(e.bind);
+            dev.destroy_texture(e.id);
+        }
+        dev.unbind_sampler(self.sampler.1);
+        dev.destroy_sampler(self.sampler.0);
         Box::new(self.lod).destroy(dev);
         self.pick_ring.destroy(dev);
         if let Some((r, _, _)) = self.pop_ring {
             r.destroy(dev);
         }
-        dev.destroy_render_pipeline(self.resolve);
-        dev.destroy_compute_pipeline(self.pick_pipe);
-        dev.destroy_compute_pipeline(self.pop_pipe);
-        for (_, p) in self.tonemap.drain(..) {
-            dev.destroy_render_pipeline(p);
-        }
-        for s in self.shaders.drain(..).chain([self.tonemap_vs, self.tonemap_fs]) {
-            dev.destroy_shader(s);
-        }
+        self.pipes.destroy(dev);
     }
 }
 

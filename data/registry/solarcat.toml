@@ -1,0 +1,15 @@
+id = "solarcat"
+name = "Solarcat character"
+organisation = "Project owner"
+kind = "asset"
+urls = ["https://github.com/curnpoo/EveryWorld"]
+licence = "Owner-made, all rights reserved"
+licence_url = "https://github.com/curnpoo/EveryWorld/blob/main/Cargo.toml"
+commercial = "yes"
+modification = "yes"
+redistribution = "packaged game only"
+attribution = ""
+screening = "YELLOW"
+review_notes = "Owner's private character model. Never copy the source .glb into the repo; reference it by path from a gitignored source TOML or an env/CLI path (EW_SOLARCAT). Baked packs go under target/ or .earthdrop-cache/ and are never committed. Ships only inside the packaged game (ew-bake verify requires game_packaged)."
+licence_checked = "2026-11-11"
+consumers = ["ed_assets"]

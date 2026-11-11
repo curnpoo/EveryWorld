@@ -19,6 +19,9 @@ log = "0.4"
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 unused_must_use = "deny"
+# The prebuilt ISPC texture kernels (intel_tex_2, ed_assets) carry no Mach-O platform load
+# command; ld notes it on every link. Harmless (they are plain arm64 objects).
+linker_messages = "allow"
 
 [workspace.lints.clippy]
 dbg_macro = "deny"

@@ -156,6 +156,20 @@ pub fn sample_prefab() -> Prefab {
     }
 }
 
+pub fn sample_skeleton() -> Skeleton {
+    let mut ib = [0.0f32; 16];
+    for i in 0..4 {
+        ib[i * 5] = 1.0;
+    }
+    Skeleton {
+        mesh: asset("mesh/cat"),
+        joints: vec![
+            Joint { parent: None, name: "root".into(), rest: Transform::default(), inverse_bind: ib },
+            Joint { parent: Some(0), name: "thigh.L".into(), rest: Transform { translation: [0.1, 0.5, 0.0], ..Default::default() }, inverse_bind: ib },
+        ],
+    }
+}
+
 pub fn sample_instances(n: usize, seed: u64) -> Instances {
     let mut rng = Rng(seed);
     let v = (0..n)
@@ -187,6 +201,7 @@ pub fn every_kind() -> Vec<Chunk<'static>> {
         Chunk::encode(&sample_collision(false), &m).unwrap(),
         Chunk::encode(&sample_collision(true), &m).unwrap(),
         Chunk::encode(&sample_prefab(), &m).unwrap(),
+        Chunk::encode(&sample_skeleton(), &m).unwrap(),
         Chunk::encode(&sample_instances(10, 1), &m).unwrap(),
         Chunk::encode(&LayerText { text: Cow::Borrowed("") }, &m).unwrap(),
     ];

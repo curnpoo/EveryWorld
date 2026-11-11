@@ -68,6 +68,16 @@ fn texture_material_collision_prefab_instances_clusters_layer_round_trip() {
 }
 
 #[test]
+fn skeleton_round_trips_and_rejects_bad_parents() {
+    let s = sample_skeleton();
+    let c = round_trip(&s);
+    assert_eq!(c.schema(), 1);
+    let mut bad = s.clone();
+    bad.joints[0].parent = Some(1);
+    assert!(Chunk::encode(&bad, &meta()).is_err());
+}
+
+#[test]
 fn reserved_kinds_are_opaque_schema_0() {
     for k in ChunkKind::ALL.iter().filter(|k| k.is_reserved()) {
         let c = opaque(*k, vec![1, 2, 3]);
