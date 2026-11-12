@@ -226,10 +226,10 @@ From `../reference/alpha-baseline.md` §5 for load and worst-frame; pass budgets
 and upscale, so "half the frame left for Phase 3 and 4" no longer holds exactly; Phase 3
 geometry is costed against what remains.
 
-**Open owner decision (O1):** the owner plays at near-fullscreen (2880×1800). Either the
-budgets below are native 2880×1800, or High is defined as 1440p internal plus MetalFX
-upscale to the window. The planner recommends the second. Until decided, every pass is
-measured at both sizes.
+**Decision O1 (owner, 2026-11-12): upscale.** High renders at 1440p internally and MetalFX
+temporal upscaling brings it to the window (the owner plays at ~2880×1800). The pass
+budgets below are at the 1440p internal size; the frame budget includes the upscale (W14).
+The exit gate checks 60 fps in the near-fullscreen window.
 
 | Item | Budget |
 |---|---|
@@ -333,7 +333,7 @@ At most three workers run at once, on disjoint files. W1, W2 and W5 start togeth
       hardening within 20% of the analytic penumbra at 1, 10 and 100 m.
 - [ ] Aerial perspective and ridge layering judged by the owner against reference photos
       01, 02, 04 and 07 (`../reference/look-reference.md`), clearly closer than Phase 1.
-- [ ] 60 fps at 2880×1800 on the gate path, at the High definition chosen in O1.
+- [ ] 60 fps in the near-fullscreen window (2880×1800) on the gate path: 1440p internal + MetalFX (O1).
 - [ ] `CHANGES.md` has the Phase 2 numbers beside the alpha's.
 
 ## 9. Failure branches
@@ -356,9 +356,9 @@ At most three workers run at once, on disjoint files. W1, W2 and W5 start togeth
 | Need | By | From |
 |---|---|---|
 | Global elevation and bathymetry at L6 resolution, imagery composite, night lights, land cover, Moon elevation: downloaded and pinned | M6 | Acquisition scripts; the owner approves each download and its size before it runs |
-| Terrain tiles for the landscape slice (Blue Ridge, Zermatt; a few hundred MB, AWS terrain tiles, already pinned) | M5a | Owner approves the download |
+| Terrain tiles for the landscape slice (Blue Ridge, Zermatt; a few hundred MB) | M5a | **Approved by the owner 2026-11-12.** Fetched through `ed_data::elevation` (Mapterhorn, YELLOW, the data-version-1 path; AWS Terrarium only as its fallback) into the gitignored `.earthdrop-cache/` |
 | Reference photos 14 and 15 (twilight), the time-of-day targets for W5 | W5 look review | Owner |
-| Decision O1 (budget resolution, §5) | Before W14 | Owner |
+| Decision O1 (budget resolution, §5) | Before W14 | **Decided 2026-11-12: 1440p + MetalFX upscale** |
 | A host for `ew-tiles` | M7 (the embedded service is enough for the gate) | Owner's server PC |
 | Confirmation of F9 (baseline lighting floor) | M6 | Owner |
 
