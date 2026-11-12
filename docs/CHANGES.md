@@ -1,3 +1,26 @@
+## 2026-11-12: AO sits at contacts and creases only (owner hand-test feedback)
+
+- **Cause of the "too strong, too broad" look:** mostly the M4f sky-visibility term, not
+  AO. Its horizon search started at 0 m, so it counted the same occluders as AO, and a
+  horizon slice treats every occluder as infinitely wide, so a bench or the character acted
+  like a canyon wall. AO itself (2.5 m radius) added ~1 m bands under ledges and a ~1.5 m
+  halo at the character's feet.
+- **Fix:**
+  - **Sky visibility** (`ao.slang`):
+    - The search now starts at the AO radius, so the two terms no longer overlap.
+    - It reads depth-pyramid blocks at least 2 m wide (`SV_MIN_M`), so people, poles and benches drop out.
+    - The result is stored as the share of the AO-visible arc that stays open.
+  - **AO:**
+    - `ao_radius` 2.5 → 1.0 m, `ao_intensity` 2.0 → 1.5 (`light.rs`).
+    - The screen radius is capped at 0.25 of screen height (was a fixed 256 px).
+- **Numbers** (proving, 300 frames):
+  - AO pass: 0.326 → 0.297 ms.
+  - GPU frame: 2.77 → 2.62 ms.
+  - Mean frame darkening: 0.055 → 0.023; sky-vis share 0.028 → 0.005.
+  - Sky-vis debug on open street: 133/101 → 153/141, where 153 = unoccluded.
+- **Test:** `ao_darkens_a_corner_and_leaves_a_plane_alone` now asserts on the AO debug view (corner 153 → 131, open ground ±2). The lit-frame corner check is kept, loosened to "darker than 1 level". Workspace 553 passed / 0 failed. Two runs give byte-identical images.
+- **Needs the owner's eye in the window:** are canyons now too light? (Knobs: `sky_vis_fill`, `SV_MIN_M`.) Is contact strength at bench legs and feet right? (Knob: `ao_intensity`.) Close-up against a wall.
+
 ## 2026-11-12: Phase 1 gate — final numbers
 
 Quiet machine, M3 Pro, `ew --headless --path proving --frames 300` (1280x720), no extra

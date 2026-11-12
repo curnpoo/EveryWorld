@@ -179,7 +179,7 @@ float fast_acos_0(float x_0)
     return _S9;
 }
 
-float3 view_at_far_0(FrameData_natural_0 device* f_5, int2 q_5, float off_0, KernelContext_0 thread* kernelContext_7)
+float3 view_at_far_0(FrameData_natural_0 device* f_5, int2 q_5, float off_0, float min_px_0, KernelContext_0 thread* kernelContext_7)
 {
     int levels_0 = int((uint4(f_5->cull_0) ).x);
     bool _S10;
@@ -196,7 +196,7 @@ float3 view_at_far_0(FrameData_natural_0 device* f_5, int2 q_5, float off_0, Ker
         float3 _S11 = view_at_0(f_5, q_5, kernelContext_7);
         return _S11;
     }
-    int l_0 = clamp(int(log2(max(off_0, 1.0f))) - int(4), int(0), levels_0 - int(1));
+    int l_0 = clamp(max(int(log2(max(off_0, 1.0f))) - int(4), int(ceil(log2(max(min_px_0, 2.0f)))) - int(1)), int(0), levels_0 - int(1));
     HzbLevel_0 lv_0 = f_5->hzb_1[l_0];
     float2 _S12 = float2(float(2U << uint(l_0))) ;
     uint2 _S13 = min(uint2(float2(clamp(q_5, int2(int(0)) , int2((float4(f_5->proj_0) ).zw) - int2(int(1)) )) / _S12), uint2(f_5->hzb_1[l_0].width_0 - 1U, f_5->hzb_1[l_0].height_0 - 1U));
@@ -217,7 +217,7 @@ float3 view_at_far_0(FrameData_natural_0 device* f_5, int2 q_5, float off_0, Ker
     return _S17;
 }
 
-float2 slice_horizons_0(FrameData_natural_0 device* f_6, int2 q_6, float3 p_1, float2 omega_0, float2 low_0, float r_px_0, float radius_1, float thin_0, uint steps_0, float jitter_0, float pw_0, bool far_0, KernelContext_0 thread* kernelContext_8)
+float2 slice_horizons_0(FrameData_natural_0 device* f_6, int2 q_6, float3 p_1, float2 omega_0, float2 low_0, float r0_px_0, float r_px_0, float radius_1, float thin_0, uint steps_0, float jitter_0, float pw_0, bool far_0, float min_px_1, KernelContext_0 thread* kernelContext_8)
 {
     float range_0 = 0.60000002384185791f * radius_1;
     float _S18 = -1.0f / range_0;
@@ -245,12 +245,12 @@ float2 slice_horizons_0(FrameData_natural_0 device* f_6, int2 q_6, float3 p_1, f
         {
             _S22 = st_0;
         }
-        float _S23 = max(_S22 * r_px_0, 1.0f + _S21);
+        float _S23 = max(r0_px_0 + _S22 * (r_px_0 - r0_px_0), 1.0f + _S21);
         float2 d_1 = omega_0 * float2(_S23) ;
         float3 _S24;
         if(far_0)
         {
-            float3 _S25 = view_at_far_0(f_6, q_6 + int2(round(d_1)), _S23, kernelContext_8);
+            float3 _S25 = view_at_far_0(f_6, q_6 + int2(round(d_1)), _S23, min_px_1, kernelContext_8);
             _S24 = _S25;
         }
         else
@@ -262,7 +262,7 @@ float2 slice_horizons_0(FrameData_natural_0 device* f_6, int2 q_6, float3 p_1, f
         float3 _S27;
         if(far_0)
         {
-            float3 _S28 = view_at_far_0(f_6, q_6 - int2(round(d_1)), _S23, kernelContext_8);
+            float3 _S28 = view_at_far_0(f_6, q_6 - int2(round(d_1)), _S23, min_px_1, kernelContext_8);
             _S27 = _S28;
         }
         else
@@ -341,39 +341,38 @@ void gtao_0(FrameData_natural_0 device* f_7, uint2 t_0, KernelContext_0 thread* 
         n_1 = n_0;
     }
     float px_per_m_0 = (float4(f_7->proj_0) ).y * (float4(f_7->proj_0) ).w * 0.5f / _S34;
-    float r_px_1 = kernelContext_9->ed_c_0->radius_0 * px_per_m_0;
-    float _S45 = min(kernelContext_9->ed_c_0->sv_radius_0 * px_per_m_0, 0.75f * (float4(f_7->proj_0) ).w);
-    bool small_0 = r_px_1 >= 2.0f;
+    float _S45 = min(kernelContext_9->ed_c_0->radius_0 * px_per_m_0, 0.25f * (float4(f_7->proj_0) ).w);
+    float _S46 = min(kernelContext_9->ed_c_0->sv_radius_0 * px_per_m_0, 0.75f * (float4(f_7->proj_0) ).w);
+    bool small_0 = _S45 >= 2.0f;
     bool sv_0;
     if((kernelContext_9->ed_c_0->sv_on_0) != 0U)
     {
-        sv_0 = _S45 >= 2.0f;
+        sv_0 = _S46 >= 2.0f;
     }
     else
     {
         sv_0 = false;
     }
-    bool _S46;
+    bool _S47;
     if(!small_0)
     {
-        _S46 = !sv_0;
+        _S47 = !sv_0;
     }
     else
     {
-        _S46 = false;
+        _S47 = false;
     }
-    if(_S46)
+    if(_S47)
     {
         *(_S32 + o_0) = packed_float4(float4(1.0f, 1.0f, _S34, 0.0f)) ;
         return;
     }
-    float _S47 = min(r_px_1, 256.0f);
     array<uint, int(16)> BAYER4_0 = { { 0U, 8U, 2U, 10U, 12U, 4U, 14U, 6U, 3U, 11U, 1U, 9U, 15U, 7U, 13U, 5U } };
     uint _S48 = _S35 & 3U;
     uint _S49 = _S36 & 3U;
     float _S50 = (float(BAYER4_0[_S48 * 4U + _S49]) + 0.5f) / 16.0f;
     float _S51 = fract(52.982917785644531f * fract(0.067110560834407806f * float(_S49) + 0.0058371499180793762f * float(_S48)));
-    float vsky_0 = 0.0f;
+    float vsky_0 = 1.0f;
     uint s_0 = 0U;
     float vis_0 = 0.0f;
     for(;;)
@@ -406,32 +405,35 @@ void gtao_0(FrameData_natural_0 device* f_7, uint2 t_0, KernelContext_0 thread* 
         float cos_n_1 = saturate(dot(pn_0, v_0) / max(pn_len_0, 9.99999997475242708e-07f));
         float ang_n_1 = sgn_0 * fast_acos_0(cos_n_1);
         float2 low_1 = float2(cos(ang_n_1 + 1.5707963705062866f), cos(ang_n_1 - 1.5707963705062866f));
+        float2 h_2;
         if(small_0)
         {
-            float2 _S54 = slice_horizons_0(f_7, _S33, _S37, omega_1, low_1, _S47, kernelContext_9->ed_c_0->radius_0, 0.0f, 4U, _S51, 2.0f, false, kernelContext_9);
-            vis_0 = vis_0 + pn_len_0 * slice_arc_0(_S54, ang_n_1, cos_n_1);
+            float2 _S54 = slice_horizons_0(f_7, _S33, _S37, omega_1, low_1, 0.0f, _S45, kernelContext_9->ed_c_0->radius_0, 0.0f, 4U, _S51, 2.0f, false, 0.0f, kernelContext_9);
+            h_2 = _S54;
         }
         else
         {
-            vis_0 = vis_0 + pn_len_0 * slice_arc_0(low_1, ang_n_1, cos_n_1);
+            h_2 = low_1;
         }
-        if(s_0 == ((_S36 + _S35) & 1U))
+        float arc_0 = slice_arc_0(h_2, ang_n_1, cos_n_1);
+        float vis_1 = vis_0 + pn_len_0 * arc_0;
+        if(sv_0)
         {
-            float2 h_2;
-            if(sv_0)
-            {
-                float2 _S55 = slice_horizons_0(f_7, _S33, _S37, omega_1, low_1, _S45, kernelContext_9->ed_c_0->sv_radius_0, 3.0f, 4U, fract(_S51 + 0.5f), 1.0f, true, kernelContext_9);
-                h_2 = _S55;
-            }
-            else
-            {
-                h_2 = low_1;
-            }
-            vsky_0 = pn_len_0 * slice_arc_0(h_2, ang_n_1, cos_n_1);
+            _S47 = s_0 == ((_S36 + _S35) & 1U);
+        }
+        else
+        {
+            _S47 = false;
+        }
+        if(_S47)
+        {
+            float2 _S55 = slice_horizons_0(f_7, _S33, _S37, omega_1, low_1, min(max(_S45, 0.0f), _S46 * 0.5f), _S46, kernelContext_9->ed_c_0->sv_radius_0, 3.0f, 4U, fract(_S51 + 0.5f), 1.0f, true, 2.0f * px_per_m_0, kernelContext_9);
+            vsky_0 = slice_arc_0(max(h_2, _S55), ang_n_1, cos_n_1) / max(arc_0, 9.9999997473787516e-05f);
         }
         s_0 = s_0 + 1U;
+        vis_0 = vis_1;
     }
-    *(_S32 + o_0) = packed_float4(float4(saturate(vis_0 / 2.0f / 0.97000002861022949f), saturate(vsky_0 / 0.97000002861022949f), _S34, 0.0f)) ;
+    *(_S32 + o_0) = packed_float4(float4(saturate(vis_0 / 2.0f / 0.97000002861022949f), saturate(vsky_0 / 0.98000001907348633f), _S34, 0.0f)) ;
     return;
 }
 

@@ -3,13 +3,21 @@
 //   mode 0 (gtao): per half-res texel, view-space position and normal from depth, 2 slices x
 //                  2 directions x 4 steps (4x4 interleaved noise for slice angle and step
 //                  jitter), cosine-weighted visible arc -> raw[t] = (ao, sky visibility, linear
-//                  depth, 0). The same slices are searched a second time at a large radius
+//                  depth, 0). The AO radius is contact scale (`radius`, under a metre, and at
+//                  most AO_MAX_FRAC of the screen height up close), so it darkens creases and
+//                  contacts only. The same slices are searched a second time at a large radius
 //                  (M4f, `sv_on`): the share of the sky the street canyon leaves open, which
 //                  resolve uses to swap occluded skylight for light bounced off the buildings.
-//                  It runs on one slice per texel (checkerboard) with linear steps out to
-//                  `sv_radius` or 0.75 of the screen height, reading the depth pyramid at a
-//                  level matched to the step length (cache-friendly far taps). It treats samples well in front of the receiver as thin (XeGTAO's
-//                  thin-occluder compensation) so poles and trees do not halo the street.
+//                  It runs on one slice per texel (checkerboard) with linear steps from the AO
+//                  radius out to `sv_radius` or 0.75 of the screen height, reading the depth
+//                  pyramid (farthest depth per block) at a level matched to the step length and
+//                  never finer than SV_MIN_M of world per block, so only building-scale
+//                  occluders survive: people, poles, benches and trunks erode away instead of
+//                  acting as canyon walls (a horizon slice treats every occluder as infinitely
+//                  wide). It also treats samples well in front of the receiver as thin (XeGTAO's
+//                  thin-occluder compensation). The stored sky visibility is the share of the
+//                  AO-visible arc that the far horizon leaves open (far arc / near arc), so the
+//                  two terms multiply without counting a near occluder twice.
 //   mode 1 (blur): 5x5 depth-aware tent (outer taps at half weight) over the 4x4 noise period,
 //                  centred on the texel (a 4x4 box would shift the result by half a texel).
 // Resolve upsamples `out` with depth weights (lighting.slang `ao_upsample`) and applies it to
@@ -39,6 +47,12 @@ static const float FAR_Z = 1.0e6;
 static const uint AO_SLICES = 2;
 static const uint AO_STEPS = 4;
 static const uint SV_STEPS = 4;
+// Contact AO: largest screen radius (fraction of the target height, full-res px), so a
+// surface right in front of the camera does not search half the screen.
+static const float AO_MAX_FRAC = 0.25;
+// Sky visibility ignores occluders narrower than this (m): the depth pyramid level it reads
+// has blocks at least this wide at the receiver's distance.
+static const float SV_MIN_M = 2.0;
 // Sky-visibility search: largest screen radius (fraction of the target height, full-res px)
 // and thin-occluder compensation.
 static const float SV_MAX_FRAC = 0.75;
@@ -67,12 +81,13 @@ float3 view_at(FrameData* f, int2 q) {
 // about `off` / 16 pixels wide (sparse far taps then share cache lines across the wave), read
 // at that texel's centre. The pyramid holds the farthest depth of each block, so thin
 // occluders erode away there, which suits the canyon-scale search. Full-res depth without it.
-float3 view_at_far(FrameData* f, int2 q, float off) {
+// `min_px`: the smallest block (full-res px) to read, which erodes occluders narrower than it.
+float3 view_at_far(FrameData* f, int2 q, float off, float min_px) {
     int levels = int(f.cull.x);
     if (ed_c.hzb_on == 0 || levels == 0) {
         return view_at(f, q);
     }
-    int l = clamp(int(log2(max(off, 1.0))) - 4, 0, levels - 1);
+    int l = clamp(max(int(log2(max(off, 1.0))) - 4, int(ceil(log2(max(min_px, 2.0)))) - 1), 0, levels - 1);
     HzbLevel lv = f.hzb[l];
     float ts = float(2u << uint(l));
     int2 fs = int2(f.proj.zw);
@@ -93,8 +108,9 @@ float fast_acos(float x) {
 // `r_px` full-res pixels, with the distance falloff over the outer 60% of `radius` (m). `thin`
 // stretches a sample's distance along the view ray (0 = plain GTAO), so a sample far in front
 // of the receiver counts as a thin occluder and fades out.
-// `pw` spaces the steps (2: quadratic, dense near the centre; 1: linear).
-float2 slice_horizons(FrameData* f, int2 q, float3 p, float2 omega, float2 low, float r_px, float radius, float thin, uint steps, float jitter, float pw, bool far) {
+// `pw` spaces the steps (2: quadratic, dense near the centre; 1: linear). The steps run from
+// `r0_px` to `r_px`; `min_px` is the far search's smallest pyramid block (`view_at_far`).
+float2 slice_horizons(FrameData* f, int2 q, float3 p, float2 omega, float2 low, float r0_px, float r_px, float radius, float thin, uint steps, float jitter, float pw, bool far, float min_px) {
     float range = 0.6 * radius;
     float fmul = -1.0 / range;
     float fadd = (radius - range) / range + 1.0;
@@ -102,10 +118,10 @@ float2 slice_horizons(FrameData* f, int2 q, float3 p, float2 omega, float2 low, 
     float2 h = low;
     for (uint k = 0; k < steps; k++) {
         float st = (float(k) + jitter) / float(steps);
-        float off = max((pw > 1.5 ? st * st : st) * r_px, 1.0 + float(k));
+        float off = max(r0_px + (pw > 1.5 ? st * st : st) * (r_px - r0_px), 1.0 + float(k));
         float2 d = omega * off;
-        float3 d0 = (far ? view_at_far(f, q + int2(round(d)), off) : view_at(f, q + int2(round(d)))) - p;
-        float3 d1 = (far ? view_at_far(f, q - int2(round(d)), off) : view_at(f, q - int2(round(d)))) - p;
+        float3 d0 = (far ? view_at_far(f, q + int2(round(d)), off, min_px) : view_at(f, q + int2(round(d)))) - p;
+        float3 d1 = (far ? view_at_far(f, q - int2(round(d)), off, min_px) : view_at(f, q - int2(round(d)))) - p;
         float l0 = length(d0);
         float l1 = length(d1);
         float c0 = dot(d0 / max(l0, 1e-6), v);
@@ -157,7 +173,7 @@ void gtao(FrameData* f, uint2 t) {
     }
     // Screen radius in full-res pixels (per metre of world radius).
     float px_per_m = f.proj.y * f.proj.w * 0.5 / z;
-    float r_px = ed_c.radius * px_per_m;
+    float r_px = min(ed_c.radius * px_per_m, AO_MAX_FRAC * f.proj.w);
     float sv_px = min(ed_c.sv_radius * px_per_m, SV_MAX_FRAC * f.proj.w);
     bool small = r_px >= 2.0;
     bool sv = ed_c.sv_on != 0 && sv_px >= 2.0;
@@ -165,13 +181,12 @@ void gtao(FrameData* f, uint2 t) {
         raw[o] = float4(1.0, 1.0, z, 0.0);
         return;
     }
-    r_px = min(r_px, 256.0);
     // 4x4 noise: a Bayer order for the slice angle, interleaved gradient noise for the steps.
     const uint BAYER4[16] = { 0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5 };
     float n0 = (float(BAYER4[(t.y & 3u) * 4u + (t.x & 3u)]) + 0.5) / 16.0;
     float n1 = frac(52.9829189 * frac(0.06711056 * float(t.x & 3u) + 0.00583715 * float(t.y & 3u)));
     float vis = 0.0;
-    float vsky = 0.0;
+    float vsky = 1.0;
     for (uint s = 0; s < AO_SLICES; s++) {
         float phi = (float(s) + n0) / float(AO_SLICES) * PI_AO;
         float3 dir = float3(cos(phi), sin(phi), 0.0);
@@ -184,22 +199,22 @@ void gtao(FrameData* f, uint2 t) {
         float cos_n = saturate(dot(pn, v) / max(pn_len, 1e-6));
         float ang_n = sgn * fast_acos(cos_n);
         float2 low = float2(cos(ang_n + PI_AO * 0.5), cos(ang_n - PI_AO * 0.5));
-        if (small) {
-            float2 h = slice_horizons(f, q, p, omega, low, r_px, ed_c.radius, 0.0, AO_STEPS, n1, 2.0, false);
-            vis += pn_len * slice_arc(h, ang_n, cos_n);
-        } else {
-            vis += pn_len * slice_arc(low, ang_n, cos_n);
-        }
+        float2 h = small ? slice_horizons(f, q, p, omega, low, 0.0, r_px, ed_c.radius, 0.0, AO_STEPS, n1, 2.0, false, 0.0) : low;
+        float arc = slice_arc(h, ang_n, cos_n);
+        vis += pn_len * arc;
         // Sky visibility is low frequency: one of the two slices per texel (checkerboard), the
-        // blur gathers the other half of the directions from the neighbours.
-        if (s == ((t.x + t.y) & 1u)) {
-            float2 h = sv ? slice_horizons(f, q, p, omega, low, sv_px, ed_c.sv_radius, SV_THIN, SV_STEPS, frac(n1 + 0.5), 1.0, true) : low;
-            vsky = pn_len * slice_arc(h, ang_n, cos_n);
+        // blur gathers the other half of the directions from the neighbours. Searched beyond
+        // the AO radius and kept as the ratio of the far arc to the near one, so whatever the
+        // AO already darkens is not darkened again.
+        if (sv && s == ((t.x + t.y) & 1u)) {
+            float r0 = min(max(r_px, 0.0), sv_px * 0.5);
+            float2 hf = max(h, slice_horizons(f, q, p, omega, low, r0, sv_px, ed_c.sv_radius, SV_THIN, SV_STEPS, frac(n1 + 0.5), 1.0, true, SV_MIN_M * px_per_m));
+            vsky = slice_arc(hf, ang_n, cos_n) / max(arc, 1e-4);
         }
     }
     vis /= float(AO_SLICES);
     // A plane reads ~0.98-1.0 from depth quantisation: map that to exactly unoccluded.
-    raw[o] = float4(saturate(vis / 0.97), saturate(vsky / 0.97), z, 0.0);
+    raw[o] = float4(saturate(vis / 0.97), saturate(vsky / 0.98), z, 0.0);
 }
 
 float4 raw_at(int2 s) {

@@ -273,14 +273,18 @@ fn ao_darkens_a_corner_and_leaves_a_plane_alone() {
     let l = sun();
     let eye = glam::Vec3::new(l.x, 0.0, l.z).normalize() * 7.0 + glam::Vec3::Y * 3.0;
     let cam = Camera::look_at(TestScene::ORIGIN + eye.as_dvec3(), TestScene::ORIGIN + glam::DVec3::new(0.0, 0.5, 0.0));
-    let shot = |rig: &mut Rig, ao: bool| {
-        let s = LightingSettings { ao, shadows: false, ..*rig.r().lighting() };
+    let shot = |rig: &mut Rig, ao: bool, debug: u32| {
+        let s = LightingSettings { ao, shadows: false, debug, ..*rig.r().lighting() };
         rig.r().set_lighting(s);
         rig.frame(cam, SceneMode::Scene, false);
         rig.image(cam)
     };
-    let off = shot(&mut rig, false);
-    let on = shot(&mut rig, true);
+    // The AO debug view (0.5 * ao, tonemapped) measures the occlusion itself; the lit frame is
+    // sun-dominated, where AO only scales the ambient share.
+    let off = shot(&mut rig, false, 2);
+    let on = shot(&mut rig, true, 2);
+    let lit_off = shot(&mut rig, false, 0);
+    let lit_on = shot(&mut rig, true, 0);
     dump(&off, "m4d_ao_off");
     dump(&on, "m4d_ao_on");
     // Ground just in front of the box's sun-facing face, and open ground 3 m further out.
@@ -290,7 +294,12 @@ fn ao_darkens_a_corner_and_leaves_a_plane_alone() {
     let (c_off, c_on) = (lum3(&off, corner), lum3(&on, corner));
     let (o_off, o_on) = (lum3(&off, open), lum3(&on, open));
     println!("corner {corner:?}: {c_off:.1} -> {c_on:.1}; open {open:?}: {o_off:.1} -> {o_on:.1}");
-    assert!(c_on < c_off - 4.0, "AO should darken the corner ({c_off} -> {c_on})");
+    assert!(c_on < c_off - 12.0, "AO should darken the corner ({c_off} -> {c_on})");
     assert!((o_on - o_off).abs() <= 2.0, "AO changed open ground ({o_off} -> {o_on})");
+    let (lc_off, lc_on) = (lum3(&lit_off, corner), lum3(&lit_on, corner));
+    let (lo_off, lo_on) = (lum3(&lit_off, open), lum3(&lit_on, open));
+    println!("lit: corner {lc_off:.1} -> {lc_on:.1}; open {lo_off:.1} -> {lo_on:.1}");
+    assert!(lc_on < lc_off - 1.0, "AO should darken the lit corner ({lc_off} -> {lc_on})");
+    assert!((lo_on - lo_off).abs() <= 2.0, "AO changed open lit ground ({lo_off} -> {lo_on})");
     rig.destroy();
 }

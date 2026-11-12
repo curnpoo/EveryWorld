@@ -67,14 +67,21 @@ pub struct LightingSettings {
     pub normal_bias: f32,
     /// Receiver depth bias, texels.
     pub depth_bias: f32,
-    /// GTAO world radius (m).
+    /// GTAO world radius (m): contact scale, so occlusion stays in creases and at contacts
+    /// (wall-ground joints, under benches) instead of haloing whole objects. Larger-scale
+    /// occlusion is the sky-visibility term's job. The shader also caps it at a quarter of the
+    /// screen height for surfaces right in front of the camera.
     pub ao_radius: f32,
-    /// GTAO strength (exponent on visibility).
+    /// GTAO strength (exponent on visibility; 1 = the cosine-weighted visible arc as measured).
+    /// 1.5 makes up for the four-step search and the blur, which both underestimate thin creases.
     pub ao_intensity: f32,
     /// Large-scale sky visibility (M4f): the GTAO slices are searched a second time out to
     /// [`Self::sky_vis_radius`], and the share of the sky that street canyons hide is lit by
-    /// bounce light instead of skylight. Needs `ao`. Cost: about 0.1 ms in the "ao" pass at
-    /// 1280x720 (four more taps per slice side), nothing extra in resolve.
+    /// bounce light instead of skylight. Needs `ao`. Only building-scale occluders count
+    /// (narrower than 2 m erode away in the depth pyramid), only beyond the AO radius, and the
+    /// result is the far horizon's share of the AO-visible arc, so AO and sky visibility do
+    /// not count the same occluder twice. Cost: about 0.1 ms in the "ao" pass at 1280x720
+    /// (four more taps per slice side), nothing extra in resolve.
     pub sky_vis: bool,
     /// Sky-visibility search radius (m): the canyon scale (the proving ground's streets are
     /// 20 m wide between buildings up to 120 m). Screen-space, so occluders off screen do not
@@ -128,8 +135,8 @@ impl Default for LightingSettings {
             caster_extend: 150.0,
             normal_bias: 1.0,
             depth_bias: 1.0,
-            ao_radius: 2.5,
-            ao_intensity: 2.0,
+            ao_radius: 1.0,
+            ao_intensity: 1.5,
             sky_vis: true,
             sky_vis_radius: 60.0,
             sky_vis_fill: 0.8,
