@@ -1,3 +1,30 @@
+## 2026-11-12: Phase 2 W1 — `ed_planet` core (quadtree, budgeted selector, height query)
+
+- **Modules:** `body` (Earth WGS84, max level 17; Moon sphere, level 16), `page`, `residency` (`Residency` trait, `FakeResidency`, `ByteLru` that never evicts a wanted node), `quadtree` (slab + lookup-only map), `cull` (horizon cone, 4-plane frustum in f64), `select` (`Planet::select`, `height`).
+- **Selector:**
+  - A max-heap of projected error per child byte, with ties broken by `NodeId`.
+  - It applies the forced splits that keep neighbours ≤ 1 level apart as one set, or skips the candidate.
+  - Split/merge hysteresis 1.0 / 0.8.
+  - Parent until children, with a fix-point collapse so drawn neighbours also stay ≤ 1 level apart.
+  - Determinism comes from `BTreeSet`s, sorted vectors and libm.
+- **Measured:** selector 0.265 ms per frame at ~600 draw nodes (2 km over the Alps, 1440p, 60 m/s; budget 0.5 ms).
+- **Tests:**
+  - 10,000 cameras from 1 m to 400,000 km: wanted bytes ≤ budget (the budget binds in 7,435 of them); neighbours ≤ 1 level apart.
+  - 1,500 partial-residency draws: every drawn node is complete; drawn area plus holes covers exactly 12 roots.
+  - 400-frame determinism: bit-identical.
+  - Height query matches the page within 4.1e-5 m.
+  - Lowering the budget never raises the wanted bytes.
+- **Deviations accepted by the conductor:**
+  - **Error distance:** a curved-slab distance, not the bounding sphere, which over-refines when heights are unknown.
+  - **`pixel_error` 16 px,** because the error proxy is the grid cell (edge/64). A baked per-node geometric error (W7) will replace it.
+  - **Radial displacement** `dir × (radius(dir) + h)`, not along the ellipsoid normal (~5 cm at 9 km). W3 and collision must use the same rule.
+  - Culled leaves stay wanted at coarse level; there is no off-frustum prefetch ring yet.
+- **Open:**
+  - `ed_data::node::HeightPage` and `ed_planet::HeightPage` are two copies; they are being merged into `ed_geo` (the layering forbids `ed_planet` → `ed_data`).
+  - `cast_height` will be a second plane in the terrain chunk (P2-D20).
+  - A `height_at_most(level)` query for the far shadow term.
+  - W8 must fill `ChunkMask.required` from the manifest.
+
 ## 2026-11-12: Phase 2 W2a — node height pages (`ed_data::node`)
 
 - **API:**

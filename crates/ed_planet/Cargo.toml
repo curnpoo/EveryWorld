@@ -12,3 +12,5 @@ ed_geo = { path = "../ed_geo" }
 ed_pack = { path = "../ed_pack" }
 ed_runtime = { path = "../ed_runtime" }
 ed_space = { path = "../ed_space" }
+glam = { workspace = true }
+libm = "0.2"

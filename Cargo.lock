@@ -486,6 +486,7 @@ dependencies = [
  "flate2",
  "image-webp",
  "jpeg-decoder",
+ "libm",
  "log",
  "png",
  "serde",
@@ -576,6 +577,8 @@ dependencies = [
  "ed_pack",
  "ed_runtime",
  "ed_space",
+ "glam",
+ "libm",
 ]
 
 [[package]]
