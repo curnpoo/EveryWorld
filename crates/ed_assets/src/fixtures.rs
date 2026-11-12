@@ -337,3 +337,21 @@ pub fn lod_chain_glb(name: &str, levels: &[(u32, u32)], scale: f32) -> Vec<u8> {
     });
     g.finish(doc)
 }
+
+/// A glTF with an EXTERNAL buffer (`json`, `bin`), built from [`lod_chain_glb`]: `levels` as
+/// `<name>_LOD<k>` nodes, `bin_uri` as the buffer URI (`"../x.bin"` mimics Fab's
+/// `standard/*_nonUE.gltf`), and, with `billboard_last`, the last level drawn with a material
+/// named `..._Billboard` (Fab's camera-facing LOD).
+pub fn external_gltf(name: &str, levels: &[(u32, u32)], bin_uri: &str, billboard_last: bool) -> (Vec<u8>, Vec<u8>) {
+    let glb = lod_chain_glb(name, levels, 1.0);
+    let mut doc = split_glb(&glb).expect("glb");
+    let jl = u32::from_le_bytes(glb[12..16].try_into().expect("len")) as usize;
+    let bin = glb[20 + jl + 8..].to_vec();
+    doc["buffers"] = json!([{"byteLength": bin.len(), "uri": bin_uri}]);
+    doc["materials"] = json!([{"name": format!("MI_{name}")}, {"name": format!("MI_{name}_Billboard")}]);
+    let n = levels.len();
+    for (k, m) in doc["meshes"].as_array_mut().expect("meshes").iter_mut().enumerate() {
+        m["primitives"][0]["material"] = json!(if billboard_last && k + 1 == n { 1 } else { 0 });
+    }
+    (serde_json::to_vec(&doc).expect("json"), bin)
+}

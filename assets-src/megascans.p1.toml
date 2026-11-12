@@ -1,0 +1,199 @@
+# Phase 1 Megascans (Fab) pack: the 31 assets downloaded to the local library.
+#
+#     EW_MEGASCANS_DIR=~/Documents/Megascans/library \
+#       ew-bake build assets-src/megascans.p1.toml -o <OUT>/p1.ewpack
+#
+# The library is never in the repository (the baker refuses a folder inside it) and its path is
+# not written here: EW_MEGASCANS_DIR names it. Fab folders are `<fab-uuid>__<slug>`; fab_id is the
+# uuid, which find_asset matches inside the folder name. The Megascans id (metadata json) is
+# recorded as provenance `megascans-id=`.
+
+[pack]
+name = "megascans-p1"
+game_packaged = true
+
+[[megascans]]
+fab_id = "091b8553-6607-4026-809d-2081621b6a49"
+alias = "dry_fallen_leaves"
+kind = "surface"
+resolution = "2K"
+
+[[megascans]]
+fab_id = "0acd97c5-5c73-4b25-be08-8a466abc21b6"
+alias = "icelandic_lava_sand"
+kind = "surface"
+resolution = "2K"
+
+[[megascans]]
+fab_id = "1eb8ff02-d0f9-4ac7-ac7b-bf6ded352635"
+alias = "moist_fallen_leaves"
+kind = "surface"
+resolution = "2K"
+
+[[megascans]]
+fab_id = "22762313-071f-4017-a721-b29c5a2f1a87"
+alias = "rock_cliff"
+kind = "surface"
+resolution = "2K"
+
+[[megascans]]
+fab_id = "31b154e8-dea5-49c8-9b29-6362fe1a4a8d"
+alias = "mossy_forest_floor"
+kind = "surface"
+resolution = "2K"
+
+[[megascans]]
+fab_id = "32e37bd7-a689-4213-a04a-e9cb7c04f3c2"
+alias = "bay_laurel"
+kind = "3d-plant"
+resolution = "2K"
+
+[[megascans]]
+fab_id = "3aab93f6-c82b-45c8-883f-04bec06d6915"
+alias = "cracked_asphalt"
+kind = "surface"
+resolution = "2K"
+
+[[megascans]]
+fab_id = "3ca1a0c0-7a72-45f2-b7ba-78e47e3f53ff"
+alias = "volcanic_gravel_ground"
+kind = "surface"
+resolution = "2K"
+
+[[megascans]]
+fab_id = "4c89bf8b-3317-4c70-9e60-7225d5aad11d"
+alias = "soil_dirt"
+kind = "surface"
+resolution = "2K"
+
+[[megascans]]
+fab_id = "58ea4b71-bb82-447c-a873-8ff962d114c9"
+alias = "road_crack"
+kind = "decal"
+resolution = "2K"
+
+[[megascans]]
+fab_id = "63593db4-786a-4b47-9204-c97161ccebfd"
+alias = "mud_stain"
+kind = "decal"
+resolution = "2K"
+
+[[megascans]]
+fab_id = "6b239c80-a0e3-48a4-a9bd-fdbb47ad539e"
+alias = "fresh_snow"
+kind = "surface"
+resolution = "2K"
+
+[[megascans]]
+fab_id = "7c3a681a-2833-4d6e-a749-af3264f024cd"
+alias = "grass_lawn"
+kind = "surface"
+resolution = "2K"
+
+[[megascans]]
+fab_id = "7d5b8684-bd22-44a6-892d-b2c2d872a248"
+alias = "red_brick_wall"
+kind = "surface"
+resolution = "2K"
+
+[[megascans]]
+fab_id = "83550d6e-50a8-4493-ba20-09dbaa30ac4d"
+alias = "coal_ash"
+kind = "surface"
+resolution = "2K"
+
+[[megascans]]
+fab_id = "8cf6b5fa-fc74-4e00-aa37-8cb239bf9782"
+alias = "mossy_forest_boulder"
+kind = "3d"
+resolution = "2K"
+
+[[megascans]]
+fab_id = "95544273-7917-4ce1-af1b-854b4d687596"
+alias = "concrete_pavement"
+kind = "surface"
+resolution = "2K"
+
+[[megascans]]
+fab_id = "b4bf4ef7-f341-48ee-b851-c3297909485d"
+alias = "bracken_fern"
+kind = "3d-plant"
+resolution = "2K"
+
+[[megascans]]
+fab_id = "bb84a6df-8cf9-4a3e-af2e-c2617a50144a"
+alias = "yellow_road_line"
+kind = "decal"
+resolution = "2K"
+
+[[megascans]]
+fab_id = "bec876f3-e72a-474e-9a9c-4dcef0600658"
+alias = "damaged_asphalt"
+kind = "surface"
+resolution = "2K"
+
+[[megascans]]
+fab_id = "c2e921f7-df47-4511-8ba4-46445dae5cff"
+alias = "mossy_rock_cluster"
+kind = "3d"
+resolution = "2K"
+
+[[megascans]]
+fab_id = "c6ceb7d9-54bb-4beb-98f0-14a9afd58113"
+alias = "concrete_sidewalk"
+kind = "surface"
+resolution = "2K"
+
+[[megascans]]
+fab_id = "c80a2806-eb66-4be2-bc5d-9c9a42e9c5ea"
+alias = "rough_concrete_wall"
+kind = "surface"
+resolution = "2K"
+
+[[megascans]]
+fab_id = "d1777536-668e-47c7-8506-e600d0900eed"
+alias = "granite_rock"
+kind = "3d"
+resolution = "2K"
+
+[[megascans]]
+fab_id = "d1f24f95-7093-4bb0-8aea-afeb7eec805d"
+alias = "gravel_on_soil"
+kind = "surface"
+resolution = "2K"
+
+[[megascans]]
+fab_id = "d60b7f69-775b-4f96-bef1-911a895d7bd3"
+alias = "granite_paving_slabs"
+kind = "surface"
+resolution = "2K"
+
+[[megascans]]
+fab_id = "d6c068bb-fceb-46b2-9841-008b9b999c58"
+alias = "mossy_stump"
+kind = "3d"
+resolution = "2K"
+
+[[megascans]]
+fab_id = "dae56d09-862c-4f77-9e72-a41281c49633"
+alias = "forest_floor"
+kind = "surface"
+resolution = "2K"
+
+[[megascans]]
+fab_id = "e1146bcb-b3f5-4baa-8fd2-6224230089bb"
+alias = "old_wooden_log"
+kind = "3d"
+resolution = "2K"
+
+[[megascans]]
+fab_id = "f8ec0a06-6a22-4ffa-9af8-490249968c58"
+alias = "cobblestone_road"
+kind = "surface"
+resolution = "2K"
+
+[[megascans]]
+fab_id = "fc52e5d3-8c95-4e0e-af45-0763cbd3ffd9"
+alias = "asphalt_road"
+kind = "surface"
+resolution = "2K"

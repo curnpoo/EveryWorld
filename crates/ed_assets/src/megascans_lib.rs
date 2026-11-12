@@ -110,6 +110,13 @@ pub const MAP_NAMES: &[(&str, &[&str])] = &[
     ("Specular", &["specular"]),
     ("Bump", &["bump"]),
     ("Fuzz", &["fuzz"]),
+    // Packed maps, matched by file-name suffix in `map_of` (not by token).
+    ("AlbedoOpacity", &[]),
+    ("NormalTranslucency", &[]),
+    ("ORM", &[]),
+    ("ORT", &[]),
+    ("BillboardAlbedo", &[]),
+    ("BillboardNormal", &[]),
 ];
 
 const IMAGE_EXT: &[&str] = &["png", "jpg", "jpeg", "webp", "exr", "tif", "tiff", "tga"];
@@ -136,6 +143,12 @@ pub struct MeshFile {
     pub variant: Option<u32>,
     /// A `_High` source scan (skipped when LOD files exist).
     pub high: bool,
+    /// LOD from a `high/ mid/ low/` tier folder (3D scans: High = LOD0, Mid = LOD1, Low = LOD2).
+    pub tier_lod: Option<u32>,
+    /// `<id>_tier_<N>` file (plants): N-th detail tier, not a LOD.
+    pub tier: Option<u32>,
+    /// Under a `standard/` folder (the non-Unreal glTF variant of a plant tier).
+    pub standard: bool,
 }
 
 /// Everything in one asset folder (sorted, sub-folders included up to 4 deep).
@@ -186,7 +199,14 @@ pub fn lod_of(s: &str) -> Option<u32> {
 
 /// `Var<n>` / `Variation<n>` in a name.
 pub fn variant_of(s: &str) -> Option<u32> {
-    numbered(s, &["variation", "var"])
+    numbered(s, &["variation", "var"]).or_else(|| {
+        // Fab plants name variants by letter: `SM_<id>_VarA` -> 0.
+        tokens(s).iter().find_map(|t| {
+            let rest = t.strip_prefix("variation").or_else(|| t.strip_prefix("var"))?;
+            let b = rest.as_bytes();
+            (b.len() == 1 && b[0].is_ascii_lowercase()).then(|| (b[0] - b'a') as u32)
+        })
+    })
 }
 
 /// `4K` -> 4096 (a token of digits followed by `k`).
@@ -196,6 +216,22 @@ pub fn res_of(stem: &str) -> Option<u32> {
 
 /// The map a file stem names (its last token that is a map name).
 pub fn map_of(stem: &str) -> Option<&'static str> {
+    // Fab packed maps: `T_<id>_2K_B-O` (albedo + opacity), `_ORT`, `_orm`, billboard pair.
+    let low = stem.to_ascii_lowercase();
+    for (suffix, name) in [
+        ("_billboard_b-o", "BillboardAlbedo"),
+        ("_billboard_n-t", "BillboardNormal"),
+        ("_b-o", "AlbedoOpacity"),
+        ("_n-t", "NormalTranslucency"),
+        ("_ort", "ORT"),
+        ("_orm", "ORM"),
+        ("_b", "Albedo"),
+        ("_n", "Normal"),
+    ] {
+        if low.ends_with(suffix) {
+            return Some(name);
+        }
+    }
     tokens(stem).iter().rev().find_map(|t| MAP_NAMES.iter().find(|(_, keys)| keys.contains(&t.as_str())).map(|(n, _)| *n))
 }
 
@@ -208,7 +244,8 @@ fn walk(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) -> Result<()> {
             continue;
         }
         if p.is_dir() {
-            if depth < 4 {
+            // The 8K Raw tier (when extracted) is not used.
+            if depth < 4 && !name.eq_ignore_ascii_case("raw") {
                 walk(&p, depth + 1, out)?;
             }
         } else {
@@ -228,14 +265,22 @@ impl Listing {
             let ext = ext_of(p);
             let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
             let rel = p.strip_prefix(dir).unwrap_or(p).to_string_lossy().replace('\\', "/");
+            if tokens(stem).iter().any(|t| t == "raw") {
+                continue; // `_Raw` files (the 8K tier) are not used
+            }
             if IMAGE_EXT.contains(&ext.as_str()) {
                 if let Some(map) = map_of(stem) {
                     l.maps.push(MapFile { map, path: p.clone(), res: res_of(stem), lod: lod_of(stem), ext });
                 }
             } else if MESH_EXT.contains(&ext.as_str()) {
                 let toks = tokens(stem);
-                let high = toks.iter().any(|t| t == "high" || t == "highpoly");
-                l.meshes.push(MeshFile { path: p.clone(), ext, lod: lod_of(stem), variant: variant_of(&rel), high });
+                let comps: Vec<String> = rel.split('/').map(|c| c.to_ascii_lowercase()).collect();
+                let tier_dir = comps.first().filter(|_| comps.len() > 1).and_then(|c| ["high", "mid", "low"].iter().position(|t| t == c));
+                let tier = toks.iter().position(|t| t == "tier").and_then(|i| toks.get(i + 1)).and_then(|n| n.parse::<u32>().ok());
+                let standard = comps.iter().any(|c| c == "standard");
+                let tier_lod = tier_dir.filter(|_| tier.is_none() && !standard).map(|i| i as u32);
+                let high = tier_dir.is_none() && toks.iter().any(|t| t == "high" || t == "highpoly");
+                l.meshes.push(MeshFile { path: p.clone(), ext, lod: lod_of(stem), variant: variant_of(&rel), high, tier_lod, tier, standard });
             } else if ext == "json" {
                 l.metadata.push(p.clone());
             } else if ext == "zip" {
@@ -244,6 +289,10 @@ impl Listing {
         }
         l.files = files;
         Ok(l)
+    }
+    /// Fab tier layout: mesh files under `high/ mid/ low/`.
+    pub fn tiered(&self) -> bool {
+        self.meshes.iter().any(|m| m.tier_lod.is_some() || m.tier.is_some())
     }
     fn has(&self, map: &str) -> bool {
         self.maps.iter().any(|m| m.map == map)
@@ -300,8 +349,8 @@ pub fn detect(l: &Listing) -> (Kind, KindSource) {
     }
     let has_mesh = !l.meshes.is_empty();
     let k = if has_mesh {
-        if l.has("Opacity") || l.has("Translucency") || l.meshes.iter().any(|m| m.variant.is_some()) { Kind::Plant } else { Kind::Model3d }
-    } else if !l.has("Albedo") {
+        if l.has("Opacity") || l.has("AlbedoOpacity") || l.has("Translucency") || l.meshes.iter().any(|m| m.variant.is_some()) { Kind::Plant } else { Kind::Model3d }
+    } else if !l.has("Albedo") && !l.has("AlbedoOpacity") {
         Kind::Imperfection
     } else if l.has("Opacity") && !l.has("Displacement") {
         Kind::Decal
@@ -343,9 +392,16 @@ pub fn select_maps(l: &Listing, want_res: Option<u32>) -> (Maps, Vec<String>) {
         }
         Some(choice.path.clone())
     };
+    let ao_albedo = pick("AlbedoOpacity");
+    let albedo_alpha = ao_albedo.is_some();
     let maps = Maps {
-        albedo: pick("Albedo"),
-        normal: pick("Normal"),
+        albedo: ao_albedo.or_else(|| pick("Albedo")),
+        albedo_alpha,
+        orm: pick("ORM"),
+        ort: pick("ORT"),
+        billboard_albedo: pick("BillboardAlbedo"),
+        billboard_normal: pick("BillboardNormal"),
+        normal: pick("NormalTranslucency").or_else(|| pick("Normal")),
         roughness: pick("Roughness"),
         gloss: pick("Gloss"),
         ao: pick("AO"),
@@ -439,11 +495,14 @@ pub struct ModelOptions {
     /// Multiplies positions (glTF sources in centimetres: 0.01). FBX unit scale is applied by
     /// Blender already.
     pub scale: f32,
+    /// Texture/tier resolution the entry asks for in pixels (plants: picks the tier file whose
+    /// textures are used; `None` = the highest tier).
+    pub want_res: Option<u32>,
 }
 
 impl Default for ModelOptions {
     fn default() -> Self {
-        ModelOptions { scale: 1.0 }
+        ModelOptions { scale: 1.0, want_res: None }
     }
 }
 
@@ -458,6 +517,9 @@ pub struct ModelVariant {
     pub supplied: Vec<u32>,
     /// Supplied LOD numbers found (before picking).
     pub found: Vec<u32>,
+    /// Triangles of the camera-facing billboard LOD the asset ships (plants), kept out of the
+    /// chain: the impostor source, not a mesh LOD.
+    pub billboard_tris: Option<u32>,
 }
 
 pub struct Model {
@@ -468,9 +530,20 @@ pub struct Model {
     pub notes: Vec<String>,
 }
 
+/// The tier folder (`high` / `mid` / `low`) the selected texture set lives in, if any.
+fn chosen_tier_dir(l: &Listing, want_res: Option<u32>) -> Option<String> {
+    let (maps, _) = select_maps(l, want_res);
+    let p = maps.albedo.or(maps.orm).or(maps.ort)?;
+    let rel = l.rel(&p);
+    let (first, rest) = rel.split_once('/')?;
+    (!rest.is_empty()).then(|| first.to_ascii_lowercase())
+}
+
 /// The mesh files a model import reads: glTF/GLB when present (no Blender), else FBX; `_High`
-/// scans are skipped when LOD files exist.
-pub fn model_sources(l: &Listing) -> Result<Vec<&MeshFile>> {
+/// scans are skipped when LOD files exist. Plants ship one `<id>_tier_<N>.gltf` per tier folder
+/// (each holds every variant and LOD): exactly one is read, the tier whose textures are chosen
+/// (the top-level file; the `standard/` copy only when there is no other).
+pub fn model_sources(l: &Listing, want_res: Option<u32>) -> Result<Vec<&MeshFile>> {
     let gltf: Vec<&MeshFile> = l.meshes.iter().filter(|m| m.ext == "gltf" || m.ext == "glb").collect();
     let fbx: Vec<&MeshFile> = l.meshes.iter().filter(|m| m.ext == "fbx").collect();
     let mut pick = if !gltf.is_empty() { gltf } else { fbx };
@@ -478,10 +551,101 @@ pub fn model_sources(l: &Listing) -> Result<Vec<&MeshFile>> {
         let exts: Vec<&str> = l.meshes.iter().map(|m| m.ext.as_str()).collect();
         bail!("no FBX or glTF mesh in {} (found {exts:?}); download the FBX or glTF format", l.dir.display());
     }
+    let tiered: Vec<&MeshFile> = pick.iter().copied().filter(|m| m.tier.is_some()).collect();
+    if !tiered.is_empty() {
+        let mut pool: Vec<&MeshFile> = tiered.iter().copied().filter(|m| !m.standard).collect();
+        if pool.is_empty() {
+            pool = tiered.clone();
+        }
+        let dir = chosen_tier_dir(l, want_res);
+        let first = |m: &&MeshFile| l.rel(&m.path).split('/').next().map(str::to_ascii_lowercase);
+        let chosen = pool.iter().copied().find(|m| dir.is_some() && first(m) == dir).or_else(|| pool.iter().copied().min_by_key(|m| m.tier)).expect("non-empty");
+        pick.retain(|m| m.tier.is_none());
+        pick.push(chosen);
+    }
     if pick.iter().any(|m| !m.high) {
         pick.retain(|m| !m.high);
     }
     Ok(pick)
+}
+
+/// One mesh piece with its variant, LOD and billboard flag decided.
+struct Piece {
+    var: u32,
+    lod: u32,
+    billboard: bool,
+    build: MeshBuild,
+}
+
+/// Lexically resolves `uri` against `base`, refusing anything that leaves `root` (`../x.bin` is
+/// fine while it stays inside the asset folder).
+fn contain(root: &Path, base: &Path, uri: &str) -> Result<PathBuf> {
+    let mut out = base.to_path_buf();
+    for c in Path::new(&uri.replace("%20", " ")).components() {
+        match c {
+            std::path::Component::Normal(n) => out.push(n),
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            _ => bail!("glTF URI {uri:?} is not relative"),
+        }
+        if !out.starts_with(root) {
+            bail!("glTF URI {uri:?} leaves the asset folder");
+        }
+    }
+    Ok(out)
+}
+
+/// Reads a mesh file (`path` is the glTF/GLB to parse) into classified pieces. External glTF
+/// buffers may sit anywhere inside the asset folder; their paths are returned as inputs.
+fn read_pieces(l: &Listing, f: &MeshFile, path: &Path) -> Result<(Vec<Piece>, Vec<PathBuf>)> {
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let mut buffers = Vec::new();
+    let mut billboard_meshes: Vec<String> = Vec::new();
+    let (bytes, dir) = if f.ext == "gltf" {
+        let mut v: serde_json::Value = serde_json::from_slice(&bytes).with_context(|| l.rel(&f.path))?;
+        let base = f.path.parent().unwrap_or(&l.dir).to_path_buf();
+        if let Some(bufs) = v.get_mut("buffers").and_then(|b| b.as_array_mut()) {
+            for b in bufs {
+                let Some(u) = b.get("uri").and_then(|u| u.as_str()).filter(|u| !u.starts_with("data:")).map(str::to_string) else { continue };
+                let full = contain(&l.dir, &base, &u).with_context(|| l.rel(&f.path))?;
+                let rel = full.strip_prefix(&l.dir).unwrap_or(&full).to_string_lossy().replace('\\', "/");
+                b["uri"] = serde_json::Value::String(rel);
+                buffers.push(full);
+            }
+        }
+        // Meshes drawn only with a billboard material are the impostor source, not a LOD.
+        let bb_mats: Vec<usize> = v.get("materials").and_then(|m| m.as_array()).map(|ms| ms.iter().enumerate().filter(|(_, m)| m.get("name").and_then(|n| n.as_str()).is_some_and(|n| n.to_ascii_lowercase().contains("billboard"))).map(|(i, _)| i).collect()).unwrap_or_default();
+        if !bb_mats.is_empty()
+            && let Some(ms) = v.get("meshes").and_then(|m| m.as_array())
+        {
+            for m in ms {
+                let prims = m.get("primitives").and_then(|p| p.as_array());
+                if let (Some(name), Some(prims)) = (m.get("name").and_then(|n| n.as_str()), prims)
+                    && !prims.is_empty()
+                    && prims.iter().all(|p| p.get("material").and_then(|i| i.as_u64()).is_some_and(|i| bb_mats.contains(&(i as usize))))
+                {
+                    billboard_meshes.push(name.to_string());
+                }
+            }
+        }
+        (serde_json::to_vec(&v)?, Some(l.dir.clone()))
+    } else {
+        (bytes, path.parent().map(Path::to_path_buf))
+    };
+    let pieces = gltf_import::read_geometry(&bytes, dir.as_deref()).with_context(|| l.rel(&f.path))?;
+    let rel = l.rel(&f.path);
+    let out = pieces
+        .into_iter()
+        .map(|p| {
+            let lod = f.tier_lod.or_else(|| lod_of(&p.node_name)).or_else(|| lod_of(&p.mesh_name)).or(f.lod).unwrap_or(0);
+            let var = variant_of(&p.node_name).or_else(|| variant_of(&p.mesh_name)).or(f.variant).or_else(|| variant_of(&rel)).unwrap_or(0);
+            let billboard = billboard_meshes.contains(&p.mesh_name);
+            Piece { var, lod, billboard, build: p.build }
+        })
+        .collect();
+    Ok((out, buffers))
 }
 
 /// Picks at most `max` of `n` levels (by triangle count, decreasing): the first, the last, and
@@ -539,7 +703,7 @@ impl Merged {
 
 /// Imports a 3D asset or plant's meshes as LOD chains, one per variant.
 pub fn import_model(l: &Listing, o: &ModelOptions) -> Result<Model> {
-    let files = model_sources(l)?;
+    let files = model_sources(l, o.want_res)?;
     let mut notes = Vec::new();
     let via_blender = files.iter().any(|f| f.ext == "fbx");
     // GLB per source file (FBX through Blender into a temporary folder).
@@ -556,33 +720,20 @@ pub fn import_model(l: &Listing, o: &ModelOptions) -> Result<Model> {
     };
     // (variant, lod) -> pieces in (file, node) order.
     let mut groups: BTreeMap<(u32, u32), Merged> = BTreeMap::new();
+    let mut billboards: BTreeMap<u32, u32> = BTreeMap::new();
     let mut sources: Vec<PathBuf> = files.iter().map(|f| f.path.clone()).collect();
     for (f, glb) in files.iter().zip(&glbs) {
-        let bytes = std::fs::read(glb).with_context(|| format!("reading {}", glb.display()))?;
-        let dir = f.path.parent();
-        if f.ext == "gltf" {
-            // External buffers are inputs too (content hash).
-            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes)
-                && let Some(bufs) = v.get("buffers").and_then(|b| b.as_array())
-            {
-                for b in bufs {
-                    if let (Some(u), Some(d)) = (b.get("uri").and_then(|u| u.as_str()), dir)
-                        && !u.starts_with("data:")
-                    {
-                        sources.push(d.join(u.replace("%20", " ")));
-                    }
-                }
-            }
-        }
-        let pieces = gltf_import::read_geometry(&bytes, dir).with_context(|| l.rel(&f.path))?;
+        let (pieces, bufs) = read_pieces(l, f, glb)?;
+        sources.extend(bufs);
         if pieces.is_empty() {
             notes.push(format!("{}: no meshes", l.rel(&f.path)));
         }
-        let rel = l.rel(&f.path);
         for p in pieces {
-            let lod = lod_of(&p.node_name).or_else(|| lod_of(&p.mesh_name)).or(f.lod).unwrap_or(0);
-            let var = variant_of(&p.node_name).or_else(|| variant_of(&p.mesh_name)).or(f.variant).or_else(|| variant_of(&rel)).unwrap_or(0);
-            groups.entry((var, lod)).or_default().add(&p.build, o.scale);
+            if p.billboard {
+                *billboards.entry(p.var).or_default() += (p.build.indices.len() / 3) as u32;
+                continue;
+            }
+            groups.entry((p.var, p.lod)).or_default().add(&p.build, o.scale);
         }
     }
     sources.sort();
@@ -637,7 +788,11 @@ pub fn import_model(l: &Listing, o: &ModelOptions) -> Result<Model> {
         if size.max_element() > 100.0 {
             notes.push(format!("{label}: {:.0} m across; if the source is in centimetres set scale = 0.01", size.max_element()));
         }
-        variants.push(ModelVariant { label, build: all, lods, report, supplied, found });
+        let billboard_tris = billboards.get(&v).copied();
+        if let Some(t) = billboard_tris {
+            notes.push(format!("{label}: billboard LOD of {t} triangles kept out of the chain (impostor source)"));
+        }
+        variants.push(ModelVariant { label, build: all, lods, report, supplied, found, billboard_tris });
     }
     Ok(Model { variants, sources, via_blender, notes })
 }
@@ -650,13 +805,13 @@ pub fn map_options(kind: Kind, maps: &Maps, normal_dx: bool, material_asset: Opt
         Kind::Model3d => o.kind_tag = Some(kind.code()),
         Kind::Plant => {
             o.kind_tag = Some(kind.code());
-            o.alpha_test = maps.opacity.as_ref().map(|_| 0.5);
+            o.alpha_test = (maps.opacity.is_some() || maps.albedo_alpha).then_some(0.5);
             o.double_sided = true;
             o.translucency = true;
         }
         Kind::Decal => {
             o.kind_tag = Some(kind.code());
-            o.alpha_blend = maps.opacity.is_some();
+            o.alpha_blend = maps.opacity.is_some() || maps.albedo_alpha;
         }
         Kind::Imperfection => {
             o.kind_tag = Some(kind.code());
@@ -688,6 +843,15 @@ pub struct ScanEntry {
     pub triangles: Vec<String>,
     pub bytes: u64,
     pub problems: Vec<String>,
+    /// Informational lines (not problems): generated LODs, billboards.
+    pub notes: Vec<String>,
+    /// The Megascans id from the metadata JSON (Fab folders are named by the Fab id instead).
+    pub megascans_id: Option<String>,
+}
+
+/// The Megascans id (`id`) from the first metadata JSON that has one.
+pub fn metadata_id(l: &Listing) -> Option<String> {
+    l.metadata.iter().find_map(|m| std::fs::read(m).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()).and_then(|v| v.get("id").and_then(|i| i.as_str()).map(str::to_string)))
 }
 
 fn lod_ranges(mut v: Vec<u32>) -> String {
@@ -702,6 +866,7 @@ pub fn scan_asset(dir: &Path) -> Result<ScanEntry> {
     let l = Listing::read(dir)?;
     let (kind, kind_source) = detect(&l);
     let mut problems = Vec::new();
+    let mut notes_out: Vec<String> = Vec::new();
     if l.files.is_empty() {
         problems.push("empty folder".into());
     }
@@ -728,7 +893,7 @@ pub fn scan_asset(dir: &Path) -> Result<ScanEntry> {
     if needs_albedo && sel.albedo.is_none() {
         problems.push("no readable Albedo map".into());
     }
-    if kind == Kind::Plant && sel.opacity.is_none() {
+    if kind == Kind::Plant && sel.opacity.is_none() && !sel.albedo_alpha {
         problems.push("plant without an Opacity map (leaves will be opaque)".into());
     }
     let mut lods = Vec::new();
@@ -743,7 +908,7 @@ pub fn scan_asset(dir: &Path) -> Result<ScanEntry> {
             vars.sort();
             vars.dedup();
             let high = ms.iter().filter(|m| m.high).count();
-            let file_lods: Vec<u32> = ms.iter().filter_map(|m| m.lod).collect();
+            let file_lods: Vec<u32> = ms.iter().filter_map(|m| m.tier_lod.or(m.lod)).collect();
             let mut s = format!("{ext}: {} file(s)", ms.len());
             if !file_lods.is_empty() {
                 let _ = write!(s, ", {}", lod_ranges(file_lods));
@@ -756,28 +921,36 @@ pub fn scan_asset(dir: &Path) -> Result<ScanEntry> {
             }
             lods.push(s);
         }
-        match model_sources(&l) {
+        match model_sources(&l, None) {
             Ok(src) if src.iter().all(|f| f.ext != "fbx") => {
                 let mut per: BTreeMap<(u32, u32), usize> = BTreeMap::new();
+                let mut bb: BTreeMap<u32, usize> = BTreeMap::new();
                 let mut extent = 0.0f32;
                 for f in src {
-                    let read = std::fs::read(&f.path).map_err(anyhow::Error::from).and_then(|b| gltf_import::read_geometry(&b, f.path.parent()));
-                    match read {
-                        Ok(pieces) => {
+                    match read_pieces(&l, f, &f.path) {
+                        Ok((pieces, _)) => {
                             for p in pieces {
-                                let lod = lod_of(&p.node_name).or_else(|| lod_of(&p.mesh_name)).or(f.lod).unwrap_or(0);
-                                let var = variant_of(&p.node_name).or_else(|| variant_of(&p.mesh_name)).or(f.variant).unwrap_or(0);
-                                *per.entry((var, lod)).or_default() += p.build.indices.len() / 3;
+                                let t = p.build.indices.len() / 3;
+                                if p.billboard {
+                                    *bb.entry(p.var).or_default() += t;
+                                    continue;
+                                }
+                                *per.entry((p.var, p.lod)).or_default() += t;
                                 let b = p.build.bounds();
                                 extent = extent.max((Vec3::from(b.max) - Vec3::from(b.min)).max_element());
                             }
                         }
-                        Err(e) => problems.push(format!("{}: {e:#}", l.rel(&f.path))),
+                        Err(e) => problems.push(format!("{e:#}")),
                     }
                 }
+                let multi = per.keys().any(|(v, _)| *v != 0);
                 for ((v, k), t) in &per {
-                    let var = if per.keys().any(|(v2, _)| *v2 != 0) { format!("Var{v} ") } else { String::new() };
+                    let var = if multi { format!("Var{v} ") } else { String::new() };
                     triangles.push(format!("{var}LOD{k} {t}"));
+                }
+                for (v, t) in &bb {
+                    let var = if multi { format!("Var{v} ") } else { String::new() };
+                    triangles.push(format!("{var}billboard {t}"));
                 }
                 if kind == Kind::Plant && per.iter().any(|((_, k), t)| *k == 0 && *t > PLANT_WARN_TRIS as usize) {
                     problems.push(format!("LOD0 over {PLANT_WARN_TRIS} triangles (heavy plant; imports with a warning)"));
@@ -785,8 +958,11 @@ pub fn scan_asset(dir: &Path) -> Result<ScanEntry> {
                 if extent > 100.0 {
                     problems.push(format!("{extent:.0} units across: probably centimetres, set scale = 0.01"));
                 }
-                if !per.is_empty() && per.keys().filter(|(v, _)| *v == per.keys().next().expect("one").0).count() < MIN_LODS {
-                    problems.push(format!("fewer than {MIN_LODS} LODs: coarser ones will be generated"));
+                if let Some(first) = per.keys().next().map(|k| k.0) {
+                    let n = per.keys().filter(|(v, _)| *v == first).count();
+                    if n < MIN_LODS {
+                        notes_out.push(format!("{n} LOD(s) supplied; coarser ones are generated at bake time"));
+                    }
                 }
             }
             Ok(_) => {
@@ -798,15 +974,9 @@ pub fn scan_asset(dir: &Path) -> Result<ScanEntry> {
             Err(e) => problems.push(format!("{e:#}")),
         }
     }
-    // Metadata id vs folder name.
-    for m in &l.metadata {
-        if let Some(mid) = std::fs::read(m).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()).and_then(|v| v.get("id").and_then(|i| i.as_str()).map(str::to_string))
-            && !id.to_ascii_lowercase().contains(&mid.to_ascii_lowercase())
-        {
-            problems.push(format!("metadata id {mid} differs from the folder name"));
-        }
-    }
-    Ok(ScanEntry { id, kind, kind_source, maps, lods, triangles, bytes: l.bytes, problems })
+    // Fab folders are named by the Fab id; the metadata holds the Megascans id (provenance only).
+    let megascans_id = metadata_id(&l);
+    Ok(ScanEntry { id, kind, kind_source, maps, lods, triangles, bytes: l.bytes, problems, notes: notes_out, megascans_id })
 }
 
 /// Scans every sub-folder of the library root (sorted).
@@ -838,7 +1008,8 @@ pub fn format_scan(root: &Path, entries: &[ScanEntry]) -> String {
             KindSource::FileNames => "file names".into(),
             KindSource::Manifest => "manifest".into(),
         };
-        let _ = writeln!(s, "{}  kind={} ({src})  {}", e.id, e.kind.as_str(), human(e.bytes));
+        let msid = e.megascans_id.as_ref().map(|m| format!("  msid={m}")).unwrap_or_default();
+        let _ = writeln!(s, "{}  kind={} ({src})  {}{msid}", e.id, e.kind.as_str(), human(e.bytes));
         if !e.maps.is_empty() {
             let _ = writeln!(s, "  maps: {}", e.maps.join(", "));
         }
@@ -847,6 +1018,9 @@ pub fn format_scan(root: &Path, entries: &[ScanEntry]) -> String {
         }
         if !e.triangles.is_empty() {
             let _ = writeln!(s, "  triangles: {}", e.triangles.join(", "));
+        }
+        for n in &e.notes {
+            let _ = writeln!(s, "  note: {n}");
         }
         for p in &e.problems {
             let _ = writeln!(s, "  problem: {p}");

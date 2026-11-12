@@ -478,3 +478,172 @@ fn heavy_plants_warn_but_import() {
     assert!(rep.warnings.iter().any(|w| w.contains("520000t 10000t 600t")), "{:?}", rep.warnings);
     std::fs::remove_dir_all(&d).ok();
 }
+
+// ---------------------------------------------------------------------------------------------
+// Fab layouts: tier-folder 3D scans and plants (synthetic; mirrors the real download structure)
+
+fn write(path: &Path, bytes: &[u8]) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, bytes).unwrap();
+}
+
+/// 3D scan: `high/ mid/ low/` each with `<Name>_<ms>_<Tier>.gltf` + `.bin` (every node named
+/// LOD0, as Fab does) and `textures/<Name>_<ms>_<Tier>_<4K|2K|1K>_{albedo,normal,orm}.png`.
+/// The ORM has R = 200 (occlusion), G = 100 (roughness), B = 30 (metalness).
+fn tier_scan(root: &Path, with_mid: bool) {
+    let a = root.join("fab-scan-uuid__stone");
+    let tiers: &[(&str, &str, u32, u32, (u32, u32))] = &[("high", "High", 4, 32, (48, 24)), ("mid", "Mid", 2, 16, (24, 12)), ("low", "Low", 1, 8, (12, 6))];
+    for &(dir, tier, k, px, level) in tiers {
+        if dir == "mid" && !with_mid {
+            continue;
+        }
+        let stem = format!("Stone_ms1_{tier}");
+        let (j, b) = fixtures::external_gltf("stone_LOD0", &[level], &format!("{stem}.bin"), false);
+        write(&a.join(format!("{dir}/{stem}.gltf")), &j);
+        write(&a.join(format!("{dir}/{stem}.bin")), &b);
+        let t = a.join(format!("{dir}/textures/{stem}_{k}K"));
+        png(&PathBuf::from(format!("{}_albedo.png", t.display())), &pattern(px, px, 1));
+        png(&PathBuf::from(format!("{}_normal.png", t.display())), &pattern(px, px, 2));
+        let orm = Rgba8::new(px, px, (0..px * px).flat_map(|_| [200u8, 100, 30, 255]).collect()).unwrap();
+        png(&PathBuf::from(format!("{}_orm.png", t.display())), &orm);
+    }
+    // The 8K Raw tier, if it was extracted, is never read.
+    write(&a.join("raw/Stone_ms1_Raw.gltf"), b"not even json");
+}
+
+#[test]
+fn tier_folder_scans_are_the_lod_chain_with_one_texture_set() {
+    let d = scratch("tiers");
+    let lib = d.join("lib");
+    tier_scan(&lib, true);
+    let l = Listing::read(&lib.join("fab-scan-uuid__stone")).unwrap();
+    assert_eq!(ml::detect(&l).0, Kind::Model3d);
+    assert!(l.meshes.iter().all(|m| !m.high && m.tier_lod.is_some()), "raw ignored, tiers are LODs: {:?}", l.meshes);
+    let m = ml::import_model(&l, &ml::ModelOptions::default()).unwrap();
+    let v = &m.variants[0];
+    assert_eq!(v.supplied, [0, 1, 2], "High, Mid, Low = LOD0..2 although every node is named LOD0");
+    assert_eq!(v.lods.len(), 3);
+    assert!(v.report.windows(2).all(|w| w[1].triangles < w[0].triangles && w[1].error > w[0].error), "{:?}", v.report);
+    // 2K asks for the Mid set; unspecified takes the largest (High); every map from one tier.
+    let sel = |res: Option<u32>| ml::select_maps(&l, res).0;
+    for (res, px) in [(Some(2048), "Mid_2K"), (None, "High_4K")] {
+        let s = sel(res);
+        for p in [s.albedo.as_ref().unwrap(), s.normal.as_ref().unwrap(), s.orm.as_ref().unwrap()] {
+            assert!(p.to_string_lossy().contains(px), "{res:?}: {p:?}");
+        }
+    }
+    // ORM is carried as is (R occlusion, G roughness, B metalness: the glTF convention).
+    let maps = sel(Some(2048));
+    let s = ml::import_textures(Kind::Model3d, &maps, "megascans/stone", false, Some("megascans/stone/material".into())).unwrap();
+    let orm = &s.textures.iter().find(|(n, _)| n.ends_with("/orm")).unwrap().1;
+    assert_eq!((orm.width, orm.height), (16, 16));
+    let (_, mat) = &s.material;
+    assert!(mat.textures.contains_key("orm") && mat.textures.contains_key("normal"));
+    // A scan without a Mid tier: two supplied LODs, a third is generated.
+    let lib2 = d.join("lib2");
+    tier_scan(&lib2, false);
+    let m = ml::import_model(&Listing::read(&lib2.join("fab-scan-uuid__stone")).unwrap(), &ml::ModelOptions::default()).unwrap();
+    assert_eq!(m.variants[0].supplied, [0, 2]);
+    assert!(m.variants[0].lods.len() >= 3 && m.notes.iter().any(|n| n.contains("generated")), "{:?}", m.notes);
+    std::fs::remove_dir_all(&d).ok();
+}
+
+/// Plant: `<ms>_tier_N.gltf` + `.bin` per tier folder, `standard/<ms>_tier_N_nonUE.gltf` using
+/// `../`, `Textures/T_<ms>_<4K|2K>_{B-O,B,N,ORT,Billboard_B-O,Billboard_N-T}.png`, `<ms>.json`.
+/// The glTF holds one variant (VarA) with LOD0..LOD2 and a billboard LOD3. ORT = (200, 100, 60).
+fn fab_plant(root: &Path, keep_top_level: bool) -> PathBuf {
+    let a = root.join("fab-plant-uuid__bush");
+    for (n, dir, k, px, lod0) in [(1, "high", 4, 32u32, (64u32, 32u32)), (2, "mid", 2, 16, (32, 16))] {
+        let stem = format!("plantms_tier_{n}");
+        let levels = [lod0, (16, 8), (8, 4), (1, 1)];
+        let (j, b) = fixtures::external_gltf("SM_plantms_VarA", &levels, &format!("{stem}.bin"), true);
+        if keep_top_level {
+            write(&a.join(format!("{dir}/{stem}.gltf")), &j);
+        }
+        write(&a.join(format!("{dir}/{stem}.bin")), &b);
+        let (js, _) = fixtures::external_gltf("SM_plantms_VarA", &levels, &format!("../{stem}.bin"), true);
+        write(&a.join(format!("{dir}/standard/{stem}_nonUE.gltf")), &js);
+        let t = |s: &str| a.join(format!("{dir}/Textures/T_plantms_{k}K_{s}.png"));
+        let bo = Rgba8::new(px, px, (0..px * px).flat_map(|i| [10u8, 120, 30, if i % 2 == 0 { 0 } else { 255 }]).collect()).unwrap();
+        png(&t("B-O"), &bo);
+        png(&t("B"), &pattern(px, px, 4));
+        png(&t("N"), &pattern(px, px, 5));
+        let ort = Rgba8::new(px, px, (0..px * px).flat_map(|_| [200u8, 100, 60, 255]).collect()).unwrap();
+        png(&t("ORT"), &ort);
+        png(&t("Billboard_B-O"), &pattern(px, px, 6));
+        png(&t("Billboard_N-T"), &pattern(px, px, 7));
+        write(&a.join(format!("{dir}/plantms.json")), br#"{"id": "plantms", "semanticTags": {"asset_type": "3D plant"}}"#);
+    }
+    a
+}
+
+#[test]
+fn fab_plants_use_packed_maps_a_tier_file_and_tag_the_billboard() {
+    let d = scratch("plant");
+    let a = fab_plant(&d.join("lib"), true);
+    let l = Listing::read(&a).unwrap();
+    assert_eq!(ml::detect(&l).0, Kind::Plant);
+    let s = ml::select_maps(&l, Some(2048)).0;
+    assert!(s.albedo_alpha && s.albedo.as_ref().unwrap().to_string_lossy().ends_with("mid/Textures/T_plantms_2K_B-O.png"), "{s:?}");
+    assert!(s.ort.is_some() && s.billboard_albedo.is_some() && s.billboard_normal.is_some() && s.normal.is_some() && s.opacity.is_none());
+    // Mesh: the mid tier's top-level file only (not the standard/ copy, not the other tier).
+    let src = ml::model_sources(&l, Some(2048)).unwrap();
+    assert_eq!(src.len(), 1);
+    assert!(src[0].path.ends_with("mid/plantms_tier_2.gltf"), "{:?}", src[0].path);
+    let m = ml::import_model(&l, &ml::ModelOptions { scale: 1.0, want_res: Some(2048) }).unwrap();
+    let v = &m.variants[0];
+    assert_eq!(v.report.len(), 3, "LOD0..2; the billboard is not in the chain: {:?}", v.report);
+    assert_eq!(v.supplied, [0, 1, 2]);
+    assert_eq!(v.billboard_tris, Some(2));
+    assert_eq!(v.report[0].triangles, 32 * 16 * 2);
+    // Without a wanted size the highest tier is used.
+    let hi = ml::import_model(&l, &ml::ModelOptions::default()).unwrap();
+    assert_eq!(hi.variants[0].report[0].triangles, 64 * 32 * 2);
+    // Material: B-O is the albedo (alpha = opacity), ORT -> ORM with B cleared, translucency
+    // from ORT's B, billboard pair kept, alpha-masked and double-sided.
+    let maps = ml::select_maps(&l, Some(2048)).0;
+    let sf = ml::import_textures(Kind::Plant, &maps, "megascans/bush", false, Some("megascans/bush/material".into())).unwrap();
+    let (_, mat) = &sf.material;
+    assert_eq!((mat.alpha_mode, mat.double_sided), (AlphaMode::Mask, true));
+    for slot in ["base_colour", "normal", "orm", T_TRANSLUCENCY, "billboard_albedo", "billboard_normal"] {
+        assert!(mat.textures.contains_key(slot), "{slot}");
+    }
+    assert_eq!(sf.textures.len(), 6);
+    // standard/ only: `../x.bin` stays inside the asset folder, so it loads.
+    let only_std = fab_plant(&d.join("lib_std"), false);
+    let ls = Listing::read(&only_std).unwrap();
+    let src = ml::model_sources(&ls, Some(2048)).unwrap();
+    assert!(src[0].standard);
+    let m = ml::import_model(&ls, &ml::ModelOptions { scale: 1.0, want_res: Some(2048) }).unwrap();
+    assert_eq!(m.variants[0].report.len(), 3);
+    assert!(m.sources.iter().any(|p| p.ends_with("mid/plantms_tier_2.bin")), "{:?}", m.sources);
+    // A URI that leaves the asset folder is refused.
+    let (bad, _) = fixtures::external_gltf("SM_plantms_VarA", &[(16, 8)], "../../../outside.bin", false);
+    write(&only_std.join("mid/standard/plantms_tier_2_nonUE.gltf"), &bad);
+    let err = ml::import_model(&Listing::read(&only_std).unwrap(), &ml::ModelOptions { scale: 1.0, want_res: Some(2048) }).err().expect("escape refused");
+    assert!(format!("{err:#}").contains("leaves the asset folder"), "{err:#}");
+    std::fs::remove_dir_all(&d).ok();
+}
+
+#[test]
+fn fab_layouts_bake_with_provenance_and_scan_clean() {
+    let d = scratch("fabbake");
+    let lib = d.join("lib");
+    tier_scan(&lib, true);
+    fab_plant(&lib, true);
+    let text = "megascans_dir = \"lib\"\n[pack]\nname = \"f\"\ngame_packaged = true\n[[megascans]]\nfab_id = \"fab-scan-uuid\"\nalias = \"stone\"\n[[megascans]]\nfab_id = \"fab-plant-uuid\"\nalias = \"bush\"\n";
+    let rep = bake::build(&source(&d, text), &d.join("f.ewpack")).unwrap();
+    assert!(rep.warnings.iter().any(|w| w.contains("bush") && w.contains("billboard")), "{:?}", rep.warnings);
+    let r = PackReader::open_file(&d.join("f.ewpack")).unwrap();
+    let prov = r.read(&ChunkKey::asset(AssetId::from_path("megascans/bush/material"), ChunkKind::Material)).unwrap().provenance().to_vec();
+    assert!(prov.iter().any(|s| s == "megascans-id=plantms") && prov.iter().any(|s| s == "fab-id=fab-plant-uuid"), "{prov:?}");
+    let mesh_c = r.read(&ChunkKey::asset(AssetId::from_path("megascans/stone/mesh"), ChunkKind::Mesh)).unwrap();
+    let mesh: Mesh = mesh_c.decode().unwrap();
+    assert_eq!(geom::decode(&mesh).unwrap().lods.len(), 3);
+    // Scan: a Fab id folder whose metadata id differs is not a problem.
+    let e = ml::scan_asset(&lib.join("fab-plant-uuid__bush")).unwrap();
+    assert!(e.problems.is_empty(), "{:?}", e.problems);
+    assert_eq!(e.megascans_id.as_deref(), Some("plantms"));
+    assert!(e.triangles.iter().any(|t| t.contains("billboard")), "{:?}", e.triangles);
+    std::fs::remove_dir_all(&d).ok();
+}

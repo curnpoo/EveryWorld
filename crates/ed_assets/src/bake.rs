@@ -351,10 +351,12 @@ fn megascans_entry(cx: &mut Ctx, dir: &Path, src: &SourceFile, m: &MegaSrc) -> R
         Some(k) => megascans_lib::Kind::parse(k)?,
         None => megascans_lib::detect(&listing).0,
     };
+    // Fab tier layouts (high/mid/low): one texture set, 2K unless the entry says otherwise.
+    let want_res = want_res.or_else(|| (kind.has_mesh() && listing.tiered()).then_some(2048));
     let (maps, notes) = megascans_lib::select_maps(&listing, want_res);
     cx.warnings.extend(notes.into_iter().map(|n| format!("megascans {asset}: {n}")));
     let model = if kind.has_mesh() {
-        let o = megascans_lib::ModelOptions { scale: m.scale.unwrap_or(1.0) };
+        let o = megascans_lib::ModelOptions { scale: m.scale.unwrap_or(1.0), want_res };
         Some(megascans_lib::import_model(&listing, &o).with_context(|| format!("megascans {asset}"))?)
     } else {
         None
@@ -374,7 +376,14 @@ fn megascans_entry(cx: &mut Ctx, dir: &Path, src: &SourceFile, m: &MegaSrc) -> R
         src: hash_hex(name.as_bytes()),
         content: h.finalize().to_hex().to_string(),
         registry: m.registry.clone(),
-        extra: vec![format!("fab-id={}", m.fab_id.trim()), format!("megascans-kind={}", kind.as_str())],
+        extra: {
+            let mut e = vec![format!("fab-id={}", m.fab_id.trim()), format!("megascans-kind={}", kind.as_str())];
+            // Fab folders are named by the Fab id; the metadata JSON holds the Megascans id.
+            if let Some(id) = megascans_lib::metadata_id(&listing) {
+                e.push(format!("megascans-id={id}"));
+            }
+            e
+        },
     };
     for (a, t) in &s.textures {
         cx.put_texture(a, t, &p)?;

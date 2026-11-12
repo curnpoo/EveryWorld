@@ -63,6 +63,15 @@ pub struct Maps {
     pub displacement: Option<PathBuf>,
     pub opacity: Option<PathBuf>,
     pub translucency: Option<PathBuf>,
+    /// The albedo file also carries opacity in its alpha (Megascans plant `B-O`).
+    pub albedo_alpha: bool,
+    /// Packed glTF-convention ORM (R occlusion, G roughness, B metalness; 3D scans' `orm.png`).
+    pub orm: Option<PathBuf>,
+    /// Packed plant ORT (R occlusion, G roughness, B translucency; no metalness).
+    pub ort: Option<PathBuf>,
+    /// Billboard (impostor source) albedo+opacity and normal, kept as an extra texture pair.
+    pub billboard_albedo: Option<PathBuf>,
+    pub billboard_normal: Option<PathBuf>,
 }
 
 /// How [`import_maps`] builds the material.
@@ -88,6 +97,9 @@ pub struct MapOptions {
 
 /// Material texture slot for a plant's translucency map (not sampled by the renderer yet).
 pub const T_TRANSLUCENCY: &str = "translucency";
+/// Material slots for a plant's billboard textures (kept for later impostors).
+pub const T_BILLBOARD_ALBEDO: &str = "billboard_albedo";
+pub const T_BILLBOARD_NORMAL: &str = "billboard_normal";
 /// Material parameter tagging the Megascans asset kind (see `megascans_lib::Kind::code`).
 pub const P_MEGASCANS_KIND: &str = "megascans_kind";
 
@@ -128,7 +140,7 @@ pub fn import_maps(maps: &Maps, base: &str, o: &MapOptions) -> Result<Surface> {
     if let Some(albedo) = &maps.albedo {
         files.push(albedo.clone());
         let mut img = load(albedo)?;
-        if alpha && let Some(op) = &maps.opacity {
+        if alpha && !maps.albedo_alpha && let Some(op) = &maps.opacity {
             files.push(op.clone());
             let a = load(op)?;
             if (a.width, a.height) != (img.width, img.height) {
@@ -157,7 +169,33 @@ pub fn import_maps(maps: &Maps, base: &str, o: &MapOptions) -> Result<Surface> {
         _ => (None, false),
     };
     let (ao, metal) = (&maps.ao, &maps.metalness);
-    if rough.is_some() || ao.is_some() || metal.is_some() {
+    // Packed maps: ORM as is; ORT (plants) with B = translucency, not metal.
+    let mut packed: Option<Rgba8> = None;
+    let mut trans_from_ort: Option<Rgba8> = None;
+    if let Some(p) = &maps.orm {
+        files.push(p.clone());
+        packed = Some(load(p)?);
+    } else if let Some(p) = &maps.ort {
+        files.push(p.clone());
+        let mut img = load(p)?;
+        if o.translucency && maps.translucency.is_none() {
+            let mut t = img.clone();
+            for px in t.data.as_chunks_mut::<4>().0 {
+                *px = [px[2], px[2], px[2], 255];
+            }
+            trans_from_ort = Some(t);
+        }
+        for px in img.data.as_chunks_mut::<4>().0 {
+            px[2] = 0;
+        }
+        packed = Some(img);
+    }
+    if let Some(mut img) = packed {
+        for px in img.data.as_chunks_mut::<4>().0 {
+            px[3] = 255;
+        }
+        put(T_ORM, "orm", &img, Role::Linear, &mut mat)?;
+    } else if rough.is_some() || ao.is_some() || metal.is_some() {
         let srcs = [ao.as_ref(), rough, metal.as_ref()];
         let mut maps_img: Vec<Option<Rgba8>> = srcs.iter().map(|p| p.map(|p| load(p)).transpose()).collect::<Result<_>>()?;
         if invert && let Some(g) = maps_img[1].as_mut() {
@@ -188,6 +226,16 @@ pub fn import_maps(maps: &Maps, base: &str, o: &MapOptions) -> Result<Surface> {
     if o.translucency && let Some(p) = &maps.translucency {
         files.push(p.clone());
         put(T_TRANSLUCENCY, "translucency", &load(p)?, Role::Colour, &mut mat)?;
+    } else if let Some(t) = &trans_from_ort {
+        put(T_TRANSLUCENCY, "translucency", t, Role::Colour, &mut mat)?;
+    }
+    if let Some(p) = &maps.billboard_albedo {
+        files.push(p.clone());
+        put(T_BILLBOARD_ALBEDO, "billboard_albedo", &load(p)?, Role::Colour, &mut mat)?;
+    }
+    if let Some(p) = &maps.billboard_normal {
+        files.push(p.clone());
+        put(T_BILLBOARD_NORMAL, "billboard_normal", &load(p)?, Role::Normal, &mut mat)?;
     }
     if let Some(c) = o.alpha_test {
         mat.alpha_mode = AlphaMode::Mask;
