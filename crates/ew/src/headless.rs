@@ -45,6 +45,9 @@ pub struct Report {
 pub fn run(args: &Args) -> Result<Report, String> {
     let frames = args.frames.unwrap_or(DEFAULT_FRAMES).max(1);
     let (w, h) = (args.width, args.height);
+    if !args.empty && args.scene() == SceneKind::Proving {
+        crate::content::Content::check_required(&args.packs)?;
+    }
     let dev = ed_gpu::create_device(ed_gpu::default_backend(), &DeviceDesc { validation: args.validation, frames_in_flight: args.frames_in_flight })
         .map_err(|e| format!("device: {e}"))?;
     let caps = crate::caps_line(dev.caps());

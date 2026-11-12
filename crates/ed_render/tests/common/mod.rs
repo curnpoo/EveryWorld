@@ -27,18 +27,11 @@ impl Rig {
     }
 
     /// A rig with an empty renderer on [`ed_gpu::default_backend`] (`ED_GPU_BACKEND`). `None`
-    /// when that is Vulkan and no Vulkan device exists (the test prints why and is skipped),
-    /// unless `ED_GPU_REQUIRE_VULKAN=1`.
+    /// when there is no usable GPU device (the test prints why and is skipped), see
+    /// [`ed_gpu::device_or_skip`].
     pub fn bare() -> Option<Self> {
         let backend = default_backend();
-        let dev = match create_device(backend, &DeviceDesc { validation: true, frames_in_flight: 2 }) {
-            Ok(d) => d,
-            Err(e) if backend == Backend::Vulkan && std::env::var("ED_GPU_REQUIRE_VULKAN").as_deref() != Ok("1") => {
-                eprintln!("SKIP: no Vulkan device ({e})");
-                return None;
-            }
-            Err(e) => panic!("{backend:?} device: {e}"),
-        };
+        let dev = device_or_skip(backend, &DeviceDesc { validation: true, frames_in_flight: 2 })?;
         let renderer = Renderer::new(&*dev).expect("renderer");
         let target = dev
             .create_texture(&TextureDesc {
@@ -143,4 +136,14 @@ pub fn hash(px: &[[u8; 4]]) -> u64 {
         }
     }
     h
+}
+
+/// Debug aid: with `ED_TEST_DUMP=dir` set, writes `px` as `dir/name.ppm` (binary P6).
+pub fn dump(px: &[[u8; 4]], name: &str) {
+    let Some(dir) = std::env::var_os("ED_TEST_DUMP") else { return };
+    let mut out = format!("P6\n{W} {H}\n255\n").into_bytes();
+    for p in px {
+        out.extend_from_slice(&p[..3]);
+    }
+    let _ = std::fs::write(std::path::Path::new(&dir).join(format!("{name}.ppm")), out);
 }

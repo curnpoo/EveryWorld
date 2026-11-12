@@ -89,6 +89,7 @@ pub(crate) struct RenderPipe {
     prim: MTLPrimitiveType,
     cull: MTLCullMode,
     bias: (f32, f32),
+    clamp: bool,
     colors: Vec<Format>,
     depth: Option<(Format, bool)>,
 }
@@ -661,6 +662,7 @@ impl Device for MetalDevice {
     }
 
     fn create_render_pipeline(&self, desc: &RenderPipelineDesc<'_>) -> Result<RenderPipelineId> {
+        desc.validate()?;
         let (vs, fs) = {
             let st = self.lock();
             let vs = st.shaders.get(desc.vertex.index(), desc.vertex.generation()).ok_or_else(|| invalid(format!("pipeline '{}': stale vertex shader", desc.label)))?;
@@ -727,6 +729,7 @@ impl Device for MetalDevice {
             prim,
             cull: conv::cull(desc.cull),
             bias: desc.depth.as_ref().map(|d| (d.bias, d.slope_bias)).unwrap_or((0.0, 0.0)),
+            clamp: desc.depth.as_ref().is_some_and(|d| d.clamp),
             colors: desc.color_formats.to_vec(),
             depth: desc.depth.as_ref().map(|d| (d.format, d.write)),
         };

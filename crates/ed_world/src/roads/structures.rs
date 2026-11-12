@@ -254,7 +254,7 @@ pub(super) fn portal(m: &mut MeshData, at: Vec3, dir: Vec3, up: Vec3, hw: f32) {
 }
 
 /// Retaining wall for a cut: vertical panels on sides where the natural ground sits above the road.
-pub fn cut_wall(m: &mut MeshData, pts: &[Vec3], up: Vec3, hw: f32, ground: &dyn Fn(Vec3) -> f32, kit: &super::StreetKit) {
+pub fn cut_wall(m: &mut MeshData, pts: &[Vec3], up: Vec3, hw: f32, ground: &dyn Fn(Vec3) -> f32, _kit: &super::StreetKit) {
     let color = rgb(0x9a9893);
     let n = pts.len();
     if n < 2 {

@@ -213,3 +213,4 @@ fn shader_reload_swaps_on_success_and_keeps_running_on_error() {
     assert_eq!(ShaderSources::load(ShaderSources::source_dir()).unwrap(), ShaderSources::builtin());
     rig.destroy();
 }
+

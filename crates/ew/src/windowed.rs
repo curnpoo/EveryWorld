@@ -79,6 +79,9 @@ struct App {
 }
 
 pub fn run(args: Args) -> Result<(), String> {
+    if args.scene() == SceneKind::Proving {
+        crate::content::Content::check_required(&args.packs)?;
+    }
     let dev = ed_gpu::create_device(ed_gpu::default_backend(), &DeviceDesc { validation: args.validation, frames_in_flight: args.frames_in_flight })
         .map_err(|e| format!("device: {e}"))?;
     println!("ew: {}", crate::caps_line(dev.caps()));

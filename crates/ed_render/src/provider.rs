@@ -55,6 +55,17 @@ pub struct SharedInputs {
 pub struct VisTargets {
     pub depth: Res,
     pub vis: Res,
+    /// Sun shadow casters to draw after the view (M4d), or none.
+    pub shadow: Option<ShadowTargets>,
+}
+
+/// The cascade atlas a provider draws sun shadow casters into: `cascades` square tiles of
+/// `tile` texels, two per row (common.slang `LightData`; the cascade matrices are in FrameData).
+#[derive(Clone, Copy, Debug)]
+pub struct ShadowTargets {
+    pub atlas: Res,
+    pub cascades: u32,
+    pub tile: u32,
 }
 
 /// What a provider hands to the passes after it (resolve, debug passes).
@@ -133,6 +144,10 @@ pub struct CullStats {
     pub triangles: u32,
     /// Drawn instances whose LOD changed this frame.
     pub changed: u32,
+    /// Sun shadow casters per cascade (M4d; 0 with shadows off).
+    pub shadow_casters: [u32; 4],
+    /// Triangles drawn into the shadow atlas.
+    pub shadow_triangles: u32,
 }
 
 impl CullStats {
@@ -152,6 +167,8 @@ impl CullStats {
             fading: w[7],
             triangles: w[8],
             changed: w[9],
+            shadow_casters: [w[10], w[11], w[12], w[13]],
+            shadow_triangles: w[14],
         }
     }
 }
@@ -280,6 +297,10 @@ struct CullView {
     state: Tracked,
     args: Tracked,
     visible: Tracked,
+    /// Sun shadow casters: per-cascade bins (same layout and template as the main view) and
+    /// their visible list.
+    shadow_args: Tracked,
+    shadow_visible: Tracked,
     hzb: Option<(Tracked, u32, u32)>,
     stats_ring: Ring,
     stats: Option<CullStats>,
@@ -298,11 +319,15 @@ impl CullView {
         state.state = ResourceState::CopyDst;
         let args = Tracked::new(dev, "draw args", bins_max * ARGS_WORDS as u64 * 4, Usage { indirect_args: true, ..rw })?;
         let visible = Tracked::new(dev, "visible list", visible_bytes, rw)?;
+        let shadow_args = Tracked::new(dev, "shadow draw args", bins_max * ARGS_WORDS as u64 * 4, Usage { indirect_args: true, ..rw })?;
+        let shadow_visible = Tracked::new(dev, "shadow visible list", visible_bytes, rw)?;
         let stats_ring = Ring::new(dev, "cull stats", (STAT_WORDS * 4) as u64)?;
         Ok(Self {
             state,
             args,
             visible,
+            shadow_args,
+            shadow_visible,
             hzb: None,
             stats_ring,
             stats: None,
@@ -314,7 +339,7 @@ impl CullView {
         })
     }
     fn destroy(self, dev: &dyn Device) {
-        for t in [self.state, self.args, self.visible] {
+        for t in [self.state, self.args, self.visible, self.shadow_args, self.shadow_visible] {
             t.destroy(dev);
         }
         if let Some((h, _, _)) = self.hzb {
@@ -346,6 +371,8 @@ enum Imported {
     Args,
     Templ,
     Visible,
+    ShadowArgs,
+    ShadowVisible,
     Hzb,
     Stats(usize),
 }
@@ -375,6 +402,9 @@ pub(crate) struct LodPipelines {
     hzb_down: ComputePipelineId,
     vis_solid: RenderPipelineId,
     vis_dither: RenderPipelineId,
+    shadow_reset: ComputePipelineId,
+    shadow_cull: ComputePipelineId,
+    shadow_raster: RenderPipelineId,
 }
 
 impl LodPipelines {
@@ -405,14 +435,32 @@ impl LodPipelines {
             fragment: Some(fragment),
             color_formats: &[VIS_FORMAT],
             blend: ed_gpu::Blend::Opaque,
-            depth: Some(DepthDesc { format: crate::DEPTH_FORMAT, write: true, compare: Compare::GreaterEqual, bias: 0.0, slope_bias: 0.0 }),
+            depth: Some(DepthDesc { format: crate::DEPTH_FORMAT, write: true, compare: Compare::GreaterEqual, bias: 0.0, slope_bias: 0.0, clamp: false }),
             cull: Cull::Back,
             topology: Topology::Triangles,
             samples: 1,
         };
         let vis_solid = b.render(dev, &rp("vis solid", fs))?;
         let vis_dither = b.render(dev, &rp("vis dither", fsd))?;
-        Ok(Self { built: std::mem::take(b), cull_reset, cull_early, cull_late, hzb_first, hzb_down, vis_solid, vis_dither })
+        let shadow_reset = b.compute(dev, src, Module::Cull, "shadow_reset", g)?;
+        let shadow_cull = b.compute(dev, src, Module::Cull, "shadow_cull", g)?;
+        let vss = b.shader(dev, src, Module::Vis, "vs_shadow", ShaderStage::Vertex, "vs_shadow")?;
+        // Depth only; both faces (thin and open geometry casts), light depth grows towards the sun.
+        let shadow_raster = b.render(
+            dev,
+            &RenderPipelineDesc {
+                label: "shadow raster",
+                vertex: vss,
+                fragment: None,
+                color_formats: &[],
+                blend: ed_gpu::Blend::Opaque,
+                depth: Some(DepthDesc { format: crate::DEPTH_FORMAT, write: true, compare: Compare::GreaterEqual, bias: 0.0, slope_bias: 0.0, clamp: true }),
+                cull: Cull::None,
+                topology: Topology::Triangles,
+                samples: 1,
+            },
+        )?;
+        Ok(Self { built: std::mem::take(b), cull_reset, cull_early, cull_late, hzb_first, hzb_down, vis_solid, vis_dither, shadow_reset, shadow_cull, shadow_raster })
     }
     pub(crate) fn destroy(self, dev: &dyn Device) {
         self.built.destroy(dev);
@@ -541,6 +589,8 @@ impl DiscreteLod {
                 if v.visible.size < self.visible_bytes {
                     let grown = Tracked::new(dev, "visible list", self.visible_bytes, rw)?;
                     std::mem::replace(&mut v.visible, grown).destroy(dev);
+                    let grown = Tracked::new(dev, "shadow visible list", self.visible_bytes, rw)?;
+                    std::mem::replace(&mut v.shadow_visible, grown).destroy(dev);
                 }
             }
         }
@@ -628,6 +678,11 @@ impl GeometryProvider for DiscreteLod {
         let state = imp(g, "instance state", &v.state, fin(ResourceState::ShaderRead), Imported::State, &mut list);
         let args = imp(g, "draw args", &v.args, fin(ResourceState::IndirectArgs), Imported::Args, &mut list);
         let visible = imp(g, "visible list", &v.visible, fin(ResourceState::ShaderRead), Imported::Visible, &mut list);
+        let shadow_bufs = out.shadow.map(|_| {
+            let a = imp(g, "shadow draw args", &v.shadow_args, fin(ResourceState::IndirectArgs), Imported::ShadowArgs, &mut list);
+            let vl = imp(g, "shadow visible list", &v.shadow_visible, fin(ResourceState::ShaderRead), Imported::ShadowVisible, &mut list);
+            (a, vl)
+        });
         let slot = v.stats_ring.slot(frame_index);
         let stats = imp(g, "cull stats", &v.stats_ring.bufs[slot], fin(ResourceState::ShaderRead), Imported::Stats(slot), &mut list);
         let occlusion = config.occlusion;
@@ -732,6 +787,56 @@ impl GeometryProvider for DiscreteLod {
             ctx.enc.dispatch(groups, 1, 1);
         });
         raster(g, "raster_late", 1, false);
+
+        // Sun shadow casters (M4d): cull every instance against every cascade on the GPU, then
+        // one depth pass that draws each cascade's bins into its atlas tile.
+        if let (Some(sh), Some((sargs, svis))) = (out.shadow, shadow_bufs) {
+            let mut scw = cw;
+            scw[4] = v.shadow_args.bindless.0;
+            scw[5] = v.shadow_visible.bindless.0;
+            let scc = constants(&scw);
+            let sargs_id = v.shadow_args.id;
+            let (p_sreset, p_scull, p_sraster) = (pipes.shadow_reset, pipes.shadow_cull, pipes.shadow_raster);
+            let copy_groups = (s * 4 * ARGS_WORDS as u32).max(1).div_ceil(CULL_GROUP);
+            cull_pass(g, "shadow_cull", inp, [meshes, state, sargs, svis, stats]).read(templ, ResourceState::ShaderRead).exec(move |ctx| {
+                ctx.enc.set_compute_pipeline(p_sreset);
+                ctx.enc.set_compute_constants(&scc);
+                ctx.enc.dispatch(copy_groups, 1, 1);
+                ctx.enc.transition(&[Transition::Buffer { buffer: sargs_id, from: sw, to: sw }]);
+                ctx.enc.set_compute_pipeline(p_scull);
+                ctx.enc.set_compute_constants(&scc);
+                ctx.enc.dispatch(groups, 1, 1);
+            });
+            let svc_base = [inp.frame.1, inp.instances.1, inp.nodes.1, v.shadow_visible.bindless.0, inp.verts.1];
+            let (n, tile) = (sh.cascades.min(4), sh.tile);
+            g.add_pass("shadow_raster", PassKind::Raster)
+                .read(inp.frame.0, ResourceState::ShaderRead)
+                .read(inp.instances.0, ResourceState::ShaderRead)
+                .read(inp.nodes.0, ResourceState::ShaderRead)
+                .read(inp.verts.0, ResourceState::ShaderRead)
+                .read(inp.indices.0, ResourceState::ShaderRead)
+                .read(svis, ResourceState::ShaderRead)
+                .read(sargs, ResourceState::IndirectArgs)
+                .depth(sh.atlas, LoadOp::Clear([0.0; 4]), StoreOp::Store, true)
+                .exec(move |ctx| {
+                    if s == 0 {
+                        return;
+                    }
+                    ctx.enc.set_index_buffer(idx_id, 0);
+                    ctx.enc.set_render_pipeline(p_sraster);
+                    for c in 0..n {
+                        let (x, y) = ((c % 2) * tile, (c / 2) * tile);
+                        ctx.enc.set_viewport(x as f32, y as f32, tile as f32, tile as f32);
+                        ctx.enc.set_scissor(x, y, tile, tile);
+                        let mut w = [0u32; 6];
+                        w[..5].copy_from_slice(&svc_base);
+                        w[5] = c;
+                        ctx.enc.set_draw_constants(&constants(&w));
+                        let off = (c * s) as u64 * (ARGS_WORDS * 4) as u64;
+                        ctx.enc.draw_indexed_indirect_multi(sargs_id, off, s, None);
+                    }
+                });
+        }
         ProviderOutputs { meshes: (meshes, mesh_table.bindless.0), state: (state, v.state.bindless.0) }
     }
 
@@ -745,6 +850,8 @@ impl GeometryProvider for DiscreteLod {
                 Imported::Args => v.args.state = s,
                 Imported::Templ => self.templ.state = s,
                 Imported::Visible => v.visible.state = s,
+                Imported::ShadowArgs => v.shadow_args.state = s,
+                Imported::ShadowVisible => v.shadow_visible.state = s,
                 Imported::Hzb => {
                     if let Some(h) = v.hzb.as_mut() {
                         h.0.state = s;

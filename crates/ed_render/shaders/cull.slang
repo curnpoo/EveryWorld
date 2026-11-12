@@ -43,6 +43,8 @@ static const uint STAT_NONEMPTY = 6;
 static const uint STAT_FADING = 7;
 static const uint STAT_TRIANGLES = 8;
 static const uint STAT_CHANGED = 9;
+static const uint STAT_SHADOW = 10;          // 10..13: shadow casters per cascade
+static const uint STAT_SHADOW_TRIANGLES = 14;
 static const uint STAT_WORDS = 16;
 
 // One atomic per wave: every thread of the group reaches the stat_add calls (no early return).
@@ -319,4 +321,61 @@ void cull_late(uint3 tid: SV_DispatchThreadID) {
     stat_add(stats, STAT_TRIANGLES, e.tris);
     stat_add(stats, STAT_FADING, fading);
     stat_add(stats, STAT_CHANGED, changed);
+}
+
+// Sun shadow casters (M4d, P1-D20): the same bins and template as the main view, one range per
+// cascade (range c = cascade c). shadow_reset copies the template into the shadow draw
+// arguments; shadow_cull tests every live instance's bounding sphere against each cascade's
+// light-space box (casters towards the sun are kept: the raster clamps them), drops casters
+// under 0.75 texel, picks a stateless LOD from the cascade's texel size and appends to that
+// cascade's bin. No per-instance CPU work.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void shadow_reset(uint3 tid: SV_DispatchThreadID) {
+    uint i = tid.x;
+    if (i < ed_c.bins_kind * 4 * ARGS_WORDS) {
+        ed_buf<uint>(ed_c.args)[i] = ed_buf<uint>(ed_c.templ)[i];
+    }
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void shadow_cull(uint3 tid: SV_DispatchThreadID) {
+    uint i = tid.x;
+    FrameData* f = ed_buf<FrameData>(ed_c.frame);
+    Atomic<uint>* stats = (Atomic<uint>*)ed_buf<uint>(ed_c.stats);
+    Emitted e = { 0, 0, 0 };
+    uint cnt0 = 0, cnt1 = 0, cnt2 = 0, cnt3 = 0;
+    if (i < ed_c.count) {
+        GpuInstance inst = ed_buf<GpuInstance>(ed_c.instances)[i];
+        if ((inst.node_flags & INSTANCE_ALIVE) != 0) {
+            uint* args_plain = ed_buf<uint>(ed_c.args);
+            Atomic<uint>* args = (Atomic<uint>*)args_plain;
+            uint* visible = ed_buf<uint>(ed_c.visible);
+            GpuMesh* m = ed_buf<GpuMesh>(ed_c.meshes) + inst.mesh;
+            Bounds b = bounds(inst, m);
+            uint nc = min(uint(f.light.cfg.x), 4u);
+            float tile = f.light.cfg.y;
+            for (uint c = 0; c < nc; c++) {
+                float4 cs = f.light.cascade[c];
+                float4 s = mul(f.light.shadow[c], float4(b.c, 1.0));
+                float rc = b.r / (cs.x * tile * 0.5);
+                float rz = b.r / cs.y;
+                if (abs(s.x) > 1.0 + rc || abs(s.y) > 1.0 + rc || s.z < -rz || 2.0 * b.r < 0.75 * cs.x) {
+                    continue;
+                }
+                uint lod = select_lod(m, b.scale / cs.x, 0u, false, f.params.y, 1.0);
+                push(args, args_plain, visible, c * ed_c.bins_kind + m.bin_base + lod, i | (lod << 20), m.capacity, m.index_count[lod] / 3u, e);
+                cnt0 += c == 0 ? 1u : 0u;
+                cnt1 += c == 1 ? 1u : 0u;
+                cnt2 += c == 2 ? 1u : 0u;
+                cnt3 += c == 3 ? 1u : 0u;
+            }
+        }
+    }
+    stat_add(stats, STAT_SHADOW, cnt0);
+    stat_add(stats, STAT_SHADOW + 1, cnt1);
+    stat_add(stats, STAT_SHADOW + 2, cnt2);
+    stat_add(stats, STAT_SHADOW + 3, cnt3);
+    stat_add(stats, STAT_SHADOW_TRIANGLES, e.tris);
 }

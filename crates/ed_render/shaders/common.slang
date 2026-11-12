@@ -6,6 +6,19 @@
 // vertex structs.
 #pragma once
 
+// Lighting (M4d), the tail of FrameData (src/gpu.rs `FD_LIGHT`, src/light.rs `LightData`).
+struct LightData {
+    float4x4 shadow[4];     // camera-relative world -> cascade clip: x, y in -1..1, z 0..1 (1 = towards the sun)
+    float4 cascade[4];      // x: texel size (m), y: depth range (m), z, w: tile origin in the atlas (px)
+    float4 split;           // view distance where each cascade ends (m)
+    float4 cfg;             // x: cascade count (0 = shadows off), y: tile size (px), z: blend band (fraction), w: edge margin (texels)
+    float4 filter;          // x: fade start (m), y: shadow distance (m), z: normal bias (texels), w: depth bias (texels)
+    uint4 flags;            // x: shadows, y: ao, z: sky ambient (SH), w: debug view (1 shadow, 2 ao)
+    float4 ao;              // x: intensity (exponent), y: half-res width, z: half-res height, w: unused
+    float4 sky;             // x: sun disc scale, yzw: unused
+    float4 sh[9];           // sky irradiance / pi as SH9 (rgb), basis constants folded in (src/light.rs)
+};
+
 // Per-view data, one cpu_write buffer read through the bindless buffer table.
 struct HzbLevel { uint offset; uint width; uint height; uint pad; };
 struct FrameData {
@@ -13,16 +26,17 @@ struct FrameData {
     float4x4 inv_view_proj;
     float4x4 view;          // camera-relative world -> view (rotation only), view looks down -Z
     float4 planes[5];       // left, right, bottom, top, near: xyz inward normal, w distance
-    float4 sun_dir;         // xyz: unit vector towards the sun
-    float4 sun_color;       // rgb: sun radiance scale (linear)
-    float4 sky_zenith;      // rgb
-    float4 sky_horizon;     // rgb
-    float4 ground_color;    // rgb: below-horizon colour and bounce light
+    float4 sun_dir;         // xyz: unit vector towards the sun, w: daylight factor (0.03..1)
+    float4 sun_color;       // rgb: sun irradiance (linear)
+    float4 sky_zenith;      // rgb: sky model zenith colour
+    float4 sky_horizon;     // rgb: sky model horizon colour
+    float4 ground_color;    // rgb: below-horizon colour (sky model)
     float4 viewport;        // x, y, w, h in output pixels
     float4 params;          // x: exposure, y: LOD threshold (px), z: near (m), w: LOD hysteresis
     float4 proj;            // x: P00, y: P11, z: target width, w: target height
     uint4 cull;             // x: HZB levels (0 = no occlusion test), y: fade frames, z: frame, w: flags
     HzbLevel hzb[16];       // depth pyramid levels inside the HZB buffer (floats)
+    LightData light;
 };
 
 // One instance (128 bytes). Transform rows are a 3x4 affine matrix relative to the node origin.
@@ -156,17 +170,60 @@ float3 view_dir(FrameData* f, float2 pixel) {
     return normalize(p.xyz / p.w);
 }
 
-// Analytic gradient sky (no sun disc). Placeholder until the atmosphere port (Phase 2).
-float3 sky_radiance(FrameData* f, float3 d) {
-    float t = pow(saturate(d.y), 0.45);
-    float3 sky = lerp(f.sky_horizon.rgb, f.sky_zenith.rgb, t);
-    sky = lerp(sky, f.ground_color.rgb, saturate(-d.y * 8.0));
-    float mu = saturate(dot(d, f.sun_dir.xyz));
-    sky += f.sun_color.rgb * 0.06 * pow(mu, 8.0);
-    return sky;
+// Sky radiance (the alpha's analytic sky, reference/alpha_metal world.metal `sky_rad`, ported
+// with its constants in FrameData): zenith/horizon gradient, warm forward scatter at low sun,
+// a sun glow, the ground below the horizon and the sun disc (`disc_k` 0 leaves it out: the
+// direct sun term carries that light). Mirrored on the CPU by src/light.rs `sky_rad` (SH bake).
+float3 sky_rad(FrameData* f, float3 d, float disc_k) {
+    float3 sun = f.sun_dir.xyz;
+    float day = f.sun_dir.w;
+    float h = d.y;
+    float t = pow(saturate(1.0 - max(h, 0.0)), 6.5);
+    float3 c = lerp(f.sky_zenith.rgb, f.sky_horizon.rgb, t);
+    float mu = dot(d, sun);
+    float warm = saturate(1.0 - sun.y * 2.5);
+    c += float3(1.0, 0.42, 0.14) * pow(saturate(mu * 0.5 + 0.5), 5.0) * warm * 0.85 * (0.4 + t);
+    c = lerp(c, c * float3(1.0, 0.7, 0.55), warm * 0.4);
+    c += float3(1.0, 0.9, 0.7) * pow(saturate(mu), 28.0) * 0.35;
+    c = lerp(c, f.ground_color.rgb, saturate(-h * 6.0));
+    float disk = smoothstep(0.99965, 0.99985, mu) * step(0.0, h);
+    return c * day + float3(1.0, 0.95, 0.85) * disk * 60.0 * day * disc_k;
 }
 
-// ACES fit (Narkowicz 2015), shared by tonemap and the pop detector. PLACEHOLDER (P1-D18).
-float3 aces_fit(float3 x) {
-    return saturate((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14));
+// The alpha's tone mapper (world.metal `resolve_fs`), exact maths (P1-D18). The film curve is
+// a 64^3 RGBA16F LUT (Blender Filmic "-11..12" log encoding, assets/filmic_lut_rgba16f.bin)
+// stored in a buffer, two words per texel (x fastest), filtered trilinearly here so CPU and
+// GPU agree (src/tonemap.rs mirrors every line).
+static const uint FILMIC_LUT_N = 64;
+
+float3 lut_texel(uint* lut, uint3 t) {
+    uint i = ((t.z * FILMIC_LUT_N + t.y) * FILMIC_LUT_N + t.x) * 2u;
+    uint a = lut[i];
+    uint b = lut[i + 1u];
+    return float3(f16tof32(a & 0xFFFFu), f16tof32(a >> 16), f16tof32(b & 0xFFFFu));
+}
+
+float3 filmic(uint lut_buf, float3 x) {
+    uint* lut = ed_buf<uint>(lut_buf);
+    x = max(x, float3(0.0));
+    x = select(x < float3(0.00003051757), x + float3(0.00001525878), x);
+    float3 n = saturate((log2(x / 0.18) + 11.0) / 23.0);
+    float3 t = n * float(FILMIC_LUT_N - 1u);
+    uint3 i = min(uint3(t), uint3(FILMIC_LUT_N - 2u));
+    float3 g = t - float3(i);
+    float3 c00 = lerp(lut_texel(lut, i), lut_texel(lut, i + uint3(1, 0, 0)), g.x);
+    float3 c10 = lerp(lut_texel(lut, i + uint3(0, 1, 0)), lut_texel(lut, i + uint3(1, 1, 0)), g.x);
+    float3 c01 = lerp(lut_texel(lut, i + uint3(0, 0, 1)), lut_texel(lut, i + uint3(1, 0, 1)), g.x);
+    float3 c11 = lerp(lut_texel(lut, i + uint3(0, 1, 1)), lut_texel(lut, i + uint3(1, 1, 1)), g.x);
+    return lerp(lerp(c00, c10, g.y), lerp(c01, c11, g.y), g.z);
+}
+
+// HDR scene radiance -> display value (gamma 2.2 encoded, 0..1), as the alpha wrote it.
+float3 alpha_tonemap(uint lut_buf, float3 hdr, float exposure) {
+    float3 c = hdr * exposure;
+    c *= float3(1.10, 1.0, 0.86);
+    c = filmic(lut_buf, c);
+    float l = dot(c, float3(0.2126, 0.7152, 0.0722));
+    c *= lerp(float3(1.0), float3(1.03, 1.0, 0.95), smoothstep(0.35, 0.9, l));
+    return pow(saturate(c), float3(1.0 / 2.2));
 }

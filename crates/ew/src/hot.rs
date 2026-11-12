@@ -1,8 +1,8 @@
 //! Hot reload (M3): `.slang` shaders (compiled with slangc) and packs, polled by file stamp (no watcher thread).
 //!
-//! - Shaders: [`ed_render::shaders::ShaderSources::FILES`] in the renderer's source folder (or
-//!   `EW_SHADER_DIR`). A change rebuilds every pipeline; a compile error is printed and the
-//!   old pipelines keep drawing.
+//! - Shaders: [`ed_render::shaders::ShaderSources::watched_files`]: every `.slang` in the
+//!   renderer's source folder (or `EW_SHADER_DIR`) and ed_gpu's `shader_abi.slang`. A change
+//!   rebuilds every pipeline; a compile error is printed and the old pipelines keep drawing.
 //! - Packs: [`crate::content::Content::poll_reload`] (manifest diff, only changed chunks).
 //!   `ew-bake watch` rebuilds a pack when its sources change, so editing a Blender export or
 //!   a material TOML reaches the running app in two hops.
@@ -42,7 +42,7 @@ impl HotReload {
     }
 
     pub fn with_shader_dir(dir: &Path) -> Self {
-        let files: Vec<PathBuf> = ShaderSources::FILES.iter().map(|f| dir.join(f)).collect();
+        let files = ShaderSources::watched_files(dir);
         let st = stamps(&files);
         Self { shader_dir: dir.to_path_buf(), shader_files: files, shader_stamps: st, last: Instant::now() }
     }

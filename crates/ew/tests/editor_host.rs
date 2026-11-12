@@ -61,6 +61,9 @@ fn cmd_s(h: &mut Harness) {
 
 #[test]
 fn pick_drag_save_restart_through_the_ew_host() {
+    if !common::gpu() {
+        return;
+    }
     let ws = common::workspace();
     let packs = common::packs();
     let out = ws.join("target/m4");

@@ -611,9 +611,9 @@ impl CommandEncoder for MetalEncoder<'_> {
         let Some(r) = self.render("set_render_pipeline") else { return };
         let p = {
             let st = self.dev.lock();
-            st.rpipes.get(pipeline.index(), pipeline.generation()).map(|p| (p.pso.clone(), p.depth_state.clone(), p.prim, p.cull, p.bias, p.colors.clone(), p.depth))
+            st.rpipes.get(pipeline.index(), pipeline.generation()).map(|p| (p.pso.clone(), p.depth_state.clone(), p.prim, p.cull, p.bias, p.clamp, p.colors.clone(), p.depth))
         };
-        let Some((pso, ds, prim, cull, bias, colors, depth)) = p else {
+        let Some((pso, ds, prim, cull, bias, clamp, colors, depth)) = p else {
             self.fail("set_render_pipeline: stale pipeline");
             return;
         };
@@ -630,6 +630,7 @@ impl CommandEncoder for MetalEncoder<'_> {
             r.setDepthStencilState(Some(ds));
             r.setDepthBias_slopeScale_clamp(bias.0, bias.1, 0.0);
         }
+        r.setDepthClipMode(if clamp { MTLDepthClipMode::Clamp } else { MTLDepthClipMode::Clip });
         self.prim = Some(prim);
     }
 

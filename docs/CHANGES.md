@@ -1,3 +1,21 @@
+## 2026-11-11: Phase 1, M4d (part 1) — lighting, shadows, AO and the alpha tone map; CI skips without a GPU
+
+- `ed_render` gains:
+  - `light.rs`: sun plus sky lighting in `lighting.slang`;
+  - sun shadows with GPU shadow culling (`cull.shadow_*`, `visibility.vs_shadow`);
+  - GTAO (`ao.slang`);
+  - `tonemap.rs`, which applies the alpha's 64^3 filmic LUT (`assets/filmic_lut_rgba16f.bin`). It is embedded, so the look matches the alpha (P1-D18).
+- CI: tests that need a GPU skip cleanly when the runner has none (`ed_gpu::device_or_skip`: macOS runners without residency sets, Windows without D3D12). `ew::headless` now checks content packs before creating a device.
+- `render_reload`: 50 warm-up reloads before measuring. Device memory steps up 1 MiB once, around reload 41, then stays flat; a 100-reload run gives the same final value, so this is a pool step, not a leak.
+- Tests:
+  - `cargo test --workspace`: 535 passed, 0 failed, 23 ignored, on Metal and with `ED_GPU_BACKEND=d3d12` (no GPU).
+  - check-deps, licence-gate, credits and golden all pass.
+- **Unfinished (M4d part 2):**
+  - the shadow depth clamp;
+  - AO strength and radius: `ao_darkens_a_corner_and_leaves_a_plane_alone` is ignored. AO darkens a corner by only ~2/255, and raising the strength to 3 moves cascade-edge pixels;
+  - budget timings (shadows ≤1.2 ms, AO ≤0.5, total GPU ≤3.5, CPU <0.2);
+  - Vulkan captures and the 1/255 tone-map parity check.
+
 ## 2026-11-11: Phase 1 data path — Megascans library import (3D scans, plants, surfaces, decals)
 
 - `ed_assets::megascans_lib` reads a local Megascans library, one folder per Fab id:

@@ -100,7 +100,7 @@ fn triangle_covers_expected_pixels(dev: &dyn Device) {
 }
 
 fn reverse_z_nearer_wins_in_either_order(dev: &dyn Device) {
-    let pso = tri_pipeline(dev, Some(DepthDesc { format: Format::Depth32Float, write: true, compare: Compare::Greater, bias: 0.0, slope_bias: 0.0 }));
+    let pso = tri_pipeline(dev, Some(DepthDesc { format: Format::Depth32Float, write: true, compare: Compare::Greater, bias: 0.0, slope_bias: 0.0, clamp: false }));
     let rt = render_target(dev, "depth test target");
     let depth = depth_target(dev);
     let rb = rt_readback(dev);

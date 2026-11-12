@@ -236,7 +236,21 @@ fn affine(t: &Transform) -> Affine3A {
     Affine3A::from_scale_rotation_translation(Vec3::from(t.scale), Quat::from_array(t.rotation), Vec3::from(t.translation))
 }
 
+fn missing_pack(s: &PackSpec, path: &Path, e: &dyn std::fmt::Display) -> String {
+    format!("pack {} ({}): {e}\n  ew draws only baked content; build it with:\n    {}", s.name, path.display(), s.bake)
+}
+
 impl Content {
+    /// Checks that every required pack in `dir` opens, without a GPU: start-up calls this
+    /// before creating the device, so a missing pack reports its bake command first.
+    pub fn check_required(dir: &Path) -> Result<(), String> {
+        for s in PACKS.iter().filter(|s| s.required) {
+            let path = dir.join(format!("{}.ewpack", s.name));
+            PackReader::open_file(&path).map_err(|e| missing_pack(s, &path, &e))?;
+        }
+        Ok(())
+    }
+
     /// Mounts the packs in `dir` and loads them into `r` (one node at the proving origin).
     pub fn load(r: &mut Renderer, dev: &dyn Device, dir: &Path) -> Result<Content, String> {
         Self::load_specs(r, dev, dir, &PACKS)
@@ -250,9 +264,7 @@ impl Content {
             let path = dir.join(format!("{}.ewpack", s.name));
             let reader = match PackReader::open_file(&path) {
                 Ok(rd) => Some(rd),
-                Err(e) if s.required => {
-                    return Err(format!("pack {} ({}): {e}\n  ew draws only baked content; build it with:\n    {}", s.name, path.display(), s.bake));
-                }
+                Err(e) if s.required => return Err(missing_pack(s, &path, &e)),
                 Err(_) => {
                     notes.push(format!("optional pack {} not found ({}); its placements are skipped. Build it with: {}", s.name, path.display(), s.bake));
                     None

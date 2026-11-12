@@ -23,7 +23,8 @@ struct PopC {
     uint tiles_x;
     uint tiles_y;
     float exposure;
-    uint pad[7];
+    uint lut;       // bindless buffer: the Filmic LUT (tonemap)
+    uint pad[6];
 };
 
 // A module has one constants block; pop_stats reads the same 64 bytes as PopC.
@@ -72,8 +73,8 @@ void pop_stats(uint3 tid: SV_DispatchThreadID) {
             if (p.x >= c.w || p.y >= c.h) {
                 continue;
             }
-            float3 c = aces_fit(hdr.Load(int3(int2(p), 0)).rgb * c.exposure);
-            sum += dot(c, float3(0.2126, 0.7152, 0.0722));
+            float3 col = alpha_tonemap(c.lut, hdr.Load(int3(int2(p), 0)).rgb, c.exposure);
+            sum += dot(col, float3(0.2126, 0.7152, 0.0722));
             n += 1;
             uint id = vis.Load(int3(int2(p), 0)).x;
             if (id != 0) {

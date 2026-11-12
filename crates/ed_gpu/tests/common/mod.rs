@@ -9,27 +9,17 @@ use ed_gpu::*;
 pub const W: u32 = 64;
 pub const H: u32 = 64;
 
-/// The device for `backend` with validation on. Metal must exist on macOS (panics if not).
-/// Vulkan may be missing (no loader or no MoltenVK): the test then prints why and is skipped,
-/// unless `ED_GPU_REQUIRE_VULKAN=1`, which turns a missing Vulkan into a failure.
+/// The device for `backend` with validation on, or `None` (test skipped, reason printed)
+/// when there is no usable GPU for it: see [`ed_gpu::device_or_skip`] (`ED_GPU_REQUIRE_GPU=1`
+/// or `ED_GPU_REQUIRE_VULKAN=1` make a missing device a failure).
 pub fn device(backend: Backend) -> Option<Box<dyn Device>> {
-    match create_device(
+    device_or_skip(
         backend,
         &DeviceDesc {
             validation: true,
             frames_in_flight: 2,
         },
-    ) {
-        Ok(d) => Some(d),
-        Err(e)
-            if backend == Backend::Vulkan
-                && std::env::var("ED_GPU_REQUIRE_VULKAN").as_deref() != Ok("1") =>
-        {
-            eprintln!("SKIP: no Vulkan device ({e})");
-            None
-        }
-        Err(e) => panic!("{backend:?} device: {e}"),
-    }
+    )
 }
 
 /// Generates `mod metal` and `mod vulkan`, each with one `#[test]` per listed body

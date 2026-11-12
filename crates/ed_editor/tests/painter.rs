@@ -13,15 +13,17 @@ use glam::{DQuat, DVec3};
 
 const CLEAR: [f32; 4] = [0.05, 0.08, 0.12, 1.0];
 
-fn device() -> Box<dyn Device> {
-    create_device(
+/// The `ED_GPU_BACKEND` device, or `None` (test skipped, "SKIP: no GPU device" printed) on a
+/// machine without a usable GPU, e.g. a CI runner older than macOS 15. `ED_GPU_REQUIRE_GPU=1`
+/// (or `ED_GPU_REQUIRE_VULKAN=1` for Vulkan) makes that a failure.
+fn device() -> Option<Box<dyn Device>> {
+    device_or_skip(
         default_backend(),
         &DeviceDesc {
             validation: true,
             frames_in_flight: 2,
         },
     )
-    .expect("device (ED_GPU_BACKEND)")
 }
 
 fn stats() -> FrameStats {
@@ -232,7 +234,7 @@ fn render(dev: &dyn Device, w: u32, h: u32) -> Vec<u8> {
 
 #[test]
 fn panels_render_offscreen_deterministically() {
-    let dev = device();
+    let Some(dev) = device() else { return };
     let (w, h) = (960u32, 640u32);
     let a = render(&*dev, w, h);
     let b = render(&*dev, w, h);
@@ -299,7 +301,7 @@ fn panels_render_offscreen_deterministically() {
 
 #[test]
 fn painter_gpu_time() {
-    let dev = device();
+    let Some(dev) = device() else { return };
     let (w, h) = (2560u32, 1440u32);
     let mut painter = Painter::new(&*dev).unwrap();
     let mut job = if std::env::var_os("EW_EGUI_EMPTY").is_some() {

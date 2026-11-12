@@ -6,8 +6,12 @@
 // gradients (the neighbouring pixels' rays hit the same triangle plane), a tangent frame
 // derived per triangle from position and UV deltas (no stored tangents), and the material's
 // UV transform.
+// M4d: the sun is shadowed by cascades (PCF), ambient light is the sky as SH9 (diffuse) and
+// the sky model blended towards it by roughness (specular), both darkened by GTAO; toon reads
+// the same terms (lighting.slang).
 #include "shader_abi.slang"
 #include "common.slang"
+#include "lighting.slang"
 
 struct ResolveC {
     uint frame;
@@ -20,7 +24,9 @@ struct ResolveC {
     uint indices;
     uint uvs;       // bindless: float2 per vertex, parallel to verts
     uint smp;       // bindless: linear, mipmapped, repeat, anisotropic
-    uint pad[6];
+    uint shadow;    // bindless depth texture: the cascade atlas (when shadows are on)
+    uint ao;        // bindless buffer: half-res AO (when AO is on)
+    uint pad[4];
 };
 ED_CONSTANTS(ResolveC)
 
@@ -57,14 +63,7 @@ float2 env_brdf(float nov, float rough) {
     return float2(-1.04, 1.04) * a004 + r.zw;
 }
 
-float3 ambient(FrameData* f, float3 n) {
-    // Hemisphere: sky above, ground bounce below.
-    float t = n.y * 0.5 + 0.5;
-    float3 sky = lerp(f.sky_horizon.rgb, f.sky_zenith.rgb, 0.5);
-    return lerp(f.ground_color.rgb, sky, t);
-}
-
-float3 shade_pbr(FrameData* f, float3 albedo, float metal, float rough, float ao, float3 n, float3 v) {
+float3 shade_pbr(FrameData* f, float3 albedo, float metal, float rough, float ao, float sun_vis, float3 n, float3 v) {
     metal = saturate(metal);
     rough = clamp(rough, 0.04, 1.0);
     float a = rough * rough;
@@ -78,25 +77,25 @@ float3 shade_pbr(FrameData* f, float3 albedo, float metal, float rough, float ao
     float3 diff_col = albedo * (1.0 - metal);
     float3 F = f_schlick(f0, voh);
     float3 spec = d_ggx(noh, a) * v_smith(nov, nol, a) * F;
-    float3 sun = f.sun_color.rgb * nol;
-    float3 direct = (diff_col * (1.0 - F) + spec * PI) * sun;
+    float3 direct = (diff_col * (1.0 - F) / PI + spec) * f.sun_color.rgb * (nol * sun_vis);
     float2 ab = env_brdf(nov, rough);
     float3 r = reflect(-v, n);
-    float3 env = lerp(sky_radiance(f, r), ambient(f, n), rough);
-    float3 amb = diff_col * ambient(f, n) + env * (f0 * ab.x + ab.y);
-    return direct + amb * ao;
+    float3 env = f.light.flags.z != 0 ? lerp(sky_rad(f, r, 0.0), sh_irradiance(f, r), rough) : hemi_ambient(f, r);
+    // Specular occlusion from AO (Lagarde 2014).
+    float spec_occ = saturate(pow(nov + ao, exp2(-16.0 * a - 1.0)) - 1.0 + ao);
+    float3 amb = diff_col * ambient_light(f, n) * ao + env * (f0 * ab.x + ab.y) * spec_occ;
+    return direct + amb;
 }
 
-float3 shade_toon(FrameData* f, GpuMaterial m, float3 albedo, float3 n, float3 v) {
+float3 shade_toon(FrameData* f, GpuMaterial m, float3 albedo, float3 n, float3 v, float ao, float sun_vis) {
     float3 l = f.sun_dir.xyz;
     float ndl = dot(n, l);
     float bands = max(m.params.z, 1.0);
-    float lit = floor(saturate(ndl * 0.5 + 0.5) * bands + 0.5) / bands;
-    float3 shade = m.shade.rgb;
-    float3 c = lerp(albedo * shade, albedo, lit);
-    float3 light = f.sun_color.rgb * 0.6 + ambient(f, n);
-    float rim = pow(1.0 - saturate(dot(n, v)), 4.0) * m.shade.w * saturate(ndl + 0.3);
-    return c * light * 0.5 + rim * f.sun_color.rgb * 0.3;
+    float lit = floor(saturate(ndl * 0.5 + 0.5) * bands + 0.5) / bands * sun_vis;
+    float3 c = lerp(albedo * m.shade.rgb, albedo, lit);
+    float3 light = f.sun_color.rgb * (lit / PI) + ambient_light(f, n) * ao;
+    float rim = pow(1.0 - saturate(dot(n, v)), 4.0) * m.shade.w * saturate(ndl + 0.3) * sun_vis;
+    return c * light + rim * f.sun_color.rgb * 0.15;
 }
 
 // Unclamped barycentrics (b1, b2) of the ray `dir` (from the camera) on the triangle plane.
@@ -127,7 +126,7 @@ float4 fs_resolve(FsOut i) : SV_Target0 {
     uint2 vis = ed_tex2d_uint(ed_c.vis).Load(int3(int2(px), 0)).xy;
     float3 dir = view_dir(f, i.pos.xy);
     if (vis.x == 0) {
-        return float4(sky_radiance(f, dir), 1.0);
+        return float4(sky_rad(f, dir, f.light.sky.x), 1.0);
     }
     GpuInstance inst = ed_buf<GpuInstance>(ed_c.instances)[vis.x - 1u];
     GpuMesh* mesh = ed_buf<GpuMesh>(ed_c.meshes) + inst.mesh;
@@ -221,6 +220,27 @@ float4 fs_resolve(FsOut i) : SV_Target0 {
         float k = fmod(abs(c.x + c.y), 2.0);
         albedo *= lerp(0.8, 1.15, k);
     }
-    float3 col = m.base.w > 0.5 ? shade_toon(f, m, albedo, n, v) : shade_pbr(f, albedo, metal, rough, ao, n, v);
+    float3 p = node + local;  // camera-relative position
+    float zlin = -mul(f.view, float4(p, 1.0)).z;
+    float3 ng = cross(e1, e2);
+    ng = length_squared(ng) > 1e-20 ? normalize(ng) : n;
+    if (dot(ng, v) < 0.0) {
+        ng = -ng;
+    }
+    float sun_vis = sun_shadow(f, ed_c.shadow, p, ng, zlin);
+    ao *= ao_upsample(f, ed_c.ao, i.pos.xy, zlin);
+    float3 col = m.base.w > 0.5 ? shade_toon(f, m, albedo, n, v, ao, sun_vis) : shade_pbr(f, albedo, metal, rough, ao, sun_vis, n, v);
+    if (f.light.flags.w == 1u) {
+        // Sun visibility (bright = lit) tinted by the cascade that served it.
+        static const float3 TINT[5] = { float3(1.0, 0.25, 0.25), float3(0.25, 1.0, 0.25), float3(0.3, 0.45, 1.0), float3(1.0, 1.0, 0.25), float3(0.6, 0.6, 0.6) };
+        col = TINT[shadow_cascade(f, p, zlin)] * (0.04 + 0.5 * sun_vis);
+    } else if (f.light.flags.w == 3u) {
+        // Receiver minus stored light depth at the centre texel (red: nearer the sun).
+        uint c = shadow_cascade(f, p, zlin);
+        float d = c < 4u ? cascade_depth_delta(f, ed_c.shadow, c, p) : 0.0;
+        col = float3(max(d, 0.0), max(-d, 0.0), 0.0) * 0.1;  // 1 m of depth = 0.1
+    } else if (f.light.flags.w == 2u) {
+        col = float3(0.5 * ao);
+    }
     return float4(col, 1.0);
 }

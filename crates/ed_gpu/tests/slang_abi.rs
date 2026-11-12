@@ -14,7 +14,8 @@ use ed_gpu::*;
 backend_tests!(
     pointers_atomics_and_waves,
     texture_views_and_samplers,
-    fragment_primitive_id_is_exact
+    fragment_primitive_id_is_exact,
+    blending_needs_a_blendable_format
 );
 
 const MSL: &str = include_str!("shaders/slang/gen/msl/abi.metal");
@@ -360,4 +361,44 @@ fn fragment_primitive_id_is_exact(dev: &dyn Device) {
         covered > (W * H / 3) as usize,
         "triangles cover the target ({covered} px)"
     );
+}
+
+/// Blending into an integer (or depth) colour target is a pipeline-creation error on every
+/// backend; opaque pipelines on the same format are fine, and blending on a float target is.
+fn blending_needs_a_blendable_format(dev: &dyn Device) {
+    let vs = slang_shader(dev, ShaderStage::Vertex, "abi_vs");
+    let fs = slang_shader(dev, ShaderStage::Fragment, "abi_fs");
+    let desc = |format: &'static [Format], blend| RenderPipelineDesc {
+        label: "blend check",
+        vertex: vs,
+        fragment: Some(fs),
+        color_formats: format,
+        blend,
+        depth: None,
+        cull: Cull::None,
+        topology: Topology::Triangles,
+        samples: 1,
+    };
+    for blend in [Blend::Alpha, Blend::Additive, Blend::Premultiplied] {
+        for f in [&[Format::Rg32Uint][..], &[Format::R32Uint], &[Format::Rgba8Unorm, Format::Rg32Uint]] {
+            match dev.create_render_pipeline(&desc(f, blend)) {
+                Err(Error::Invalid(_)) => {}
+                Err(e) => panic!("{blend:?} on {f:?}: expected Invalid, got {e}"),
+                Ok(p) => {
+                    dev.destroy_render_pipeline(p);
+                    panic!("{blend:?} on {f:?}: pipeline created");
+                }
+            }
+        }
+    }
+    assert!(matches!(
+        dev.create_render_pipeline(&desc(&[Format::Depth32Float], Blend::Opaque)),
+        Err(Error::Invalid(_))
+    ));
+    let ok = dev.create_render_pipeline(&desc(&[Format::Rg32Uint], Blend::Opaque)).unwrap();
+    dev.destroy_render_pipeline(ok);
+    // (abi_fs writes uint2, so a float target is only checked against the shared rule.)
+    assert!(desc(&[Format::Rgba16Float, Format::Rgba8Srgb], Blend::Alpha).validate().is_ok());
+    dev.destroy_shader(vs);
+    dev.destroy_shader(fs);
 }

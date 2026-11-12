@@ -22,6 +22,9 @@ fn run(out: &str) -> ew::headless::Report {
 
 #[test]
 fn proving_frames_are_byte_identical_across_runs() {
+    if !common::gpu() {
+        return;
+    }
     let a = run("det_a");
     let b = run("det_b");
     let street = |r: &ew::headless::Report| r.shots.iter().find(|s| s.0 == "street").expect("street shot at frame 120").1.clone();

@@ -49,6 +49,34 @@ struct HzbLevel_0
     uint pad_1;
 };
 
+struct _Array_natural_matrixx3Cfloatx2C4x2C4x3E4_0
+{
+    array<_MatrixStorage_float4x4_ColMajornatural_0, int(4)> data_2;
+};
+
+struct _Array_natural_vectorx3Cfloatx2C4x3E4_0
+{
+    array<packed_float4, int(4)> data_3;
+};
+
+struct _Array_natural_vectorx3Cfloatx2C4x3E9_0
+{
+    array<packed_float4, int(9)> data_4;
+};
+
+struct LightData_natural_0
+{
+    _Array_natural_matrixx3Cfloatx2C4x2C4x3E4_0 shadow_0;
+    _Array_natural_vectorx3Cfloatx2C4x3E4_0 cascade_0;
+    packed_float4 split_0;
+    packed_float4 cfg_0;
+    packed_float4 filter_0;
+    packed_uint4 flags_0;
+    packed_float4 ao_0;
+    packed_float4 sky_0;
+    _Array_natural_vectorx3Cfloatx2C4x3E9_0 sh_0;
+};
+
 struct FrameData_natural_0
 {
     _MatrixStorage_float4x4_ColMajornatural_0 view_proj_0;
@@ -65,6 +93,7 @@ struct FrameData_natural_0
     packed_float4 proj_0;
     packed_uint4 cull_0;
     array<HzbLevel_0, int(16)> hzb_0;
+    LightData_natural_0 light_0;
 };
 
 FrameData_natural_0 device* ed_buf_1(uint i_1, KernelContext_0 thread* kernelContext_1)

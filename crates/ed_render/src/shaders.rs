@@ -17,12 +17,16 @@ use ed_gpu::{
     ShaderCode, ShaderDesc, ShaderId, ShaderStage,
 };
 use std::borrow::Cow;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-/// The Slang source of every renderer module. `common` is included by the others.
+/// The Slang source of every renderer module. `common` and `lighting` are included by the
+/// others, and `abi` is ed_gpu's binding ABI (`shader_abi.slang`), which every module includes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShaderSources {
+    pub abi: String,
     pub common: String,
+    pub lighting: String,
+    pub ao: String,
     pub resolve: String,
     pub tonemap: String,
     pub debug: String,
@@ -44,10 +48,11 @@ pub(crate) enum Module {
     Hzb,
     Vis,
     Overlay,
+    Ao,
 }
 
 impl Module {
-    const ALL: [Module; 8] = [
+    const ALL: [Module; 9] = [
         Module::Resolve,
         Module::Tonemap,
         Module::Debug,
@@ -56,6 +61,7 @@ impl Module {
         Module::Hzb,
         Module::Vis,
         Module::Overlay,
+        Module::Ao,
     ];
 
     /// File stem in `shaders/` (and of the generated outputs).
@@ -69,6 +75,7 @@ impl Module {
             Module::Hzb => "hzb",
             Module::Vis => "visibility",
             Module::Overlay => "overlay",
+            Module::Ao => "ao",
         }
     }
 
@@ -82,14 +89,18 @@ impl Module {
             Module::Hzb => &s.hzb,
             Module::Vis => &s.vis,
             Module::Overlay => &s.overlay,
+            Module::Ao => &s.ao,
         }
     }
 }
 
 impl ShaderSources {
-    /// File names in a shader directory, in field order.
-    pub const FILES: [&'static str; 9] = [
+    /// File names in a shader directory, in field order (after `abi`, which lives in ed_gpu:
+    /// see [`Self::abi_path`]).
+    pub const FILES: [&'static str; 11] = [
         "common.slang",
+        "lighting.slang",
+        "ao.slang",
         "resolve.slang",
         "tonemap.slang",
         "debug.slang",
@@ -103,7 +114,10 @@ impl ShaderSources {
     /// The sources compiled into the crate.
     pub fn builtin() -> Self {
         Self {
+            abi: ed_gpu::slang::ABI_SOURCE.into(),
             common: include_str!("../shaders/common.slang").into(),
+            lighting: include_str!("../shaders/lighting.slang").into(),
+            ao: include_str!("../shaders/ao.slang").into(),
             resolve: include_str!("../shaders/resolve.slang").into(),
             tonemap: include_str!("../shaders/tonemap.slang").into(),
             debug: include_str!("../shaders/debug.slang").into(),
@@ -115,11 +129,19 @@ impl ShaderSources {
         }
     }
 
-    /// Loads [`Self::FILES`] from `dir` (for hot reload, normally `crates/ed_render/shaders`).
+    /// Loads [`Self::FILES`] from `dir` (for hot reload, normally `crates/ed_render/shaders`)
+    /// and the binding ABI from [`Self::abi_path`] (the built-in ABI when there is none).
     pub fn load(dir: &Path) -> std::io::Result<Self> {
         let r = |f: &str| std::fs::read_to_string(dir.join(f));
+        let abi = match Self::abi_path(dir) {
+            Some(p) => std::fs::read_to_string(p)?,
+            None => ed_gpu::slang::ABI_SOURCE.into(),
+        };
         Ok(Self {
+            abi,
             common: r("common.slang")?,
+            lighting: r("lighting.slang")?,
+            ao: r("ao.slang")?,
             resolve: r("resolve.slang")?,
             tonemap: r("tonemap.slang")?,
             debug: r("debug.slang")?,
@@ -129,6 +151,21 @@ impl ShaderSources {
             vis: r("visibility.slang")?,
             overlay: r("overlay.slang")?,
         })
+    }
+
+    /// The binding ABI a shader directory compiles against: `dir/shader_abi.slang` when
+    /// present, else ed_gpu's source next to a source checkout
+    /// (`dir/../../ed_gpu/src/shader_abi.slang`), else none (the built-in ABI).
+    pub fn abi_path(dir: &Path) -> Option<PathBuf> {
+        [dir.join("shader_abi.slang"), dir.join("../../ed_gpu/src/shader_abi.slang")].into_iter().find(|p| p.is_file())
+    }
+
+    /// Every file a change of which should reload the shaders of `dir`: [`Self::FILES`] and
+    /// the ABI ([`Self::abi_path`]).
+    pub fn watched_files(dir: &Path) -> Vec<PathBuf> {
+        let mut v: Vec<PathBuf> = Self::FILES.iter().map(|f| dir.join(f)).collect();
+        v.extend(Self::abi_path(dir));
+        v
     }
 
     /// The crate's own shader directory (source checkout), for development hot reload.
@@ -160,10 +197,11 @@ builtin_set! {
     Tonemap "tonemap" ["vs_fullscreen", "fs_tonemap"],
     Debug "debug" ["pick", "pop_stats"],
     Skin "skin" ["skin"],
-    Cull "cull" ["cull_reset", "cull_early", "cull_late"],
+    Cull "cull" ["cull_reset", "cull_early", "cull_late", "shadow_reset", "shadow_cull"],
     Hzb "hzb" ["hzb_first", "hzb_down"],
-    Vis "visibility" ["vs_vis", "fs_vis", "fs_vis_dither"],
+    Vis "visibility" ["vs_vis", "fs_vis", "fs_vis_dither", "vs_shadow"],
     Overlay "overlay" ["vs_overlay", "fs_overlay"],
+    Ao "ao" ["ao_main"],
 }
 
 fn words(bytes: &[u8]) -> Vec<u32> {
@@ -191,9 +229,15 @@ impl ShaderSet {
         };
         for m in Module::ALL {
             let file = format!("{}.slang", m.stem());
+            // `shader_abi.slang` here overrides the built-in copy compile() writes first.
             let o = ed_gpu::slang::compile(
                 &slangc,
-                &[(&file, m.source(src)), ("common.slang", &src.common)],
+                &[
+                    (&file, m.source(src)),
+                    ("common.slang", &src.common),
+                    ("lighting.slang", &src.lighting),
+                    ("shader_abi.slang", &src.abi),
+                ],
             )
             .map_err(ed_gpu::Error::Invalid)?;
             set.msl.push((m, Cow::Owned(o.msl)));
@@ -300,6 +344,14 @@ impl Built {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hot_reload_watches_the_abi() {
+        let w = ShaderSources::watched_files(ShaderSources::source_dir());
+        let abi = w.iter().find(|p| p.ends_with("shader_abi.slang")).expect("ABI watched");
+        assert_eq!(std::fs::read_to_string(abi).unwrap(), ed_gpu::slang::ABI_SOURCE);
+        assert!(ShaderSources::FILES.iter().all(|f| w.iter().any(|p| p.ends_with(f))));
+    }
 
     #[test]
     fn source_dir_matches_builtin_and_every_entry_is_embedded() {

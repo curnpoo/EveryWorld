@@ -272,7 +272,18 @@ struct Messages {
     waived: Mutex<Vec<&'static str>>,
     /// Set once the device turns out to be MoltenVK; [`WAIVED`] applies only then.
     moltenvk: std::sync::atomic::AtomicBool,
+    /// Pipelines being created right now whose colour targets include a format that cannot
+    /// blend, with blending off ([`RenderPipelineDesc::validate`] rejects blending there).
+    /// MoltenVK 1.4.2 warns "Blending is enabled for attachment with format ..." for every
+    /// such attachment whatever `blendEnable` says (its check omits `pCA->blendEnable`; fixed
+    /// upstream), so that warning is waived only while this is non-zero.
+    unblendable_opaque: std::sync::atomic::AtomicU32,
 }
+
+/// MoltenVK's false-positive blend warning (see `Messages::unblendable_opaque`).
+const MVK_BLEND_WARNING: &str = "Blending is enabled for attachment with format";
+const MVK_BLEND_WAIVER: &str = "MoltenVK 1.4.2 reports this for any colour attachment whose format cannot blend, even with \
+     blendEnable = VK_FALSE (its check omits pCA->blendEnable); ed_gpu rejects real blending on such formats";
 
 struct Locked(Mutex<State>);
 // SAFETY: `State` holds Vulkan handles (plain integers) and raw pointers into persistently
@@ -315,6 +326,8 @@ pub(crate) struct VulkanDevice {
     /// Device features this backend enabled that commands depend on.
     indirect_count: bool,
     multi_draw: bool,
+    /// `depthClamp` (DepthDesc::clamp); without it such pipelines clip instead.
+    depth_clamp: bool,
     validation: bool,
     /// `ED_GPU_VK_VALIDATION=require`: a validation error at submit panics (tests, CI).
     require_validation: bool,
@@ -350,6 +363,14 @@ unsafe extern "system" fn on_message(
     let id = cstr(data.p_message_id_name);
     let text = cstr(data.p_message);
     let molten = msgs.moltenvk.load(std::sync::atomic::Ordering::Relaxed);
+    if molten && text.contains(MVK_BLEND_WARNING) && msgs.unblendable_opaque.load(std::sync::atomic::Ordering::Relaxed) > 0 {
+        // Silent: the pipeline provably has blending off on that attachment.
+        let mut w = msgs.waived.lock().unwrap_or_else(|e| e.into_inner());
+        if !w.contains(&MVK_BLEND_WAIVER) {
+            w.push(MVK_BLEND_WAIVER);
+        }
+        return vk::FALSE;
+    }
     if let Some((name, why)) = WAIVED.iter().find(|(n, _)| molten && *n == id) {
         let mut w = msgs.waived.lock().unwrap_or_else(|e| e.into_inner());
         if !w.contains(name) {
@@ -399,7 +420,7 @@ fn has_ext(list: &[vk::ExtensionProperties], name: &CStr) -> bool {
 impl VulkanDevice {
     pub fn new(desc: &DeviceDesc) -> Result<Self> {
         let entry = load_entry()?;
-        let messages = Box::new(Messages { errors: Mutex::new(Vec::new()), waived: Mutex::new(Vec::new()), moltenvk: Default::default() });
+        let messages = Box::new(Messages { errors: Mutex::new(Vec::new()), waived: Mutex::new(Vec::new()), moltenvk: Default::default(), unblendable_opaque: Default::default() });
 
         // ---- Instance ----
         // SAFETY: plain queries on a loaded entry.
@@ -561,6 +582,7 @@ impl VulkanDevice {
         }
         let e10 = vk::PhysicalDeviceFeatures::default()
             .multi_draw_indirect(t(s10.multi_draw_indirect))
+            .depth_clamp(t(s10.depth_clamp))
             .draw_indirect_first_instance(t(s10.draw_indirect_first_instance))
             .sampler_anisotropy(t(s10.sampler_anisotropy))
             .texture_compression_bc(t(s10.texture_compression_bc))
@@ -791,6 +813,7 @@ impl VulkanDevice {
             dummy_sampler: vk::Sampler::null(),
             indirect_count: t(s12.draw_indirect_count),
             multi_draw: t(s10.multi_draw_indirect),
+            depth_clamp: t(s10.depth_clamp),
             validation: desc.validation,
             require_validation: require && use_layer,
             frames,
@@ -1723,6 +1746,7 @@ impl Device for VulkanDevice {
     }
 
     fn create_render_pipeline(&self, desc: &RenderPipelineDesc<'_>) -> Result<RenderPipelineId> {
+        desc.validate()?;
         let (vs, fs) = {
             let st = self.lock();
             let vs = st.shaders.get(desc.vertex.index(), desc.vertex.generation()).ok_or_else(|| invalid(format!("pipeline '{}': stale vertex shader", desc.label)))?;
@@ -1762,6 +1786,7 @@ impl Device for VulkanDevice {
             .cull_mode(conv::cull(desc.cull))
             .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
             .line_width(1.0)
+            .depth_clamp_enable(self.depth_clamp && desc.depth.as_ref().is_some_and(|d| d.clamp))
             .depth_bias_enable(bias != 0.0 || slope != 0.0)
             .depth_bias_constant_factor(bias)
             .depth_bias_slope_factor(slope);
@@ -1790,9 +1815,19 @@ impl Device for VulkanDevice {
             .dynamic_state(&dynamic)
             .layout(self.layout)
             .push_next(&mut rendering);
+        // Blending is off on every unblendable target here (`validate` above), so MoltenVK's
+        // blend warning during this call is the known false positive.
+        let unblendable = desc.color_formats.iter().any(|f| !f.is_blendable());
+        let flag = &self.messages.unblendable_opaque;
+        if unblendable {
+            flag.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         // SAFETY: every pointer in the create info is alive for the call; modules are valid.
-        let raw = unsafe { self.raw.create_graphics_pipelines(vk::PipelineCache::null(), &[info], None) }
-            .map_err(|(_, e)| invalid(format!("pipeline '{}': {e:?}", desc.label)))?[0];
+        let created = unsafe { self.raw.create_graphics_pipelines(vk::PipelineCache::null(), &[info], None) };
+        if unblendable {
+            flag.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        let raw = created.map_err(|(_, e)| invalid(format!("pipeline '{}': {e:?}", desc.label)))?[0];
         if let Err(e) = self.check_validation(&format!("pipeline '{}'", desc.label)) {
             // SAFETY: unused pipeline.
             unsafe { self.raw.destroy_pipeline(raw, None) };

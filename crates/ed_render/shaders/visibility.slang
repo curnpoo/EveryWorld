@@ -11,7 +11,8 @@ struct VisC {
     uint nodes;
     uint visible;
     uint verts;
-    uint pad[11];
+    uint cascade;   // vs_shadow: which cascade matrix
+    uint pad[10];
 };
 ED_CONSTANTS(VisC)
 
@@ -70,4 +71,26 @@ uint4 fs_vis_dither(VisOut i, uint prim: SV_PrimitiveID) : SV_Target0 {
         discard;
     }
     return vis_value(i.entry, prim);
+}
+
+// Sun shadow caster (M4d): the same pulled vertices (after skinning, so skinned instances cast)
+// into one cascade of the depth atlas, depth only. Light depth grows towards the sun (cleared to
+// 0, GreaterEqual). Casters between the sun and the cascade volume are clamped onto its sun-side
+// face ("pancaking") by the pipeline's depth clamp, per fragment: clamping vertex z instead
+// bends the depth plane of large triangles (terrain, ground slabs) and makes them self-shadow.
+struct ShadowOut {
+    float4 pos: SV_Position;
+};
+
+[shader("vertex")]
+ShadowOut vs_shadow(uint vid: SV_VulkanVertexID, uint iid: SV_VulkanInstanceID) {
+    FrameData* f = ed_buf<FrameData>(ed_c.frame);
+    uint entry = ed_buf<uint>(ed_c.visible)[iid];
+    GpuInstance inst = ed_buf<GpuInstance>(ed_c.instances)[entry & ENTRY_INSTANCE_MASK];
+    Vtx v = ed_buf<Vtx>(ed_c.verts)[vid];
+    float3 node = ed_buf<float4>(ed_c.nodes)[inst.node_flags & 0xFFFFu].xyz;
+    float3 p = node + xform_point(inst, float3(v.px, v.py, v.pz));
+    ShadowOut o;
+    o.pos = mul(f.light.shadow[ed_c.cascade], float4(p, 1.0));
+    return o;
 }

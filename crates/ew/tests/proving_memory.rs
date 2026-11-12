@@ -7,6 +7,9 @@ mod common;
 
 #[test]
 fn no_memory_growth_over_300_proving_frames() {
+    if !common::gpu() {
+        return;
+    }
     let args = Args {
         headless: true,
         width: 640,

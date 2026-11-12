@@ -10,7 +10,8 @@ struct VisC_0
     uint nodes_0;
     uint visible_0;
     uint verts_0;
-    array<uint, int(11)> pad_0;
+    uint cascade_0;
+    array<uint, int(10)> pad_0;
 };
 
 struct KernelContext_0
@@ -81,6 +82,34 @@ struct HzbLevel_0
     uint pad_2;
 };
 
+struct _Array_natural_matrixx3Cfloatx2C4x2C4x3E4_0
+{
+    array<_MatrixStorage_float4x4_ColMajornatural_0, int(4)> data_3;
+};
+
+struct _Array_natural_vectorx3Cfloatx2C4x3E4_0
+{
+    array<packed_float4, int(4)> data_4;
+};
+
+struct _Array_natural_vectorx3Cfloatx2C4x3E9_0
+{
+    array<packed_float4, int(9)> data_5;
+};
+
+struct LightData_natural_0
+{
+    _Array_natural_matrixx3Cfloatx2C4x2C4x3E4_0 shadow_0;
+    _Array_natural_vectorx3Cfloatx2C4x3E4_0 cascade_1;
+    packed_float4 split_0;
+    packed_float4 cfg_0;
+    packed_float4 filter_0;
+    packed_uint4 flags_0;
+    packed_float4 ao_0;
+    packed_float4 sky_0;
+    _Array_natural_vectorx3Cfloatx2C4x3E9_0 sh_0;
+};
+
 struct FrameData_natural_0
 {
     _MatrixStorage_float4x4_ColMajornatural_0 view_proj_0;
@@ -97,6 +126,7 @@ struct FrameData_natural_0
     packed_float4 proj_0;
     packed_uint4 cull_0;
     array<HzbLevel_0, int(16)> hzb_0;
+    LightData_natural_0 light_0;
 };
 
 FrameData_natural_0 device* ed_buf_4(uint i_4, KernelContext_0 thread* kernelContext_4)
@@ -198,5 +228,41 @@ struct VisOut_0
     (&_S17)->pos_2 = o_0.pos_3;
     (&_S17)->entry_3 = o_0.entry_4;
     return _S17;
+}
+
+struct vs_shadow_Result_0
+{
+    float4 pos_4 [[position]];
+};
+
+struct ShadowOut_0
+{
+    float4 pos_5;
+};
+
+[[vertex]] vs_shadow_Result_0 vs_shadow(uint vid_1 [[vertex_id]], uint iid_1 [[instance_id]], VisC_0 constant* ed_c_4 [[buffer(0)]], ulong device* ed_buffers_4 [[buffer(2)]])
+{
+    thread KernelContext_0 kernelContext_8;
+    (&kernelContext_8)->ed_c_0 = ed_c_4;
+    (&kernelContext_8)->ed_buffers_0 = ed_buffers_4;
+    FrameData_natural_0 device* _S18 = ed_buf_4(ed_c_4->frame_0, &kernelContext_8);
+    uint device* _S19 = ed_buf_3((&kernelContext_8)->ed_c_0->visible_0, &kernelContext_8);
+    uint entry_6 = *(_S19 + iid_1);
+    GpuInstance_natural_0 device* _S20 = ed_buf_2((&kernelContext_8)->ed_c_0->instances_0, &kernelContext_8);
+    GpuInstance_natural_0 device* _S21 = _S20 + (entry_6 & 1048575U);
+    GpuInstance_natural_0 inst_1 = *_S21;
+    thread GpuInstance_natural_0 _S22 = *_S21;
+    Vtx_0 device* _S23 = ed_buf_1((&kernelContext_8)->ed_c_0->verts_0, &kernelContext_8);
+    Vtx_0 v_1 = *(_S23 + vid_1);
+    packed_float4 device* _S24 = ed_buf_0((&kernelContext_8)->ed_c_0->nodes_0, &kernelContext_8);
+    float3 node_1 = (float4(*(_S24 + (((&_S22)->node_flags_0) & 65535U))) ).xyz;
+    float3 _S25 = float3(v_1.px_0, v_1.py_0, v_1.pz_0);
+    _S22 = inst_1;
+    float3 _S26 = xform_point_0(&_S22, _S25);
+    thread ShadowOut_0 o_1;
+    (&o_1)->pos_5 = (((float4(node_1 + _S26, 1.0f)) * (matrix<float,int(4),int(4)> ((&(&_S18->light_0)->shadow_0)->data_3[(&kernelContext_8)->ed_c_0->cascade_0].data_1[int(0)][int(0)], (&(&_S18->light_0)->shadow_0)->data_3[(&kernelContext_8)->ed_c_0->cascade_0].data_1[int(1)][int(0)], (&(&_S18->light_0)->shadow_0)->data_3[(&kernelContext_8)->ed_c_0->cascade_0].data_1[int(2)][int(0)], (&(&_S18->light_0)->shadow_0)->data_3[(&kernelContext_8)->ed_c_0->cascade_0].data_1[int(3)][int(0)], (&(&_S18->light_0)->shadow_0)->data_3[(&kernelContext_8)->ed_c_0->cascade_0].data_1[int(0)][int(1)], (&(&_S18->light_0)->shadow_0)->data_3[(&kernelContext_8)->ed_c_0->cascade_0].data_1[int(1)][int(1)], (&(&_S18->light_0)->shadow_0)->data_3[(&kernelContext_8)->ed_c_0->cascade_0].data_1[int(2)][int(1)], (&(&_S18->light_0)->shadow_0)->data_3[(&kernelContext_8)->ed_c_0->cascade_0].data_1[int(3)][int(1)], (&(&_S18->light_0)->shadow_0)->data_3[(&kernelContext_8)->ed_c_0->cascade_0].data_1[int(0)][int(2)], (&(&_S18->light_0)->shadow_0)->data_3[(&kernelContext_8)->ed_c_0->cascade_0].data_1[int(1)][int(2)], (&(&_S18->light_0)->shadow_0)->data_3[(&kernelContext_8)->ed_c_0->cascade_0].data_1[int(2)][int(2)], (&(&_S18->light_0)->shadow_0)->data_3[(&kernelContext_8)->ed_c_0->cascade_0].data_1[int(3)][int(2)], (&(&_S18->light_0)->shadow_0)->data_3[(&kernelContext_8)->ed_c_0->cascade_0].data_1[int(0)][int(3)], (&(&_S18->light_0)->shadow_0)->data_3[(&kernelContext_8)->ed_c_0->cascade_0].data_1[int(1)][int(3)], (&(&_S18->light_0)->shadow_0)->data_3[(&kernelContext_8)->ed_c_0->cascade_0].data_1[int(2)][int(3)], (&(&_S18->light_0)->shadow_0)->data_3[(&kernelContext_8)->ed_c_0->cascade_0].data_1[int(3)][int(3)]))));
+    thread vs_shadow_Result_0 _S27;
+    (&_S27)->pos_4 = o_1.pos_5;
+    return _S27;
 }
 

@@ -210,6 +210,15 @@ impl Format {
     pub fn is_depth(self) -> bool {
         matches!(self, Format::Depth32Float)
     }
+    /// Integer colour formats (no filtering, no blending).
+    pub fn is_integer(self) -> bool {
+        matches!(self, Format::R32Uint | Format::Rg32Uint)
+    }
+    /// Can a render pipeline blend into this format? Not integer, depth or block-compressed
+    /// formats (Metal, Vulkan and D3D12 all reject blending on those).
+    pub fn is_blendable(self) -> bool {
+        !self.is_integer() && !self.is_depth() && self.block().0 == 1
+    }
     /// Tightly packed bytes per row of blocks for a mip of `width` texels.
     pub fn packed_row_bytes(self, width: u32) -> u32 {
         let (bw, _, bytes) = self.block();
@@ -387,6 +396,10 @@ pub struct DepthDesc {
     pub compare: Compare,
     pub bias: f32,
     pub slope_bias: f32,
+    /// Clamp fragment depth to the depth range instead of clipping primitives against the
+    /// near/far planes (shadow-map "pancaking": casters beyond the volume still write, at the
+    /// clamped depth, without bending the triangle's depth plane).
+    pub clamp: bool,
 }
 
 /// There is no vertex layout: vertex shaders read vertex data from bindless buffers by
@@ -403,6 +416,26 @@ pub struct RenderPipelineDesc<'a> {
     pub cull: Cull,
     pub topology: Topology,
     pub samples: u32,
+}
+
+impl RenderPipelineDesc<'_> {
+    /// Checks shared by every backend: a blend other than [`Blend::Opaque`] needs every colour
+    /// target to be blendable ([`Format::is_blendable`]), and colour targets must be colour
+    /// formats. Backends call this before creating the pipeline.
+    pub fn validate(&self) -> Result<()> {
+        for f in self.color_formats {
+            if f.is_depth() {
+                return Err(Error::Invalid(format!("pipeline '{}': colour target format {f:?} is a depth format", self.label)));
+            }
+            if self.blend != Blend::Opaque && !f.is_blendable() {
+                return Err(Error::Invalid(format!(
+                    "pipeline '{}': blend {:?} on colour target format {f:?}, which cannot blend (integer, depth or compressed)",
+                    self.label, self.blend
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -684,6 +717,37 @@ pub fn create_device(backend: Backend, desc: &DeviceDesc) -> Result<Box<dyn Devi
         Backend::Vulkan => Ok(Box::new(vulkan::VulkanDevice::new(desc)?)),
         _ => Err(Error::Unsupported(format!("{backend:?}: backend not available in this build"))),
     }
+}
+
+/// Device creation for tests and tools that should skip, not fail, on a machine without a
+/// usable GPU (CI runners: no Metal residency sets before macOS 15, no D3D12 in this build, no
+/// Vulkan loader). Returns `None` after printing `SKIP: no GPU device (...)` when creation
+/// fails with [`Error::Unsupported`] (any backend) or fails at all on Vulkan (loader or
+/// MoltenVK missing). `ED_GPU_REQUIRE_GPU=1` (any backend) or `ED_GPU_REQUIRE_VULKAN=1`
+/// (Vulkan) turns the skip into a panic. Other errors panic.
+pub fn device_or_skip(backend: Backend, desc: &DeviceDesc) -> Option<Box<dyn Device>> {
+    match create_device(backend, desc) {
+        Ok(d) => Some(d),
+        Err(e) => {
+            if skip_without_gpu(backend, &e) {
+                eprintln!("SKIP: no GPU device ({backend:?}: {e})");
+                None
+            } else {
+                panic!("{backend:?} device: {e}")
+            }
+        }
+    }
+}
+
+/// Whether a device-creation error means "no usable GPU here" and the caller may skip (see
+/// [`device_or_skip`]; false when `ED_GPU_REQUIRE_GPU=1`, or `ED_GPU_REQUIRE_VULKAN=1` on
+/// Vulkan).
+pub fn skip_without_gpu(backend: Backend, e: &Error) -> bool {
+    let set = |v: &str| std::env::var(v).as_deref() == Ok("1");
+    if set("ED_GPU_REQUIRE_GPU") || (backend == Backend::Vulkan && set("ED_GPU_REQUIRE_VULKAN")) {
+        return false;
+    }
+    matches!(e, Error::Unsupported(_)) || backend == Backend::Vulkan
 }
 
 /// The backend to use on this machine: `ED_GPU_BACKEND` (`metal`, `vulkan` or `d3d12`, any

@@ -594,7 +594,7 @@ pub fn build(job: &TileJob) -> TileBuild {
             // `EW_SCATTER_MAX` caps the tree/shrub instances per tile (each bakes to ~110 card
             // triangles; a canyon tile at the 16 k cap is ~1.7 M triangles resident).
             let max = std::env::var("EW_SCATTER_MAX").ok().and_then(|v| v.parse().ok()).unwrap_or(max);
-            let (trees, rocks, kept) = foliage::scatter(&proj, &grid, &surface, Some(&occ), max);
+            let (trees, rocks, _kept) = foliage::scatter(&proj, &grid, &surface, Some(&occ), max);
             out.stats.trees = trees.len();
             out.stats.rocks = rocks.len();
             // Fine tiles: chunks with far cards and instances, so the game can

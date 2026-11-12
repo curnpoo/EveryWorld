@@ -114,7 +114,8 @@ struct PopC_0
     uint tiles_x_0;
     uint tiles_y_0;
     float exposure_0;
-    array<uint, int(7)> pad_2;
+    uint lut_0;
+    array<uint, int(6)> pad_2;
 };
 
 struct AnyValue64
@@ -149,13 +150,13 @@ PopC_0 unpackAnyValue64_0(const AnyValue64 thread* _S10)
     (&_S11)->tiles_x_0 = _S10->field6_0;
     (&_S11)->tiles_y_0 = _S10->field7_0;
     (&_S11)->exposure_0 = as_type<float>(_S10->field8_0);
-    (&_S11)->pad_2[int(0)] = _S10->field9_0;
-    (&_S11)->pad_2[int(1)] = _S10->field10_0;
-    (&_S11)->pad_2[int(2)] = _S10->field11_0;
-    (&_S11)->pad_2[int(3)] = _S10->field12_0;
-    (&_S11)->pad_2[int(4)] = _S10->field13_0;
-    (&_S11)->pad_2[int(5)] = _S10->field14_0;
-    (&_S11)->pad_2[int(6)] = _S10->field15_0;
+    (&_S11)->lut_0 = _S10->field9_0;
+    (&_S11)->pad_2[int(0)] = _S10->field10_0;
+    (&_S11)->pad_2[int(1)] = _S10->field11_0;
+    (&_S11)->pad_2[int(2)] = _S10->field12_0;
+    (&_S11)->pad_2[int(3)] = _S10->field13_0;
+    (&_S11)->pad_2[int(4)] = _S10->field14_0;
+    (&_S11)->pad_2[int(5)] = _S10->field15_0;
     return _S11;
 }
 
@@ -189,36 +190,67 @@ PopC_0 pop_c_0(KernelContext_0 thread* kernelContext_5)
     return _S15;
 }
 
-float3 aces_fit_0(float3 x_1)
+float3 lut_texel_0(uint device* lut_1, uint3 t_0)
 {
-    return saturate(x_1 * (float3(2.5099999904632568f)  * x_1 + float3(0.029999999329447746f) ) / (x_1 * (float3(2.4300000667572021f)  * x_1 + float3(0.5899999737739563f) ) + float3(0.14000000059604645f) ));
+    uint i_3 = ((t_0.z * 64U + t_0.y) * 64U + t_0.x) * 2U;
+    uint device* _S16 = lut_1 + i_3;
+    return float3((as_type<half>((ushort)(((*_S16) & 65535U)))), (as_type<half>((ushort)(((*_S16) >> 16U)))), (as_type<half>((ushort)(((*(lut_1 + (i_3 + 1U))) & 65535U)))));
+}
+
+float3 filmic_0(uint lut_buf_0, float3 x_1, KernelContext_0 thread* kernelContext_6)
+{
+    uint device* _S17 = ed_buf_2(lut_buf_0, kernelContext_6);
+    float3 _S18 = max(x_1, float3(0.0f) );
+    float3 t_1 = saturate((log2(select(_S18, _S18 + float3(1.5258779967552982e-05f) , _S18 < (float3(3.0517570849042386e-05f) )) / float3(0.18000000715255737f) ) + float3(11.0f) ) / float3(23.0f) ) * float3(63.0f) ;
+    uint3 _S19 = min(uint3(t_1), uint3(62U) );
+    float3 g_0 = t_1 - float3(_S19);
+    float3 _S20 = lut_texel_0(_S17, _S19);
+    float3 _S21 = lut_texel_0(_S17, _S19 + uint3(1U, 0U, 0U));
+    float3 _S22 = float3(g_0.x) ;
+    float3 c00_0 = mix(_S20, _S21, _S22);
+    float3 _S23 = lut_texel_0(_S17, _S19 + uint3(0U, 1U, 0U));
+    float3 _S24 = lut_texel_0(_S17, _S19 + uint3(1U, 1U, 0U));
+    float3 c10_0 = mix(_S23, _S24, _S22);
+    float3 _S25 = lut_texel_0(_S17, _S19 + uint3(0U, 0U, 1U));
+    float3 _S26 = lut_texel_0(_S17, _S19 + uint3(1U, 0U, 1U));
+    float3 c01_0 = mix(_S25, _S26, _S22);
+    float3 _S27 = lut_texel_0(_S17, _S19 + uint3(0U, 1U, 1U));
+    float3 _S28 = lut_texel_0(_S17, _S19 + uint3(1U, 1U, 1U));
+    float3 _S29 = float3(g_0.y) ;
+    return mix(mix(c00_0, c10_0, _S29), mix(c01_0, mix(_S27, _S28, _S22), _S29), float3(g_0.z) );
+}
+
+float3 alpha_tonemap_0(uint lut_buf_1, float3 hdr_1, float exposure_1, KernelContext_0 thread* kernelContext_7)
+{
+    float3 _S30 = filmic_0(lut_buf_1, hdr_1 * float3(exposure_1)  * float3(1.1000000238418579f, 1.0f, 0.86000001430511475f), kernelContext_7);
+    return pow(saturate(_S30 * mix(float3(1.0f) , float3(1.0299999713897705f, 1.0f, 0.94999998807907104f), float3(smoothstep(0.34999999403953552f, 0.89999997615814209f, dot(_S30, float3(0.2125999927520752f, 0.71520000696182251f, 0.072200000286102295f)))) )), float3(0.45454543828964233f) );
 }
 
 [[kernel]] void pop_stats(uint3 tid_1 [[thread_position_in_grid]], PickC_0 constant* ed_c_2 [[buffer(0)]], ulong device* ed_buffers_2 [[buffer(2)]], ulong device* ed_textures_2 [[buffer(1)]])
 {
-    thread KernelContext_0 kernelContext_6;
-    (&kernelContext_6)->ed_c_0 = ed_c_2;
-    (&kernelContext_6)->ed_buffers_0 = ed_buffers_2;
-    (&kernelContext_6)->ed_textures_0 = ed_textures_2;
-    uint2 t_0 = tid_1.xy;
-    PopC_0 _S16 = pop_c_0(&kernelContext_6);
-    uint _S17 = t_0.x;
-    bool _S18;
-    if(_S17 >= (_S16.tiles_x_0))
+    thread KernelContext_0 kernelContext_8;
+    (&kernelContext_8)->ed_c_0 = ed_c_2;
+    (&kernelContext_8)->ed_buffers_0 = ed_buffers_2;
+    (&kernelContext_8)->ed_textures_0 = ed_textures_2;
+    uint2 t_2 = tid_1.xy;
+    PopC_0 _S31 = pop_c_0(&kernelContext_8);
+    uint _S32 = t_2.x;
+    bool _S33;
+    if(_S32 >= (_S31.tiles_x_0))
     {
-        _S18 = true;
+        _S33 = true;
     }
     else
     {
-        _S18 = (t_0.y) >= (_S16.tiles_y_0);
+        _S33 = (t_2.y) >= (_S31.tiles_y_0);
     }
-    if(_S18)
+    if(_S33)
     {
         return;
     }
-    texture2d<float, access::sample> _S19 = ((reinterpret_cast<device texture2d<float, access::sample>*>(((&kernelContext_6)->ed_textures_0))[(_S16.hdr_0)]));
-    texture2d<uint, access::sample> _S20 = ((reinterpret_cast<device texture2d<uint, access::sample>*>(((&kernelContext_6)->ed_textures_0))[(_S16.vis_1)]));
-    uint device* _S21 = ed_buf_2(_S16.state_0, &kernelContext_6);
+    texture2d<float, access::sample> _S34 = ((reinterpret_cast<device texture2d<float, access::sample>*>(((&kernelContext_8)->ed_textures_0))[(_S31.hdr_0)]));
+    texture2d<uint, access::sample> _S35 = ((reinterpret_cast<device texture2d<uint, access::sample>*>(((&kernelContext_8)->ed_textures_0))[(_S31.vis_1)]));
+    uint device* _S36 = ed_buf_2(_S31.state_0, &kernelContext_8);
     uint y_1 = 0U;
     float sum_0 = 0.0f;
     uint n_0 = 0U;
@@ -245,41 +277,42 @@ float3 aces_fit_0(float3 x_1)
             {
                 break;
             }
-            uint2 p_0 = t_0 * uint2(8U)  + uint2(x_2, y_1);
-            if((p_0.x) >= (_S16.w_1))
+            uint2 p_0 = t_2 * uint2(8U)  + uint2(x_2, y_1);
+            if((p_0.x) >= (_S31.w_1))
             {
-                _S18 = true;
+                _S33 = true;
             }
             else
             {
-                _S18 = (p_0.y) >= (_S16.h_1);
+                _S33 = (p_0.y) >= (_S31.h_1);
             }
             uint trans_2;
-            if(_S18)
+            if(_S33)
             {
                 trans_2 = trans_1;
                 x_2 = x_2 + 1U;
                 trans_1 = trans_2;
                 continue;
             }
-            int3 _S22 = int3(int2(p_0), int(0));
-            float sum_2 = sum_1 + dot(aces_fit_0(((_S19).read(vec<uint,2>(((_S22)).xy), uint(((_S22)).z))).xyz * float3(_S16.exposure_0) ), float3(0.2125999927520752f, 0.71520000696182251f, 0.072200000286102295f));
+            int3 _S37 = int3(int2(p_0), int(0));
+            float3 _S38 = alpha_tonemap_0(_S31.lut_0, ((_S34).read(vec<uint,2>(((_S37)).xy), uint(((_S37)).z))).xyz, _S31.exposure_0, &kernelContext_8);
+            float sum_2 = sum_1 + dot(_S38, float3(0.2125999927520752f, 0.71520000696182251f, 0.072200000286102295f));
             uint n_2 = n_1 + 1U;
-            uint id_0 = ((_S20).read(vec<uint,2>(((_S22)).xy), uint(((_S22)).z))).x;
+            uint id_0 = ((_S35).read(vec<uint,2>(((_S37)).xy), uint(((_S37)).z))).x;
             if(id_0 != 0U)
             {
-                uint device* _S23 = _S21 + (id_0 - 1U);
-                uint st_0 = *_S23;
-                bool _S24;
-                if((((*_S23) >> 4U) & 63U) != 0U)
+                uint device* _S39 = _S36 + (id_0 - 1U);
+                uint st_0 = *_S39;
+                bool _S40;
+                if((((*_S39) >> 4U) & 63U) != 0U)
                 {
-                    _S24 = true;
+                    _S40 = true;
                 }
                 else
                 {
-                    _S24 = (st_0 & 4096U) != 0U;
+                    _S40 = (st_0 & 4096U) != 0U;
                 }
-                if(_S24)
+                if(_S40)
                 {
                     trans_2 = trans_1 + 1U;
                 }
@@ -302,9 +335,9 @@ float3 aces_fit_0(float3 x_1)
         n_0 = n_1;
         trans_0 = trans_1;
     }
-    float device* _S25 = ed_buf_0(_S16.out_1, &kernelContext_6);
-    uint i_3 = (t_0.y * _S16.tiles_x_0 + _S17) * 2U;
-    float device* _S26 = _S25 + i_3;
+    float device* _S41 = ed_buf_0(_S31.out_1, &kernelContext_8);
+    uint i_4 = (t_2.y * _S31.tiles_x_0 + _S32) * 2U;
+    float device* _S42 = _S41 + i_4;
     if(n_0 > 0U)
     {
         sum_0 = sum_0 / float(n_0);
@@ -313,8 +346,8 @@ float3 aces_fit_0(float3 x_1)
     {
         sum_0 = 0.0f;
     }
-    *_S26 = sum_0;
-    *(_S25 + (i_3 + 1U)) = float(trans_0);
+    *_S42 = sum_0;
+    *(_S41 + (i_4 + 1U)) = float(trans_0);
     return;
 }
 

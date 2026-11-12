@@ -72,7 +72,8 @@ pub fn skinned_bar() -> SkinnedMeshAsset {
         for c in 0..4u32 {
             let (a, b) = (r * 4 + c, r * 4 + (c + 1) % 4);
             let (a2, b2) = (a + 4, b + 4);
-            idx.extend_from_slice(&[a, b, b2, a, b2, a2]);
+            // Counter-clockwise seen from outside (front faces), like the caps.
+            idx.extend_from_slice(&[a, b2, b, a, a2, b2]);
         }
     }
     // Caps.

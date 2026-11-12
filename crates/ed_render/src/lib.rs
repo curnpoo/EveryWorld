@@ -26,9 +26,11 @@
 mod alloc;
 pub mod graph;
 mod gpu;
+pub mod light;
 pub mod provider;
 pub mod scene;
 pub mod shaders;
+pub mod tonemap;
 
 use ed_geo::ObjectId;
 use alloc::{Deferred, RangeAlloc, Release};
@@ -38,9 +40,10 @@ use ed_gpu::{
     Subresource, TextureDesc, TextureId, TextureKind, Timing, Topology, Transition, Usage,
 };
 use glam::{Affine3A, DVec3, Mat4, Quat, Vec3, Vec4};
-use gpu::{FD_PARAMS, FD_PLANES, FD_PROJ, FD_SUN_DIR, FD_VIEWPORT, FRAME_WORDS, INSTANCE_WORDS, MATERIAL_WORDS, NO_TEXTURE, PALETTE_WORDS, SKIN_SRC_WORDS, UV_WORDS, VERTEX_WORDS, constants};
+use gpu::{FD_LIGHT, FD_PARAMS, FD_PLANES, FD_PROJ, FD_SUN_DIR, FD_VIEWPORT, FRAME_WORDS, INSTANCE_WORDS, MATERIAL_WORDS, NO_TEXTURE, PALETTE_WORDS, SKIN_SRC_WORDS, UV_WORDS, VERTEX_WORDS, constants};
 use graph::{FrameGraph, FrameTimings, GraphError, PassKind, TextureInfo, TransientPool};
-use provider::{CullStats, DiscreteLod, GeometryProvider, LodConfig, LodPipelines, MeshRecord, Ring, SharedInputs, VisTargets};
+use provider::{CullStats, DiscreteLod, GeometryProvider, LodConfig, LodPipelines, MeshRecord, Ring, ShadowTargets, SharedInputs, VisTargets};
+pub use light::{LightingSettings, Sky};
 use scene::{InstanceDesc, InstancePools, MAX_LODS, Material, MaterialId, MeshAsset, MeshId, SkinId, SkinnedMeshAsset, TextureAsset, TextureHandle};
 use shaders::{Built, Module, ShaderSet, ShaderSources};
 
@@ -198,6 +201,9 @@ pub enum SceneMode {
     Scene,
     /// Clear, tonemap, overlay: the "empty frame" budget.
     Empty,
+    /// Like `Empty`, but the tonemap pass maps [`tonemap::test_ramp`] instead of the HDR target
+    /// (the GPU-vs-CPU tone map tolerance test).
+    ToneRamp,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -222,7 +228,7 @@ pub struct FrameParams {
 
 impl Default for FrameParams {
     fn default() -> Self {
-        Self { mode: SceneMode::Scene, sun_dir: Vec3::new(0.45, 0.62, 0.35).normalize(), exposure: 1.0, readback: None, pick: None, pop_stats: false, vis_readback: None }
+        Self { mode: SceneMode::Scene, sun_dir: Vec3::new(0.45, 0.62, 0.35).normalize(), exposure: tonemap::ALPHA_EXPOSURE, readback: None, pick: None, pop_stats: false, vis_readback: None }
     }
 }
 
@@ -366,6 +372,7 @@ struct Pipelines {
     pick: ComputePipelineId,
     pop: ComputePipelineId,
     skin: ComputePipelineId,
+    ao: ComputePipelineId,
     overlay_vs: ShaderId,
     overlay_fs: ShaderId,
     /// Overlay pipelines (lines, triangles) per output format, created on first use.
@@ -405,9 +412,10 @@ impl Pipelines {
         let pick = b.compute(dev, src, Module::Debug, "pick", [1, 1, 1])?;
         let pop = b.compute(dev, src, Module::Debug, "pop_stats", [8, 8, 1])?;
         let skin = b.compute(dev, src, Module::Skin, "skin", [SKIN_GROUP, 1, 1])?;
+        let ao = b.compute(dev, src, Module::Ao, "ao_main", [8, 8, 1])?;
         let overlay_vs = b.shader(dev, src, Module::Overlay, "overlay vs", ShaderStage::Vertex, "vs_overlay")?;
         let overlay_fs = b.shader(dev, src, Module::Overlay, "overlay fs", ShaderStage::Fragment, "fs_overlay")?;
-        Ok(Self { built: std::mem::take(b), resolve, tonemap_vs, tonemap_fs, tonemap: Vec::new(), pick, pop, skin, overlay_vs, overlay_fs, overlay: Vec::new() })
+        Ok(Self { built: std::mem::take(b), resolve, tonemap_vs, tonemap_fs, tonemap: Vec::new(), pick, pop, skin, ao, overlay_vs, overlay_fs, overlay: Vec::new() })
     }
     fn destroy(mut self, dev: &dyn Device) {
         for (_, p) in self.tonemap.drain(..) {
@@ -544,6 +552,12 @@ pub struct Renderer {
     overlay_filled: Option<u64>,
     scratch: Vec<Timing>,
     bytes_scratch: Vec<u8>,
+    /// Lighting switches and tunables (M4d).
+    lighting: LightingSettings,
+    /// The tone mapper's Filmic LUT (RGBA16F texels as words).
+    lut: Tracked,
+    /// Sky SH9 for the last sun ([`light::sky_sh9`] runs only when the sun moves).
+    sky_cache: Option<(Sky, [[f32; 4]; 9])>,
 }
 
 /// One view slot's state: per-frame buffers (filled once per frame per view), the pick ring
@@ -555,6 +569,8 @@ struct ViewSlot {
     pick_requests: [(u32, u32); provider::RING],
     pick: Option<PickResult>,
     pool: TransientPool,
+    /// Half-res GTAO buffers (raw, blurred; float2 per texel) and their size.
+    ao: Option<(Tracked, Tracked, u32, u32)>,
 }
 
 impl ViewSlot {
@@ -567,6 +583,7 @@ impl ViewSlot {
             pick_requests: [(0, 0); provider::RING],
             pick: None,
             pool: TransientPool::new(),
+            ao: None,
         })
     }
     fn destroy(mut self, dev: &dyn Device) {
@@ -574,6 +591,10 @@ impl ViewSlot {
         self.frame_data.destroy(dev);
         self.nodes_buf.destroy(dev);
         self.pick_ring.destroy(dev);
+        if let Some((a, b, _, _)) = self.ao {
+            a.destroy(dev);
+            b.destroy(dev);
+        }
     }
 }
 
@@ -610,6 +631,9 @@ impl Renderer {
         let palette_buf = Tracked::new(dev, "skin palette", desc.max_joints as u64 * (PALETTE_WORDS * 4) as u64, per_frame)?;
         let smp = dev.create_sampler(&SamplerDesc { min_mag: Filter::Linear, mip: Filter::Linear, address: AddressMode::Repeat, anisotropy: 8, compare: None })?;
         let sampler = (smp, dev.bind_sampler(smp)?);
+        let mut lut = Tracked::new(dev, "filmic lut", tonemap::FILMIC_LUT.len() as u64, upload)?;
+        dev.write_buffer(lut.id, 0, tonemap::FILMIC_LUT)?;
+        lut.state = ResourceState::CopyDst;
         Ok(Self {
             desc: *desc,
             lod: DiscreteLod::new(dev, src, desc.max_instances, desc.max_meshes, desc.lod)?,
@@ -652,6 +676,9 @@ impl Renderer {
             overlay_filled: None,
             scratch: Vec::new(),
             bytes_scratch: Vec::new(),
+            lighting: LightingSettings::from_env(),
+            lut,
+            sky_cache: None,
         })
     }
 
@@ -1033,13 +1060,19 @@ impl Renderer {
     /// Pass names (timer labels) of a frame, in run order.
     pub fn pass_names(&self, params: &FrameParams) -> Vec<&'static str> {
         match params.mode {
-            SceneMode::Empty => PASSES_EMPTY.to_vec(),
+            SceneMode::Empty | SceneMode::ToneRamp => PASSES_EMPTY.to_vec(),
             SceneMode::Scene => {
                 let mut v = Vec::new();
                 if self.skins.iter().any(Option::is_some) {
                     v.push("skin");
                 }
                 v.extend_from_slice(self.lod.pass_names());
+                if self.lighting.shadows {
+                    v.extend(["shadow_cull", "shadow_raster"]);
+                }
+                if self.lighting.ao {
+                    v.push("ao");
+                }
                 v.push("resolve");
                 if params.pop_stats {
                     v.push("pop_stats");
@@ -1147,13 +1180,15 @@ impl Renderer {
         for (i, p) in frustum_planes(&vpm).iter().enumerate() {
             put(&mut fd, FD_PLANES + i * 4, &p.to_array());
         }
-        let s = params.sun_dir.normalize_or(Vec3::Y);
+        // The sky model for this sun (no wall clock: the sun comes from the caller, P1).
+        let sky = Sky::for_sun(params.sun_dir);
+        let s = sky.sun_dir;
         let rows: [[f32; 4]; 5] = [
-            [s.x, s.y, s.z, 0.0],
-            [3.0, 2.85, 2.6, 0.0],   // sun
-            [0.18, 0.36, 0.85, 0.0], // zenith
-            [0.62, 0.72, 0.86, 0.0], // horizon
-            [0.24, 0.21, 0.17, 0.0], // ground
+            [s.x, s.y, s.z, sky.day],
+            sky.sun_color.extend(0.0).to_array(),
+            sky.zenith.extend(0.0).to_array(),
+            sky.horizon.extend(0.0).to_array(),
+            sky.ground.extend(0.0).to_array(),
         ];
         for (i, r) in rows.iter().enumerate() {
             put(&mut fd, FD_SUN_DIR + i * 4, r);
@@ -1165,6 +1200,27 @@ impl Renderer {
         let scene = params.mode == SceneMode::Scene;
         if scene {
             self.lod.prepare(dev, &self.pools, w, h, &mut fd)?;
+        }
+        // Lighting (M4d): cascades re-fit every frame (cheap, CPU), sky SH only when the sun moves.
+        let lighting = self.lighting;
+        let cplan = light::plan_cascades(&lighting, cam, w as f32 / h as f32, sky.sun_dir);
+        if self.sky_cache.as_ref().map(|c| c.0) != Some(sky) {
+            self.sky_cache = Some((sky, light::sky_sh9(&sky)));
+        }
+        let sh = self.sky_cache.as_ref().expect("just set").1;
+        let (ao_w, ao_h) = (w.div_ceil(2), h.div_ceil(2));
+        let ao_on = scene && lighting.ao;
+        let lw = light::light_words(&LightingSettings { ao: ao_on, ..lighting }, &cplan, &sh, (ao_w, ao_h), 1.0);
+        fd[FD_LIGHT..FD_LIGHT + light::LIGHT_WORDS].copy_from_slice(&lw);
+        if ao_on && self.views[si].ao.as_ref().map(|a| (a.2, a.3)) != Some((ao_w, ao_h)) {
+            if let Some((a, b, _, _)) = self.views[si].ao.take() {
+                dev.wait_idle();
+                a.destroy(dev);
+                b.destroy(dev);
+            }
+            let rw = Usage { shader_read: true, shader_write: true, ..Default::default() };
+            let bytes = ao_w as u64 * ao_h as u64 * 8;
+            self.views[si].ao = Some((Tracked::new(dev, "ao raw", bytes, rw)?, Tracked::new(dev, "ao", bytes, rw)?, ao_w, ao_h));
         }
         fd[gpu::FD_CULL + 2] = self.frame_counter;
         self.frame_counter = self.frame_counter.wrapping_add(1);
@@ -1185,11 +1241,15 @@ impl Renderer {
 
         let encode_srgb = !matches!(view.target.format, Format::Rgba8Srgb | Format::Bgra8Srgb | Format::Rgba16Float);
         let exposure = params.exposure;
+        let ramp = params.mode == SceneMode::ToneRamp;
         let mut g = FrameGraph::new();
         let hdr = g.create_texture("hdr", TextureInfo { format: HDR_FORMAT, width: w, height: h });
         let out_info = TextureInfo { format: view.target.format, width: view.target.width, height: view.target.height };
         let out = g.import_texture("output", view.target.texture, out_info, view.target.initial, view.target.final_state);
         let fd_res = g.import_buffer("frame data", self.views[si].frame_data.id, self.views[si].frame_data.state, None);
+        let lut_res = g.import_buffer("filmic lut", self.lut.id, self.lut.state, None);
+        let lut_bi = self.lut.bindless.0;
+        let mut ao_imports = None;
         let mut imports = Vec::new();
         let mut imports_tail: Vec<graph::Res> = Vec::new();
         let mut skin_here = false;
@@ -1231,7 +1291,36 @@ impl Renderer {
             };
             let depth = g.create_texture("depth", TextureInfo { format: DEPTH_FORMAT, width: w, height: h });
             let vis = g.create_texture("visibility", TextureInfo { format: VIS_FORMAT, width: w, height: h });
-            let po = self.lod.record(&mut g, frame_index, &inputs, VisTargets { depth, vis });
+            let shadow = (cplan.count > 0).then(|| {
+                let (aw, ah) = lighting.atlas_size();
+                let atlas = g.create_texture("shadow atlas", TextureInfo { format: DEPTH_FORMAT, width: aw, height: ah });
+                ShadowTargets { atlas, cascades: cplan.count, tile: cplan.tile }
+            });
+            let po = self.lod.record(&mut g, frame_index, &inputs, VisTargets { depth, vis, shadow });
+            if ao_on {
+                let (a, b, _, _) = self.views[si].ao.as_ref().expect("allocated above");
+                let (ra, rb) = (g.import_buffer("ao raw", a.id, a.state, None), g.import_buffer("ao", b.id, b.state, None));
+                ao_imports = Some((ra, rb));
+                let (raw_id, raw_bi, out_bi, fd_bi) = (a.id, a.bindless.0, b.bindless.0, self.views[si].frame_data.bindless.0);
+                let (pipe, radius) = (self.pipes.ao, lighting.ao_radius);
+                let sw = ResourceState::ShaderWrite;
+                g.add_pass("ao", PassKind::Compute)
+                    .read(fd_res, ResourceState::ShaderRead)
+                    .read(depth, ResourceState::ShaderRead)
+                    .write(ra, sw)
+                    .write(rb, sw)
+                    .exec(move |ctx| {
+                        let di = ctx.bindless(depth).0;
+                        ctx.enc.set_compute_pipeline(pipe);
+                        for mode in 0..2u32 {
+                            if mode == 1 {
+                                ctx.enc.transition(&[Transition::Buffer { buffer: raw_id, from: sw, to: sw }]);
+                            }
+                            ctx.enc.set_compute_constants(&constants(&[fd_bi, di, raw_bi, out_bi, mode, ao_w, ao_h, radius.to_bits()]));
+                            ctx.enc.dispatch(ao_w.div_ceil(8), ao_h.div_ceil(8), 1);
+                        }
+                    });
+            }
             let rc = constants(&[
                 self.views[si].frame_data.bindless.0,
                 0, // vis: bindless index of a transient, known in the pass
@@ -1243,9 +1332,19 @@ impl Renderer {
                 self.indices.bindless.0,
                 self.uvs.bindless.0,
                 self.sampler.1.0,
+                0, // shadow atlas: a transient, known in the pass
+                self.views[si].ao.as_ref().filter(|_| ao_on).map_or(0, |a| a.1.bindless.0),
             ]);
             let resolve = self.pipes.resolve;
-            g.add_pass("resolve", PassKind::Raster)
+            let atlas = shadow.map(|s| s.atlas);
+            let mut rp = g.add_pass("resolve", PassKind::Raster);
+            if let Some(a) = atlas {
+                rp = rp.read(a, ResourceState::ShaderRead);
+            }
+            if let Some((_, rb)) = ao_imports {
+                rp = rp.read(rb, ResourceState::ShaderRead);
+            }
+            rp
                 .read(fd_res, ResourceState::ShaderRead)
                 .read(vis, ResourceState::ShaderRead)
                 .read(inst, ResourceState::ShaderRead)
@@ -1259,6 +1358,9 @@ impl Renderer {
                 .exec(move |ctx| {
                     let mut c = rc;
                     c[4..8].copy_from_slice(&ctx.bindless(vis).0.to_ne_bytes());
+                    if let Some(a) = atlas {
+                        c[40..44].copy_from_slice(&ctx.bindless(a).0.to_ne_bytes());
+                    }
                     ctx.enc.set_render_pipeline(resolve);
                     ctx.enc.set_draw_constants(&c);
                     ctx.enc.draw(0..3, 0..1);
@@ -1287,13 +1389,14 @@ impl Renderer {
                 let (bi, pipe, state_bi) = (b.bindless.0, self.pipes.pop, po.state.1);
                 g.add_pass("pop_stats", PassKind::Compute)
                     .read(hdr, ResourceState::ShaderRead)
+                    .read(lut_res, ResourceState::ShaderRead)
                     .read(vis, ResourceState::ShaderRead)
                     .read(po.state.0, ResourceState::ShaderRead)
                     .write(res, ResourceState::ShaderWrite)
                     .exec(move |ctx| {
                         let (hi, vi) = (ctx.bindless(hdr).0, ctx.bindless(vis).0);
                         ctx.enc.set_compute_pipeline(pipe);
-                        ctx.enc.set_compute_constants(&constants(&[hi, vi, state_bi, bi, w, h, tx, ty, exposure.to_bits()]));
+                        ctx.enc.set_compute_constants(&constants(&[hi, vi, state_bi, bi, w, h, tx, ty, exposure.to_bits(), lut_bi]));
                         ctx.enc.dispatch(tx.div_ceil(8), ty.div_ceil(8), 1);
                     });
             }
@@ -1326,7 +1429,7 @@ impl Renderer {
         } else {
             LoadOp::Clear([0.0, 0.0, 0.0, 1.0])
         };
-        g.add_pass("tonemap", PassKind::Raster).read(hdr, ResourceState::ShaderRead).color(out, out_load, StoreOp::Store).exec(move |ctx| {
+        g.add_pass("tonemap", PassKind::Raster).read(hdr, ResourceState::ShaderRead).read(lut_res, ResourceState::ShaderRead).color(out, out_load, StoreOp::Store).exec(move |ctx| {
             if !full {
                 ctx.enc.set_viewport(vp.x as f32, vp.y as f32, w as f32, h as f32);
             }
@@ -1336,11 +1439,12 @@ impl Renderer {
                 hdr_idx,
                 encode_srgb as u32,
                 exposure.to_bits(),
-                0,
+                lut_bi,
                 (vp.x as f32).to_bits(),
                 (vp.y as f32).to_bits(),
                 (w as f32).to_bits(),
                 (h as f32).to_bits(),
+                ramp as u32,
             ]));
             ctx.enc.draw(0..3, 0..1);
         });
@@ -1394,6 +1498,11 @@ impl Renderer {
         }
         let plan = g.execute(dev, enc, &mut self.views[si].pool)?;
         self.views[si].frame_data.state = plan.final_states[fd_res.index()];
+        self.lut.state = plan.final_states[lut_res.index()];
+        if let (Some((ra, rb)), Some(ao)) = (ao_imports, self.views[si].ao.as_mut()) {
+            ao.0.state = plan.final_states[ra.index()];
+            ao.1.state = plan.final_states[rb.index()];
+        }
         if let Some(&ov) = imports_tail.first() {
             self.overlay_buf.state = plan.final_states[ov.index()];
         }
@@ -1427,14 +1536,23 @@ impl Renderer {
         Ok(())
     }
 
+    /// Lighting switches and tunables (M4d).
+    pub fn lighting(&self) -> &LightingSettings {
+        &self.lighting
+    }
+    /// Changes the lighting switches; takes effect from the next recorded frame.
+    pub fn set_lighting(&mut self, l: LightingSettings) {
+        self.lighting = l;
+    }
+
     /// GPU culling counters of the latest finished frame.
     pub fn cull_stats(&self) -> Option<CullStats> {
         self.lod.stats()
     }
-    /// Draw calls recorded per scene frame: the provider's indirect draws plus resolve and
-    /// tonemap.
+    /// Draw calls recorded per scene frame: the provider's indirect draws (plus one per shadow
+    /// cascade) and resolve and tonemap.
     pub fn draw_calls(&self) -> u32 {
-        self.lod.draw_calls() + 2
+        self.lod.draw_calls() + 2 + if self.lighting.shadows { self.lighting.cascade_count() } else { 0 }
     }
     /// CPU time of the last frame's multi-draw loops, ms.
     pub fn draw_loop_ms(&self) -> f64 {
@@ -1537,7 +1655,7 @@ impl Renderer {
         for v in self.views {
             v.destroy(dev);
         }
-        for t in [self.vertices, self.uvs, self.indices, self.instance_buf, self.materials_buf, self.overlay_buf, self.skin_src, self.palette_buf] {
+        for t in [self.vertices, self.uvs, self.indices, self.instance_buf, self.materials_buf, self.overlay_buf, self.skin_src, self.palette_buf, self.lut] {
             t.destroy(dev);
         }
         for e in self.textures.drain(..).flatten() {
