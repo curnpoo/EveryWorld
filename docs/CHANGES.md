@@ -1,3 +1,24 @@
+## 2026-11-12: Phase 2 W2a — node height pages (`ed_data::node`)
+
+- **API:**
+  - `node_heights(&dyn SourceView, NodeId) -> HeightPage` (257² u16, scale, offset, min, max) samples the f64 node lattice and resamples slippy elevation bilinearly. `ElevationSource` wraps `elevation::fetch`, which tries Mapterhorn first and falls back to AWS.
+  - `parent_heights([&HeightPage; 4])` builds a parent from its children: [1 2 1]/4 filter, borders copied.
+  - No slippy type in the public API.
+- **Decisions (accepted by the conductor):**
+  - **Fixed 0.5 m height step**, with the offset a multiple of 0.5 m. This is what makes decoded borders bit-identical between neighbours and between parent and children; a per-node scale cannot. Cost: ±0.25 m quantisation.
+  - **Source zoom** is `min(level + 2, 15)`.
+  - **Polar caps** (beyond ±85.05°) repeat the edge row: stable and deterministic, but not real data. A polar dataset is still needed.
+  - **libm for every transcendental** (`tan`, `cos`, `log`, `atan2`, `sincos`; Bowring geodetic conversion inlined), so pages match across platforms.
+- **Tests:**
+  - **G4** (1,000 neighbour pairs over 6 faces and both poles, 183 across face edges; 60 parent cases): bit-identical.
+  - **Determinism:** two runs and a child process give the same bytes. Digest over 6 fixed nodes: `d454fbbb…`; compare on Windows with `cargo test -p ed_data --test node_determinism two_runs -- --nocapture`.
+  - **Accuracy:** worst error 0.395 m against the analytic field.
+  - **libm conversion:** agrees with `ed_geo` within 1e-9°.
+- **Open:**
+  - Terrarium/Mapterhorn heights are above sea level (orthometric), not above the ellipsoid. The geoid undulation (±100 m) must be added before heights meet the ECEF truth (P2-D3).
+  - Polar source.
+- **Slice data:** 1,966 elevation tiles (280 MB; 1,965 from Mapterhorn, 1 from AWS) for Blue Ridge and Zermatt, z8–z14, are in the gitignored `.earthdrop-cache/`. Run with `EARTHDROP_CACHE=.earthdrop-cache`; the default cache is ephemeral.
+
 ## 2026-11-12: AO sits at contacts and creases only (owner hand-test feedback)
 
 - **Cause of the "too strong, too broad" look:** mostly the M4f sky-visibility term, not

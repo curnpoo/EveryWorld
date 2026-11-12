@@ -21,6 +21,7 @@ pub mod geocode;
 pub mod geology;
 pub mod http;
 pub mod mvt;
+pub mod node;
 pub mod osmtags;
 pub mod overture;
 pub mod roadz;

@@ -1,0 +1,10 @@
+//! Node-space source data (Phase 2 W2). Resamples public rasters into the cube-sphere node
+//! lattice of `ed_geo::node`. No slippy-map type appears in this module's public API.
+
+mod heights;
+mod source;
+
+pub use heights::{
+    HeightPage, HEIGHT_STEP_M, PAGE_CELLS, PAGE_SAMPLES, node_heights, parent_heights, source_zoom,
+};
+pub use source::{ElevationSource, Raster, SourceView};
