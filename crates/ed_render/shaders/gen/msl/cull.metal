@@ -122,6 +122,22 @@ struct LightData_natural_0
     packed_float4 skyvis_0;
 };
 
+struct AtmosData_natural_0
+{
+    packed_float4 radii_0;
+    packed_float4 rayleigh_0;
+    packed_float4 mie_s_0;
+    packed_float4 mie_a_0;
+    packed_float4 ozone_0;
+    packed_float4 ground_0;
+    packed_float4 sun_0;
+    packed_float4 up_0;
+    packed_float4 ap_0;
+    packed_uint4 bufs_0;
+    packed_uint4 bufs2_0;
+    packed_uint4 cfg_1;
+};
+
 struct FrameData_natural_0
 {
     _MatrixStorage_float4x4_ColMajornatural_0 view_proj_0;
@@ -139,6 +155,7 @@ struct FrameData_natural_0
     packed_uint4 cull_0;
     array<HzbLevel_0, int(16)> hzb_1;
     LightData_natural_0 light_0;
+    AtmosData_natural_0 atmos_0;
 };
 
 FrameData_natural_0 device* ed_buf_4(uint i_4, KernelContext_0 thread* kernelContext_4)

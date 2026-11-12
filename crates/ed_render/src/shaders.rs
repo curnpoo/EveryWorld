@@ -19,13 +19,15 @@ use ed_gpu::{
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
-/// The Slang source of every renderer module. `common` and `lighting` are included by the
+/// The Slang source of every renderer module. `common`, `lighting` and `atmos` are included by the
 /// others, and `abi` is ed_gpu's binding ABI (`shader_abi.slang`), which every module includes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShaderSources {
     pub abi: String,
     pub common: String,
     pub lighting: String,
+    pub atmos: String,
+    pub atmos_tables: String,
     pub ao: String,
     pub resolve: String,
     pub tonemap: String,
@@ -49,10 +51,11 @@ pub(crate) enum Module {
     Vis,
     Overlay,
     Ao,
+    Atmos,
 }
 
 impl Module {
-    const ALL: [Module; 9] = [
+    const ALL: [Module; 10] = [
         Module::Resolve,
         Module::Tonemap,
         Module::Debug,
@@ -62,6 +65,7 @@ impl Module {
         Module::Vis,
         Module::Overlay,
         Module::Ao,
+        Module::Atmos,
     ];
 
     /// File stem in `shaders/` (and of the generated outputs).
@@ -76,6 +80,7 @@ impl Module {
             Module::Vis => "visibility",
             Module::Overlay => "overlay",
             Module::Ao => "ao",
+            Module::Atmos => "atmos_tables",
         }
     }
 
@@ -90,6 +95,7 @@ impl Module {
             Module::Vis => &s.vis,
             Module::Overlay => &s.overlay,
             Module::Ao => &s.ao,
+            Module::Atmos => &s.atmos_tables,
         }
     }
 }
@@ -97,9 +103,11 @@ impl Module {
 impl ShaderSources {
     /// File names in a shader directory, in field order (after `abi`, which lives in ed_gpu:
     /// see [`Self::abi_path`]).
-    pub const FILES: [&'static str; 11] = [
+    pub const FILES: [&'static str; 13] = [
         "common.slang",
         "lighting.slang",
+        "atmos.slang",
+        "atmos_tables.slang",
         "ao.slang",
         "resolve.slang",
         "tonemap.slang",
@@ -117,6 +125,8 @@ impl ShaderSources {
             abi: ed_gpu::slang::ABI_SOURCE.into(),
             common: include_str!("../shaders/common.slang").into(),
             lighting: include_str!("../shaders/lighting.slang").into(),
+            atmos: include_str!("../shaders/atmos.slang").into(),
+            atmos_tables: include_str!("../shaders/atmos_tables.slang").into(),
             ao: include_str!("../shaders/ao.slang").into(),
             resolve: include_str!("../shaders/resolve.slang").into(),
             tonemap: include_str!("../shaders/tonemap.slang").into(),
@@ -141,6 +151,8 @@ impl ShaderSources {
             abi,
             common: r("common.slang")?,
             lighting: r("lighting.slang")?,
+            atmos: r("atmos.slang")?,
+            atmos_tables: r("atmos_tables.slang")?,
             ao: r("ao.slang")?,
             resolve: r("resolve.slang")?,
             tonemap: r("tonemap.slang")?,
@@ -202,6 +214,7 @@ builtin_set! {
     Vis "visibility" ["vs_vis", "fs_vis", "fs_vis_dither", "vs_shadow"],
     Overlay "overlay" ["vs_overlay", "fs_overlay"],
     Ao "ao" ["ao_main"],
+    Atmos "atmos_tables" ["atmos_transmittance", "atmos_multiscatter", "atmos_skyview", "atmos_ap", "atmos_sh_partial", "atmos_sh_final"],
 }
 
 fn words(bytes: &[u8]) -> Vec<u32> {
@@ -236,6 +249,7 @@ impl ShaderSet {
                     (&file, m.source(src)),
                     ("common.slang", &src.common),
                     ("lighting.slang", &src.lighting),
+                    ("atmos.slang", &src.atmos),
                     ("shader_abi.slang", &src.abi),
                 ],
             )

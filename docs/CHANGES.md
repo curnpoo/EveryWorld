@@ -1,3 +1,35 @@
+## 2026-11-12: Phase 2 W5 — physically based atmosphere (on by default)
+
+- **What:** Rayleigh + Mie + ozone tables built on the GPU in one "atmos" compute pass:
+  - transmittance 256×64 and multi-scatter 32², rebuilt only when the body or medium changes;
+  - sky view 192×108 for the camera and 96×54 for the surface, which also feeds the ambient SH9 on the GPU;
+  - aerial-perspective froxels 32³, exponential slices to 150 km (1200 km from outside).
+- **Resolve:** takes the sky, the specular environment, the transmitted sun at each point and the ambient SH from those tables, and lays aerial perspective over every opaque pixel.
+- **Code:**
+  - New: `ed_render/src/atmosphere.rs` (GPU glue) and `atmosphere_model.rs` (f64 CPU mirror with unit tests), `shaders/atmos.slang`, `shaders/atmos_tables.slang`, and the GPU test `tests/render_atmos.rs`.
+  - `FrameData` gained `AtmosData` (48 words).
+- **Switches:** `EW_NO_ATMOS=1` (the old analytic sky), `EW_ATMOS_DEBUG=transmittance|inscatter`, `EW_ATMOS_BODY=moon` (vacuum: no sky).
+- **Cost** (M3 Pro, proving path, 300 frames, conductor re-measure):
+  - 1440p: GPU frame 6.42 → 6.86 ms (+0.45; the atmos pass is 0.11 ms, resolve +0.33 from per-pixel froxel trilinear).
+  - Worker numbers: 720p +0.20 ms, 2880×1800 +0.57 ms.
+  - A hardware 3D texture for the froxels could recover most of the resolve cost.
+- **Calibration — owner to confirm:**
+  - Clear-day aerosol is AOD 0.05 at 550 nm (about 70 km visibility). That puts sky:sun irradiance at 0.153, against 0.20 in M4e.
+  - Sun brightness at the ground is unchanged (luminance 4.54) but slightly warmer.
+  - Shade gets about 20% less fill light and is bluer.
+  - The M4e value, 0.20, washed the 30 km ridge to about 3% contrast, while measured clear days run 0.12–0.18. To go back, scale the Mie terms by 1/0.6 and set `sun_irradiance` to 8.2.
+- **Checked:**
+  - Ridges at 2, 8 and 30 km get bluer and flatter.
+  - The horizon is pale and the zenith blue.
+  - At 10 km there is a blue-grey haze with a white horizon band.
+  - From 400 km: a black sky, a thin blue limb and, at sun −4°, a pink terminator band.
+  - Frames are byte-identical across runs. `ed_render` tests 64/64 pass.
+- **Open:**
+  - The atmosphere assumes a flat ground at y = 0 with +Y up. `ed_planet` must set `surface_y`/`surface_alt_km`/up, and until then the 10 km view shows a ~0.3° line where the flat slab ends.
+  - Twilight frames are near-black at fixed exposure; eye adaptation comes later.
+  - The sky is less saturated than photo 01 (a phone photo).
+- **Mac check:** look at the proving street's shade colour and the sky in the window (`EW_NO_ATMOS=1` for A/B).
+
 ## 2026-11-12: One `HeightPage`, in `ed_geo`
 
 - W1 and W2 had each written their own 257×257 height page. The layering rules (`xtask/deps.toml`) forbid `ed_planet → ed_data`, so the single type now lives in `ed_geo::height_page` (`PAGE_N`, `HEIGHT_STEP_M` = 0.5 m, `sample(u,v)` with the 00–11 diagonal rule). `ed_data::node` and `ed_planet` re-export it.

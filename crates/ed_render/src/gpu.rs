@@ -33,8 +33,8 @@ pub(crate) const VERTEX_WORDS: usize = 4;
 /// `DrawIndexedArgs`.
 pub(crate) const ARGS_WORDS: usize = 5;
 
-/// `FrameData`: 3 float4x4, 5 planes, 8 float4, uint4 cull, 16 HzbLevel, `LightData`.
-pub(crate) const FRAME_WORDS: usize = 48 + 20 + 32 + 4 + 64 + crate::light::LIGHT_WORDS;
+/// `FrameData`: 3 float4x4, 5 planes, 8 float4, uint4 cull, 16 HzbLevel, `LightData`, `AtmosData`.
+pub(crate) const FRAME_WORDS: usize = 48 + 20 + 32 + 4 + 64 + crate::light::LIGHT_WORDS + crate::atmosphere::ATMOS_WORDS;
 pub(crate) const FD_PLANES: usize = 48;
 pub(crate) const FD_SUN_DIR: usize = 68;
 pub(crate) const FD_VIEWPORT: usize = 88;
@@ -45,6 +45,8 @@ pub(crate) const FD_HZB: usize = 104;
 pub(crate) const MAX_HZB_LEVELS: usize = 16;
 /// `FrameData.light` (common.slang `LightData`, [`crate::light::light_words`]).
 pub(crate) const FD_LIGHT: usize = FD_HZB + MAX_HZB_LEVELS * 4;
+/// `FrameData.atmos` (common.slang `AtmosData`, [`crate::atmosphere::Atmosphere::words`]).
+pub(crate) const FD_ATMOS: usize = FD_LIGHT + crate::light::LIGHT_WORDS;
 
 /// Visible-list entry: instance index bits.
 pub(crate) const ENTRY_INSTANCE_BITS: u32 = 20;
@@ -105,8 +107,8 @@ mod tests {
 
     #[test]
     fn frame_layout_offsets() {
-        assert_eq!(FRAME_WORDS, 312);
-        assert_eq!(FD_LIGHT + crate::light::LIGHT_WORDS, FRAME_WORDS);
+        assert_eq!(FRAME_WORDS, 360);
+        assert_eq!(FD_ATMOS + crate::atmosphere::ATMOS_WORDS, FRAME_WORDS);
         assert_eq!(FD_SUN_DIR, FD_PLANES + 20);
         assert_eq!(FD_CULL, FD_SUN_DIR + 32);
         assert_eq!(FD_HZB + MAX_HZB_LEVELS * 4, FD_LIGHT);

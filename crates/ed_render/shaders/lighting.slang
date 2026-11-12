@@ -2,15 +2,22 @@
 // a tent PCF and cascade blending, and the AO upsample. The CPU side (cascade fit, SH bake,
 // switches) is src/light.rs; the data is FrameData.light (common.slang `LightData`).
 #pragma once
+#include "atmos.slang"
 
-// Diffuse ambient light (skylight above, ground bounce below: light.rs `ambient_sh9`) reaching
+// Diffuse ambient light (skylight above, ground bounce below: light.rs `ambient_sh9`, or with
+// the atmosphere on the surface sky-view table, atmos_tables.slang `atmos_sh_final`) reaching
 // a surface with normal `n`, divided by pi (multiply by albedo).
 // The SH9 coefficients already include the basis constants and the cosine lobe.
 float3 sh_irradiance(FrameData* f, float3 n) {
-    float3 c = f.light.sh[0].rgb;
-    c += f.light.sh[1].rgb * n.y + f.light.sh[2].rgb * n.z + f.light.sh[3].rgb * n.x;
-    c += f.light.sh[4].rgb * (n.x * n.y) + f.light.sh[5].rgb * (n.y * n.z) + f.light.sh[6].rgb * (3.0 * n.z * n.z - 1.0);
-    c += f.light.sh[7].rgb * (n.x * n.z) + f.light.sh[8].rgb * (n.x * n.x - n.y * n.y);
+    float4 s[9];
+    float4* ab = ed_buf<float4>(f.atmos.bufs2.z);
+    for (uint k = 0u; k < 9u; k++) {
+        s[k] = atmos_on(f) ? ab[ATM_SH_OUT + k] : f.light.sh[k];
+    }
+    float3 c = s[0].rgb;
+    c += s[1].rgb * n.y + s[2].rgb * n.z + s[3].rgb * n.x;
+    c += s[4].rgb * (n.x * n.y) + s[5].rgb * (n.y * n.z) + s[6].rgb * (3.0 * n.z * n.z - 1.0);
+    c += s[7].rgb * (n.x * n.z) + s[8].rgb * (n.x * n.x - n.y * n.y);
     return max(c, float3(0.0));
 }
 

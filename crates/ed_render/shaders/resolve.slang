@@ -13,6 +13,9 @@
 // multi-bounce, and ambient diffuse gives up the specular lobe's share.
 // M4f: large-scale sky visibility (ao.slang) swaps the sky a street canyon hides for bounce
 // light off the buildings, in the diffuse and the specular ambient.
+// Phase 2 W5: with the atmosphere on (atmos.slang), the sky, the specular environment, the sun
+// reaching each point and the ambient SH come from its tables, and aerial perspective is laid
+// over every opaque pixel.
 #include "shader_abi.slang"
 #include "common.slang"
 #include "lighting.slang"
@@ -67,7 +70,7 @@ float2 env_brdf(float nov, float rough) {
     return float2(-1.04, 1.04) * a004 + r.zw;
 }
 
-float3 shade_pbr(FrameData* f, float3 albedo, float metal, float rough, float ao, float sv, float sun_vis, float3 n, float3 v) {
+float3 shade_pbr(FrameData* f, float3 sun, float3 albedo, float metal, float rough, float ao, float sv, float sun_vis, float3 n, float3 v) {
     metal = saturate(metal);
     rough = clamp(rough, 0.04, 1.0);
     float a = rough * rough;
@@ -81,10 +84,10 @@ float3 shade_pbr(FrameData* f, float3 albedo, float metal, float rough, float ao
     float3 diff_col = albedo * (1.0 - metal);
     float3 F = f_schlick(f0, voh);
     float3 spec = d_ggx(noh, a) * v_smith(nov, nol, a) * F;
-    float3 direct = (diff_col * (1.0 - F) / PI + spec) * f.sun_color.rgb * (nol * sun_vis);
+    float3 direct = (diff_col * (1.0 - F) / PI + spec) * sun * (nol * sun_vis);
     float2 ab = env_brdf(nov, rough);
     float3 r = reflect(-v, n);
-    float3 env = f.light.flags.z != 0 ? lerp(sky_rad(f, r, 0.0), sh_irradiance(f, r), rough) : hemi_ambient(f, r);
+    float3 env = f.light.flags.z != 0 ? lerp(sky_env(f, r), sh_irradiance(f, r), rough) : hemi_ambient(f, r);
     env = occluded_ambient(f, env, sv);
     // Specular occlusion from AO (Lagarde 2014).
     float spec_occ = saturate(pow(nov + ao, exp2(-16.0 * a - 1.0)) - 1.0 + ao);
@@ -94,15 +97,15 @@ float3 shade_pbr(FrameData* f, float3 albedo, float metal, float rough, float ao
     return direct + amb;
 }
 
-float3 shade_toon(FrameData* f, GpuMaterial m, float3 albedo, float3 n, float3 v, float ao, float sv, float sun_vis) {
+float3 shade_toon(FrameData* f, float3 sun, GpuMaterial m, float3 albedo, float3 n, float3 v, float ao, float sv, float sun_vis) {
     float3 l = f.sun_dir.xyz;
     float ndl = dot(n, l);
     float bands = max(m.params.z, 1.0);
     float lit = floor(saturate(ndl * 0.5 + 0.5) * bands + 0.5) / bands * sun_vis;
     float3 c = lerp(albedo * m.shade.rgb, albedo, lit);
-    float3 light = f.sun_color.rgb * (lit / PI) + occluded_ambient(f, ambient_light(f, n), sv) * ao_multibounce(f, ao, albedo);
+    float3 light = sun * (lit / PI) + occluded_ambient(f, ambient_light(f, n), sv) * ao_multibounce(f, ao, albedo);
     float rim = pow(1.0 - saturate(dot(n, v)), 4.0) * m.shade.w * saturate(ndl + 0.3) * sun_vis;
-    return c * light + rim * f.sun_color.rgb * 0.15;
+    return c * light + rim * sun * 0.15;
 }
 
 // Unclamped barycentrics (b1, b2) of the ray `dir` (from the camera) on the triangle plane.
@@ -133,7 +136,7 @@ float4 fs_resolve(FsOut i) : SV_Target0 {
     uint2 vis = ed_tex2d_uint(ed_c.vis).Load(int3(int2(px), 0)).xy;
     float3 dir = view_dir(f, i.pos.xy);
     if (vis.x == 0) {
-        return float4(sky_rad(f, dir, f.light.sky.x), 1.0);
+        return float4(sky_pixel(f, dir), 1.0);
     }
     GpuInstance inst = ed_buf<GpuInstance>(ed_c.instances)[vis.x - 1u];
     GpuMesh* mesh = ed_buf<GpuMesh>(ed_c.meshes) + inst.mesh;
@@ -238,7 +241,9 @@ float4 fs_resolve(FsOut i) : SV_Target0 {
     float2 occ = ao_upsample(f, ed_c.ao, i.pos.xy, zlin);
     ao *= occ.x;
     float sv = occ.y;
-    float3 col = m.base.w > 0.5 ? shade_toon(f, m, albedo, n, v, ao, sv, sun_vis) : shade_pbr(f, albedo, metal, rough, ao, sv, sun_vis, n, v);
+    float3 sun = sun_light_at(f, p);
+    float3 col = m.base.w > 0.5 ? shade_toon(f, sun, m, albedo, n, v, ao, sv, sun_vis) : shade_pbr(f, sun, albedo, metal, rough, ao, sv, sun_vis, n, v);
+    col = apply_aerial(f, col, p, i.pos.xy);
     if (f.light.flags.w == 1u) {
         // Sun visibility (bright = lit) tinted by the cascade that served it.
         static const float3 TINT[5] = { float3(1.0, 0.25, 0.25), float3(0.25, 1.0, 0.25), float3(0.3, 0.45, 1.0), float3(1.0, 1.0, 0.25), float3(0.6, 0.6, 0.6) };

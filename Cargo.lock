@@ -591,6 +591,7 @@ dependencies = [
  "ed_pack",
  "ed_planet",
  "glam",
+ "png",
 ]
 
 [[package]]

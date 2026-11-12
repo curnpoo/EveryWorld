@@ -21,6 +21,23 @@ struct LightData {
 };
 
 // Per-view data, one cpu_write buffer read through the bindless buffer table.
+// Physically based atmosphere (atmos.slang; src/atmosphere.rs `atmos_words`). Lengths in km,
+// coefficients in 1/km.
+struct AtmosData {
+    float4 radii;           // x: body radius, y: top of the atmosphere, z: camera altitude, w: surface altitude (ambient)
+    float4 rayleigh;        // rgb: Rayleigh scattering, w: scale height
+    float4 mie_s;           // rgb: Mie scattering, w: scale height
+    float4 mie_a;           // rgb: Mie absorption, w: phase asymmetry g
+    float4 ozone;           // rgb: ozone absorption at the peak, w: peak altitude
+    float4 ground;          // rgb: ground albedo, w: ozone half width
+    float4 sun;             // rgb: sun irradiance at the top of the atmosphere, w: cos of the disc's angular radius
+    float4 up;              // xyz: local up at the camera, w: cos of the sun's zenith angle there
+    float4 ap;              // x, y: froxel depth mapping n, D (km), z: sunlit share of the ground, w: unused
+    uint4 bufs;             // bindless: transmittance, multiple scattering, sky view (camera), sky view (surface)
+    uint4 bufs2;            // bindless: froxel in-scatter, froxel transmittance, ambient SH, unused
+    uint4 cfg;              // x: on, y: debug view (1 transmittance, 2 in-scatter), z, w: unused
+};
+
 struct HzbLevel { uint offset; uint width; uint height; uint pad; };
 struct FrameData {
     float4x4 view_proj;     // camera-relative: rotation and projection only (P1-D7)
@@ -38,6 +55,7 @@ struct FrameData {
     uint4 cull;             // x: HZB levels (0 = no occlusion test), y: fade frames, z: frame, w: flags
     HzbLevel hzb[16];       // depth pyramid levels inside the HZB buffer (floats)
     LightData light;
+    AtmosData atmos;
 };
 
 // One instance (128 bytes). Transform rows are a 3x4 affine matrix relative to the node origin.

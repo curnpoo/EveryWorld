@@ -21,3 +21,5 @@ glam = { workspace = true }
 [dev-dependencies]
 # Tests bake real BC7/BC5 textures with the asset pipeline (dev-only; not a runtime dep).
 ed_assets = { path = "../ed_assets" }
+# The atmosphere captures (tests/render_atmos.rs, ED_ATMOS_SHOTS) are written as PNG.
+png = "0.18"

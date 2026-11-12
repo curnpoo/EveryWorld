@@ -24,6 +24,8 @@
 //! (`shaders/gen/`, `tools/shaders/build.sh`); see [`shaders`].
 
 mod alloc;
+pub mod atmosphere;
+pub mod atmosphere_model;
 pub mod graph;
 mod gpu;
 pub mod light;
@@ -43,6 +45,7 @@ use glam::{Affine3A, DVec3, Mat4, Quat, Vec3, Vec4};
 use gpu::{FD_LIGHT, FD_PARAMS, FD_PLANES, FD_PROJ, FD_SUN_DIR, FD_VIEWPORT, FRAME_WORDS, INSTANCE_WORDS, MATERIAL_WORDS, NO_TEXTURE, PALETTE_WORDS, SKIN_SRC_WORDS, UV_WORDS, VERTEX_WORDS, constants};
 use graph::{FrameGraph, FrameTimings, GraphError, PassKind, TextureInfo, TransientPool};
 use provider::{CullStats, DiscreteLod, GeometryProvider, LodConfig, LodPipelines, MeshRecord, Ring, ShadowTargets, SharedInputs, VisTargets};
+pub use atmosphere::AtmosphereSettings;
 pub use light::{LightingSettings, Sky};
 use scene::{InstanceDesc, InstancePools, MAX_LODS, Material, MaterialId, MeshAsset, MeshId, SkinId, SkinnedMeshAsset, TextureAsset, TextureHandle};
 use shaders::{Built, Module, ShaderSet, ShaderSources};
@@ -373,6 +376,7 @@ struct Pipelines {
     pop: ComputePipelineId,
     skin: ComputePipelineId,
     ao: ComputePipelineId,
+    atmos: atmosphere::AtmosPipes,
     overlay_vs: ShaderId,
     overlay_fs: ShaderId,
     /// Overlay pipelines (lines, triangles) per output format, created on first use.
@@ -413,9 +417,10 @@ impl Pipelines {
         let pop = b.compute(dev, src, Module::Debug, "pop_stats", [8, 8, 1])?;
         let skin = b.compute(dev, src, Module::Skin, "skin", [SKIN_GROUP, 1, 1])?;
         let ao = b.compute(dev, src, Module::Ao, "ao_main", [8, 8, 1])?;
+        let atmos = atmosphere::AtmosPipes::build(dev, src, b)?;
         let overlay_vs = b.shader(dev, src, Module::Overlay, "overlay vs", ShaderStage::Vertex, "vs_overlay")?;
         let overlay_fs = b.shader(dev, src, Module::Overlay, "overlay fs", ShaderStage::Fragment, "fs_overlay")?;
-        Ok(Self { built: std::mem::take(b), resolve, tonemap_vs, tonemap_fs, tonemap: Vec::new(), pick, pop, skin, ao, overlay_vs, overlay_fs, overlay: Vec::new() })
+        Ok(Self { built: std::mem::take(b), resolve, tonemap_vs, tonemap_fs, tonemap: Vec::new(), pick, pop, skin, ao, atmos, overlay_vs, overlay_fs, overlay: Vec::new() })
     }
     fn destroy(mut self, dev: &dyn Device) {
         for (_, p) in self.tonemap.drain(..) {
@@ -558,6 +563,8 @@ pub struct Renderer {
     lut: Tracked,
     /// Ambient SH9 for the last sun and ambient settings ([`light::ambient_sh9`] runs only when they change).
     sky_cache: Option<((Sky, [f32; 6]), [[f32; 4]; 9])>,
+    /// Physically based atmosphere (Phase 2 W5): its tables and the "atmos" pass.
+    atmos: atmosphere::Atmosphere,
 }
 
 /// One view slot's state: per-frame buffers (filled once per frame per view), the pick ring
@@ -679,6 +686,7 @@ impl Renderer {
             lighting: LightingSettings::from_env(),
             lut,
             sky_cache: None,
+            atmos: atmosphere::Atmosphere::new(AtmosphereSettings::from_env()),
         })
     }
 
@@ -1076,6 +1084,9 @@ impl Renderer {
                 if self.lighting.ao {
                     v.push("ao");
                 }
+                if self.atmos.settings.enabled {
+                    v.push("atmos");
+                }
                 v.push("resolve");
                 if params.pop_stats {
                     v.push("pop_stats");
@@ -1217,6 +1228,9 @@ impl Renderer {
         let ao_on = scene && lighting.ao;
         let lw = light::light_words(&LightingSettings { ao: ao_on, ..lighting }, &cplan, &sh, (ao_w, ao_h), 1.0);
         fd[FD_LIGHT..FD_LIGHT + light::LIGHT_WORDS].copy_from_slice(&lw);
+        if scene {
+            self.atmos.prepare(dev, si, cam.position, sky.sun_dir, &lighting, &mut fd)?;
+        }
         if ao_on && self.views[si].ao.as_ref().map(|a| (a.2, a.3)) != Some((ao_w, ao_h)) {
             if let Some((a, b, _, _)) = self.views[si].ao.take() {
                 dev.wait_idle();
@@ -1255,6 +1269,7 @@ impl Renderer {
         let lut_res = g.import_buffer("filmic lut", self.lut.id, self.lut.state, None);
         let lut_bi = self.lut.bindless.0;
         let mut ao_imports = None;
+        let mut atmos_frame = None;
         let mut imports = Vec::new();
         let mut imports_tail: Vec<graph::Res> = Vec::new();
         let mut skin_here = false;
@@ -1329,6 +1344,7 @@ impl Renderer {
                         }
                     });
             }
+            atmos_frame = self.atmos.record_atmosphere(&mut g, si, (fd_res, self.views[si].frame_data.bindless.0), &self.pipes.atmos);
             let rc = constants(&[
                 self.views[si].frame_data.bindless.0,
                 0, // vis: bindless index of a transient, known in the pass
@@ -1351,6 +1367,9 @@ impl Renderer {
             }
             if let Some((_, rb)) = ao_imports {
                 rp = rp.read(rb, ResourceState::ShaderRead);
+            }
+            for r in atmos_frame.iter().flat_map(|a| a.reads()) {
+                rp = rp.read(r, ResourceState::ShaderRead);
             }
             rp
                 .read(fd_res, ResourceState::ShaderRead)
@@ -1511,6 +1530,9 @@ impl Renderer {
             ao.0.state = plan.final_states[ra.index()];
             ao.1.state = plan.final_states[rb.index()];
         }
+        if let Some(a) = atmos_frame {
+            self.atmos.finish(&plan, a);
+        }
         if let Some(&ov) = imports_tail.first() {
             self.overlay_buf.state = plan.final_states[ov.index()];
         }
@@ -1551,6 +1573,14 @@ impl Renderer {
     /// Changes the lighting switches; takes effect from the next recorded frame.
     pub fn set_lighting(&mut self, l: LightingSettings) {
         self.lighting = l;
+    }
+
+    /// Atmosphere settings (Phase 2 W5; `EW_NO_ATMOS=1` turns it off).
+    pub fn atmosphere(&self) -> &AtmosphereSettings {
+        &self.atmos.settings
+    }
+    pub fn set_atmosphere(&mut self, a: AtmosphereSettings) {
+        self.atmos.settings = a;
     }
 
     /// GPU culling counters of the latest finished frame.
@@ -1677,6 +1707,7 @@ impl Renderer {
             r.destroy(dev);
         }
         self.pipes.destroy(dev);
+        self.atmos.destroy(dev);
     }
 }
 
