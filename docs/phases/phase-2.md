@@ -27,7 +27,8 @@ residency, uploads or precision.
 ## 3. What Phase 2 does not do
 
 No buildings, roads or trees as geometry (Phase 3); they exist only as R3 tints and
-emissive. No VSM, GI, volumetric clouds or waves (Phase 4). No car physics beyond a
+emissive. No GI, volumetric clouds or waves (Phase 4); sun VSM is in this phase (P2-D20),
+local-light VSM stays in Phase 4. No car physics beyond a
 placeholder box on wheels (Phase 5). No networking beyond the tile service's plain HTTP.
 
 ## 4. Decisions in detail (proposed)
@@ -102,6 +103,15 @@ sky-view table per view, and an aerial-perspective froxel volume applied to ever
 pixel including far rungs. Constants per body; the Moon has none. Valid at ground, aircraft
 and orbital altitudes with the same code. The alpha's atmosphere maths is ported where it
 matches this structure, with a capture comparison.
+- The froxel volume starts at 32×32×32 with exponential depth slices out to 100+ km; the
+  resolution is set by measurement.
+- Sky ambient (`ambient_sh9`) is fed from the sky-view table, so ambient and sky agree at
+  every altitude and time of day.
+- World-space sky visibility (the open item from M4f: screen-space sky visibility misses
+  off-screen occluders) lives here, beside the ambient term; it reads the far height term of
+  P2-D20 so canyons and valleys darken the sky dome consistently.
+- Developed on the proving ground before terrain exists, with a synthetic far-depth scene
+  (ridges at 2, 8 and 30 km), so W5 does not wait on W3.
 
 ### P2-D11 — Clouds as one field, shell rendering
 A deterministic cloud field: a pure function of (seed, UTC, body position, weather sample).
@@ -165,13 +175,23 @@ are not acceptable. Phase 2 is where view distance becomes real.*
 
 - **Near and mid: virtual shadow maps (VSM).** A sun clipmap of virtual pages, 128² texels
   each, backed by one physical depth atlas: 8192² on High (256 MB), 16384² on Ultra.
-  - Pages are requested from the previous frame's visibility/depth buffer at the
-    resolution each pixel needs. There are no screen-visible cascade bands.
-  - Pages are rendered through the cluster provider with per-page culling, and cached
-    until an instance or the sun moves over them. The sun moves slowly, so re-rendering
-    is spread over frames.
-  - If page rendering exceeds budget in a city, cap the pages rendered per frame and
-    accept one-frame-late shadows.
+  - Clipmap of 6–8 levels; level k covers 2^k × 64 m around the camera in light space,
+    snapped to the page grid; 128×128 virtual pages per level. Page table: one `R32Uint`
+    array texture (physical xy, valid, dirty).
+  - Pages are requested from **this frame's final depth** (after `raster_late`, like
+    `hzb_final`), at the level each pixel's footprint needs. Reading the previous frame
+    would make the image depend on history (the Phase 1 AO bug). There are no
+    screen-visible cascade bands.
+  - Passes: `vsm_mark` → `vsm_alloc` (LRU free list, cached pages kept) →
+    `vsm_invalidate` (moved-instance AABBs; the sun invalidates level k every 2^k steps) →
+    `vsm_cull` + `vsm_raster` → resolve. Casters are the `DiscreteLod` provider and the
+    terrain provider (W3); there is no cluster provider until Track G.
+  - If page rendering exceeds budget in a city, cap the pages rendered per frame (start 64)
+    and let the coarser level serve meanwhile. If the page pool is exhausted, bias the
+    requested level up by one for that frame; a missing page falls back to a coarser
+    level, never to "lit".
+  - If Metal lacks a layered/sparse raster path, draw per page with viewport and scissor,
+    batched by level.
 - **Contact hardening (owner requirement).** Shadows look like ray-traced shadows from a
   real sun: sharp where the caster touches the receiver, softer the farther the receiver
   is from the blocker.
@@ -187,8 +207,14 @@ are not acceptable. Phase 2 is where view distance becomes real.*
   layer data, plus forest canopy height. A whole city is a lumpy height map at that range.
   - It is ray-marched or horizon-mapped toward the sun, with the same angular-radius
     penumbra, which is naturally wide at distance.
-  - The alpha's `horizon.rs`/`farshadow` maths is the starting point. It also shadows
+  - The alpha's `horizon.rs`/`farshadow` gives the maths only. The data is the node
+    height pages W3 already holds on the GPU, at a node level chosen by distance. Coarser
+    nodes exist up to L0, so "no distance limit" costs nothing extra, and it also shadows
     from orbit (mountain shadows at dawn).
+  - Buildings and canopy enter as a `cast_height` channel in the terrain layer chunk (max
+    of terrain, building top, canopy; the R3 rung). It is part of the P2-D3/D13 chunk
+    layout from the start and is baked by W7. Phase 2 fills terrain + canopy; Phase 3 adds
+    buildings.
 - **Transitions.** VSM and the far term overlap over a distance band and take the darker
   of the two there, not a crossfade to "lit". No cutoff line anywhere.
 - **Fallback.** Phase 1 cascades stay as the Low tier and as the A/B reference.
@@ -196,7 +222,14 @@ are not acceptable. Phase 2 is where view distance becomes real.*
 ## 5. Budgets (M3 Pro, 1440p, High, local packs)
 
 From `../reference/alpha-baseline.md` §5 for load and worst-frame; pass budgets split a
-16.6 ms frame leaving half for Phase 3 and 4 content.
+16.6 ms frame. With sun VSM in this phase, the passes below sum to 8.0 ms before tone map
+and upscale, so "half the frame left for Phase 3 and 4" no longer holds exactly; Phase 3
+geometry is costed against what remains.
+
+**Open owner decision (O1):** the owner plays at near-fullscreen (2880×1800). Either the
+budgets below are native 2880×1800, or High is defined as 1440p internal plus MetalFX
+upscale to the window. The planner recommends the second. Until decided, every pass is
+measured at both sizes.
 
 | Item | Budget |
 |---|---|
@@ -211,6 +244,9 @@ From `../reference/alpha-baseline.md` §5 for load and worst-frame; pass budgets
 | Ocean v0 | 1.0 ms |
 | Sun shadows (VSM pages + contact-hardening filter + far height term) | 2.5 ms High, 1.5 ms Low (cascades) |
 | Shadow page atlas | 256 MB High |
+| VSM split (High): mark + alloc / raster (amortised) / filter / far term | 0.3 / 1.2 / 0.7 / 0.3 ms |
+| VSM invalidation, CPU | 0.1 ms |
+| Tone map (AgX) + upscale | 0.6 ms |
 | Total GPU frame on bare planet | 8 ms |
 | Upload per frame | 8 MB and 2 ms |
 | Terrain and layer GPU memory | 1.5 GB |
@@ -224,9 +260,9 @@ A missed number is reported with its diagnosis, not adjusted.
 
 | # | Scope | Owns | Done when |
 |---|---|---|---|
-| W1 | `ed_planet` core: quadtree on `NodeId`, budgeted selector, horizon and frustum cull, residency (LRU over bytes), parent-until-children state machine, height query | `crates/ed_planet` | Property tests: wanted ≤ budget for random cameras; no node visible without complete required chunks; height query matches chunk data to 1 mm |
+| W1 | `ed_planet` core: quadtree on `NodeId`, budgeted selector, horizon and frustum cull, residency (LRU over bytes), parent-until-children state machine, height query. Neighbours are kept ≤ 1 level apart by the selector from the start. Lookups may use a hash map; iteration is always in sorted `NodeId` order. A `Residency` trait with an in-memory fake keeps the core free of IO and GPU | `crates/ed_planet` | Property tests: wanted ≤ budget for random cameras; no node visible without complete required chunks; neighbours ≤ 1 level apart; same input gives identical output on two runs; height query matches chunk data to 1 mm; selector ≤ 0.5 ms at 600 draw nodes |
 | W2 | Node-space source data: `SourceView`, slippy and raster resampling into node grids, elevation and bathymetry merge, land cover | `crates/ed_data` (new `node` module); no slippy type exported | G4 edge test: neighbour and parent borders bit-identical for 1,000 random nodes on all six faces and both poles |
-| W3 | Terrain rendering: node grid, height displacement, geomorph, skirts, camera-relative transforms, terrain pass in the frame graph | `crates/ed_render/src/terrain*` | Scripted ground-to-orbit path with zero hole pixels and no crack over one pixel |
+| W3 | Terrain rendering as a `GeometryProvider` (beside `DiscreteLod`), also a VSM caster: node grid, height displacement, geomorph, skirts, camera-relative transforms, terrain pass in the frame graph | `crates/ed_render/src/terrain*` | Scripted ground-to-orbit path with zero hole pixels and no crack over one pixel |
 | W4 | Node-paged texture atlas, layer chunks, ground material synthesis and imagery blend | `crates/ed_render/src/vt*`, `ground*` | Material reference test against the alpha capture; atlas never exceeds its pool |
 | W5 | Atmosphere tables, sky, aerial perspective | `crates/ed_render/src/atmosphere*` | Captures at ground, 10 km and 400 km match the reference within tolerance; energy test on the tables |
 | W6 | Cloud field (engine-free) and shell rendering; ocean v0 | `crates/ed_world/src/clouds.rs` reuse, `crates/ed_render/src/clouds*`, `ocean*` | Field is bit-identical for the same UTC on two runs; both passes inside budget |
@@ -236,23 +272,45 @@ A missed number is reported with its diagnosis, not adjusted.
 | W10 | Sim on the planet: gravity, heightfield collision chunks, mover and placeholder car on terrain | `crates/ed_sim`, `crates/ew` | Mover stands still on a slope at three latitudes; a box dropped from 100 m lands on the rendered surface within 2 cm |
 | W11 | Editor stage E2: go-to, time and body, node overlays, selector freeze, streaming monitor, chunk inspector | `crates/ed_editor` | Each overlay is exercised by a headless UI test that reads back the overlay image |
 | W12 | Harness: gate path script, hole detector, load-time and upload columns, alpha comparison on the same path (carried from Phase 0) | `crates/ew` harness, `tools/` | The gate path produces one CSV and one frame strip per run |
-| W13 | Sun shadows per P2-D20: VSM page request/alloc/cache/render, contact-hardening filter, far height term, transition band. **Opus** designs and builds; Sonnet writes the test battery; Fable reviews the look against `docs/reference/look-reference.md` | `crates/ed_render/src/vsm*`, `farshadow*`, `shaders/shadow*` | No cutoff or seam at any distance from 1 m to orbit on the gate path; penumbra width within 20% of the analytic sun-disc value at 1, 10 and 100 m blocker distance; page pool never exhausted; budget held |
+| W13a | Sun VSM near and mid per P2-D20, on the proving ground: page mark/alloc/cache/render, contact-hardening filter | `crates/ed_render/src/vsm*`, `shaders/vsm*` | No seam at any distance the clipmap covers; penumbra width within 20% of the analytic sun-disc value at 1, 10 and 100 m blocker distance; page pool never exhausted; budget held |
+| W13b | Far height term and the transition band, reading W3's height pages and the `cast_height` channel | `crates/ed_render/src/farshadow*`, `shaders/farshadow*` | No cutoff line from 1 m to orbit on the gate path; dawn mountain shadow visible from orbit |
+| W14 | AgX tone map (promised in M4d–M4f), render scale and MetalFX temporal upscale | `ed_render/src/tonemap.rs`, `shaders/tonemap.slang`, an `ed_gpu` upscaler interface | 60 fps at 2880×1800 on the landscape slice; shadowed asphalt keeps detail (no filmic-toe crush) |
+
+**Who does what** (CLAUDE.md "Who does what"):
+
+| Model | Workstreams |
+|---|---|
+| Opus builds | W1 (Sonnet writes the property tests), W3, W4, W5, W13a/b, W11 (UX), the re-base part of W10, the look side of W6 and W14 |
+| Sonnet builds from a precise brief | W2, W7 (Opus checks), W8 (Opus does the upload queue), W9, W12, the rest of W10, the W13 test battery, W14 render-scale plumbing |
+| Fable | One look review at the landscape slice and one whole-milestone review at the end of M6; not per workstream |
+
+**Shared-file rule:** `ed_render/src/lib.rs` (frame assembly) and `resolve.slang` are wired
+by the conductor only. Workers add their own modules and expose one `record_*` function,
+and hand over the wiring as a diff.
 
 ## 7. Order
 
+*Revised 2026-11-12 from the Fable plan: the owner needs real depth and distance to judge
+the look, so a landscape slice comes first.*
+
 ```
-        ┌─> W3 ──> W4 ──┬─> W5 ──> W6 ─────────────┐
-W1 ─────┤               │                           ├─> W9 ──> gate path (W12)
-W2 ─────┴─> W7 ─────────┴─> W8 ──> W11 ────────────┘
-W10 after W1+W2 (needs height query and collision chunks)
-W12 from the first terrain frame on
-W13 starts with W1 (VSM on the proving ground first); the far height term joins after W3
+M5a  W1 planet core ──┐
+     W2 node heights ─┼─> W3 terrain provider ─> LANDSCAPE SLICE (owner look #1, Fable look review)
+     W5 atmosphere ───┘   (W5 starts on day 1 on the proving ground; it needs only depth)
+M5b  W13a VSM near/mid on the proving ground (when W5 frees the Opus slot)
+     W10 sim on the planet, W12 harness (hole detector, gate path): Sonnet, alongside
+M6   W4 VT + ground material ─> W13b far height term (needs W3's pages) ─> W6 clouds/ocean
+     W7 globe bake, W9 Moon and bodies, W14 AgX + render scale + MetalFX, in parallel
+     ─> Fable whole-milestone review
+M7   W8 loader / ew-tiles, W1 residency under real IO, W11 editor E2, exit gate
 ```
 
-W1 and W2 start together and share no files. W7 (bake) and W3 (render) both need W2 and
-then run in parallel. W5 and W8 run in parallel. W10 is independent of all GPU work.
+**Landscape slice:** Blue Ridge and Zermatt (reference photos 01, 02, 04) from the pinned
+AWS terrain tiles through W2, generated in process (no pack, no VT). Albedo is a slope and
+altitude tint; shadows are the Phase 1 cascades; sky and haze are the new atmosphere. That
+is enough to judge haze, ridge layering and distance against the photos.
 
-M5 = W1, W2, W3, W10. M6 = W4, W5, W6, W7, W9. M7 = W8, W11, W12 and the exit gate.
+At most three workers run at once, on disjoint files. W1, W2 and W5 start together.
 
 ## 8. Exit gate
 
@@ -271,6 +329,11 @@ M5 = W1, W2, W3, W10. M6 = W4, W5, W6, W7, W9. M7 = W8, W11, W12 and the exit ga
 - [ ] The Moon is a terrain body; a camera can stand on it.
 - [ ] Mover and placeholder car on real terrain at three latitudes.
 - [ ] Editor E2 overlays and go-to work on the live planet.
+- [ ] Sun shadows: no seam and no cutoff line from 1 m to orbit on the gate path; contact
+      hardening within 20% of the analytic penumbra at 1, 10 and 100 m.
+- [ ] Aerial perspective and ridge layering judged by the owner against reference photos
+      01, 02, 04 and 07 (`../reference/look-reference.md`), clearly closer than Phase 1.
+- [ ] 60 fps at 2880×1800 on the gate path, at the High definition chosen in O1.
 - [ ] `CHANGES.md` has the Phase 2 numbers beside the alpha's.
 
 ## 9. Failure branches
@@ -284,6 +347,8 @@ M5 = W1, W2, W3, W10. M6 = W4, W5, W6, W7, W9. M7 = W8, W11, W12 and the exit ga
 | Re-basing disturbs resting contacts (S5 over 1 mm) | Re-base only when every dynamic body in the region is asleep or airborne, up to a hard limit of 16 km; record the diagnosis |
 | Node-paged texturing wastes memory on flat ocean | Share one constant page for uniform nodes; flag in the manifest |
 | Atmosphere tables too slow to update on time-of-day change | Amortise over frames; they change slowly |
+| Selector over 0.5 ms | Re-evaluate only nodes whose error changed by more than 10%, plus the budget frontier; hysteresis on split vs merge (1.0 / 0.8) |
+| VSM misses 2.5 ms on High | Lower the page cap, then the atlas; if still over, cascades + far height term on High and VSM on Ultra (as Phase 4 §9) |
 | A dataset cannot be pinned or is not GREEN/YELLOW | It does not enter the pack; use the next source in `../data/README.md` and record it |
 
 ## 10. Needed from outside the code
@@ -291,6 +356,9 @@ M5 = W1, W2, W3, W10. M6 = W4, W5, W6, W7, W9. M7 = W8, W11, W12 and the exit ga
 | Need | By | From |
 |---|---|---|
 | Global elevation and bathymetry at L6 resolution, imagery composite, night lights, land cover, Moon elevation: downloaded and pinned | M6 | Acquisition scripts; the owner approves each download and its size before it runs |
+| Terrain tiles for the landscape slice (Blue Ridge, Zermatt; a few hundred MB, AWS terrain tiles, already pinned) | M5a | Owner approves the download |
+| Reference photos 14 and 15 (twilight), the time-of-day targets for W5 | W5 look review | Owner |
+| Decision O1 (budget resolution, §5) | Before W14 | Owner |
 | A host for `ew-tiles` | M7 (the embedded service is enough for the gate) | Owner's server PC |
 | Confirmation of F9 (baseline lighting floor) | M6 | Owner |
 

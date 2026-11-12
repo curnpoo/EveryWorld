@@ -114,7 +114,8 @@ Track G never blocks a phase gate.
 | High | Virtual shadow maps | Voxel dynamic GI | Screen-space, sky fallback |
 | Ultra | Virtual shadow maps | Voxel dynamic GI at higher resolution | Hardware ray tracing |
 
-The baseline exists from Phase 1 (F9). VSM and voxel GI are built in Phase 4 and become the
+The baseline exists from Phase 1 (F9). Sun VSM is built in Phase 2 (P2-D20); local-light VSM
+and voxel GI are built in Phase 4. Each becomes the
 default on a tier when the harness shows they fit that tier's frame and memory budget on the
 reference scenes. The 18 GB M3 Pro is the High tier reference; GI volume size and shadow page
 pool are sized to it, not the other way round.
@@ -139,9 +140,9 @@ the harness writes per-pass times.
 |---|---|---|
 | 0 | Look-reference captures and perf baseline from the alpha; Solstice and meshoptimizer cluster study on the M3 Pro; RHI contract reviewed against D3D12 and Vulkan | Captures committed; study written |
 | 1 | `ed_gpu` Metal + minimal second backend; frame graph; instance pools; provider 1; visibility buffer and resolve; PBR and toon v0; baseline lighting; picking; multi-view; egui; harness | 100k instances of mixed parts at 60 fps on High with per-pass timings; same scene on the second backend |
-| 2 | Terrain nodes, virtual texturing, atmosphere, clouds shell, ocean surface v0, horizon culling, Moon | Unbroken orbit ↔ ground recording |
+| 2 | Terrain nodes, virtual texturing, atmosphere, sun VSM + far height term, clouds shell, ocean surface v0, horizon culling, Moon | Unbroken orbit ↔ ground recording |
 | 3 | Rungs R0–R2 drawing through provider 1, cross-fades, foliage ladder | Reference cities at 60 fps on High with fixed memory |
-| 4 | VSM, voxel GI, full water, volumetric clouds, material library, hardware RT on Ultra | Look matches or beats the Phase 0 captures at budget |
+| 4 | Local-light VSM, voxel GI, full water, volumetric clouds, material library, hardware RT on Ultra | Look matches or beats the Phase 0 captures at budget |
 | G | Track G steps 1–5 | Per-content-type adoption by measurement |
 
 ## 8. Open questions
