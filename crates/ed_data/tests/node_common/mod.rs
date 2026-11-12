@@ -68,9 +68,11 @@ pub fn random_node(rng: &mut Rng, max_level: u8) -> NodeId {
     NodeId::new(BodyId(0), rng.below(6) as u8, level, rng.below(n) as u32, rng.below(n) as u32).unwrap()
 }
 
-/// Geodetic lat/lon of lattice point (i, j) of `id`'s 256-cell grid.
+/// Geodetic lat/lon of lattice point (i, j) of `id`'s 256-cell grid: the ellipsoid point
+/// `d * r(d)` along the lattice direction, as `ed_planet` places it.
 pub fn lat_lon(id: NodeId, i: u32, j: u32) -> (f64, f64) {
-    let p = id.grid_point(i, j, 256);
-    let g = Geodetic::from_ecef(p.with_x(p.x * WGS84_A).with_y(p.y * WGS84_A).with_z(p.z * WGS84_B));
+    let d = id.grid_point(i, j, 256);
+    let r = 1.0 / ((d.x * d.x + d.y * d.y) / (WGS84_A * WGS84_A) + d.z * d.z / (WGS84_B * WGS84_B)).sqrt();
+    let g = Geodetic::from_ecef(d * r);
     (g.lat_deg, g.lon_deg)
 }

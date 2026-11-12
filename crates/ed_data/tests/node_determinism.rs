@@ -61,7 +61,9 @@ fn height_error_within_bound() {
         // Resampling bound: bilinear error <= h^2/8 * (|f_xx| + |f_yy|) with h the pixel pitch
         // in radians at the source zoom (Mercator pitch in latitude is no larger).
         let h = 2.0 * std::f64::consts::PI / (256.0 * (1u64 << source_zoom(id.level())) as f64);
-        let bound = (HEIGHT_STEP_M as f64) / 2.0 + h * h / 8.0 * 2.0 * F_PP;
+        // + 1 mm: the test's geodetic conversion (ed_geo, iterative) and ed_data's (one-step
+        // Bowring, libm) differ by ~1e-9 deg, which shows up on steep synthetic slopes.
+        let bound = (HEIGHT_STEP_M as f64) / 2.0 + h * h / 8.0 * 2.0 * F_PP + 1e-3;
         for _ in 0..200 {
             let (i, j) = (rng.below(257) as u32, rng.below(257) as u32);
             let (lat, lon) = lat_lon(id, i, j);

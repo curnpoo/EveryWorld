@@ -92,8 +92,7 @@ impl Tiles<'_> {
 /// Heights for `id`'s 257 x 257 lattice, sampled bilinearly in tile pixel space.
 ///
 /// Sample positions are `NodeId::grid_point(i, j, 256)` (f64, shared bit for bit with
-/// neighbours), turned into geodetic lat/lon on the WGS84 ellipsoid (unit vector scaled by the
-/// radii, P0-R1). Pure function of `(id, source)`.
+/// neighbours), turned into geodetic lat/lon of the ellipsoid point `d * r(d)` (P0-R1). Pure function of `(id, source)`.
 pub fn node_heights(src: &dyn SourceView, id: NodeId) -> HeightPage {
     let z = source_zoom(id.level());
     let mut tiles = Tiles { src, z, cache: Vec::new() };
@@ -124,10 +123,25 @@ pub fn node_heights(src: &dyn SourceView, id: NodeId) -> HeightPage {
     page_from_quantised(&q)
 }
 
-/// Geodetic lat/lon of a lattice point: unit vector scaled by the WGS84 radii (P0-R1).
+/// Geodetic lat/lon of a lattice point: the ECEF point `d * r(d)` where `r(d)` is the WGS84
+/// ellipsoid radius along the unit direction `d`. This is exactly where `ed_planet` places the
+/// lattice sample (`Body::point`), so sampled terrain and rendered terrain agree.
 fn lattice_geodetic(id: NodeId, i: usize, j: usize) -> LatLon {
-    let p = id.grid_point(i as u32, j as u32, PAGE_CELLS as u32);
-    ecef_to_latlon(p.x * WGS84_A, p.y * WGS84_A, p.z * WGS84_B)
+    let d = id.grid_point(i as u32, j as u32, PAGE_CELLS as u32);
+    direction_geodetic(d.x, d.y, d.z)
+}
+
+/// Geodetic lat/lon of the ellipsoid point along unit direction `(x, y, z)`.
+pub(crate) fn direction_geodetic(x: f64, y: f64, z: f64) -> LatLon {
+    let r = ellipsoid_radius(x, y, z);
+    ecef_to_latlon(x * r, y * r, z * r)
+}
+
+/// Ellipsoid radius along unit direction `d`; same formula as `ed_planet::body::Body::radius`
+/// (crates/ed_planet/src/body.rs), copied because ed_data must not depend on ed_planet.
+pub(crate) fn ellipsoid_radius(x: f64, y: f64, z: f64) -> f64 {
+    let (a2, b2) = (WGS84_A * WGS84_A, WGS84_B * WGS84_B);
+    1.0 / ((x * x + y * y) / a2 + z * z / b2).sqrt()
 }
 
 /// Geodetic latitude and longitude in degrees.
@@ -212,5 +226,35 @@ mod tests {
             let q = Geodetic::new(b.lat_deg, b.lon_deg, 0.0).to_ecef();
             assert!((q - p).length() < 1e-6 * 1e3, "surface");
         }
+    }
+
+    #[test]
+    fn sampled_point_lies_on_lattice_ray() {
+        let mut dirs: Vec<[f64; 3]> = vec![
+            [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, -1.0],
+        ];
+        for lat in [0.0f64, 46.0, 80.0, -46.0, -80.0, 89.9, -89.9] {
+            for lon in [0.0f64, 37.0, 170.0, -123.0] {
+                let (la, lo) = (lat.to_radians(), lon.to_radians());
+                dirs.push([la.cos() * lo.cos(), la.cos() * lo.sin(), la.sin()]);
+            }
+        }
+        for d in dirs {
+            let g = direction_geodetic(d[0], d[1], d[2]);
+            let p = Geodetic::new(g.lat_deg, g.lon_deg, 0.0).to_ecef();
+            let pl = (p.x * p.x + p.y * p.y + p.z * p.z).sqrt();
+            let u = [p.x / pl, p.y / pl, p.z / pl];
+            let dot = u[0] * d[0] + u[1] * d[1] + u[2] * d[2];
+            let cr = [u[1] * d[2] - u[2] * d[1], u[2] * d[0] - u[0] * d[2], u[0] * d[1] - u[1] * d[0]];
+            let ang = (cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]).sqrt().atan2(dot);
+            assert!(ang < 1e-9, "dir {d:?} angle {ang}");
+        }
+    }
+
+    #[test]
+    fn geodetic_46n_round_trips() {
+        let p = Geodetic::new(46.0, 7.0, 0.0).to_ecef();
+        let g = ecef_to_latlon(p.x, p.y, p.z);
+        assert!((g.lat_deg - 46.0).abs() < 1e-9 && (g.lon_deg - 7.0).abs() < 1e-9);
     }
 }

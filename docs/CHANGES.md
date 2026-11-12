@@ -1,3 +1,15 @@
+## 2026-11-12: Node heights sampled where `ed_planet` draws them (10 km placement fix)
+
+- **The bug:** `ed_data::node_heights` sampled lattice direction `d` at the geodetic point of `(d.x·A, d.y·A, d.z·B)`. `ed_planet` draws that sample at `d·r(d)`, the ellipsoid point straight along `d`. The two are about 10.7 km apart at 46°N.
+- **The fix:** it now samples at `d·r(d)`, with the radius formula copied from `ed_planet::body::Body::radius`, because the layering rules forbid `ed_data → ed_planet`.
+- **New tests:**
+  - The sampled point lies on the lattice ray within 1e-9 rad, at the equator, ±46°, ±80°, ±89.9° and the poles.
+  - Geodetic latitude round-trips at 46°N.
+- **Test helper:** `tests/node_common::lat_lon` now uses the same rule. The height-error bound gained 1 mm for the ~1e-9° difference between the test's and the code's geodetic conversions.
+- **Digest changed on purpose:** it is now `c571ed842d793e9a,87d4b34841880c28,e41766a0b2a5a882,640af18ee90118b5,f1c10b08eddf15b3,14351b749fe46b11`. The test compares two processes, not a stored constant.
+- **Still open:** the W3 terrain harness (`ed_render/src/terrain_harness.rs`) still copies the old rule. Its results stay self-consistent, but it should switch when terrain is wired into the frame.
+- **Mac check:** none.
+
 ## 2026-11-12: Phase 2 W3 — terrain provider (built and tested, not yet in the frame)
 
 - **What:**
