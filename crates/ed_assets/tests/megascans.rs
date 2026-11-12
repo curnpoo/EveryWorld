@@ -584,7 +584,7 @@ fn fab_plants_use_packed_maps_a_tier_file_and_tag_the_billboard() {
     let l = Listing::read(&a).unwrap();
     assert_eq!(ml::detect(&l).0, Kind::Plant);
     let s = ml::select_maps(&l, Some(2048)).0;
-    assert!(s.albedo_alpha && s.albedo.as_ref().unwrap().to_string_lossy().ends_with("mid/Textures/T_plantms_2K_B-O.png"), "{s:?}");
+    assert!(s.albedo_alpha && s.albedo.as_ref().unwrap().ends_with("mid/Textures/T_plantms_2K_B-O.png"), "{s:?}");
     assert!(s.ort.is_some() && s.billboard_albedo.is_some() && s.billboard_normal.is_some() && s.normal.is_some() && s.opacity.is_none());
     // Mesh: the mid tier's top-level file only (not the standard/ copy, not the other tier).
     let src = ml::model_sources(&l, Some(2048)).unwrap();
