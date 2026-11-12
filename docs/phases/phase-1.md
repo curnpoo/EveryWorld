@@ -213,22 +213,32 @@ contracts.
 
 ## 7. Exit gate
 
-- [ ] `ew` opens a Metal window; resize, HDR and shutdown are clean.
-- [ ] Proving ground renders through the public RHI at the P1-D20 budgets, with per-pass
-      timings in the harness output.
-- [ ] No per-instance CPU work in the frame; culling and LOD selection are on the GPU.
-- [ ] LOD cross-fades are free of popping on the scripted path.
-- [ ] The same scene renders on the second backend.
-- [ ] PBR and toon materials render under the same lighting; tone mapping matches its CPU
+Evidence per item is in `../CHANGES.md` (milestone entries M1–M4f and "Phase 1 gate").
+
+- [x] `ew` opens a Metal window; resize, HDR and shutdown are clean. (M1; windowed hand
+      tests by the owner 2026-11-12.)
+- [x] Proving ground renders through the public RHI at the P1-D20 budgets, with per-pass
+      timings in the harness output. (Gate runs 2026-11-12: GPU 3.00 ms, CPU 0.152 ms.)
+- [x] No per-instance CPU work in the frame; culling and LOD selection are on the GPU. (M2;
+      CPU cost scales with draw bins, not instances.)
+- [x] LOD cross-fades are free of popping on the scripted path. (M2 pop measurement.)
+- [x] The same scene renders on the second backend. (Vulkan, M4c: 5–21 px differ at 1440p.)
+- [x] PBR and toon materials render under the same lighting; tone mapping matches its CPU
       reference within 1/255, and lighting is calibrated to physical daylight (P1-D18, revised).
-- [ ] `ew-bake` output is deterministic, carries provenance, and passes the licence gate.
-- [ ] Blender export → on screen without restarting.
+      (M4d part 2, M4e.)
+- [x] `ew-bake` output is deterministic, carries provenance, and passes the licence gate. (M3.)
+- [x] Blender export → on screen without restarting. (M3 capture pair; exercised by a worker
+      in a window, not yet by the owner.)
 - [ ] Sim replay hash is stable across runs and processes; CI green on macOS and Windows
-      for CPU tests.
-- [ ] Editor E1: pick, inspect, move, save layer, restart, object is in place.
-- [ ] `NodeId`, `ObjectId`, pack manifest and layer files are the proving ground's actual
-      data path.
-- [ ] `CHANGES.md` has the Phase 1 numbers.
+      for CPU tests. (Hash `647f42726a0a56de` stable since M4b. CI: the last red was a
+      Windows path-separator bug in a test, fixed in 7ed8602; waits for a push and a green
+      run.)
+- [x] Editor E1: pick, inspect, move, save layer, restart, object is in place.
+      (`ew/tests/editor_host.rs` covers the restart; the owner used the editor by hand on
+      2026-11-12 and accepted it. Save → restart was not separately repeated by hand.)
+- [x] `NodeId`, `ObjectId`, pack manifest and layer files are the proving ground's actual
+      data path. (M1, M3, M4b.)
+- [x] `CHANGES.md` has the Phase 1 numbers.
 
 ## 8. Failure branches
 

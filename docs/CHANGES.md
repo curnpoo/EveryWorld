@@ -1,3 +1,31 @@
+## 2026-11-12: Phase 1 gate — final numbers
+
+Quiet machine, M3 Pro, `ew --headless --path proving --frames 300` (1280x720), no extra
+pack, commit 88b96aa. Three runs; mean of the three, with the per-run spread.
+
+| Pass | r1 | r2 | r3 | Mean | Budget (P1-D20) |
+|---|---|---|---|---|---|
+| GPU frame mean | 2.893 | 3.248 | 2.849 | **3.00** | 3.5 |
+| GPU frame p99 | 3.63 | 4.40 | 3.56 | 3.86 | 16.7 |
+| CPU frame build | 0.142 | 0.171 | 0.144 | **0.152** | 0.2 |
+| Shadows (cull + raster) | 1.115 | 1.200 | 1.053 | **1.12** | 1.2 |
+| AO | 0.346 | 0.398 | 0.331 | **0.358** | 0.5 |
+| Culling (both phases + HZB) | 0.313 | 0.422 | 0.328 | 0.354 | 1.0 |
+| Sim step | 0.005 | 0.008 | 0.004 | 0.006 | 2.0 |
+
+- Every mean is inside its budget. r2 was noisier than the others: its culling p99 reads
+  1.25 ms, so the harness prints "MISSED" for culling on that run only. The M2 timer note
+  applies (gaps between passes are charged to the next pass).
+- With the Megascans pack mounted (`--pack`), CPU build rises to ~0.27 ms. Draw binning
+  for material variants is queued as a Phase 2 follow-up.
+- In a window the owner sees 60–70 fps at near-fullscreen (2880x1800) while moving fast;
+  GPU-bound there (6.5–13 ms). Render scale and MetalFX upscale are queued for Phase 2.
+- CI: the last red run failed only on Windows, in
+  `fab_plants_use_packed_maps_a_tier_file_and_tag_the_billboard`. The test compared a path
+  string with a `/` suffix; it now compares path components (7ed8602). The gate's CI item
+  closes on the next green run.
+- Gate status (`phases/phase-1.md` §7): 11 of 12 ticked; the CI item is open.
+
 ## 2026-11-12: Phase 1, M4f — Opus graphics review with real textures
 
 - **Sky visibility at canyon scale.** A screen-space horizon march out to 60 m, with far taps read from the HZB. Occluded sky is replaced by 0.8× ground bounce. Street floors no longer get the full sky dome.
