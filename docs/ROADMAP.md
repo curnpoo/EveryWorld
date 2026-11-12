@@ -8,8 +8,8 @@ The order of work and the gate each phase must pass. Gates, not dates (D18). Goa
 - `main` is the custom-engine rebuild. The Bevy alpha is frozen on `alpha-early`.
 - Phase 0 — Prepare: **complete** (2026-11-10). Exit record and carried items:
   `phases/phase-0.md` §5; budgets from the alpha: `reference/alpha-baseline.md`.
-- Phase 1 — Engine base and editor shell: gate met except CI green on macOS and Windows
-  (`phases/phase-1.md` §7).
+- Phase 1 — Engine base and editor shell: **complete** (2026-11-12), all 12 gate items
+  met (`phases/phase-1.md` §7).
 - **Current phase: 2 — Planet, far field and streaming** (started 2026-11-12). Detail and
   progress: `phases/phase-2.md` §7.
 - Milestones to the playable solo loop: `plans/path-to-solo.md`.

@@ -229,10 +229,9 @@ Evidence per item is in `../CHANGES.md` (milestone entries M1–M4f and "Phase 1
 - [x] `ew-bake` output is deterministic, carries provenance, and passes the licence gate. (M3.)
 - [x] Blender export → on screen without restarting. (M3 capture pair; exercised by a worker
       in a window, not yet by the owner.)
-- [ ] Sim replay hash is stable across runs and processes; CI green on macOS and Windows
-      for CPU tests. (Hash `647f42726a0a56de` stable since M4b. CI: the last red was a
-      Windows path-separator bug in a test, fixed in 7ed8602; waits for a push and a green
-      run.)
+- [x] Sim replay hash is stable across runs and processes; CI green on macOS and Windows
+      for CPU tests. (Hash `647f42726a0a56de` stable since M4b. CI run 43266785044 on
+      be48f29: macOS and Windows green, 2026-11-12.)
 - [x] Editor E1: pick, inspect, move, save layer, restart, object is in place.
       (`ew/tests/editor_host.rs` covers the restart; the owner used the editor by hand on
       2026-11-12 and accepted it. Save → restart was not separately repeated by hand.)
