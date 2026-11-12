@@ -586,6 +586,7 @@ name = "ed_render"
 version = "0.1.0"
 dependencies = [
  "ed_assets",
+ "ed_data",
  "ed_geo",
  "ed_gpu",
  "ed_pack",

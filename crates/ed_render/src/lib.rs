@@ -32,6 +32,7 @@ pub mod light;
 pub mod provider;
 pub mod scene;
 pub mod shaders;
+pub mod terrain;
 pub mod tonemap;
 
 use ed_geo::ObjectId;

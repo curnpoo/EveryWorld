@@ -1,3 +1,34 @@
+## 2026-11-12: Phase 2 W3 — terrain provider (built and tested, not yet in the frame)
+
+- **What:**
+  - `ed_render::terrain::TerrainProvider` implements `GeometryProvider`.
+  - It draws one shared 65×65 grid (+ skirt ring) instanced per `ed_planet` draw node.
+  - Heights come from a GPU page pool (1024 slots of 257² u16, LRU by frame via `BTreeMap`).
+  - Vertices use `ed_planet`'s radial rule `dir*(radius(dir)+h)`; node origin minus camera is formed in f64 and only the offset goes to the GPU.
+  - It geomorphs toward the parent over a band that finishes before the selector merges, and edges are pinned to coarser neighbours (no T-junctions).
+  - Shaders: `shaders/terrain.slang`, `terrain_common.slang`. It is also a shadow caster with per-cascade node culling.
+- **Gate** (conductor re-run, Zermatt, 24 points from 1 m to 1000 km AGL, real Mapterhorn tiles, offline):
+  - 0 hole pixels and no skirt or crack wider than 1 px.
+  - Skirts off: 17 crack pixels over the whole path, the widest 1 px.
+  - Captures are local only.
+  - Run: `EARTHDROP_CACHE=<absolute path> ED_TERRAIN_SHOTS=dir cargo test -p ed_render --release --lib terrain::harness -- --ignored --nocapture`. A relative cache path makes the test skip silently, because cargo runs tests from the crate folder.
+- **Cost (1440p, M3 Pro, harness cascades):**
+
+  | AGL | nodes | terrain pass | terrain shadow |
+  |---|---|---|---|
+  | 1 m | 555 | 2.55 ms | 3.71 ms |
+  | 10 km | 354 | 1.65 ms | 0.75 ms |
+  | 1000 km | 120 | 0.64 ms | — |
+
+  - Ground level is over budget: it is vertex-bound, with 4.8 M triangles and up to 3 lattice evaluations per morphing vertex.
+  - Planned fixes: a coarser index buffer for far nodes and outer cascades, and per-cascade selection culling.
+- **Open:**
+  1. **Height placement bug:** `ed_data::node_heights` places a lattice direction `d` at the geodetic point `(d.x·A, d.y·A, d.z·B)`, while `ed_planet` renders it at `d·r(d)`. That is about 10.7 km apart at 46°N, so real terrain would render shifted. The harness copies ed_data's rule, so the gate result holds; the fix belongs in `ed_data`.
+  2. Not yet wired into `Renderer::render` or resolve.
+  3. Terrain draws after `DiscreteLod`, so the AO sky-visibility pyramid and occlusion culling miss terrain.
+  4. Only Metal has run; Vulkan is untested.
+  5. The provider runs its own GPU page pool and ignores `DrawNode::page_slot`.
+
 ## 2026-11-12: Phase 2 W5 — physically based atmosphere (on by default)
 
 - **What:** Rayleigh + Mie + ozone tables built on the GPU in one "atmos" compute pass:

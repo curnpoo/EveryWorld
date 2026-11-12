@@ -23,3 +23,5 @@ glam = { workspace = true }
 ed_assets = { path = "../ed_assets" }
 # The atmosphere captures (tests/render_atmos.rs, ED_ATMOS_SHOTS) are written as PNG.
 png = "0.18"
+# The terrain harness (src/terrain_harness.rs) reads real heights from the tile cache, offline.
+ed_data = { path = "../ed_data" }
