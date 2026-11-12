@@ -7,7 +7,7 @@ use crate::content::Content;
 use crate::headless::{OUT_FORMAT, write_png};
 use crate::session::{FrameIn, FrameOut, Mode, Session};
 use ed_editor::editor::InputEvent;
-use ed_gpu::{Backend, BufferDesc, BufferId, Device, DeviceDesc, ResourceState, TextureDesc, TextureId, TextureKind, Usage};
+use ed_gpu::{BufferDesc, BufferId, Device, DeviceDesc, ResourceState, TextureDesc, TextureId, TextureKind, Usage};
 use ed_render::{FrameParams, Renderer, ViewTarget};
 use std::path::{Path, PathBuf};
 
@@ -26,7 +26,7 @@ pub struct Harness {
 
 impl Harness {
     pub fn new(packs: &Path, layers: PathBuf, width: u32, height: u32, mode: Mode, editor_ui: bool, validation: bool) -> Result<Harness, String> {
-        let dev = ed_gpu::create_device(Backend::Metal, &DeviceDesc { validation, frames_in_flight: 2 }).map_err(|e| format!("device: {e}"))?;
+        let dev = ed_gpu::create_device(ed_gpu::default_backend(), &DeviceDesc { validation, frames_in_flight: 2 }).map_err(|e| format!("device: {e}"))?;
         let mut r = Renderer::new(&*dev).map_err(|e| format!("renderer: {e}"))?;
         Args::default().apply_lod(r.lod_config());
         let mut content = Content::load(&mut r, &*dev, packs)?;

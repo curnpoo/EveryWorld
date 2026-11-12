@@ -19,7 +19,7 @@
 use crate::gpu::{self, ARGS_WORDS, FD_CULL, FD_HZB, MAX_HZB_LEVELS, MESH_WORDS, STAT_WORDS, constants};
 use crate::graph::{FrameGraph, PassBuilder, PassKind, Plan, Res};
 use crate::scene::{InstancePools, MAX_LODS};
-use crate::shaders::{Built, ShaderSources};
+use crate::shaders::{Built, Module, ShaderSet};
 use crate::{Tracked, VIS_FORMAT};
 use ed_gpu::{
     BufferId, Compare, ComputePipelineId, Cull, DepthDesc, Device, LoadOp, RenderPipelineDesc,
@@ -156,12 +156,12 @@ impl CullStats {
     }
 }
 
-/// Pixels per metre at the near side of a bounding sphere (the LOD metric; mirrors cull.metal).
+/// Pixels per metre at the near side of a bounding sphere (the LOD metric; mirrors cull.slang).
 pub fn pixels_per_metre(scale: f32, target_height: f32, p11: f32, centre_distance: f32, radius: f32, near: f32) -> f32 {
     scale * target_height * 0.5 * p11 / (centre_distance - radius).max(near)
 }
 
-/// LOD selection (mirrors cull.metal): the coarsest level whose error projects under
+/// LOD selection (mirrors cull.slang): the coarsest level whose error projects under
 /// `threshold` pixels; a switch to a coarser level than `cur` needs `threshold * hysteresis`.
 /// `init` is false the first time an instance is seen (no hysteresis).
 pub fn select_lod(errors: &[f32], px_per_m: f32, cur: u32, init: bool, threshold: f32, hysteresis: f32) -> u32 {
@@ -379,7 +379,7 @@ pub(crate) struct LodPipelines {
 
 impl LodPipelines {
     /// Compiles every pipeline; on any error nothing created so far is left behind.
-    pub(crate) fn new(dev: &dyn Device, src: &ShaderSources) -> Result<Self, ed_gpu::Error> {
+    pub(crate) fn new(dev: &dyn Device, src: &ShaderSet) -> Result<Self, ed_gpu::Error> {
         let mut b = Built::default();
         match Self::build(dev, src, &mut b) {
             Ok(p) => Ok(p),
@@ -389,16 +389,16 @@ impl LodPipelines {
             }
         }
     }
-    fn build(dev: &dyn Device, src: &ShaderSources, b: &mut Built) -> Result<Self, ed_gpu::Error> {
+    fn build(dev: &dyn Device, src: &ShaderSet, b: &mut Built) -> Result<Self, ed_gpu::Error> {
         let g = [CULL_GROUP, 1, 1];
-        let cull_reset = b.compute(dev, src, &src.cull, "cull_reset", g)?;
-        let cull_early = b.compute(dev, src, &src.cull, "cull_early", g)?;
-        let cull_late = b.compute(dev, src, &src.cull, "cull_late", g)?;
-        let hzb_first = b.compute(dev, src, &src.hzb, "hzb_first", [8, 8, 1])?;
-        let hzb_down = b.compute(dev, src, &src.hzb, "hzb_down", [8, 8, 1])?;
-        let vs = b.shader(dev, src, &src.vis, "vs_vis", ShaderStage::Vertex, "vs_vis")?;
-        let fs = b.shader(dev, src, &src.vis, "fs_vis", ShaderStage::Fragment, "fs_vis")?;
-        let fsd = b.shader(dev, src, &src.vis, "fs_vis_dither", ShaderStage::Fragment, "fs_vis_dither")?;
+        let cull_reset = b.compute(dev, src, Module::Cull, "cull_reset", g)?;
+        let cull_early = b.compute(dev, src, Module::Cull, "cull_early", g)?;
+        let cull_late = b.compute(dev, src, Module::Cull, "cull_late", g)?;
+        let hzb_first = b.compute(dev, src, Module::Hzb, "hzb_first", [8, 8, 1])?;
+        let hzb_down = b.compute(dev, src, Module::Hzb, "hzb_down", [8, 8, 1])?;
+        let vs = b.shader(dev, src, Module::Vis, "vs_vis", ShaderStage::Vertex, "vs_vis")?;
+        let fs = b.shader(dev, src, Module::Vis, "fs_vis", ShaderStage::Fragment, "fs_vis")?;
+        let fsd = b.shader(dev, src, Module::Vis, "fs_vis_dither", ShaderStage::Fragment, "fs_vis_dither")?;
         let rp = |label, fragment| RenderPipelineDesc {
             label,
             vertex: vs,
@@ -420,7 +420,7 @@ impl LodPipelines {
 }
 
 impl DiscreteLod {
-    pub(crate) fn new(dev: &dyn Device, src: &ShaderSources, max_instances: u32, max_meshes: u32, config: LodConfig) -> Result<Self, ed_gpu::Error> {
+    pub(crate) fn new(dev: &dyn Device, src: &ShaderSet, max_instances: u32, max_meshes: u32, config: LodConfig) -> Result<Self, ed_gpu::Error> {
         let p = LodPipelines::new(dev, src)?;
         let mesh_table = Tracked::new(dev, "mesh table", (max_meshes as usize * MESH_WORDS * 4) as u64, Usage { shader_read: true, copy_dst: true, ..Default::default() })?;
         let bins_max = max_meshes as u64 * MAX_LODS as u64 * 4;

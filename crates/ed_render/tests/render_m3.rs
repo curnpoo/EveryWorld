@@ -37,7 +37,7 @@ fn max_diff(a: &[[u8; 4]], b: &[[u8; 4]]) -> i32 {
 
 #[test]
 fn base_colour_normal_and_orm_textures_are_sampled() {
-    let mut rig = Rig::bare();
+    let Some(mut rig) = Rig::bare() else { return };
     if !bc(&rig) {
         return rig.destroy();
     }
@@ -114,7 +114,7 @@ fn red_pixels(img: &[[u8; 4]], x0: u32, x1: u32, y0: u32, y1: u32) -> usize {
 
 #[test]
 fn skinning_pass_moves_vertices_and_identity_matches_the_static_mesh() {
-    let mut rig = Rig::bare();
+    let Some(mut rig) = Rig::bare() else { return };
     let dev = &*rig.dev;
     let bar = skinned_bar();
     let r = rig.renderer.as_mut().unwrap();
@@ -156,7 +156,7 @@ fn skinning_pass_moves_vertices_and_identity_matches_the_static_mesh() {
 
 #[test]
 fn replace_mesh_swaps_geometry_and_frees_old_ranges_after_frames() {
-    let mut rig = Rig::bare();
+    let Some(mut rig) = Rig::bare() else { return };
     let dev = &*rig.dev;
     let r = rig.renderer.as_mut().unwrap();
     let mesh = r.add_mesh(dev, &cube_mesh()).unwrap();
@@ -190,7 +190,7 @@ fn replace_mesh_swaps_geometry_and_frees_old_ranges_after_frames() {
 
 #[test]
 fn shader_reload_swaps_on_success_and_keeps_running_on_error() {
-    let mut rig = Rig::new();
+    let Some(mut rig) = Rig::new() else { return };
     let cam = TestScene::test_camera();
     let before = rig.image(cam);
     let dev = &*rig.dev;

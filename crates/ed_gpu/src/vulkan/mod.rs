@@ -12,9 +12,10 @@
 //!   update-after-bind, partially-bound bindings (sampled images, storage images, storage
 //!   buffers, samplers) and one set per frame slot, so a `cpu_write` buffer can point at its
 //!   per-slot copy. Every pass binds the slot's set and pushes 64 bytes of zero constants.
-//!   Buffer device addresses were the alternative; descriptor arrays were chosen because they
-//!   map 1:1 to D3D12 `ResourceDescriptorHeap` and Slang `StructuredBuffer` arrays, and need
-//!   no 64-bit pointer types in shaders.
+//!   Slang shaders (the engine's, `shader_abi.slang`) read buffers through device addresses
+//!   instead: binding 4 is a storage buffer holding one `u64` buffer device address per table
+//!   index (per frame slot, like the descriptors), so `ed_buf<T>(i)` is a `T*` on both Metal
+//!   and Vulkan. The storage-buffer array at binding 2 stays for hand-written GLSL.
 //! - Freed table slots are overwritten with dummy descriptors when they retire (MoltenVK keeps
 //!   pointers to the objects in its descriptors, so a stale one must not outlive its object).
 //! - States: the tracker in `crate::track` drives barriers. Every transition becomes one
@@ -50,6 +51,9 @@ const B_TEXTURES: u32 = 0;
 const B_IMAGES: u32 = 1;
 const B_BUFFERS: u32 = 2;
 const B_SAMPLERS: u32 = 3;
+/// Buffer address table (Slang ABI): one `u64` device address per buffer table index, one
+/// table per frame slot (a `cpu_write` buffer's entry is that slot's copy).
+const B_ADDRS: u32 = 4;
 
 /// Validation messages that are expected on MoltenVK and do not indicate a bug here.
 /// (message id name, reason). Printed once with the reason instead of failing the frame.
@@ -213,6 +217,19 @@ pub(crate) struct FrameSlot {
     queries: vk::QueryPool,
     set: vk::DescriptorSet,
     staging: Option<RawBuffer>,
+    /// Buffer address table (binding 4): `buf_n` u64 device addresses, persistently mapped.
+    addrs: RawBuffer,
+}
+
+impl FrameSlot {
+    /// Writes buffer table entry `index` of this slot's address table.
+    fn set_addr(&self, index: u32, addr: u64) {
+        if (index as u64 + 1) * 8 <= self.addrs.bytes {
+            // SAFETY: in-bounds write to the persistent mapping; the entry is not read by a
+            // pending frame (fresh slots are unused; freed slots retire only once completed).
+            unsafe { (self.addrs.ptr as *mut u64).add(index as usize).write(addr) };
+        }
+    }
 }
 
 struct Tables {
@@ -299,6 +316,8 @@ pub(crate) struct VulkanDevice {
     indirect_count: bool,
     multi_draw: bool,
     validation: bool,
+    /// `ED_GPU_VK_VALIDATION=require`: a validation error at submit panics (tests, CI).
+    require_validation: bool,
     frames: u32,
     allocated: AtomicU64,
     state: Locked,
@@ -533,6 +552,8 @@ impl VulkanDevice {
             ("shaderSampledImageArrayNonUniformIndexing", t(s12.shader_sampled_image_array_non_uniform_indexing)),
             ("shaderStorageBufferArrayNonUniformIndexing", t(s12.shader_storage_buffer_array_non_uniform_indexing)),
             ("shaderStorageImageArrayNonUniformIndexing", t(s12.shader_storage_image_array_non_uniform_indexing)),
+            ("bufferDeviceAddress", t(s12.buffer_device_address)),
+            ("shaderInt64", t(s10.shader_int64)),
         ];
         let missing: Vec<_> = required.iter().filter(|r| !r.1).map(|r| r.0).collect();
         if !missing.is_empty() {
@@ -545,6 +566,11 @@ impl VulkanDevice {
             .texture_compression_bc(t(s10.texture_compression_bc))
             .texture_compression_astc_ldr(t(s10.texture_compression_astc_ldr))
             .shader_int64(t(s10.shader_int64))
+            // Fragment `SV_PrimitiveID` (the visibility buffer) needs one of these; Slang
+            // fragment modules declare `Tessellation` for it (`slang::fragment_primitive_id_without_geometry`)
+            // because MoltenVK has no geometry shaders.
+            .tessellation_shader(t(s10.tessellation_shader))
+            .geometry_shader(t(s10.geometry_shader))
             .fragment_stores_and_atomics(t(s10.fragment_stores_and_atomics))
             // The buffer table is read-write in every stage (as on Metal), so vertex shaders
             // that read it need this unless every buffer alias is declared `readonly`.
@@ -567,7 +593,8 @@ impl VulkanDevice {
             .draw_indirect_count(t(s12.draw_indirect_count))
             .host_query_reset(t(s12.host_query_reset))
             .scalar_block_layout(t(s12.scalar_block_layout))
-            .shader_buffer_int64_atomics(t(s12.shader_buffer_int64_atomics));
+            .shader_buffer_int64_atomics(t(s12.shader_buffer_int64_atomics))
+            .buffer_device_address(true);
         // maintenance4: glslang targeting Vulkan 1.3 writes `local_size_x_id` as LocalSizeId.
         let mut e13 = vk::PhysicalDeviceVulkan13Features::default().dynamic_rendering(true).synchronization2(true).maintenance4(t(s13.maintenance4));
 
@@ -624,13 +651,15 @@ impl VulkanDevice {
         // vkGetDescriptorSetLayoutSupport (MoltenVK reports a small maxPerSetDescriptors and
         // checks the sum). Halve the tables until the driver accepts the layout.
         let stages = vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE;
-        let bflags = [vk::DescriptorBindingFlags::UPDATE_AFTER_BIND | vk::DescriptorBindingFlags::PARTIALLY_BOUND | vk::DescriptorBindingFlags::UPDATE_UNUSED_WHILE_PENDING; 4];
+        let uab = vk::DescriptorBindingFlags::UPDATE_AFTER_BIND | vk::DescriptorBindingFlags::PARTIALLY_BOUND | vk::DescriptorBindingFlags::UPDATE_UNUSED_WHILE_PENDING;
+        let bflags = [uab, uab, uab, uab, vk::DescriptorBindingFlags::UPDATE_AFTER_BIND];
         let table_bindings = |tex_n: u32, buf_n: u32, smp_n: u32| {
             [
                 (B_TEXTURES, vk::DescriptorType::SAMPLED_IMAGE, tex_n),
                 (B_IMAGES, vk::DescriptorType::STORAGE_IMAGE, tex_n),
                 (B_BUFFERS, vk::DescriptorType::STORAGE_BUFFER, buf_n),
                 (B_SAMPLERS, vk::DescriptorType::SAMPLER, smp_n),
+                (B_ADDRS, vk::DescriptorType::STORAGE_BUFFER, 1),
             ]
             .map(|(b, ty, n)| vk::DescriptorSetLayoutBinding::default().binding(b).descriptor_type(ty).descriptor_count(n).stage_flags(stages))
         };
@@ -712,7 +741,7 @@ impl VulkanDevice {
         let sizes = [
             (vk::DescriptorType::SAMPLED_IMAGE, tex_n),
             (vk::DescriptorType::STORAGE_IMAGE, tex_n),
-            (vk::DescriptorType::STORAGE_BUFFER, buf_n),
+            (vk::DescriptorType::STORAGE_BUFFER, buf_n + 1),
             (vk::DescriptorType::SAMPLER, smp_n),
         ]
         .map(|(ty, n)| vk::DescriptorPoolSize::default().ty(ty).descriptor_count(n * frames));
@@ -763,6 +792,7 @@ impl VulkanDevice {
             indirect_count: t(s12.draw_indirect_count),
             multi_draw: t(s10.multi_draw_indirect),
             validation: desc.validation,
+            require_validation: require && use_layer,
             frames,
             allocated: AtomicU64::new(0),
             state: Locked(Mutex::new(State {
@@ -814,7 +844,13 @@ impl VulkanDevice {
             // SAFETY: valid device.
             let queries = unsafe { self.raw.create_query_pool(&vk::QueryPoolCreateInfo::default().query_type(vk::QueryType::TIMESTAMP).query_count(MAX_QUERIES), None) }.map_err(vkr)?;
             self.name(set, &format!("ed_gpu bindless set (frame slot {f})"));
-            slots.push(FrameSlot { pool, cb, queries, set, staging: None });
+            let n = self.caps.max_bindless_buffers as u64;
+            let addrs = self.make_buffer(n * 8, vk::BufferUsageFlags::STORAGE_BUFFER, MemKind::Upload, &format!("ed_gpu buffer address table (frame slot {f})"))?;
+            // SAFETY: fresh host-visible mapping of at least n * 8 bytes.
+            unsafe { std::ptr::write_bytes(addrs.ptr, 0, (n * 8) as usize) };
+            let info = vk::DescriptorBufferInfo::default().buffer(addrs.raw).range(vk::WHOLE_SIZE);
+            self.write_descriptor(set, B_ADDRS, 0, None, Some(info));
+            slots.push(FrameSlot { pool, cb, queries, set, staging: None, addrs });
         }
         self.state.0.get_mut().unwrap_or_else(|e| e.into_inner()).slots = slots;
         Ok(())
@@ -905,9 +941,19 @@ impl VulkanDevice {
 
     /// Allocates and (for host kinds) maps memory. Returns the memory and the mapping.
     fn alloc(&self, req: vk::MemoryRequirements, kind: MemKind, label: Option<&str>) -> Result<(vk::DeviceMemory, *mut u8)> {
+        self.alloc_flags(req, kind, label, false)
+    }
+
+    /// As [`Self::alloc`]; `device_address` allocates with `VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT`.
+    fn alloc_flags(&self, req: vk::MemoryRequirements, kind: MemKind, label: Option<&str>, device_address: bool) -> Result<(vk::DeviceMemory, *mut u8)> {
         let ty = self.memory_type(req.memory_type_bits, kind).ok_or_else(|| Error::Backend(format!("no memory type for {:?}", label)))?;
+        let mut flags = vk::MemoryAllocateFlagsInfo::default().flags(vk::MemoryAllocateFlags::DEVICE_ADDRESS);
+        let mut info = vk::MemoryAllocateInfo::default().allocation_size(req.size).memory_type_index(ty);
+        if device_address {
+            info = info.push_next(&mut flags);
+        }
         // SAFETY: valid device; size and type from the resource's requirements.
-        let mem = unsafe { self.raw.allocate_memory(&vk::MemoryAllocateInfo::default().allocation_size(req.size).memory_type_index(ty), None) }.map_err(vkr)?;
+        let mem = unsafe { self.raw.allocate_memory(&info, None) }.map_err(vkr)?;
         self.allocated.fetch_add(req.size, Ordering::Relaxed);
         let ptr = if kind == MemKind::Gpu {
             std::ptr::null_mut()
@@ -936,11 +982,14 @@ impl VulkanDevice {
     }
 
     fn make_buffer(&self, size: u64, usage: vk::BufferUsageFlags, kind: MemKind, label: &str) -> Result<RawBuffer> {
+        // Storage buffers are reachable by device address (Slang ABI, binding 4).
+        let addressable = usage.contains(vk::BufferUsageFlags::STORAGE_BUFFER);
+        let usage = if addressable { usage | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS } else { usage };
         // SAFETY: valid device and create info.
         let raw = unsafe { self.raw.create_buffer(&vk::BufferCreateInfo::default().size(size).usage(usage).sharing_mode(vk::SharingMode::EXCLUSIVE), None) }.map_err(vkr)?;
         // SAFETY: valid buffer.
         let req = unsafe { self.raw.get_buffer_memory_requirements(raw) };
-        let (mem, ptr) = match self.alloc(req, kind, Some(label)) {
+        let (mem, ptr) = match self.alloc_flags(req, kind, Some(label), addressable) {
             Ok(m) => m,
             Err(e) => {
                 // SAFETY: unused buffer.
@@ -1050,6 +1099,9 @@ impl VulkanDevice {
         st.tables.buf_slots.retire(completed, &mut freed);
         for s in freed.drain(..) {
             writes.push((B_BUFFERS, s, None, Some(vk::DescriptorBufferInfo::default().buffer(self.dummy_buffer.raw).range(vk::WHOLE_SIZE))));
+            for slot in &st.slots {
+                slot.set_addr(s, 0);
+            }
         }
         st.tables.smp_slots.retire(completed, &mut freed);
         for s in freed.drain(..) {
@@ -1078,7 +1130,7 @@ impl VulkanDevice {
         let ty = match binding {
             B_TEXTURES => vk::DescriptorType::SAMPLED_IMAGE,
             B_IMAGES => vk::DescriptorType::STORAGE_IMAGE,
-            B_BUFFERS => vk::DescriptorType::STORAGE_BUFFER,
+            B_BUFFERS | B_ADDRS => vk::DescriptorType::STORAGE_BUFFER,
             _ => vk::DescriptorType::SAMPLER,
         };
         let imgs = img.map(|i| [i]);
@@ -1101,8 +1153,10 @@ impl VulkanDevice {
         }
         let n = f.scopes.iter().map(|s| s.end.max(s.begin) + 1).max().unwrap_or(0).min(MAX_QUERIES);
         let mut stamps = vec![0u64; n as usize];
-        // SAFETY: the frame finished, so every query below `n` it wrote is available.
-        let ok = unsafe { self.raw.get_query_pool_results(st.slots[f.slot].queries, 0, &mut stamps, vk::QueryResultFlags::TYPE_64) }.is_ok();
+        // SAFETY: the frame finished and wrote every query below `n` (they are allocated in
+        // order), so WAIT returns. Without WAIT, MoltenVK often reports NOT_READY here: it
+        // resolves timestamps after the fence signals, and most frames read zeros.
+        let ok = unsafe { self.raw.get_query_pool_results(st.slots[f.slot].queries, 0, &mut stamps, vk::QueryResultFlags::TYPE_64 | vk::QueryResultFlags::WAIT) }.is_ok();
         st.timings = f
             .scopes
             .iter()
@@ -1426,6 +1480,7 @@ impl Drop for VulkanDevice {
                 if let Some(b) = s.staging {
                     self.free_buffer(b);
                 }
+                self.free_buffer(s.addrs);
             }
             let (img, mem, view) = self.dummy_image;
             if view != vk::ImageView::null() {
@@ -1905,8 +1960,12 @@ impl Device for VulkanDevice {
         }
         st.tables.buf_owner[slot as usize] = Some(id);
         for f in 0..st.slots.len() {
-            let info = vk::DescriptorBufferInfo::default().buffer(raws[f % raws.len()]).range(vk::WHOLE_SIZE);
+            let raw = raws[f % raws.len()];
+            let info = vk::DescriptorBufferInfo::default().buffer(raw).range(vk::WHOLE_SIZE);
             self.write_descriptor(st.slots[f].set, B_BUFFERS, slot, None, Some(info));
+            // SAFETY: valid buffer created with SHADER_DEVICE_ADDRESS usage (it has STORAGE_BUFFER).
+            let addr = unsafe { self.raw.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(raw)) };
+            st.slots[f].set_addr(slot, addr);
         }
         Ok(BindlessBuffer(slot))
     }
@@ -2197,7 +2256,17 @@ impl Device for VulkanDevice {
     }
 
     fn end_frame(&self, encoder: Box<dyn CommandEncoder + '_>) -> Result<()> {
-        encoder.finish()
+        // `finish` turns validation errors raised while the frame was recorded or submitted
+        // into `Err` ("Vulkan validation: ..."); under ED_GPU_VK_VALIDATION=require they panic
+        // here, so no caller can drop them.
+        let r = encoder.finish();
+        if let Err(e) = &r
+            && self.require_validation
+            && e.to_string().contains("Vulkan validation:")
+        {
+            panic!("{e} (ED_GPU_VK_VALIDATION=require)");
+        }
+        r
     }
 
     fn wait_idle(&self) {

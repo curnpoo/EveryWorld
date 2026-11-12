@@ -9,6 +9,10 @@ workspace = true
 
 # The full allowed list (xtask/deps.toml) also has ed_planet, ed_world and ed_sim; stage E1
 # needs none of them, so they are not linked yet.
+[features]
+# Vulkan backend passthrough (P1-D22, off by default); pick it at run time with ED_GPU_BACKEND=vulkan.
+vulkan = ["ed_gpu/vulkan", "ed_render/vulkan"]
+
 [dependencies]
 ed_geo = { path = "../ed_geo" }
 ed_pack = { path = "../ed_pack" }

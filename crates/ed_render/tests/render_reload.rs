@@ -16,7 +16,7 @@ use glam::{Affine3A, Vec3};
 
 #[test]
 fn fifty_reloads_keep_memory_flat() {
-    let mut rig = Rig::new();
+    let Some(mut rig) = Rig::new() else { return };
     let cam = TestScene::test_camera();
     let bc = rig.dev.caps().bc_textures;
     let dev = &*rig.dev;

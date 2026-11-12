@@ -18,7 +18,7 @@ fn is_ground(p: [u8; 4]) -> bool {
 
 #[test]
 fn test_scene_pixels_are_sky_ground_and_cube() {
-    let mut rig = Rig::new();
+    let Some(mut rig) = Rig::new() else { return };
     let px = rig.image(TestScene::test_camera());
     let top = at(&px, W / 2, 4);
     let centre = at(&px, W / 2, H / 2);
@@ -34,7 +34,7 @@ fn test_scene_pixels_are_sky_ground_and_cube() {
 
 #[test]
 fn image_is_identical_across_runs() {
-    let mut a = Rig::new();
+    let Some(mut a) = Rig::new() else { return };
     let ha = hash(&a.image(TestScene::test_camera()));
     // Same device, more frames in between, then the same view again.
     for _ in 0..5 {
@@ -42,7 +42,7 @@ fn image_is_identical_across_runs() {
     }
     let ha2 = hash(&a.image(TestScene::test_camera()));
     a.destroy();
-    let mut b = Rig::new();
+    let Some(mut b) = Rig::new() else { return };
     let hb = hash(&b.image(TestScene::test_camera()));
     b.destroy();
     assert_eq!(ha, ha2, "same device, two renders");
@@ -53,7 +53,7 @@ fn image_is_identical_across_runs() {
 fn camera_position_keeps_f64_precision() {
     // The scene's origin is ~6,500 km from 0, where f32 spacing is 0.5 m. A 5 cm camera move
     // must still change the image: only (origin - camera), computed in f64, reaches the GPU.
-    let mut rig = Rig::new();
+    let Some(mut rig) = Rig::new() else { return };
     let cam = TestScene::test_camera();
     let base = hash(&rig.image(cam));
     let mut moved = cam;
@@ -64,7 +64,7 @@ fn camera_position_keeps_f64_precision() {
 
 #[test]
 fn per_pass_timers_return_every_declared_pass() {
-    let mut rig = Rig::new();
+    let Some(mut rig) = Rig::new() else { return };
     for _ in 0..4 {
         rig.frame(TestScene::test_camera(), SceneMode::Scene, false);
     }

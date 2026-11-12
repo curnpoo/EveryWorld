@@ -20,7 +20,7 @@ use crate::fixed_step::FixedStep;
 use crate::session::{FrameIn, Mode, Session};
 use ed_editor::editor::InputEvent;
 use ed_editor::egui;
-use ed_gpu::{Backend, Device, DeviceDesc, Format, ResourceState, SurfaceConfig, SurfaceId, WindowHandle};
+use ed_gpu::{Device, DeviceDesc, Format, ResourceState, SurfaceConfig, SurfaceId, WindowHandle};
 use ed_render::{FrameParams, Renderer, TestScene, View, ViewTarget, Viewport};
 
 use glam::{Vec2, Vec3};
@@ -79,7 +79,7 @@ struct App {
 }
 
 pub fn run(args: Args) -> Result<(), String> {
-    let dev = ed_gpu::create_device(Backend::Metal, &DeviceDesc { validation: args.validation, frames_in_flight: args.frames_in_flight })
+    let dev = ed_gpu::create_device(ed_gpu::default_backend(), &DeviceDesc { validation: args.validation, frames_in_flight: args.frames_in_flight })
         .map_err(|e| format!("device: {e}"))?;
     println!("ew: {}", crate::caps_line(dev.caps()));
     let event_loop = EventLoop::new().map_err(|e| format!("event loop: {e}"))?;

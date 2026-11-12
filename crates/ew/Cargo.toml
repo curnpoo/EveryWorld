@@ -7,6 +7,10 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Vulkan backend passthrough (P1-D22, off by default); pick it at run time with ED_GPU_BACKEND=vulkan.
+vulkan = ["ed_gpu/vulkan", "ed_render/vulkan", "ed_editor/vulkan"]
+
 [dependencies]
 ed_geo = { path = "../ed_geo" }
 ed_data = { path = "../ed_data" }

@@ -7,7 +7,7 @@
 
 mod common;
 
-use ed_gpu::{Backend, BufferDesc, BufferId, Device, DeviceDesc, Format, ResourceState, TextureDesc, TextureId, TextureKind, Usage};
+use ed_gpu::{BufferDesc, BufferId, Device, DeviceDesc, Format, ResourceState, TextureDesc, TextureId, TextureKind, Usage};
 use ed_render::{Camera, FrameParams, Renderer, View, ViewTarget, Viewport};
 use ew::content::{Content, PACKS, PackSpec};
 use glam::{DVec3, Vec4};
@@ -186,7 +186,7 @@ fn prefab_reexport_hot_reloads_and_changes_only_the_prefab() {
     ed_assets::bake::build(&src, &bench).unwrap();
     let oak = std::fs::read(&bench).unwrap();
 
-    let dev = ed_gpu::create_device(Backend::Metal, &DeviceDesc { validation: true, frames_in_flight: 2 }).unwrap();
+    let dev = ed_gpu::create_device(ed_gpu::default_backend(), &DeviceDesc { validation: true, frames_in_flight: 2 }).unwrap();
     let dev = &*dev;
     let mut r = Renderer::new(dev).unwrap();
     let specs: Vec<PackSpec> = PACKS.iter().copied().filter(|s| s.name != "character").collect();

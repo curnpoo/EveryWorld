@@ -1,4 +1,4 @@
-//! GPU word layouts shared with `shaders/common.metal` and `shaders/cull.metal`. Change both
+//! GPU word layouts shared with `shaders/common.slang` and `shaders/cull.slang`. Change both
 //! sides together; the tests at the bottom pin the sizes.
 
 use ed_gpu::DRAW_CONSTANTS_BYTES;
@@ -47,7 +47,7 @@ pub(crate) const MAX_HZB_LEVELS: usize = 16;
 /// Visible-list entry: instance index bits.
 pub(crate) const ENTRY_INSTANCE_BITS: u32 = 20;
 
-/// Cull statistics words (cull.metal `STAT_*`).
+/// Cull statistics words (cull.slang `STAT_*`).
 pub(crate) const STAT_WORDS: usize = 16;
 
 pub(crate) fn bytes(words: &[u32]) -> Vec<u8> {

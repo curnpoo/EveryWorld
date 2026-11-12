@@ -3,6 +3,8 @@
 // the skinned vertex into the mesh's own range of the shared vertex buffer, which provider 1
 // then draws like any mesh. Linear blend skinning; normals use the same matrices (uniform
 // scale joints; non-uniform joint scale would need the cofactor, not needed yet).
+#include "shader_abi.slang"
+#include "common.slang"
 
 struct SkinC {
     uint src;       // bindless: SkinVtx buffer
@@ -14,13 +16,18 @@ struct SkinC {
     uint pal_base;  // first joint in the palette
     uint pad[9];
 };
+ED_CONSTANTS(SkinC)
 
-kernel void skin(uint id [[thread_position_in_grid]], ED_BINDLESS(SkinC)) {
+// SKIN_GROUP in src/lib.rs.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void skin(uint3 tid: SV_DispatchThreadID) {
+    uint id = tid.x;
     if (id >= ed_c.count) {
         return;
     }
-    SkinVtx s = ed_buf(SkinVtx, ed_c.src)[ed_c.src_base + id];
-    device const float4* pal = ed_buf(float4, ed_c.palette) + ed_c.pal_base * 3u;
+    SkinVtx s = ed_buf<SkinVtx>(ed_c.src)[ed_c.src_base + id];
+    float4* pal = ed_buf<float4>(ed_c.palette) + ed_c.pal_base * 3u;
     uint j[4] = { s.j01 & 0xFFFFu, s.j01 >> 16, s.j23 & 0xFFFFu, s.j23 >> 16 };
     float3 bp = float3(s.px, s.py, s.pz);
     float3 bn = oct_decode(s.n);
@@ -45,9 +52,9 @@ kernel void skin(uint id [[thread_position_in_grid]], ED_BINDLESS(SkinC)) {
     } else {
         p /= wsum;
     }
-    device Vtx* o = ed_buf(Vtx, ed_c.dst) + ed_c.dst_base + id;
-    o->px = p.x;
-    o->py = p.y;
-    o->pz = p.z;
-    o->n = oct_encode(length_squared(n) > 0.0 ? normalize(n) : bn);
+    Vtx* o = ed_buf<Vtx>(ed_c.dst) + ed_c.dst_base + id;
+    o.px = p.x;
+    o.py = p.y;
+    o.pz = p.z;
+    o.n = oct_encode(length_squared(n) > 0.0 ? normalize(n) : bn);
 }

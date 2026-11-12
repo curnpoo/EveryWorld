@@ -111,19 +111,8 @@ pub struct Painter {
 
 impl Painter {
     pub fn new(dev: &dyn Device) -> Result<Self> {
-        let src = format!("{}\n{}", shader_abi::MSL_PRELUDE, SHADER);
-        let vs = dev.create_shader(&ShaderDesc {
-            label: "egui vs",
-            stage: ShaderStage::Vertex,
-            entry: "vs_egui",
-            code: ShaderCode::MslSource(&src),
-        })?;
-        let fs = dev.create_shader(&ShaderDesc {
-            label: "egui fs",
-            stage: ShaderStage::Fragment,
-            entry: "fs_egui",
-            code: ShaderCode::MslSource(&src),
-        })?;
+        let vs = create_shader(dev, "egui vs", ShaderStage::Vertex, "vs_egui")?;
+        let fs = create_shader(dev, "egui fs", ShaderStage::Fragment, "fs_egui")?;
         let mut samplers = Vec::new();
         for (f, a) in SAMPLERS {
             let s = dev.create_sampler(&SamplerDesc {
@@ -522,35 +511,43 @@ fn sampler_index(o: &egui::TextureOptions) -> usize {
     wrap + usize::from(o.magnification == egui::TextureFilter::Nearest)
 }
 
-const SHADER: &str = r#"
-struct EguiC { float2 screen; uint buf; uint vtx; uint idx; uint tex; uint smp; uint linear_out; uint pad[8]; };
-struct EguiV { packed_float2 pos; packed_float2 uv; uint color; };
-struct EguiOut { float4 pos [[position]]; float4 color; float2 uv; };
+// The shaders are `shaders/egui.slang` (P1-D1), compiled by `tools/shaders/build.sh` to the
+// checked-in MSL and per-entry SPIR-V below (`ed_gpu` test `slang_fresh` checks they are current).
+const MSL: &str = include_str!("../shaders/gen/msl/egui.metal");
+const SPV_VS: &[u8] = include_bytes!("../shaders/gen/spv/egui.vs_egui.spv");
+const SPV_FS: &[u8] = include_bytes!("../shaders/gen/spv/egui.fs_egui.spv");
 
-static float3 egui_linear_from_gamma(float3 s) {
-    float3 lo = s / 12.92;
-    float3 hi = pow((s + 0.055) / 1.055, float3(2.4));
-    return select(hi, lo, s < 0.04045);
-}
-
-vertex EguiOut vs_egui(uint vid [[vertex_id]], ED_BINDLESS(EguiC)) {
-    device const uchar* base = ed_buffers[ed_c.buf].p;
-    uint i = ((device const uint*)(base + ed_c.idx))[vid];
-    EguiV v = ((device const EguiV*)(base + ed_c.vtx))[i];
-    EguiOut o;
-    o.pos = float4(2.0 * v.pos.x / ed_c.screen.x - 1.0, 1.0 - 2.0 * v.pos.y / ed_c.screen.y, 0.0, 1.0);
-    o.color = unpack_unorm4x8_to_float(v.color); // premultiplied, gamma
-    o.uv = float2(v.uv);
-    return o;
-}
-
-fragment float4 fs_egui(EguiOut in [[stage_in]], ED_BINDLESS(EguiC)) {
-    // Textures hold egui's gamma-space premultiplied colours in a Unorm format, so sampling
-    // returns gamma values and filtering happens in gamma space, as egui expects.
-    float4 c = in.color * ed_tex2d(ed_c.tex).sample(ed_smp(ed_c.smp), in.uv);
-    if (ed_c.linear_out != 0) {
-        c.rgb = egui_linear_from_gamma(c.rgb);
+fn create_shader(
+    dev: &dyn Device,
+    label: &str,
+    stage: ShaderStage,
+    entry: &str,
+) -> Result<ShaderId> {
+    match dev.caps().backend {
+        Backend::Vulkan => {
+            let bytes = if stage == ShaderStage::Vertex {
+                SPV_VS
+            } else {
+                SPV_FS
+            };
+            let words: Vec<u32> = bytes
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| u32::from_le_bytes(*c))
+                .collect();
+            dev.create_shader(&ShaderDesc {
+                label,
+                stage,
+                entry,
+                code: ShaderCode::SpirV(&words),
+            })
+        }
+        _ => dev.create_shader(&ShaderDesc {
+            label,
+            stage,
+            entry,
+            code: ShaderCode::MslSource(MSL),
+        }),
     }
-    return c;
 }
-"#;

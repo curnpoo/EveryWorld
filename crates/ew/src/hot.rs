@@ -1,4 +1,4 @@
-//! Hot reload (M3): `.metal` shaders and packs, polled by file stamp (no watcher thread).
+//! Hot reload (M3): `.slang` shaders (compiled with slangc) and packs, polled by file stamp (no watcher thread).
 //!
 //! - Shaders: [`ed_render::shaders::ShaderSources::FILES`] in the renderer's source folder (or
 //!   `EW_SHADER_DIR`). A change rebuilds every pipeline; a compile error is printed and the

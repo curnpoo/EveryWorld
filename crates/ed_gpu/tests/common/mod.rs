@@ -13,9 +13,18 @@ pub const H: u32 = 64;
 /// Vulkan may be missing (no loader or no MoltenVK): the test then prints why and is skipped,
 /// unless `ED_GPU_REQUIRE_VULKAN=1`, which turns a missing Vulkan into a failure.
 pub fn device(backend: Backend) -> Option<Box<dyn Device>> {
-    match create_device(backend, &DeviceDesc { validation: true, frames_in_flight: 2 }) {
+    match create_device(
+        backend,
+        &DeviceDesc {
+            validation: true,
+            frames_in_flight: 2,
+        },
+    ) {
         Ok(d) => Some(d),
-        Err(e) if backend == Backend::Vulkan && std::env::var("ED_GPU_REQUIRE_VULKAN").as_deref() != Ok("1") => {
+        Err(e)
+            if backend == Backend::Vulkan
+                && std::env::var("ED_GPU_REQUIRE_VULKAN").as_deref() != Ok("1") =>
+        {
             eprintln!("SKIP: no Vulkan device ({e})");
             None
         }
@@ -46,7 +55,13 @@ macro_rules! backend_tests {
 #[macro_export]
 macro_rules! spv {
     ($name:literal) => {
-        include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/shaders/spv/", $name, ".spv")).as_slice()
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/shaders/spv/",
+            $name,
+            ".spv"
+        ))
+        .as_slice()
     };
 }
 
@@ -56,15 +71,31 @@ pub fn usage() -> Usage {
 
 /// A shader for whichever backend `dev` is: `msl` (the body after [`shader_abi::MSL_PRELUDE`])
 /// with entry point `entry` on Metal, `spv` with entry `main` on Vulkan.
-pub fn shader(dev: &dyn Device, stage: ShaderStage, entry: &str, msl: &str, spv: &[u8]) -> ShaderId {
+pub fn shader(
+    dev: &dyn Device,
+    stage: ShaderStage,
+    entry: &str,
+    msl: &str,
+    spv: &[u8],
+) -> ShaderId {
     let r = match dev.caps().backend {
         Backend::Vulkan => {
             let words = spirv_words(spv);
-            dev.create_shader(&ShaderDesc { label: entry, stage, entry: "main", code: ShaderCode::SpirV(&words) })
+            dev.create_shader(&ShaderDesc {
+                label: entry,
+                stage,
+                entry: "main",
+                code: ShaderCode::SpirV(&words),
+            })
         }
         _ => {
             let src = format!("{}\n{}", shader_abi::MSL_PRELUDE, msl);
-            dev.create_shader(&ShaderDesc { label: entry, stage, entry, code: ShaderCode::MslSource(&src) })
+            dev.create_shader(&ShaderDesc {
+                label: entry,
+                stage,
+                entry,
+                code: ShaderCode::MslSource(&src),
+            })
         }
     };
     r.unwrap_or_else(|e| panic!("shader {entry}: {e}"))
@@ -72,7 +103,12 @@ pub fn shader(dev: &dyn Device, stage: ShaderStage, entry: &str, msl: &str, spv:
 
 pub fn spirv_words(bytes: &[u8]) -> Vec<u32> {
     assert_eq!(bytes.len() % 4, 0, "SPIR-V length must be a multiple of 4");
-    bytes.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect()
+    bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| u32::from_le_bytes(*c))
+        .collect()
 }
 
 pub fn render_target(dev: &dyn Device, label: &str) -> TextureId {
@@ -85,7 +121,11 @@ pub fn render_target(dev: &dyn Device, label: &str) -> TextureId {
         depth_or_layers: 1,
         mips: 1,
         samples: 1,
-        usage: Usage { render_target: true, copy_src: true, ..usage() },
+        usage: Usage {
+            render_target: true,
+            copy_src: true,
+            ..usage()
+        },
     })
     .expect("render target")
 }
@@ -100,13 +140,25 @@ pub fn depth_target(dev: &dyn Device) -> TextureId {
         depth_or_layers: 1,
         mips: 1,
         samples: 1,
-        usage: Usage { depth: true, ..usage() },
+        usage: Usage {
+            depth: true,
+            ..usage()
+        },
     })
     .expect("depth target")
 }
 
 pub fn readback_buffer(dev: &dyn Device, size: u64) -> BufferId {
-    dev.create_buffer(&BufferDesc { label: "readback", size, usage: Usage { copy_dst: true, cpu_read: true, ..usage() } }).expect("readback buffer")
+    dev.create_buffer(&BufferDesc {
+        label: "readback",
+        size,
+        usage: Usage {
+            copy_dst: true,
+            cpu_read: true,
+            ..usage()
+        },
+    })
+    .expect("readback buffer")
 }
 
 pub fn rt_readback(dev: &dyn Device) -> BufferId {
@@ -116,7 +168,12 @@ pub fn rt_readback(dev: &dyn Device) -> BufferId {
 pub const SUB0: Subresource = Subresource { mip: 0, layer: 0 };
 
 pub fn tex(texture: TextureId, from: ResourceState, to: ResourceState) -> Transition {
-    Transition::Texture { texture, sub: None, from, to }
+    Transition::Texture {
+        texture,
+        sub: None,
+        from,
+        to,
+    }
 }
 
 pub fn buf(buffer: BufferId, from: ResourceState, to: ResourceState) -> Transition {
@@ -124,12 +181,20 @@ pub fn buf(buffer: BufferId, from: ResourceState, to: ResourceState) -> Transiti
 }
 
 pub fn color(texture: TextureId, load: LoadOp) -> Attachment {
-    Attachment { texture, sub: SUB0, load, store: StoreOp::Store }
+    Attachment {
+        texture,
+        sub: SUB0,
+        load,
+        store: StoreOp::Store,
+    }
 }
 
 /// Records a copy of the RGBA8 render target into `rb` (state RenderTarget -> CopySrc).
 pub fn copy_out(e: &mut dyn CommandEncoder, rt: TextureId, rb: BufferId) {
-    e.transition(&[tex(rt, ResourceState::RenderTarget, ResourceState::CopySrc), buf(rb, ResourceState::Undefined, ResourceState::CopyDst)]);
+    e.transition(&[
+        tex(rt, ResourceState::RenderTarget, ResourceState::CopySrc),
+        buf(rb, ResourceState::Undefined, ResourceState::CopyDst),
+    ]);
     e.copy_texture_to_buffer(rt, SUB0, rb, 0, Format::Rgba8Unorm.copy_row_pitch(W));
 }
 
@@ -154,7 +219,11 @@ pub fn words(dev: &dyn Device, rb: BufferId) -> Vec<u32> {
     dev.wait_idle();
     let mut out = Vec::new();
     dev.read_buffer(rb, &mut out).expect("read_buffer");
-    out.as_chunks::<4>().0.iter().map(|c| u32::from_ne_bytes(*c)).collect()
+    out.as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| u32::from_ne_bytes(*c))
+        .collect()
 }
 
 pub fn at(px: &[[u8; 4]], x: u32, y: u32) -> [u8; 4] {
@@ -177,7 +246,12 @@ pub fn bytes_u32(v: &[u32]) -> Vec<u8> {
     v.iter().flat_map(|w| w.to_ne_bytes()).collect()
 }
 
-pub fn pipeline(dev: &dyn Device, vs: ShaderId, fs: ShaderId, depth: Option<DepthDesc>) -> RenderPipelineId {
+pub fn pipeline(
+    dev: &dyn Device,
+    vs: ShaderId,
+    fs: ShaderId,
+    depth: Option<DepthDesc>,
+) -> RenderPipelineId {
     dev.create_render_pipeline(&RenderPipelineDesc {
         label: "test pipeline",
         vertex: vs,
@@ -193,7 +267,12 @@ pub fn pipeline(dev: &dyn Device, vs: ShaderId, fs: ShaderId, depth: Option<Dept
 }
 
 pub fn compute_pipeline(dev: &dyn Device, cs: ShaderId, group: u32) -> ComputePipelineId {
-    dev.create_compute_pipeline(&ComputePipelineDesc { label: "test kernel", shader: cs, workgroup_size: [group, 1, 1] }).expect("compute pipeline")
+    dev.create_compute_pipeline(&ComputePipelineDesc {
+        label: "test kernel",
+        shader: cs,
+        workgroup_size: [group, 1, 1],
+    })
+    .expect("compute pipeline")
 }
 
 /// MSL fragment shader that outputs the flat colour from the vertex stage (`flat.frag`).
@@ -204,7 +283,13 @@ fragment float4 fs_flat(VOut in [[stage_in]], ED_BINDLESS(Empty)) { return in.co
 "#;
 
 pub fn flat_fs(dev: &dyn Device) -> ShaderId {
-    shader(dev, ShaderStage::Fragment, "fs_flat", FLAT_FS, spv!("flat.frag"))
+    shader(
+        dev,
+        ShaderStage::Fragment,
+        "fs_flat",
+        FLAT_FS,
+        spv!("flat.frag"),
+    )
 }
 
 /// Full-screen triangle with uv in 0..1 (v down), MSL side of `full.vert`. Fragment code is
@@ -243,16 +328,35 @@ kernel void burn(uint gid [[thread_position_in_grid]], ED_BINDLESS(KC)) {
 /// Times a heavy compute pass and a one-group pass; returns (heavy ms, light ms).
 pub fn heavy_and_light(dev: &dyn Device) -> (f32, f32) {
     const N: u32 = 1 << 20;
-    let cs = shader(dev, ShaderStage::Compute, "burn", BURN_MSL, spv!("burn.comp"));
+    let cs = shader(
+        dev,
+        ShaderStage::Compute,
+        "burn",
+        BURN_MSL,
+        spv!("burn.comp"),
+    );
     let pso = compute_pipeline(dev, cs, 256);
-    let out = dev.create_buffer(&BufferDesc { label: "burn out", size: N as u64 * 4, usage: Usage { shader_write: true, ..usage() } }).unwrap();
+    let out = dev
+        .create_buffer(&BufferDesc {
+            label: "burn out",
+            size: N as u64 * 4,
+            usage: Usage {
+                shader_write: true,
+                ..usage()
+            },
+        })
+        .unwrap();
     let bi = dev.bind_buffer(out).unwrap();
     let mut t = Vec::new();
     let mut result = (0.0, 0.0);
     // Two rounds: the first warms up pipelines and clock calibration.
     for _ in 0..2 {
         let mut e = dev.begin_frame().unwrap();
-        e.transition(&[buf(out, ResourceState::Undefined, ResourceState::ShaderWrite)]);
+        e.transition(&[buf(
+            out,
+            ResourceState::Undefined,
+            ResourceState::ShaderWrite,
+        )]);
         e.begin_timer("heavy");
         e.begin_compute_pass("heavy");
         e.set_compute_pipeline(pso);
@@ -260,7 +364,11 @@ pub fn heavy_and_light(dev: &dyn Device) -> (f32, f32) {
         e.dispatch(N / 256, 1, 1);
         e.end_compute_pass();
         e.end_timer();
-        e.transition(&[buf(out, ResourceState::ShaderWrite, ResourceState::ShaderWrite)]);
+        e.transition(&[buf(
+            out,
+            ResourceState::ShaderWrite,
+            ResourceState::ShaderWrite,
+        )]);
         e.begin_timer("light");
         e.begin_compute_pass("light");
         e.set_compute_pipeline(pso);
@@ -271,7 +379,12 @@ pub fn heavy_and_light(dev: &dyn Device) -> (f32, f32) {
         dev.end_frame(e).unwrap();
         dev.wait_idle();
         dev.timings(&mut t);
-        let get = |l: &str| t.iter().find(|x| x.label == l).map(|x| x.gpu_ms).unwrap_or(0.0);
+        let get = |l: &str| {
+            t.iter()
+                .find(|x| x.label == l)
+                .map(|x| x.gpu_ms)
+                .unwrap_or(0.0)
+        };
         result = (get("heavy"), get("light"));
     }
     result

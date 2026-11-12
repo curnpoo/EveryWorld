@@ -48,7 +48,7 @@ fn pick(rig: &mut Rig, cam: Camera, at: (u32, u32)) -> PickResult {
 
 #[test]
 fn culling_counts_frustum_and_occlusion() {
-    let mut rig = Rig::bare();
+    let Some(mut rig) = Rig::bare() else { return };
     let dev = &*rig.dev;
     let r = rig.renderer.as_mut().unwrap();
     let cube = r.add_mesh(dev, &cube_mesh()).unwrap();
@@ -93,7 +93,7 @@ fn culling_counts_frustum_and_occlusion() {
 fn camera_move_reveals_occluded_instance_same_frame() {
     // Two-phase occlusion: an instance hidden last frame but visible now is drawn in the late
     // phase of this frame (no one-frame hole).
-    let mut rig = Rig::bare();
+    let Some(mut rig) = Rig::bare() else { return };
     let dev = &*rig.dev;
     let r = rig.renderer.as_mut().unwrap();
     let cube = r.add_mesh(dev, &cube_mesh()).unwrap();
@@ -125,7 +125,7 @@ fn lod_cube() -> MeshAsset {
 
 #[test]
 fn lod_level_at_known_distances() {
-    let mut rig = Rig::bare();
+    let Some(mut rig) = Rig::bare() else { return };
     let dev = &*rig.dev;
     let r = rig.renderer.as_mut().unwrap();
     r.lod_config().fade_frames = 0;
@@ -166,7 +166,7 @@ fn lod_level_at_known_distances() {
 #[test]
 fn cross_fade_draws_both_levels_for_exactly_the_fade_length() {
     const N: u32 = 8;
-    let mut rig = Rig::bare();
+    let Some(mut rig) = Rig::bare() else { return };
     let dev = &*rig.dev;
     let r = rig.renderer.as_mut().unwrap();
     r.lod_config().fade_frames = N;
@@ -210,7 +210,7 @@ fn luma(p: [u8; 4]) -> f32 {
 
 #[test]
 fn pbr_and_toon_render_under_the_same_light() {
-    let mut rig = Rig::bare();
+    let Some(mut rig) = Rig::bare() else { return };
     let dev = &*rig.dev;
     let r = rig.renderer.as_mut().unwrap();
     let cube = r.add_mesh(dev, &cube_mesh()).unwrap();
@@ -244,7 +244,7 @@ fn pbr_and_toon_render_under_the_same_light() {
 
 #[test]
 fn picking_returns_the_object_and_sky() {
-    let mut rig = Rig::new();
+    let Some(mut rig) = Rig::new() else { return };
     let cam = TestScene::test_camera();
     let p = pick(&mut rig, cam, (W / 2, H / 2));
     assert_eq!(p.object, Some(ObjectId(0x7E57_0001)), "the red box");

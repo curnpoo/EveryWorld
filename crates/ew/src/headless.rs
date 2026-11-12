@@ -15,7 +15,7 @@ use crate::args::{Args, SceneKind};
 use crate::camera::{PathKind, ScriptedPath};
 use crate::fixed_step::FixedStep;
 use crate::perf::{FrameRow, PerfLog, Stats};
-use ed_gpu::{Backend, BufferDesc, BufferId, DeviceDesc, Format, ResourceState, TextureDesc, TextureKind, Usage};
+use ed_gpu::{BufferDesc, BufferId, DeviceDesc, Format, ResourceState, TextureDesc, TextureKind, Usage};
 use ed_render::{FrameParams, PickResult, PopFrame, Renderer, SceneMode, TestScene, View, ViewTarget, Viewport};
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -45,7 +45,7 @@ pub struct Report {
 pub fn run(args: &Args) -> Result<Report, String> {
     let frames = args.frames.unwrap_or(DEFAULT_FRAMES).max(1);
     let (w, h) = (args.width, args.height);
-    let dev = ed_gpu::create_device(Backend::Metal, &DeviceDesc { validation: args.validation, frames_in_flight: args.frames_in_flight })
+    let dev = ed_gpu::create_device(ed_gpu::default_backend(), &DeviceDesc { validation: args.validation, frames_in_flight: args.frames_in_flight })
         .map_err(|e| format!("device: {e}"))?;
     let caps = crate::caps_line(dev.caps());
     let mut renderer = Renderer::new(&*dev).map_err(|e| format!("renderer: {e}"))?;
@@ -126,6 +126,15 @@ pub fn run(args: &Args) -> Result<Report, String> {
             .map_err(|e| format!("readback: {e}"))
     };
     let readback = readback_buf("headless readback")?;
+    // Last frame's visibility buffer (instance + 1, LOD << 28 | primitive), for backend parity.
+    let vis_pitch = ed_render::VIS_FORMAT.copy_row_pitch(w);
+    let vis_readback = match args.dump_vis && !args.empty {
+        true => Some(
+            dev.create_buffer(&BufferDesc { label: "headless vis readback", size: vis_pitch as u64 * h as u64, usage: Usage { copy_dst: true, cpu_read: true, ..Default::default() } })
+                .map_err(|e| format!("vis readback: {e}"))?,
+        ),
+        false => None,
+    };
     // Screenshots along the proving path: (name, frame, buffer).
     let mut shots: Vec<(&'static str, u64, BufferId)> = Vec::new();
     if args.path == PathKind::Proving && !args.empty {
@@ -218,6 +227,7 @@ pub fn run(args: &Args) -> Result<Report, String> {
             readback: if last { Some(readback) } else { shot },
             pick: (!args.empty && i % PICK_EVERY == PICK_EVERY - 1).then_some((w / 2, h / 2)),
             pop_stats: args.pop && !args.empty,
+            vis_readback: vis_readback.filter(|_| last),
             ..Default::default()
         };
         match &mut session {
@@ -271,6 +281,17 @@ pub fn run(args: &Args) -> Result<Report, String> {
     for (name, _, buf) in &shots {
         shot_paths.push((*name, save(*buf, &format!("{name}.png"))?));
     }
+    if let Some(vb) = vis_readback {
+        let mut raw = Vec::new();
+        dev.read_buffer(vb, &mut raw).map_err(|e| format!("read_buffer: {e}"))?;
+        let mut vis = Vec::with_capacity((w * h * 8) as usize);
+        for y in 0..h as usize {
+            let o = y * vis_pitch as usize;
+            vis.extend_from_slice(&raw[o..o + w as usize * 8]);
+        }
+        // Raw little-endian u32 pairs, row-major, top row first.
+        std::fs::write(args.out.join("vis.bin"), &vis).map_err(|e| format!("vis.bin: {e}"))?;
+    }
     std::fs::write(args.out.join("perf.csv"), log.csv()).map_err(|e| format!("perf.csv: {e}"))?;
 
     let header = format!(
@@ -317,6 +338,9 @@ pub fn run(args: &Args) -> Result<Report, String> {
     renderer.destroy(&*dev);
     dev.destroy_texture(target);
     dev.destroy_buffer(readback);
+    if let Some(vb) = vis_readback {
+        dev.destroy_buffer(vb);
+    }
     for (_, _, b) in shots {
         dev.destroy_buffer(b);
     }

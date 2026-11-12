@@ -12,6 +12,8 @@
 // Bins: per phase, [solid bins][dithered bins], each `bins_kind` long; a mesh owns
 // `lod_count` consecutive bins starting at `bin_base` in each range. Every bin is a
 // DrawIndexedArgs entry whose instances live at visible[first_instance ..].
+#include "shader_abi.slang"
+#include "common.slang"
 
 struct CullC {
     uint frame;
@@ -28,40 +30,47 @@ struct CullC {
     uint nodes;
     uint pad[4];
 };
+ED_CONSTANTS(CullC)
 
 // Stats words (mirror `CullStats` in src/provider.rs).
-constant uint STAT_TOTAL = 0;
-constant uint STAT_FRUSTUM = 1;
-constant uint STAT_OCCLUSION = 2;
-constant uint STAT_DRAWN_EARLY = 3;
-constant uint STAT_DRAWN_LATE = 4;
-constant uint STAT_ENTRIES = 5;
-constant uint STAT_NONEMPTY = 6;
-constant uint STAT_FADING = 7;
-constant uint STAT_TRIANGLES = 8;
-constant uint STAT_CHANGED = 9;
-constant uint STAT_WORDS = 16;
+static const uint STAT_TOTAL = 0;
+static const uint STAT_FRUSTUM = 1;
+static const uint STAT_OCCLUSION = 2;
+static const uint STAT_DRAWN_EARLY = 3;
+static const uint STAT_DRAWN_LATE = 4;
+static const uint STAT_ENTRIES = 5;
+static const uint STAT_NONEMPTY = 6;
+static const uint STAT_FADING = 7;
+static const uint STAT_TRIANGLES = 8;
+static const uint STAT_CHANGED = 9;
+static const uint STAT_WORDS = 16;
 
-inline void stat_add(device atomic_uint* stats, uint idx, uint v) {
-    uint s = simd_sum(v);
-    if (simd_is_first() && s != 0) {
-        atomic_fetch_add_explicit(&stats[idx], s, memory_order_relaxed);
+// One atomic per wave: every thread of the group reaches the stat_add calls (no early return).
+void stat_add(Atomic<uint>* stats, uint idx, uint v) {
+    uint s = WaveActiveSum(v);
+    if (WaveIsFirstLane() && s != 0) {
+        stats[idx].add(s, MemoryOrder.Relaxed);
     }
 }
 
-kernel void cull_reset(uint i [[thread_position_in_grid]], ED_BINDLESS(CullC)) {
+// CULL_GROUP in src/provider.rs.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void cull_reset(uint3 tid: SV_DispatchThreadID) {
+    uint i = tid.x;
     uint n = ed_c.bins_kind * 4 * ARGS_WORDS;
     if (i < n) {
-        ed_buf(uint, ed_c.args)[i] = ed_buf(uint, ed_c.templ)[i];
+        ed_buf<uint>(ed_c.args)[i] = ed_buf<uint>(ed_c.templ)[i];
     }
     if (i < STAT_WORDS) {
-        ed_buf(uint, ed_c.stats)[i] = 0;
+        ed_buf<uint>(ed_c.stats)[i] = 0;
     }
 }
 
-inline bool in_frustum(device const FrameData& f, float3 c, float r) {
+bool in_frustum(FrameData* f, float3 c, float r) {
     for (int k = 0; k < 5; k++) {
-        if (dot(f.planes[k].xyz, c) + f.planes[k].w < -r) {
+        float4 pl = f.planes[k];
+        if (dot(pl.xyz, c) + pl.w < -r) {
             return false;
         }
     }
@@ -70,7 +79,7 @@ inline bool in_frustum(device const FrameData& f, float3 c, float r) {
 
 // Coarsest level whose projected error is under the threshold; going coarser needs the
 // tighter `thr * hyst` (hysteresis). Mirrors `select_lod` in src/provider.rs.
-inline uint select_lod(device const GpuMesh& m, float px_per_m, uint cur, bool init, float thr, float hyst) {
+uint select_lod(GpuMesh* m, float px_per_m, uint cur, bool init, float thr, float hyst) {
     uint n = clamp(m.lod_count, 1u, 4u);
     uint want = 0;
     for (uint l = 1; l < n; l++) {
@@ -96,8 +105,8 @@ struct Bounds {
     float scale;
 };
 
-inline Bounds bounds(constant CullC& c, constant EdBuf* bufs, thread const GpuInstance& inst, device const GpuMesh& m) {
-    device const float4* nodes = reinterpret_cast<device const float4*>(bufs[c.nodes].p);
+Bounds bounds(GpuInstance inst, GpuMesh* m) {
+    float4* nodes = ed_buf<float4>(ed_c.nodes);
     Bounds b;
     b.scale = max_scale(inst);
     b.c = nodes[inst.node_flags & 0xFFFFu].xyz + xform_point(inst, m.sphere.xyz);
@@ -111,12 +120,11 @@ struct Emitted {
     uint tris;
 };
 
-inline void push(device atomic_uint* args, device uint* args_plain, device uint* visible, uint bin, uint entry, uint cap,
-                 uint tris, thread Emitted& e) {
-    uint slot = atomic_fetch_add_explicit(&args[bin * ARGS_WORDS + 1], 1u, memory_order_relaxed);
+void push(Atomic<uint>* args, uint* args_plain, uint* visible, uint bin, uint entry, uint cap, uint tris, inout Emitted e) {
+    uint slot = args[bin * ARGS_WORDS + 1].add(1u, MemoryOrder.Relaxed);
     if (slot >= cap) {
         // Bin full (layout lags one frame behind instance growth): undo, drop the entry.
-        atomic_fetch_sub_explicit(&args[bin * ARGS_WORDS + 1], 1u, memory_order_relaxed);
+        args[bin * ARGS_WORDS + 1].sub(1u, MemoryOrder.Relaxed);
         return;
     }
     if (slot == 0) {
@@ -129,39 +137,42 @@ inline void push(device atomic_uint* args, device uint* args_plain, device uint*
 
 // Emit one instance into the bins of `phase`: one solid entry, or two dithered entries with
 // complementary masks while a LOD cross-fade runs.
-inline void emit(constant CullC& c, constant EdBuf* bufs, device const GpuMesh& m, uint inst, uint st, uint phase, uint fade_frames,
-                 thread Emitted& e) {
-    device atomic_uint* args = reinterpret_cast<device atomic_uint*>(bufs[c.args].p);
-    device uint* args_plain = reinterpret_cast<device uint*>(bufs[c.args].p);
-    device uint* visible = reinterpret_cast<device uint*>(bufs[c.visible].p);
+void emit(GpuMesh* m, uint inst, uint st, uint phase, uint fade_frames, inout Emitted e) {
+    uint* args_plain = ed_buf<uint>(ed_c.args);
+    Atomic<uint>* args = (Atomic<uint>*)args_plain;
+    uint* visible = ed_buf<uint>(ed_c.visible);
     uint cur = st & 3u;
     uint prev = (st >> 2) & 3u;
     uint fade = (st >> ST_FADE_SHIFT) & 63u;
-    uint phase_base = phase * 2u * c.bins_kind + m.bin_base;
+    uint phase_base = phase * 2u * ed_c.bins_kind + m.bin_base;
+    uint cap = m.capacity;
     if (fade == 0) {
-        push(args, args_plain, visible, phase_base + cur, inst | (cur << 20), m.capacity, m.index_count[cur] / 3u, e);
+        push(args, args_plain, visible, phase_base + cur, inst | (cur << 20), cap, m.index_count[cur] / 3u, e);
     } else {
         // `cur` covers (N - fade + 1) / (N + 1) of the pixels, `prev` the rest.
         uint cov = clamp(((fade_frames - fade + 1u) * 256u) / (fade_frames + 1u), 1u, 255u);
-        uint dith = phase_base + c.bins_kind;
-        push(args, args_plain, visible, dith + cur, inst | (cur << 20) | (cov << 22), m.capacity, m.index_count[cur] / 3u, e);
-        push(args, args_plain, visible, dith + prev, inst | (prev << 20) | (cov << 22) | (1u << 30), m.capacity, m.index_count[prev] / 3u, e);
+        uint dith = phase_base + ed_c.bins_kind;
+        push(args, args_plain, visible, dith + cur, inst | (cur << 20) | (cov << 22), cap, m.index_count[cur] / 3u, e);
+        push(args, args_plain, visible, dith + prev, inst | (prev << 20) | (cov << 22) | (1u << 30), cap, m.index_count[prev] / 3u, e);
     }
 }
 
-kernel void cull_early(uint i [[thread_position_in_grid]], ED_BINDLESS(CullC)) {
-    device const FrameData& f = *ed_buf(FrameData, ed_c.frame);
-    device atomic_uint* stats = ed_buf(atomic_uint, ed_c.stats);
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void cull_early(uint3 tid: SV_DispatchThreadID) {
+    uint i = tid.x;
+    FrameData* f = ed_buf<FrameData>(ed_c.frame);
+    Atomic<uint>* stats = (Atomic<uint>*)ed_buf<uint>(ed_c.stats);
     Emitted e = { 0, 0, 0 };
     uint drawn = 0;
     if (i < ed_c.count) {
-        device uint* state = ed_buf(uint, ed_c.state);
-        GpuInstance inst = ed_buf(GpuInstance, ed_c.instances)[i];
+        uint* state = ed_buf<uint>(ed_c.state);
+        GpuInstance inst = ed_buf<GpuInstance>(ed_c.instances)[i];
         if ((inst.node_flags & INSTANCE_ALIVE) == 0) {
             state[i] = 0;
         } else {
-            device const GpuMesh& m = ed_buf(GpuMesh, ed_c.meshes)[inst.mesh];
-            Bounds b = bounds(ed_c, ed_buffers, inst, m);
+            GpuMesh* m = ed_buf<GpuMesh>(ed_c.meshes) + inst.mesh;
+            Bounds b = bounds(inst, m);
             bool inf = in_frustum(f, b.c, b.r);
             uint st = state[i];
             bool init = (st & ST_INIT) != 0;
@@ -169,9 +180,11 @@ kernel void cull_early(uint i [[thread_position_in_grid]], ED_BINDLESS(CullC)) {
             uint prev = (st >> 2) & 3u;
             uint fade = (st >> ST_FADE_SHIFT) & 63u;
             uint n = f.cull.y;
-            float dist = max(length(b.c) - b.r, f.params.z);
-            float px_per_m = b.scale * f.proj.w * 0.5 * f.proj.y / dist;
-            uint want = select_lod(m, px_per_m, cur, init, f.params.y, f.params.w);
+            float4 params = f.params;
+            float4 proj = f.proj;
+            float dist = max(length(b.c) - b.r, params.z);
+            float px_per_m = b.scale * proj.w * 0.5 * proj.y / dist;
+            uint want = select_lod(m, px_per_m, cur, init, params.y, params.w);
             bool changed = false;
             if (fade > 0) {
                 fade -= 1;
@@ -193,7 +206,7 @@ kernel void cull_early(uint i [[thread_position_in_grid]], ED_BINDLESS(CullC)) {
             st = cur | (prev << 2) | (fade << ST_FADE_SHIFT) | (st & ST_VISIBLE) | ST_INIT | (changed ? ST_CHANGED : 0u);
             state[i] = st;
             if (inf && (st & ST_VISIBLE) != 0) {
-                emit(ed_c, ed_buffers, m, i, st, 0, n, e);
+                emit(m, i, st, 0, n, e);
                 drawn = 1;
             }
         }
@@ -206,7 +219,8 @@ kernel void cull_early(uint i [[thread_position_in_grid]], ED_BINDLESS(CullC)) {
 
 // Screen rectangle (uv, y down) of a view-space sphere (x right, y up, z forward), after
 // Mara and McGuire 2013 (as in zeux/niagara). False if it crosses the near plane.
-inline bool project_sphere(float3 c, float r, float znear, float p00, float p11, thread float4& aabb) {
+bool project_sphere(float3 c, float r, float znear, float p00, float p11, out float4 aabb) {
+    aabb = float4(0.0);
     if (c.z < r + znear) {
         return false;
     }
@@ -225,16 +239,18 @@ inline bool project_sphere(float3 c, float r, float znear, float p00, float p11,
 
 // Depth pyramid test: occluded when the sphere's nearest depth is farther (smaller, reverse-Z)
 // than the farthest depth stored over its screen rectangle.
-inline bool occluded(device const FrameData& f, device const float* hzb, float3 c_rel, float r) {
-    float3 v = (f.view * float4(c_rel, 1.0)).xyz;
+bool occluded(FrameData* f, float* hzb, float3 c_rel, float r) {
+    float3 v = mul(f.view, float4(c_rel, 1.0)).xyz;
     float3 cv = float3(v.x, v.y, -v.z);
-    float znear = f.params.z;
+    float4 params = f.params;
+    float4 proj = f.proj;
+    float znear = params.z;
     float4 aabb;
-    if (!project_sphere(cv, r, znear, f.proj.x, f.proj.y, aabb)) {
+    if (!project_sphere(cv, r, znear, proj.x, proj.y, aabb)) {
         return false;
     }
-    float w = f.proj.z;
-    float h = f.proj.w;
+    float w = proj.z;
+    float h = proj.w;
     float x0 = clamp(aabb.x, 0.0, 1.0) * w;
     float y0 = clamp(aabb.y, 0.0, 1.0) * h;
     float x1 = clamp(aabb.z, 0.0, 1.0) * w;
@@ -253,35 +269,38 @@ inline bool occluded(device const FrameData& f, device const float* hzb, float3 
     uint ty0 = min(uint(y0 / ts), lv.height - 1);
     uint tx1 = min(uint(x1 / ts), lv.width - 1);
     uint ty1 = min(uint(y1 / ts), lv.height - 1);
-    device const float* p = hzb + lv.offset;
+    float* p = hzb + lv.offset;
     float d = min(min(p[ty0 * lv.width + tx0], p[ty0 * lv.width + tx1]), min(p[ty1 * lv.width + tx0], p[ty1 * lv.width + tx1]));
     float nearest = znear / (cv.z - r);
     return nearest < d;
 }
 
-kernel void cull_late(uint i [[thread_position_in_grid]], ED_BINDLESS(CullC)) {
-    device const FrameData& f = *ed_buf(FrameData, ed_c.frame);
-    device atomic_uint* stats = ed_buf(atomic_uint, ed_c.stats);
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void cull_late(uint3 tid: SV_DispatchThreadID) {
+    uint i = tid.x;
+    FrameData* f = ed_buf<FrameData>(ed_c.frame);
+    Atomic<uint>* stats = (Atomic<uint>*)ed_buf<uint>(ed_c.stats);
     Emitted e = { 0, 0, 0 };
     uint total = 0, fr = 0, occ = 0, drawn = 0, fading = 0, changed = 0;
     if (i < ed_c.count) {
-        GpuInstance inst = ed_buf(GpuInstance, ed_c.instances)[i];
+        GpuInstance inst = ed_buf<GpuInstance>(ed_c.instances)[i];
         if ((inst.node_flags & INSTANCE_ALIVE) != 0) {
-            device uint* state = ed_buf(uint, ed_c.state);
-            device const GpuMesh& m = ed_buf(GpuMesh, ed_c.meshes)[inst.mesh];
-            Bounds b = bounds(ed_c, ed_buffers, inst, m);
+            uint* state = ed_buf<uint>(ed_c.state);
+            GpuMesh* m = ed_buf<GpuMesh>(ed_c.meshes) + inst.mesh;
+            Bounds b = bounds(inst, m);
             uint st = state[i];
             total = 1;
             bool inf = in_frustum(f, b.c, b.r);
             bool vis = inf;
             if (inf && f.cull.x > 0) {
-                vis = !occluded(f, ed_buf(float, ed_c.hzb), b.c, b.r);
+                vis = !occluded(f, ed_buf<float>(ed_c.hzb), b.c, b.r);
             }
             fr = inf ? 1 : 0;
             occ = vis ? 1 : 0;
             bool early = inf && (st & ST_VISIBLE) != 0;
             if (vis && !early) {
-                emit(ed_c, ed_buffers, m, i, st, 1, f.cull.y, e);
+                emit(m, i, st, 1, f.cull.y, e);
                 drawn = 1;
             }
             if (early || drawn != 0) {

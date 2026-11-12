@@ -26,6 +26,7 @@ OPTIONS:
   --lod-fade N                 LOD cross-fade length in frames, 0 = hard switch (default 16)
   --no-occlusion               frustum culling only (no depth-pyramid occlusion test)
   --pop                        headless: run the pop detector (per-tile luminance change)
+  --dump-vis                   headless: write the last frame's visibility buffer to OUT/vis.bin (backend parity)
   --empty                      clear + tonemap only (the empty-frame budget)
   --packs DIR                  pack folder (default target/packs): proving.ewpack (required),
                                bench.ewpack and character.ewpack (optional)
@@ -77,6 +78,8 @@ pub struct Args {
     pub lod_fade: Option<u32>,
     pub no_occlusion: bool,
     pub pop: bool,
+    /// Headless: write the last frame's visibility buffer (raw u32 pairs) to `out/vis.bin`.
+    pub dump_vis: bool,
     /// Pack folder ([`crate::content`]).
     pub packs: PathBuf,
     /// Fixed headless camera: x, y, z (from the proving origin), yaw, pitch.
@@ -137,6 +140,7 @@ impl Default for Args {
             lod_fade: None,
             no_occlusion: false,
             pop: false,
+            dump_vis: false,
             packs: crate::content::default_pack_dir(),
             camera: None,
             layers: crate::authored::default_layer_root(),
@@ -166,6 +170,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Option<Args>, Str
             "--validation" => a.validation = true,
             "--no-occlusion" => a.no_occlusion = true,
             "--pop" => a.pop = true,
+            "--dump-vis" => a.dump_vis = true,
             "--sim-route" => a.sim_route = true,
             "--editor-ui" => a.editor_ui = true,
             "--inset" => a.inset = true,

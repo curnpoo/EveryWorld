@@ -379,7 +379,7 @@ impl Session {
                 target: ViewTarget { initial: ResourceState::RenderTarget, final_state: Some(ResourceState::RenderTarget), ..target },
                 flags: ViewFlags { slot: 1, keep_output: true, overlay: false },
             };
-            r.render(dev, enc, &v, &FrameParams { readback: rb_renderer, pick: None, pop_stats: false, ..params }).map_err(|e| format!("render inset: {e}"))?;
+            r.render(dev, enc, &v, &FrameParams { readback: rb_renderer, pick: None, pop_stats: false, vis_readback: None, ..params }).map_err(|e| format!("render inset: {e}"))?;
         }
         // With `extra`, every view above ended in RenderTarget.
         let mut state = ResourceState::RenderTarget;

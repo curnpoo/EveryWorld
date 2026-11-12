@@ -18,17 +18,27 @@ pub struct Rig {
 }
 
 impl Rig {
-    /// A rig with the test scene loaded.
-    pub fn new() -> Self {
-        let mut rig = Self::bare();
+    /// A rig with the test scene loaded (`None`: the selected backend is missing, test skipped).
+    pub fn new() -> Option<Self> {
+        let mut rig = Self::bare()?;
         let dev = &*rig.dev;
         TestScene::load(rig.renderer.as_mut().unwrap(), dev).expect("test scene");
-        rig
+        Some(rig)
     }
 
-    /// A rig with an empty renderer.
-    pub fn bare() -> Self {
-        let dev = create_device(Backend::Metal, &DeviceDesc { validation: true, frames_in_flight: 2 }).expect("Metal device");
+    /// A rig with an empty renderer on [`ed_gpu::default_backend`] (`ED_GPU_BACKEND`). `None`
+    /// when that is Vulkan and no Vulkan device exists (the test prints why and is skipped),
+    /// unless `ED_GPU_REQUIRE_VULKAN=1`.
+    pub fn bare() -> Option<Self> {
+        let backend = default_backend();
+        let dev = match create_device(backend, &DeviceDesc { validation: true, frames_in_flight: 2 }) {
+            Ok(d) => d,
+            Err(e) if backend == Backend::Vulkan && std::env::var("ED_GPU_REQUIRE_VULKAN").as_deref() != Ok("1") => {
+                eprintln!("SKIP: no Vulkan device ({e})");
+                return None;
+            }
+            Err(e) => panic!("{backend:?} device: {e}"),
+        };
         let renderer = Renderer::new(&*dev).expect("renderer");
         let target = dev
             .create_texture(&TextureDesc {
@@ -50,7 +60,7 @@ impl Rig {
                 usage: Usage { copy_dst: true, cpu_read: true, ..Default::default() },
             })
             .unwrap();
-        Self { dev, renderer: Some(renderer), target, readback }
+        Some(Self { dev, renderer: Some(renderer), target, readback })
     }
 
     pub fn view(&self, camera: Camera) -> View {

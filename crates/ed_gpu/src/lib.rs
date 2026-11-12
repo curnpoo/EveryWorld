@@ -30,6 +30,7 @@ use std::num::NonZeroU32;
 
 mod pool;
 pub mod shader_abi;
+pub mod slang;
 mod track;
 #[cfg(target_os = "macos")]
 mod metal;

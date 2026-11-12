@@ -15,13 +15,13 @@ const CLEAR: [f32; 4] = [0.05, 0.08, 0.12, 1.0];
 
 fn device() -> Box<dyn Device> {
     create_device(
-        Backend::Metal,
+        default_backend(),
         &DeviceDesc {
             validation: true,
             frames_in_flight: 2,
         },
     )
-    .expect("Metal device")
+    .expect("device (ED_GPU_BACKEND)")
 }
 
 fn stats() -> FrameStats {

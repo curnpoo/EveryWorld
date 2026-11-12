@@ -1,3 +1,57 @@
+## 2026-11-11: Phase 1, M4c — Slang is the only shader source; proving ground on Vulkan
+
+Closes P1-D1 and P1-D22.
+
+**Shaders**
+- Every engine shader is now Slang:
+  - 8 `ed_render` modules plus `common.slang`;
+  - the editor's `egui.slang`;
+  - the shared header `ed_gpu/src/shader_abi.slang`.
+- The hand-written `.metal` files are deleted.
+- `tools/shaders/build.sh`, using slangc 2026.20 (pinned, `SLANGC` overrides), regenerates
+  the checked-in MSL and SPIR-V under `crates/ed_render/shaders/gen/`. The `slang_fresh`
+  test fails if any output is stale, so building needs no slangc.
+- Hot reload compiles edited `.slang` files at run time.
+
+**ABI**
+- Buffers are read through buffer device addresses on both backends. Metal's buffer
+  table holds `ulong` addresses. Vulkan adds a u64 address table at set 0, binding 4, and
+  requires `bufferDeviceAddress` and `shaderInt64`.
+- Fragment `SV_PrimitiveID` works on MoltenVK. `ed_gpu::slang` rewrites Slang's
+  `Geometry` capability to `Tessellation`, and the device enables `tessellationShader`.
+- On Vulkan with `ED_GPU_VK_VALIDATION=require`, a validation error raised at submit time
+  now panics.
+- Vulkan timestamps were reading 0 because they were fetched without WAIT. Fixed.
+- `ED_GPU_BACKEND` picks the backend everywhere. `ew --dump-vis` writes the visibility
+  buffer to a file.
+
+**Checked by the conductor**
+- Tests:
+  - Metal: 207 passed, 0 failed.
+  - Vulkan with validation required: 229 passed, 0 failed, 0 skipped.
+  - `check-deps` clean.
+  - sim-route hash unchanged at `647f42726a0a56de`.
+- Parity at 2560x1440 (3.69 M pixels):
+  - Metal and Vulkan differ in 5 to 21 pixels per shot.
+  - Hand-written MSL and Slang-generated MSL differ in 13 to 32 pixels.
+  - Mean difference is at most 0.0001.
+  - Visibility ids differ in 13 pixels. Coverage is identical. The cause is edge pixels
+    changing owner because vertex positions differ in the last bit.
+- Metal speed, hand MSL against Slang, 3 alternating pairs: GPU 1.563 → 1.550 ms,
+  CPU 0.087 → 0.086 ms. No regression.
+- Vulkan on MoltenVK: GPU about 1.82 ms, CPU about 0.32 ms. P1-D22 sets no target.
+- Captures: `docs/captures/phase-1/m4c-{metal,vulkan}-street.png`.
+
+**Open**
+- In `ed_gpu/src/vulkan/conv.rs`, blending is enabled for any non-opaque blend mode, even
+  on the `R32G32_UINT` visibility target. MoltenVK only warns, but stricter drivers reject
+  it. Fix it in the gate cleanup.
+- MoltenVK reads a 20-byte struct through a cast pointer as zeros. `egui.slang` works
+  around it by reading words.
+- The `ed_gpu` backend tests still use hand-written MSL and GLSL; only the ABI test is in
+  Slang.
+- Hot reload does not watch `shader_abi.slang`.
+
 ## 2026-11-11: Phase 1, M4b — editor in `ew`, character mover, collision in packs
 
 `ew` now runs the editor and the game in one session. Tab or F1 switches between them.

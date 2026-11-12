@@ -8,7 +8,7 @@ use ed_render::*;
 
 #[test]
 fn three_hundred_frames_without_growth() {
-    let mut rig = Rig::new();
+    let Some(mut rig) = Rig::new() else { return };
     let mut cam = TestScene::test_camera();
     for _ in 0..30 {
         rig.frame(cam, SceneMode::Scene, false);

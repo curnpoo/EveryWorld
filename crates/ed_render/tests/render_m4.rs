@@ -55,7 +55,7 @@ fn top_down() -> Camera {
 
 #[test]
 fn second_view_is_an_inset_and_leaks_nothing_into_the_main_view() {
-    let mut rig = Rig::new();
+    let Some(mut rig) = Rig::new() else { return };
     let cam = TestScene::test_camera();
     let rb = rig.readback;
     rig.renderer.as_mut().unwrap().prepare_views(&*rig.dev, 2).unwrap();
@@ -115,7 +115,7 @@ fn second_view_is_an_inset_and_leaks_nothing_into_the_main_view() {
 
 #[test]
 fn overlay_draws_lines_and_triangles_on_top_without_depth() {
-    let mut rig = Rig::new();
+    let Some(mut rig) = Rig::new() else { return };
     let cam = TestScene::test_camera();
     let base = rig.image(cam);
     // A magenta triangle and a green line a few metres in front of the camera, relative to
@@ -160,7 +160,7 @@ fn bend(a: f32) -> [Mat4; 2] {
 /// holds (the vertex buffer's final state forces a barrier at the start of every frame).
 #[test]
 fn in_place_skinning_is_safe_with_two_frames_in_flight() {
-    let mut rig = Rig::bare();
+    let Some(mut rig) = Rig::bare() else { return };
     let dev = &*rig.dev;
     let bar = skinned_bar();
     let r = rig.renderer.as_mut().unwrap();

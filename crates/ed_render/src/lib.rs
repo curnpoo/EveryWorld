@@ -20,8 +20,8 @@
 //! ids, dirty-range uploads). Call [`Renderer::flush_uploads`] before `begin_frame`; the data
 //! lands at the start of that frame.
 //!
-//! Shaders are MSL source (`shaders/*.metal`, the MSL-first fallback of P1-D1), each file
-//! prefixed with `ed_gpu::shader_abi::MSL_PRELUDE` and `shaders/common.metal`.
+//! Shaders are Slang (`shaders/*.slang`, P1-D1) compiled to checked-in MSL and SPIR-V
+//! (`shaders/gen/`, `tools/shaders/build.sh`); see [`shaders`].
 
 mod alloc;
 pub mod graph;
@@ -42,7 +42,7 @@ use gpu::{FD_PARAMS, FD_PLANES, FD_PROJ, FD_SUN_DIR, FD_VIEWPORT, FRAME_WORDS, I
 use graph::{FrameGraph, FrameTimings, GraphError, PassKind, TextureInfo, TransientPool};
 use provider::{CullStats, DiscreteLod, GeometryProvider, LodConfig, LodPipelines, MeshRecord, Ring, SharedInputs, VisTargets};
 use scene::{InstanceDesc, InstancePools, MAX_LODS, Material, MaterialId, MeshAsset, MeshId, SkinId, SkinnedMeshAsset, TextureAsset, TextureHandle};
-use shaders::{Built, ShaderSources};
+use shaders::{Built, Module, ShaderSet, ShaderSources};
 
 /// HDR scene colour format.
 pub const HDR_FORMAT: Format = Format::Rgba16Float;
@@ -180,7 +180,7 @@ impl Default for ViewFlags {
 }
 
 /// One overlay vertex: position relative to the batch origin, RGBA8 colour (sRGB, straight
-/// alpha). Matches `OverlayV` in `shaders/overlay.metal`.
+/// alpha). Matches `OverlayV` in `shaders/overlay.slang`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[repr(C)]
 pub struct OverlayVertex {
@@ -214,11 +214,15 @@ pub struct FrameParams {
     pub pick: Option<(u32, u32)>,
     /// Run the pop detector's per-tile pass ([`Renderer::take_pop_frames`]).
     pub pop_stats: bool,
+    /// Debug: copy this view's visibility buffer (`VIS_FORMAT`, viewport-sized, rows
+    /// `VIS_FORMAT.copy_row_pitch(width)` apart) into this `cpu_read` buffer after the resolve
+    /// pass (scene mode only). Used for cross-backend parity checks (M4c).
+    pub vis_readback: Option<BufferId>,
 }
 
 impl Default for FrameParams {
     fn default() -> Self {
-        Self { mode: SceneMode::Scene, sun_dir: Vec3::new(0.45, 0.62, 0.35).normalize(), exposure: 1.0, readback: None, pick: None, pop_stats: false }
+        Self { mode: SceneMode::Scene, sun_dir: Vec3::new(0.45, 0.62, 0.35).normalize(), exposure: 1.0, readback: None, pick: None, pop_stats: false, vis_readback: None }
     }
 }
 
@@ -369,7 +373,7 @@ struct Pipelines {
 }
 
 impl Pipelines {
-    fn new(dev: &dyn Device, src: &ShaderSources) -> Result<Self, ed_gpu::Error> {
+    fn new(dev: &dyn Device, src: &ShaderSet) -> Result<Self, ed_gpu::Error> {
         let mut b = Built::default();
         match Self::build(dev, src, &mut b) {
             Ok(p) => Ok(p),
@@ -379,11 +383,11 @@ impl Pipelines {
             }
         }
     }
-    fn build(dev: &dyn Device, src: &ShaderSources, b: &mut Built) -> Result<Self, ed_gpu::Error> {
-        let vs = b.shader(dev, src, &src.resolve, "resolve vs", ShaderStage::Vertex, "vs_resolve")?;
-        let fs = b.shader(dev, src, &src.resolve, "resolve fs", ShaderStage::Fragment, "fs_resolve")?;
-        let tonemap_vs = b.shader(dev, src, &src.tonemap, "tonemap vs", ShaderStage::Vertex, "vs_fullscreen")?;
-        let tonemap_fs = b.shader(dev, src, &src.tonemap, "tonemap fs", ShaderStage::Fragment, "fs_tonemap")?;
+    fn build(dev: &dyn Device, src: &ShaderSet, b: &mut Built) -> Result<Self, ed_gpu::Error> {
+        let vs = b.shader(dev, src, Module::Resolve, "resolve vs", ShaderStage::Vertex, "vs_resolve")?;
+        let fs = b.shader(dev, src, Module::Resolve, "resolve fs", ShaderStage::Fragment, "fs_resolve")?;
+        let tonemap_vs = b.shader(dev, src, Module::Tonemap, "tonemap vs", ShaderStage::Vertex, "vs_fullscreen")?;
+        let tonemap_fs = b.shader(dev, src, Module::Tonemap, "tonemap fs", ShaderStage::Fragment, "fs_tonemap")?;
         let resolve = b.render(
             dev,
             &RenderPipelineDesc {
@@ -398,11 +402,11 @@ impl Pipelines {
                 samples: 1,
             },
         )?;
-        let pick = b.compute(dev, src, &src.debug, "pick", [1, 1, 1])?;
-        let pop = b.compute(dev, src, &src.debug, "pop_stats", [8, 8, 1])?;
-        let skin = b.compute(dev, src, &src.skin, "skin", [SKIN_GROUP, 1, 1])?;
-        let overlay_vs = b.shader(dev, src, &src.overlay, "overlay vs", ShaderStage::Vertex, "vs_overlay")?;
-        let overlay_fs = b.shader(dev, src, &src.overlay, "overlay fs", ShaderStage::Fragment, "fs_overlay")?;
+        let pick = b.compute(dev, src, Module::Debug, "pick", [1, 1, 1])?;
+        let pop = b.compute(dev, src, Module::Debug, "pop_stats", [8, 8, 1])?;
+        let skin = b.compute(dev, src, Module::Skin, "skin", [SKIN_GROUP, 1, 1])?;
+        let overlay_vs = b.shader(dev, src, Module::Overlay, "overlay vs", ShaderStage::Vertex, "vs_overlay")?;
+        let overlay_fs = b.shader(dev, src, Module::Overlay, "overlay fs", ShaderStage::Fragment, "fs_overlay")?;
         Ok(Self { built: std::mem::take(b), resolve, tonemap_vs, tonemap_fs, tonemap: Vec::new(), pick, pop, skin, overlay_vs, overlay_fs, overlay: Vec::new() })
     }
     fn destroy(mut self, dev: &dyn Device) {
@@ -588,6 +592,8 @@ impl Renderer {
 
     /// A renderer compiled from `src` (e.g. [`ShaderSources::load`] of a shader directory).
     pub fn with_shaders(dev: &dyn Device, desc: &RendererDesc, src: &ShaderSources) -> Result<Self, ed_gpu::Error> {
+        let set = ShaderSet::for_sources(src)?;
+        let src = &set;
         let pipes = Pipelines::new(dev, src)?;
         let upload = Usage { shader_read: true, copy_dst: true, ..Default::default() };
         let per_frame = Usage { shader_read: true, cpu_write: true, ..Default::default() };
@@ -657,6 +663,8 @@ impl Renderer {
     /// compiles does the renderer wait for the GPU, swap them in and destroy the old set. On
     /// error the running pipelines stay and the error (compiler message) is returned.
     pub fn reload_shaders(&mut self, dev: &dyn Device, src: &ShaderSources) -> Result<(), ed_gpu::Error> {
+        let set = ShaderSet::for_sources(src)?;
+        let src = &set;
         let pipes = Pipelines::new(dev, src)?;
         let lod = match LodPipelines::new(dev, src) {
             Ok(l) => l,
@@ -1255,6 +1263,14 @@ impl Renderer {
                     ctx.enc.set_draw_constants(&c);
                     ctx.enc.draw(0..3, 0..1);
                 });
+            if let Some(rb) = params.vis_readback {
+                let rb_res = g.import_buffer("vis readback", rb, ResourceState::Undefined, None);
+                let pitch = VIS_FORMAT.copy_row_pitch(w);
+                g.add_pass("vis readback", PassKind::Manual).read(vis, ResourceState::CopySrc).write(rb_res, ResourceState::CopyDst).exec(move |ctx| {
+                    let (t, b) = (ctx.texture(vis), ctx.buffer(rb_res));
+                    ctx.enc.copy_texture_to_buffer(t, Subresource { mip: 0, layer: 0 }, b, 0, pitch);
+                });
+            }
             if params.pop_stats {
                 let (tx, ty) = (w.div_ceil(POP_TILE), h.div_ceil(POP_TILE));
                 if self.pop_ring.as_ref().map(|p| (p.1, p.2)) != Some((tx, ty)) {
