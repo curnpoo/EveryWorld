@@ -136,7 +136,32 @@ pub struct Session {
     overlay_empty: bool,
 }
 
+/// Banner drawn by the editor UI (top centre) so the owner always sees the mode and the keys.
+pub const EDITOR_HINT: &str = "EDITOR  |  Tab/F1: play  |  RMB-drag: look  |  WASD/QE: fly (Shift fast)  |  LMB: select / drag gizmo  |  W/E/R: move/rotate/scale";
+/// Window title per mode (game mode has no egui overlay, so the title carries the hint).
+pub fn window_title(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Editor => "ew - EDITOR (Tab: play, LMB: select/drag gizmo, RMB-drag: look, WASD/QE: fly)",
+        Mode::Game => "ew - GAME (Tab: back to editor, WASD: move, mouse: look, Space: jump)",
+    }
+}
+
 impl Session {
+    /// Moves the fly camera to see every authored place at once (editor start: the default
+    /// street camera is 300 m away, where the movable props are a few pixels).
+    pub fn frame_authored(&mut self) {
+        let pts: Vec<DVec3> = self.authored.places.iter().map(|p| p.transform.position).collect();
+        if pts.is_empty() {
+            return;
+        }
+        let c = pts.iter().fold(DVec3::ZERO, |a, p| a + *p) / pts.len() as f64;
+        let r = pts.iter().map(|p| p.distance(c)).fold(4.0f64, f64::max);
+        let eye = c + DVec3::new(0.0, 0.5 * r + 3.0, 1.8 * r + 8.0);
+        let d = (c - eye).normalize();
+        let pose = Pose { position: eye, yaw: 0.0, pitch: d.y.asin() as f32 };
+        self.free.prev = pose;
+        self.free.cur = pose;
+    }
     /// Loads the layers, places the authored objects and the character, builds the sim.
     pub fn new(r: &mut Renderer, dev: &dyn Device, content: &mut Content, layer_root: PathBuf, mode: Mode, editor_ui: bool) -> Result<Session, String> {
         let authored = Authored::load(&layer_root)?;
@@ -271,6 +296,11 @@ impl Session {
         self.camera = camera;
 
         // Editor.
+        if let Some(ed) = &mut self.editor {
+            if ed.state.hint != EDITOR_HINT {
+                ed.state.hint = EDITOR_HINT.to_string();
+            }
+        }
         let mut out = FrameOut { camera, wants_pointer: false, wants_keyboard: false, steps };
         let mut gizmo = ed_editor::DrawList::default();
         if self.mode == Mode::Editor

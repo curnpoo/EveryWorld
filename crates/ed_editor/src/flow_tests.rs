@@ -387,3 +387,25 @@ fn idle_editor_skips_ui_passes() {
     let n = d.ed.ui_passes - before;
     assert!((6..=12).contains(&n), "{n} UI passes in 2 s idle");
 }
+
+#[test]
+fn mode_hint_banner_never_takes_the_pointer_and_left_click_still_picks() {
+    let (root, _) = sample_root("hint");
+    let mut d = Driver {
+        ed: Editor::new(),
+        host: MockHost::new(root),
+        time: 0.0,
+    };
+    d.ed.state.hint = "EDITOR | Tab: play".to_string();
+    d.frame(vec![]);
+    d.frame(vec![InputEvent::PointerMoved([800.0, 22.0])]);
+    let out = d.frame(vec![]);
+    assert!(!out.wants_pointer, "the banner is not interactive");
+    // Left click on the bench selects it (pick is on the primary button).
+    let bench_px = d.host.view().project(DVec3::from_array(POS)).unwrap();
+    d.click(bench_px);
+    for _ in 0..3 {
+        d.frame(vec![]);
+    }
+    assert_eq!(d.ed.state.selection.primary(), Some(id(1)));
+}

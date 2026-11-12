@@ -225,6 +225,8 @@ pub struct EditorState {
     /// Stats as last refreshed (the panels update at [`STATS_HZ`], not every frame).
     pub stats: FrameStats,
     pub time: f64,
+    /// Host-set banner (current mode and key hints), drawn top-centre when non-empty.
+    pub hint: String,
 }
 
 pub const LOG_LINES: usize = 200;

@@ -34,6 +34,27 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
+/// Editor-mode camera look: only a right-button press the UI does not want starts it (left
+/// belongs to select / gizmo / the panels), and releasing right always ends it. `None` = the
+/// button does not affect look.
+fn look_after_button(button: MouseButton, pressed: bool, ui_pointer: bool) -> Option<bool> {
+    (button == MouseButton::Right).then_some(pressed && !ui_pointer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_click_the_ui_wants_does_not_start_camera_look() {
+        assert_eq!(look_after_button(MouseButton::Right, true, true), Some(false));
+        assert_eq!(look_after_button(MouseButton::Right, true, false), Some(true));
+        assert_eq!(look_after_button(MouseButton::Right, false, true), Some(false));
+        // Left never looks in editor mode: it selects / drags the gizmo.
+        assert_eq!(look_after_button(MouseButton::Left, true, false), None);
+    }
+}
+
 pub const SURFACE_FORMAT: Format = Format::Bgra8Srgb;
 
 struct Gpu {
@@ -61,6 +82,9 @@ struct App {
     log_t: Instant,
     log_frames: u64,
     log_cpu_ms: f64,
+    /// Per-second wall-time splits (ms summed): update (hot poll, session, editor), begin_frame
+    /// (frames-in-flight wait), acquire (drawable / vsync wait), record + end_frame.
+    split_ms: [f64; 4],
     max_wall_ms: f64,
     result: Result<(), String>,
     done: bool,
@@ -114,6 +138,7 @@ pub fn run(args: Args) -> Result<(), String> {
         log_t: Instant::now(),
         log_frames: 0,
         log_cpu_ms: 0.0,
+        split_ms: [0.0; 4],
         max_wall_ms: 0.0,
         result: Ok(()),
         done: false,
@@ -175,6 +200,9 @@ impl App {
                     let mut s = Session::new(&mut renderer, &*self.dev, &mut c, self.args.layers.clone(), self.args.mode, true)?;
                     s.inset = self.args.inset;
                     s.collision_debug = self.args.collision_debug;
+                    if s.mode == Mode::Editor && self.args.camera.is_none() {
+                        s.frame_authored();
+                    }
                     println!(
                         "ew: session: mode {:?}, character {}, {} authored places from {} (Tab/F1 switches mode)",
                         s.mode,
@@ -204,6 +232,7 @@ impl App {
             let _ = gpu.window.set_cursor_grab(CursorGrabMode::None);
         }
         gpu.window.set_cursor_visible(!game);
+        gpu.window.set_title(crate::session::window_title(s.mode));
         self.looking = false;
         self.look = Vec2::ZERO;
         self.events.push(InputEvent::PointerGone);
@@ -212,7 +241,7 @@ impl App {
     fn switch_mode(&mut self) {
         if let Some(s) = &mut self.session {
             s.mode = s.mode.toggled();
-            println!("ew: {:?} mode", s.mode);
+            println!("ew: {:?} mode ({})", s.mode, crate::session::window_title(s.mode));
         }
         self.apply_mode();
     }
@@ -223,6 +252,7 @@ impl App {
         let (Some(s), Some(content)) = (&mut self.session, &mut self.content) else { return };
         let dev = &*self.dev;
         let renderer = gpu.renderer.as_mut().expect("renderer lives until shutdown");
+        let t_upd = Instant::now();
         let ev = self.hot.poll(renderer, dev, Some(content), false);
         crate::hot::report(&ev);
         s.log_hot(&ev);
@@ -268,6 +298,8 @@ impl App {
             self.errors += 1;
         }
         let flush_ms = tf.elapsed().as_secs_f64() * 1e3;
+        let t_bf = Instant::now();
+        self.split_ms[0] += (t_bf - t_upd).as_secs_f64() * 1e3 - flush_ms;
         let mut enc = match dev.begin_frame() {
             Ok(e) => e,
             Err(e) => {
@@ -276,6 +308,8 @@ impl App {
                 return;
             }
         };
+        let t_aq = Instant::now();
+        self.split_ms[1] += (t_aq - t_bf).as_secs_f64() * 1e3;
         let tex = match dev.acquire(gpu.surface) {
             Ok(t) => t,
             Err(e) => {
@@ -290,6 +324,7 @@ impl App {
             }
         };
         let t0 = Instant::now();
+        self.split_ms[2] += (t0 - t_aq).as_secs_f64() * 1e3;
         let (w, h) = (gpu.config.width, gpu.config.height);
         let target = ViewTarget { texture: tex, format: gpu.config.format, width: w, height: h, initial: ResourceState::Undefined, final_state: Some(ResourceState::Present) };
         if let Err(e) = s.record(renderer, dev, &mut *enc, target, FrameParams::default(), None) {
@@ -304,25 +339,32 @@ impl App {
             }
         }
         let cpu = flush_ms + t0.elapsed().as_secs_f64() * 1e3;
+        self.split_ms[3] += t0.elapsed().as_secs_f64() * 1e3;
         self.log_cpu_ms += cpu;
         s.set_cpu_ms(cpu);
         s.after_frame(renderer, dev);
         self.log_frames += 1;
         let since = self.log_t.elapsed().as_secs_f64();
         if since >= 1.0 {
+            let n = self.log_frames.max(1) as f64;
             let t = renderer.timings(dev);
             if let Some(t) = &t {
                 s.set_timings(t);
             }
             let (sm, sp) = s.game.as_ref().map(|g| g.step_stats()).map_or((0.0, 0.0), |x| (x.0, x.1));
             println!(
-                "ew: {:.1} fps, cpu {:.3} ms/frame, gpu {} ms, {:?} mode, sim step mean {sm:.3} / p99 {sp:.3} ms, {} presented",
+                "ew: {:.1} fps, cpu {:.3} ms/frame, gpu {} ms, {:?} mode, sim step mean {sm:.3} / p99 {sp:.3} ms, {} presented | wall ms/frame: update {:.2} begin_frame(wait) {:.2} acquire(wait) {:.2} record+present {:.2}",
                 self.log_frames as f64 / since,
                 self.log_cpu_ms / self.log_frames.max(1) as f64,
                 t.map(|t| format!("{:.3}", t.frame_ms)).unwrap_or_else(|| "-".into()),
                 s.mode,
-                self.presented
+                self.presented,
+                self.split_ms[0] / n,
+                self.split_ms[1] / n,
+                self.split_ms[2] / n,
+                self.split_ms[3] / n
             );
+            self.split_ms = [0.0; 4];
             let _ = renderer.take_cull_history();
             self.log_t = Instant::now();
             self.log_frames = 0;
@@ -650,8 +692,8 @@ impl ApplicationHandler for App {
                         self.events.push(InputEvent::PointerButton { button, pressed });
                     }
                     // Right-drag flies the camera when the UI does not own the pointer.
-                    if button == MouseButton::Right {
-                        self.looking = pressed && !self.ui_pointer;
+                    if let Some(look) = look_after_button(button, pressed, self.ui_pointer) {
+                        self.looking = look;
                     }
                 }
             }

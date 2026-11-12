@@ -10,11 +10,28 @@ use crate::model::GRID_STEPS;
 
 /// All panels.
 pub fn ui(state: &mut EditorState, ctx: &egui::Context, stats: &FrameStats) {
+    hint_overlay(ctx, &state.hint);
     stats_panel(ctx, stats);
     passes_panel(ctx, stats);
     inspector_panel(state, ctx);
     layers_panel(state, ctx);
     log_panel(state, ctx);
+}
+
+/// Always-visible mode / key hint banner, top centre. Not interactive: it never takes the pointer.
+pub fn hint_overlay(ctx: &egui::Context, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    egui::Area::new(egui::Id::new("mode_hint"))
+        .anchor(egui::Align2::CENTER_TOP, [0.0, 8.0])
+        .order(egui::Order::Foreground)
+        .interactable(false)
+        .show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.label(RichText::new(text).monospace().color(Color32::WHITE));
+            });
+        });
 }
 
 /// Panels sit in the four corners (stats and passes stacked top-left), anchored so they do
@@ -131,6 +148,10 @@ fn inspected(ui: &mut egui::Ui, i: &Inspected) {
                     row(ui, "layer op", format!("marker {name} ({kind})"))
                 }
                 None => row(ui, "layer op", "generated (read-only)".into()),
+            }
+            if i.authored.is_none() {
+                ui.colored_label(Color32::YELLOW, "read-only: no gizmo");
+                ui.end_row();
             }
             if let Some(l) = &i.layer {
                 row(ui, "layer", l.clone());
