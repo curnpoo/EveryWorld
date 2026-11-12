@@ -304,6 +304,7 @@ editor E2. Everything after P-slice keeps the order below.
 | S4 | Interactive play: `ew --play zermatt\|blueridge`, third-person camera, character from the proving ground, spawn on the ground | Opus (feel) | The owner walks around Zermatt in a window |
 | S5 | Placeholder car (box body, raycast wheels, simple engine and steering), enter/exit | Opus (feel), Sonnet plumbing | The owner drives a valley road |
 | S6 | Make it run: terrain + its shadows ≤ 2 ms at 1 m AGL at 1440p (coarser index buffer for far nodes and outer cascades, per-cascade culling) | Sonnet with measurement, Opus if stuck | 60 fps at 1440p while walking and driving |
+| S7 | Close-up ground (owner, 2026-11-12): (a) 2 m or finer heights where open data exists (swissALTI3D, USGS 3DEP, IGN RGE ALTI), each with a registry entry first (`docs/data/README.md`) and the owner's OK before any download; (b) deterministic erosion detail per node (hydraulic + thermal, CPU in the generator, amplitude below the source resolution so measured terrain does not move), emitting flow and curvature; (c) height-blended material layers (rock, scree, grass, forest floor, snow; triplanar on cliffs) driven by slope, altitude, curvature, flow and WorldCover. Pulls the start of W4 / P2-D9 forward | Sonnet (data, bake), Opus (look) | Walking in Zermatt, slopes show real 2 m relief, gullies and scree, and the material changes where a photo says it should (`docs/reference/look-reference.md`) |
 
 **Lean rules for P-slice** (usage):
 - At most 2 workers at once.
