@@ -64,7 +64,14 @@ Easy work skips Fable entirely: Opus scopes it and Sonnet does it.
 
 Rules:
 - **Don't run the main session on Fable.** The conductor is talking every turn, so a Fable main session drains usage fast. Keep the main session on Opus and call Fable as a subagent when a decision needs it.
-- **Run at most about 3 workers at once.** Give each its own files, and tell it to run no state-changing git and to edit no docs. The conductor verifies, commits, and writes the phase docs and `CHANGES.md`.
+- **Usage is the bottleneck (owner, 2026-11-12):** resets were lasting about 45 minutes. Until the owner says otherwise:
+  - Sonnet builds by default from tight briefs; Opus only for look/feel and stuck problems.
+  - At most 2 workers at once.
+  - No Fable until there is something playable to review.
+  - A fresh conductor session per milestone.
+  - One gate check per piece.
+  - Point briefs at exact files and line ranges, so workers don't re-read whole crates.
+- **Run at most about 3 workers at once** (2 under the usage rule above). Give each its own files, and tell it to run no state-changing git and to edit no docs. The conductor verifies, commits, and writes the phase docs and `CHANGES.md`.
 - **Escalate by evidence.** If Sonnet fails a brief twice, or reaches a judgement call about look or feel, Opus takes it over. If Opus is stuck on a design question, ask Fable once with a focused question.
 - **Long Opus runs are expensive.** Split them into a scoped Opus core plus Sonnet follow-ups instead of one open-ended run.
 

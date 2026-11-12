@@ -290,8 +290,30 @@ and hand over the wiring as a diff.
 
 ## 7. Order
 
-*Revised 2026-11-12 from the Fable plan: the owner needs real depth and distance to judge
-the look, so a landscape slice comes first.*
+### 7.0 Playable slice first (owner, 2026-11-12 evening; overrides the diagram below)
+
+The owner wants something to play sooner, and lower usage per window. The next milestone is
+**P-slice: walk and drive on real terrain**, before VSM, clouds, ocean, globe pack, Moon or
+editor E2. Everything after P-slice keeps the order below.
+
+| Step | What | Who | Done when |
+|---|---|---|---|
+| S1 | Terrain in the frame: `Renderer` hooks, resolve branch with smooth normals and a slope/altitude tint, terrain before the final HZB, harness on the `d·r(d)` rule (notes in the W3 `CHANGES.md` entry) | Opus | `ew --headless --path zermatt` shows real terrain; proving output unchanged |
+| S2 | Atmosphere on the curved planet (`TerrainProvider::camera_ground`) | Sonnet, from a precise brief | No flat-slab line at 10 km; proving output unchanged |
+| S3 | Ground collision from the same heights: a Box3D heightfield or per-node mesh built from resident `HeightPage`s near the player; `ed_sim` mover walks on it | Opus core, Sonnet tests | The mover stands and walks on Zermatt slopes without sinking or floating (same `HeightPage::sample` as render) |
+| S4 | Interactive play: `ew --play zermatt\|blueridge`, third-person camera, character from the proving ground, spawn on the ground | Opus (feel) | The owner walks around Zermatt in a window |
+| S5 | Placeholder car (box body, raycast wheels, simple engine and steering), enter/exit | Opus (feel), Sonnet plumbing | The owner drives a valley road |
+| S6 | Make it run: terrain + its shadows ≤ 2 ms at 1 m AGL at 1440p (coarser index buffer for far nodes and outer cascades, per-cascade culling) | Sonnet with measurement, Opus if stuck | 60 fps at 1440p while walking and driving |
+
+**Lean rules for P-slice** (usage):
+- At most 2 workers at once.
+- Sonnet by default; Opus only where the table says.
+- No Fable until the owner has played S5.
+- A fresh conductor session per milestone.
+- One gate check per step, not repeated re-runs.
+
+*Earlier revision, 2026-11-12, from the Fable plan: the owner needs real depth and distance
+to judge the look, so a landscape slice comes first.*
 
 ```
 M5a  W1 planet core ──┐
@@ -315,12 +337,7 @@ At most three workers run at once, on disjoint files. W1, W2 and W5 start togeth
 **Progress (2026-11-12):**
 - **Done:** W1 planet core, W2 node heights, W5 atmosphere, and W3 terrain provider. For W3 the hole and crack gate passed in its own harness.
 - **Height placement fix:** `ed_data` and `ed_planet` placed height samples about 10 km apart; they now agree, with one `HeightPage` in `ed_geo`.
-- **Next (in order):**
-  1. Wire terrain into `Renderer::render` and resolve, before the final HZB so AO and occlusion see it.
-  2. Put the atmosphere on the curved planet.
-  3. Add `ew --path zermatt|blueridge`.
-  4. Cut terrain plus its shadows to ≤ 2 ms at 1 m AGL (today 2.55 + 3.71 ms at 1440p).
-  5. Run the landscape slice: owner look #1, then the Fable look review.
+- **Next:** P-slice S1–S6 (§7.0).
 - **Waiting on the owner:** the clear-day aerosol choice (W5 CHANGES entry).
 
 ## 8. Exit gate
