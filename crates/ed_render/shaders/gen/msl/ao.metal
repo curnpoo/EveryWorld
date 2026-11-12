@@ -12,7 +12,11 @@ struct AoC_0
     uint hw_0;
     uint hh_0;
     float radius_0;
-    array<uint, int(8)> pad_0;
+    float sv_radius_0;
+    uint sv_on_0;
+    uint hzb_0;
+    uint hzb_on_0;
+    array<uint, int(4)> pad_0;
 };
 
 struct KernelContext_0
@@ -22,9 +26,14 @@ struct KernelContext_0
     ulong device* ed_textures_0;
 };
 
-packed_float2 device* ed_buf_0(uint i_0, KernelContext_0 thread* kernelContext_0)
+float device* ed_buf_0(uint i_0, KernelContext_0 thread* kernelContext_0)
 {
-    return (packed_float2 device*)kernelContext_0->ed_buffers_0[i_0];
+    return (float device*)kernelContext_0->ed_buffers_0[i_0];
+}
+
+packed_float4 device* ed_buf_1(uint i_1, KernelContext_0 thread* kernelContext_1)
+{
+    return (packed_float4 device*)kernelContext_1->ed_buffers_0[i_1];
 }
 
 struct _MatrixStorage_float4x4_ColMajornatural_0
@@ -71,6 +80,7 @@ struct LightData_natural_0
     packed_float4 ao_0;
     packed_float4 sky_0;
     _Array_natural_vectorx3Cfloatx2C4x3E9_0 sh_0;
+    packed_float4 skyvis_0;
 };
 
 struct FrameData_natural_0
@@ -88,24 +98,24 @@ struct FrameData_natural_0
     packed_float4 params_0;
     packed_float4 proj_0;
     packed_uint4 cull_0;
-    array<HzbLevel_0, int(16)> hzb_0;
+    array<HzbLevel_0, int(16)> hzb_1;
     LightData_natural_0 light_0;
 };
 
-FrameData_natural_0 device* ed_buf_1(uint i_1, KernelContext_0 thread* kernelContext_1)
+FrameData_natural_0 device* ed_buf_2(uint i_2, KernelContext_0 thread* kernelContext_2)
 {
-    return (FrameData_natural_0 device*)kernelContext_1->ed_buffers_0[i_1];
+    return (FrameData_natural_0 device*)kernelContext_2->ed_buffers_0[i_2];
 }
 
-float ed_depth_read_0(uint i_2, uint2 p_0, KernelContext_0 thread* kernelContext_2)
+float ed_depth_read_0(uint i_3, uint2 p_0, KernelContext_0 thread* kernelContext_3)
 {
-    float _S1 = ((reinterpret_cast<device depth2d<float, access::sample>*>((kernelContext_2->ed_textures_0))[(i_2)].read((p_0))));
+    float _S1 = ((reinterpret_cast<device depth2d<float, access::sample>*>((kernelContext_3->ed_textures_0))[(i_3)].read((p_0))));
     return _S1;
 }
 
-float linear_z_0(FrameData_natural_0 device* f_0, int2 q_0, KernelContext_0 thread* kernelContext_3)
+float linear_z_0(FrameData_natural_0 device* f_0, int2 q_0, KernelContext_0 thread* kernelContext_4)
 {
-    float _S2 = ed_depth_read_0(kernelContext_3->ed_c_0->depth_0, uint2(clamp(q_0, int2(int(0)) , int2((float4(f_0->proj_0) ).zw) - int2(int(1)) )), kernelContext_3);
+    float _S2 = ed_depth_read_0(kernelContext_4->ed_c_0->depth_0, uint2(clamp(q_0, int2(int(0)) , int2((float4(f_0->proj_0) ).zw) - int2(int(1)) )), kernelContext_4);
     float _S3;
     if(_S2 > 0.0f)
     {
@@ -118,9 +128,9 @@ float linear_z_0(FrameData_natural_0 device* f_0, int2 q_0, KernelContext_0 thre
     return _S3;
 }
 
-float linear_z_1(FrameData_natural_0 device* f_1, int2 q_1, KernelContext_0 thread* kernelContext_4)
+float linear_z_1(FrameData_natural_0 device* f_1, int2 q_1, KernelContext_0 thread* kernelContext_5)
 {
-    float _S4 = ed_depth_read_0(kernelContext_4->ed_c_0->depth_0, uint2(clamp(q_1, int2(int(0)) , int2((float4(f_1->proj_0) ).zw) - int2(int(1)) )), kernelContext_4);
+    float _S4 = ed_depth_read_0(kernelContext_5->ed_c_0->depth_0, uint2(clamp(q_1, int2(int(0)) , int2((float4(f_1->proj_0) ).zw) - int2(int(1)) )), kernelContext_5);
     float _S5;
     if(_S4 > 0.0f)
     {
@@ -145,10 +155,10 @@ float3 view_pos_1(FrameData_natural_0 device* f_3, float2 q_3, float z_1)
     return float3((uv_1.x * 2.0f - 1.0f) / (float4(f_3->proj_0) ).x * z_1, (1.0f - uv_1.y * 2.0f) / (float4(f_3->proj_0) ).y * z_1, - z_1);
 }
 
-float3 view_at_0(FrameData_natural_0 device* f_4, int2 q_4, KernelContext_0 thread* kernelContext_5)
+float3 view_at_0(FrameData_natural_0 device* f_4, int2 q_4, KernelContext_0 thread* kernelContext_6)
 {
     float2 _S6 = float2(q_4);
-    float _S7 = linear_z_1(f_4, q_4, kernelContext_5);
+    float _S7 = linear_z_1(f_4, q_4, kernelContext_6);
     float3 _S8 = view_pos_1(f_4, _S6, _S7);
     return _S8;
 }
@@ -169,47 +179,158 @@ float fast_acos_0(float x_0)
     return _S9;
 }
 
-void gtao_0(FrameData_natural_0 device* f_5, uint2 t_0, KernelContext_0 thread* kernelContext_6)
+float3 view_at_far_0(FrameData_natural_0 device* f_5, int2 q_5, float off_0, KernelContext_0 thread* kernelContext_7)
 {
-    packed_float2 device* _S10 = ed_buf_0(kernelContext_6->ed_c_0->raw_0, kernelContext_6);
-    int2 _S11 = int2(t_0 * uint2(2U) );
-    float _S12 = linear_z_0(f_5, _S11, kernelContext_6);
-    uint _S13 = t_0.y;
-    uint _S14 = t_0.x;
-    uint o_0 = _S13 * kernelContext_6->ed_c_0->hw_0 + _S14;
-    if(_S12 >= 1.0e+06f)
+    int levels_0 = int((uint4(f_5->cull_0) ).x);
+    bool _S10;
+    if((kernelContext_7->ed_c_0->hzb_on_0) == 0U)
     {
-        *(_S10 + o_0) = packed_float2(float2(1.0f, 1.0e+06f)) ;
+        _S10 = true;
+    }
+    else
+    {
+        _S10 = levels_0 == int(0);
+    }
+    if(_S10)
+    {
+        float3 _S11 = view_at_0(f_5, q_5, kernelContext_7);
+        return _S11;
+    }
+    int l_0 = clamp(int(log2(max(off_0, 1.0f))) - int(4), int(0), levels_0 - int(1));
+    HzbLevel_0 lv_0 = f_5->hzb_1[l_0];
+    float2 _S12 = float2(float(2U << uint(l_0))) ;
+    uint2 _S13 = min(uint2(float2(clamp(q_5, int2(int(0)) , int2((float4(f_5->proj_0) ).zw) - int2(int(1)) )) / _S12), uint2(f_5->hzb_1[l_0].width_0 - 1U, f_5->hzb_1[l_0].height_0 - 1U));
+    float device* _S14 = ed_buf_0(kernelContext_7->ed_c_0->hzb_0, kernelContext_7);
+    float device* _S15 = _S14 + (lv_0.offset_0 + _S13.y * lv_0.width_0 + _S13.x);
+    float d_0 = *_S15;
+    float z_2;
+    if((*_S15) > 0.0f)
+    {
+        z_2 = min((float4(f_5->params_0) ).z / d_0, 1.0e+06f);
+    }
+    else
+    {
+        z_2 = 1.0e+06f;
+    }
+    float2 _S16 = float2(0.5f) ;
+    float3 _S17 = view_pos_0(f_5, (float2(_S13) + _S16) * _S12 - _S16, z_2);
+    return _S17;
+}
+
+float2 slice_horizons_0(FrameData_natural_0 device* f_6, int2 q_6, float3 p_1, float2 omega_0, float2 low_0, float r_px_0, float radius_1, float thin_0, uint steps_0, float jitter_0, float pw_0, bool far_0, KernelContext_0 thread* kernelContext_8)
+{
+    float range_0 = 0.60000002384185791f * radius_1;
+    float _S18 = -1.0f / range_0;
+    float _S19 = (radius_1 - range_0) / range_0 + 1.0f;
+    float3 _S20 = normalize(- p_1);
+    thread float2 h_0 = low_0;
+    uint k_0 = 0U;
+    for(;;)
+    {
+        if(k_0 < steps_0)
+        {
+        }
+        else
+        {
+            break;
+        }
+        float _S21 = float(k_0);
+        float st_0 = (_S21 + jitter_0) / float(steps_0);
+        float _S22;
+        if(pw_0 > 1.5f)
+        {
+            _S22 = st_0 * st_0;
+        }
+        else
+        {
+            _S22 = st_0;
+        }
+        float _S23 = max(_S22 * r_px_0, 1.0f + _S21);
+        float2 d_1 = omega_0 * float2(_S23) ;
+        float3 _S24;
+        if(far_0)
+        {
+            float3 _S25 = view_at_far_0(f_6, q_6 + int2(round(d_1)), _S23, kernelContext_8);
+            _S24 = _S25;
+        }
+        else
+        {
+            float3 _S26 = view_at_0(f_6, q_6 + int2(round(d_1)), kernelContext_8);
+            _S24 = _S26;
+        }
+        float3 d0_0 = _S24 - p_1;
+        float3 _S27;
+        if(far_0)
+        {
+            float3 _S28 = view_at_far_0(f_6, q_6 - int2(round(d_1)), _S23, kernelContext_8);
+            _S27 = _S28;
+        }
+        else
+        {
+            float3 _S29 = view_at_0(f_6, q_6 - int2(round(d_1)), kernelContext_8);
+            _S27 = _S29;
+        }
+        float3 d1_0 = _S27 - p_1;
+        float l0_0 = length(d0_0);
+        float l1_0 = length(d1_0);
+        float c1_0 = dot(d1_0 / float3(max(l1_0, 9.99999997475242708e-07f)) , _S20);
+        float w1_0 = saturate((l1_0 + thin_0 * max(dot(d1_0, _S20), 0.0f)) * _S18 + _S19);
+        h_0.x = max(h_0.x, mix(low_0.x, dot(d0_0 / float3(max(l0_0, 9.99999997475242708e-07f)) , _S20), saturate((l0_0 + thin_0 * max(dot(d0_0, _S20), 0.0f)) * _S18 + _S19)));
+        h_0.y = max(h_0.y, mix(low_0.y, c1_0, w1_0));
+        k_0 = k_0 + 1U;
+    }
+    return h_0;
+}
+
+float slice_arc_0(float2 h_1, float ang_n_0, float cos_n_0)
+{
+    float sin_n_0 = sin(ang_n_0);
+    float _S30 = 2.0f * (ang_n_0 + max(- fast_acos_0(h_1.y) - ang_n_0, -1.5707963705062866f));
+    float _S31 = 2.0f * (ang_n_0 + min(fast_acos_0(h_1.x) - ang_n_0, 1.5707963705062866f));
+    return (cos_n_0 + _S30 * sin_n_0 - cos(_S30 - ang_n_0)) * 0.25f + (cos_n_0 + _S31 * sin_n_0 - cos(_S31 - ang_n_0)) * 0.25f;
+}
+
+void gtao_0(FrameData_natural_0 device* f_7, uint2 t_0, KernelContext_0 thread* kernelContext_9)
+{
+    packed_float4 device* _S32 = ed_buf_1(kernelContext_9->ed_c_0->raw_0, kernelContext_9);
+    int2 _S33 = int2(t_0 * uint2(2U) );
+    float _S34 = linear_z_0(f_7, _S33, kernelContext_9);
+    uint _S35 = t_0.y;
+    uint _S36 = t_0.x;
+    uint o_0 = _S35 * kernelContext_9->ed_c_0->hw_0 + _S36;
+    if(_S34 >= 1.0e+06f)
+    {
+        *(_S32 + o_0) = packed_float4(float4(1.0f, 1.0f, 1.0e+06f, 0.0f)) ;
         return;
     }
-    float3 _S15 = view_pos_0(f_5, float2(_S11), _S12);
-    int2 _S16 = int2(int(2), int(0));
-    float3 _S17 = view_at_0(f_5, _S11 + _S16, kernelContext_6);
-    float3 _S18 = view_at_0(f_5, _S11 - _S16, kernelContext_6);
-    int2 _S19 = int2(int(0), int(2));
-    float3 _S20 = view_at_0(f_5, _S11 + _S19, kernelContext_6);
-    float3 _S21 = view_at_0(f_5, _S11 - _S19, kernelContext_6);
-    float _S22 = _S15.z;
+    float3 _S37 = view_pos_0(f_7, float2(_S33), _S34);
+    int2 _S38 = int2(int(2), int(0));
+    float3 _S39 = view_at_0(f_7, _S33 + _S38, kernelContext_9);
+    float3 _S40 = view_at_0(f_7, _S33 - _S38, kernelContext_9);
+    int2 _S41 = int2(int(0), int(2));
+    float3 _S42 = view_at_0(f_7, _S33 + _S41, kernelContext_9);
+    float3 _S43 = view_at_0(f_7, _S33 - _S41, kernelContext_9);
+    float _S44 = _S37.z;
     float3 dx_0;
-    if((abs(_S17.z - _S22)) < (abs(_S22 - _S18.z)))
+    if((abs(_S39.z - _S44)) < (abs(_S44 - _S40.z)))
     {
-        dx_0 = _S17 - _S15;
+        dx_0 = _S39 - _S37;
     }
     else
     {
-        dx_0 = _S15 - _S18;
+        dx_0 = _S37 - _S40;
     }
     float3 dy_0;
-    if((abs(_S20.z - _S22)) < (abs(_S22 - _S21.z)))
+    if((abs(_S42.z - _S44)) < (abs(_S44 - _S43.z)))
     {
-        dy_0 = _S20 - _S15;
+        dy_0 = _S42 - _S37;
     }
     else
     {
-        dy_0 = _S15 - _S21;
+        dy_0 = _S37 - _S43;
     }
     float3 n_0 = normalize(cross(dy_0, dx_0));
-    float3 v_0 = normalize(- _S15);
+    float3 v_0 = normalize(- _S37);
     float3 n_1;
     if((dot(n_0, v_0)) < 0.0f)
     {
@@ -219,21 +340,40 @@ void gtao_0(FrameData_natural_0 device* f_5, uint2 t_0, KernelContext_0 thread* 
     {
         n_1 = n_0;
     }
-    float r_px_0 = kernelContext_6->ed_c_0->radius_0 * (float4(f_5->proj_0) ).y * (float4(f_5->proj_0) ).w * 0.5f / _S12;
-    if(r_px_0 < 2.0f)
+    float px_per_m_0 = (float4(f_7->proj_0) ).y * (float4(f_7->proj_0) ).w * 0.5f / _S34;
+    float r_px_1 = kernelContext_9->ed_c_0->radius_0 * px_per_m_0;
+    float _S45 = min(kernelContext_9->ed_c_0->sv_radius_0 * px_per_m_0, 0.75f * (float4(f_7->proj_0) ).w);
+    bool small_0 = r_px_1 >= 2.0f;
+    bool sv_0;
+    if((kernelContext_9->ed_c_0->sv_on_0) != 0U)
     {
-        *(_S10 + o_0) = packed_float2(float2(1.0f, _S12)) ;
+        sv_0 = _S45 >= 2.0f;
+    }
+    else
+    {
+        sv_0 = false;
+    }
+    bool _S46;
+    if(!small_0)
+    {
+        _S46 = !sv_0;
+    }
+    else
+    {
+        _S46 = false;
+    }
+    if(_S46)
+    {
+        *(_S32 + o_0) = packed_float4(float4(1.0f, 1.0f, _S34, 0.0f)) ;
         return;
     }
-    float _S23 = min(r_px_0, 256.0f);
+    float _S47 = min(r_px_1, 256.0f);
     array<uint, int(16)> BAYER4_0 = { { 0U, 8U, 2U, 10U, 12U, 4U, 14U, 6U, 3U, 11U, 1U, 9U, 15U, 7U, 13U, 5U } };
-    uint _S24 = _S13 & 3U;
-    uint _S25 = _S14 & 3U;
-    float _S26 = (float(BAYER4_0[_S24 * 4U + _S25]) + 0.5f) / 16.0f;
-    float _S27 = fract(52.982917785644531f * fract(0.067110560834407806f * float(_S25) + 0.0058371499180793762f * float(_S24)));
-    float falloff_range_0 = 0.60000002384185791f * kernelContext_6->ed_c_0->radius_0;
-    float _S28 = -1.0f / falloff_range_0;
-    float _S29 = (kernelContext_6->ed_c_0->radius_0 - falloff_range_0) / falloff_range_0 + 1.0f;
+    uint _S48 = _S35 & 3U;
+    uint _S49 = _S36 & 3U;
+    float _S50 = (float(BAYER4_0[_S48 * 4U + _S49]) + 0.5f) / 16.0f;
+    float _S51 = fract(52.982917785644531f * fract(0.067110560834407806f * float(_S49) + 0.0058371499180793762f * float(_S48)));
+    float vsky_0 = 0.0f;
     uint s_0 = 0U;
     float vis_0 = 0.0f;
     for(;;)
@@ -245,11 +385,11 @@ void gtao_0(FrameData_natural_0 device* f_5, uint2 t_0, KernelContext_0 thread* 
         {
             break;
         }
-        float phi_0 = (float(s_0) + _S26) / 2.0f * 3.1415927410125732f;
-        float _S30 = cos(phi_0);
-        float _S31 = sin(phi_0);
-        float3 dir_0 = float3(_S30, _S31, 0.0f);
-        float2 _S32 = float2(_S30, - _S31);
+        float phi_0 = (float(s_0) + _S50) / 2.0f * 3.1415927410125732f;
+        float _S52 = cos(phi_0);
+        float _S53 = sin(phi_0);
+        float3 dir_0 = float3(_S52, _S53, 0.0f);
+        float2 omega_1 = float2(_S52, - _S53);
         float3 ortho_0 = dir_0 - float3(dot(dir_0, v_0))  * v_0;
         float3 axis_0 = normalize(cross(ortho_0, v_0));
         float3 pn_0 = n_1 - axis_0 * float3(dot(n_1, axis_0)) ;
@@ -263,63 +403,87 @@ void gtao_0(FrameData_natural_0 device* f_5, uint2 t_0, KernelContext_0 thread* 
         {
             sgn_0 = -1.0f;
         }
-        float cos_n_0 = saturate(dot(pn_0, v_0) / max(pn_len_0, 9.99999997475242708e-07f));
-        float ang_n_0 = sgn_0 * fast_acos_0(cos_n_0);
-        float low0_0 = cos(ang_n_0 + 1.5707963705062866f);
-        float low1_0 = cos(ang_n_0 - 1.5707963705062866f);
-        float h0_0 = low0_0;
-        float h1_0 = low1_0;
-        uint k_0 = 0U;
-        for(;;)
+        float cos_n_1 = saturate(dot(pn_0, v_0) / max(pn_len_0, 9.99999997475242708e-07f));
+        float ang_n_1 = sgn_0 * fast_acos_0(cos_n_1);
+        float2 low_1 = float2(cos(ang_n_1 + 1.5707963705062866f), cos(ang_n_1 - 1.5707963705062866f));
+        if(small_0)
         {
-            if(k_0 < 4U)
+            float2 _S54 = slice_horizons_0(f_7, _S33, _S37, omega_1, low_1, _S47, kernelContext_9->ed_c_0->radius_0, 0.0f, 4U, _S51, 2.0f, false, kernelContext_9);
+            vis_0 = vis_0 + pn_len_0 * slice_arc_0(_S54, ang_n_1, cos_n_1);
+        }
+        else
+        {
+            vis_0 = vis_0 + pn_len_0 * slice_arc_0(low_1, ang_n_1, cos_n_1);
+        }
+        if(s_0 == ((_S36 + _S35) & 1U))
+        {
+            float2 h_2;
+            if(sv_0)
             {
+                float2 _S55 = slice_horizons_0(f_7, _S33, _S37, omega_1, low_1, _S45, kernelContext_9->ed_c_0->sv_radius_0, 3.0f, 4U, fract(_S51 + 0.5f), 1.0f, true, kernelContext_9);
+                h_2 = _S55;
             }
             else
             {
-                break;
+                h_2 = low_1;
             }
-            float _S33 = float(k_0);
-            float st_0 = (_S33 + _S27) / 4.0f;
-            int2 _S34 = int2(round(_S32 * float2(max(st_0 * st_0 * _S23, 1.0f + _S33)) ));
-            float3 _S35 = view_at_0(f_5, _S11 + _S34, kernelContext_6);
-            float3 _S36 = view_at_0(f_5, _S11 - _S34, kernelContext_6);
-            float3 d0_0 = _S35 - _S15;
-            float3 d1_0 = _S36 - _S15;
-            float l0_0 = length(d0_0);
-            float l1_0 = length(d1_0);
-            float _S37 = max(h0_0, mix(low0_0, dot(d0_0 / float3(max(l0_0, 9.99999997475242708e-07f)) , v_0), saturate(l0_0 * _S28 + _S29)));
-            float _S38 = max(h1_0, mix(low1_0, dot(d1_0 / float3(max(l1_0, 9.99999997475242708e-07f)) , v_0), saturate(l1_0 * _S28 + _S29)));
-            uint _S39 = k_0 + 1U;
-            h0_0 = _S37;
-            h1_0 = _S38;
-            k_0 = _S39;
+            vsky_0 = pn_len_0 * slice_arc_0(h_2, ang_n_1, cos_n_1);
         }
-        float sin_n_0 = sin(ang_n_0);
-        float _S40 = 2.0f * (ang_n_0 + max(- fast_acos_0(h1_0) - ang_n_0, -1.5707963705062866f));
-        float _S41 = 2.0f * (ang_n_0 + min(fast_acos_0(h0_0) - ang_n_0, 1.5707963705062866f));
-        float vis_1 = vis_0 + pn_len_0 * ((cos_n_0 + _S40 * sin_n_0 - cos(_S40 - ang_n_0)) * 0.25f + (cos_n_0 + _S41 * sin_n_0 - cos(_S41 - ang_n_0)) * 0.25f);
         s_0 = s_0 + 1U;
-        vis_0 = vis_1;
     }
-    *(_S10 + o_0) = packed_float2(float2(saturate(vis_0 / 2.0f / 0.97000002861022949f), _S12)) ;
+    *(_S32 + o_0) = packed_float4(float4(saturate(vis_0 / 2.0f / 0.97000002861022949f), saturate(vsky_0 / 0.97000002861022949f), _S34, 0.0f)) ;
     return;
 }
 
-void blur_0(uint2 t_1, KernelContext_0 thread* kernelContext_7)
+float4 raw_at_0(int2 s_1, KernelContext_0 thread* kernelContext_10)
 {
-    packed_float2 device* _S42 = ed_buf_0(kernelContext_7->ed_c_0->raw_0, kernelContext_7);
-    packed_float2 device* _S43 = ed_buf_0(kernelContext_7->ed_c_0->out_0, kernelContext_7);
-    uint o_1 = t_1.y * kernelContext_7->ed_c_0->hw_0 + t_1.x;
-    float2 _S44 = float2(*(_S42 + o_1)) ;
-    float _S45 = _S44.y;
-    if(_S45 >= 1.0e+06f)
+    int2 _S56 = clamp(s_1, int2(int(0)) , int2(int(kernelContext_10->ed_c_0->hw_0) - int(1), int(kernelContext_10->ed_c_0->hh_0) - int(1)));
+    packed_float4 device* _S57 = ed_buf_1(kernelContext_10->ed_c_0->raw_0, kernelContext_10);
+    return float4(*(_S57 + (uint(_S56.y) * kernelContext_10->ed_c_0->hw_0 + uint(_S56.x)))) ;
+}
+
+float depth_slope_0(float zm_0, float z_3, float zp_0)
+{
+    float a_1 = z_3 - zm_0;
+    float b_0 = zp_0 - z_3;
+    float _S58;
+    if((abs(a_1)) < (abs(b_0)))
     {
-        *(_S43 + o_1) = packed_float2(_S44) ;
+        _S58 = a_1;
+    }
+    else
+    {
+        _S58 = b_0;
+    }
+    return _S58;
+}
+
+void blur_0(uint2 t_1, KernelContext_0 thread* kernelContext_11)
+{
+    packed_float4 device* _S59 = ed_buf_1(kernelContext_11->ed_c_0->out_0, kernelContext_11);
+    uint o_1 = t_1.y * kernelContext_11->ed_c_0->hw_0 + t_1.x;
+    int2 _S60 = int2(t_1);
+    float4 _S61 = raw_at_0(_S60, kernelContext_11);
+    float _S62 = _S61.z;
+    if(_S62 >= 1.0e+06f)
+    {
+        *(_S59 + o_1) = packed_float4(_S61) ;
         return;
     }
-    int y_0 = int(-1);
-    float sum_0 = 0.0f;
+    int2 _S63 = int2(int(1), int(0));
+    float4 _S64 = raw_at_0(_S60 - _S63, kernelContext_11);
+    float _S65 = _S64.z;
+    float4 _S66 = raw_at_0(_S60 + _S63, kernelContext_11);
+    float _S67 = depth_slope_0(_S65, _S62, _S66.z);
+    int2 _S68 = int2(int(0), int(1));
+    float4 _S69 = raw_at_0(_S60 - _S68, kernelContext_11);
+    float _S70 = _S69.z;
+    float4 _S71 = raw_at_0(_S60 + _S68, kernelContext_11);
+    float _S72 = depth_slope_0(_S70, _S62, _S71.z);
+    float _S73 = 1.0f / (0.05000000074505806f * _S62);
+    float2 _S74 = float2(0.0f) ;
+    int y_0 = int(-2);
+    float2 sum_0 = _S74;
     float wsum_0 = 0.0f;
     for(;;)
     {
@@ -330,7 +494,16 @@ void blur_0(uint2 t_1, KernelContext_0 thread* kernelContext_7)
         {
             break;
         }
-        int x_1 = int(-1);
+        float _S75;
+        if((abs(y_0)) == int(2))
+        {
+            _S75 = 0.5f;
+        }
+        else
+        {
+            _S75 = 1.0f;
+        }
+        int x_1 = int(-2);
         for(;;)
         {
             if(x_1 <= int(2))
@@ -340,10 +513,18 @@ void blur_0(uint2 t_1, KernelContext_0 thread* kernelContext_7)
             {
                 break;
             }
-            int2 s_1 = clamp(int2(t_1) + int2(x_1, y_0), int2(int(0)) , int2(int(kernelContext_7->ed_c_0->hw_0) - int(1), int(kernelContext_7->ed_c_0->hh_0) - int(1)));
-            float2 _S46 = float2(*(_S42 + (uint(s_1.y) * kernelContext_7->ed_c_0->hw_0 + uint(s_1.x)))) ;
-            float w_0 = saturate(1.0f - abs(_S46.y - _S45) / (0.05000000074505806f * _S45));
-            float sum_1 = sum_0 + _S46.x * w_0;
+            float wx_0;
+            if((abs(x_1)) == int(2))
+            {
+                wx_0 = 0.5f;
+            }
+            else
+            {
+                wx_0 = 1.0f;
+            }
+            float4 _S76 = raw_at_0(_S60 + int2(x_1, y_0), kernelContext_11);
+            float w_0 = wx_0 * _S75 * saturate(1.0f - abs(_S76.z - (_S62 + _S67 * float(x_1) + _S72 * float(y_0))) * _S73);
+            float2 sum_1 = sum_0 + _S76.xy * float2(w_0) ;
             float wsum_1 = wsum_0 + w_0;
             x_1 = x_1 + int(1);
             sum_0 = sum_1;
@@ -351,47 +532,47 @@ void blur_0(uint2 t_1, KernelContext_0 thread* kernelContext_7)
         }
         y_0 = y_0 + int(1);
     }
-    packed_float2 device* _S47 = _S43 + o_1;
+    packed_float4 device* _S77 = _S59 + o_1;
     if(wsum_0 > 0.0f)
     {
-        sum_0 = sum_0 / wsum_0;
+        sum_0 = sum_0 / float2(wsum_0) ;
     }
     else
     {
-        sum_0 = _S44.x;
+        sum_0 = _S61.xy;
     }
-    *_S47 = packed_float2(float2(sum_0, _S45)) ;
+    *_S77 = packed_float4(float4(sum_0, _S62, 0.0f)) ;
     return;
 }
 
 [[kernel]] void ao_main(uint3 tid_0 [[thread_position_in_grid]], AoC_0 constant* ed_c_1 [[buffer(0)]], ulong device* ed_buffers_1 [[buffer(2)]], ulong device* ed_textures_1 [[buffer(1)]])
 {
-    thread KernelContext_0 kernelContext_8;
-    (&kernelContext_8)->ed_c_0 = ed_c_1;
-    (&kernelContext_8)->ed_buffers_0 = ed_buffers_1;
-    (&kernelContext_8)->ed_textures_0 = ed_textures_1;
+    thread KernelContext_0 kernelContext_12;
+    (&kernelContext_12)->ed_c_0 = ed_c_1;
+    (&kernelContext_12)->ed_buffers_0 = ed_buffers_1;
+    (&kernelContext_12)->ed_textures_0 = ed_textures_1;
     uint2 t_2 = tid_0.xy;
-    bool _S48;
+    bool _S78;
     if((t_2.x) >= (ed_c_1->hw_0))
     {
-        _S48 = true;
+        _S78 = true;
     }
     else
     {
-        _S48 = (t_2.y) >= ((&kernelContext_8)->ed_c_0->hh_0);
+        _S78 = (t_2.y) >= ((&kernelContext_12)->ed_c_0->hh_0);
     }
-    if(_S48)
+    if(_S78)
     {
         return;
     }
-    FrameData_natural_0 device* _S49 = ed_buf_1((&kernelContext_8)->ed_c_0->frame_0, &kernelContext_8);
-    if(((&kernelContext_8)->ed_c_0->mode_0) == 0U)
+    FrameData_natural_0 device* _S79 = ed_buf_2((&kernelContext_12)->ed_c_0->frame_0, &kernelContext_12);
+    if(((&kernelContext_12)->ed_c_0->mode_0) == 0U)
     {
-        gtao_0(_S49, t_2, &kernelContext_8);
+        gtao_0(_S79, t_2, &kernelContext_12);
     }
     else
     {
-        blur_0(t_2, &kernelContext_8);
+        blur_0(t_2, &kernelContext_12);
     }
     return;
 }

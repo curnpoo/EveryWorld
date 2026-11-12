@@ -1067,6 +1067,9 @@ impl Renderer {
                     v.push("skin");
                 }
                 v.extend_from_slice(self.lod.pass_names());
+                if self.lighting.ao && self.lighting.sky_vis {
+                    v.push("hzb_final");
+                }
                 if self.lighting.shadows {
                     v.extend(["shadow_cull", "shadow_raster"]);
                 }
@@ -1221,7 +1224,7 @@ impl Renderer {
                 b.destroy(dev);
             }
             let rw = Usage { shader_read: true, shader_write: true, ..Default::default() };
-            let bytes = ao_w as u64 * ao_h as u64 * 8;
+            let bytes = ao_w as u64 * ao_h as u64 * 16;
             self.views[si].ao = Some((Tracked::new(dev, "ao raw", bytes, rw)?, Tracked::new(dev, "ao", bytes, rw)?, ao_w, ao_h));
         }
         fd[gpu::FD_CULL + 2] = self.frame_counter;
@@ -1298,18 +1301,21 @@ impl Renderer {
                 let atlas = g.create_texture("shadow atlas", TextureInfo { format: DEPTH_FORMAT, width: aw, height: ah });
                 ShadowTargets { atlas, cascades: cplan.count, tile: cplan.tile }
             });
-            let po = self.lod.record(&mut g, frame_index, &inputs, VisTargets { depth, vis, shadow });
+            let po = self.lod.record(&mut g, frame_index, &inputs, VisTargets { depth, vis, shadow, final_hzb: ao_on && lighting.sky_vis });
             if ao_on {
                 let (a, b, _, _) = self.views[si].ao.as_ref().expect("allocated above");
                 let (ra, rb) = (g.import_buffer("ao raw", a.id, a.state, None), g.import_buffer("ao", b.id, b.state, None));
                 ao_imports = Some((ra, rb));
                 let (raw_id, raw_bi, out_bi, fd_bi) = (a.id, a.bindless.0, b.bindless.0, self.views[si].frame_data.bindless.0);
                 let (pipe, radius) = (self.pipes.ao, lighting.ao_radius);
+                let (sv_radius, sv_on) = (lighting.sky_vis_radius, lighting.sky_vis as u32);
                 let sw = ResourceState::ShaderWrite;
-                g.add_pass("ao", PassKind::Compute)
-                    .read(fd_res, ResourceState::ShaderRead)
-                    .read(depth, ResourceState::ShaderRead)
-                    .write(ra, sw)
+                let (hzb_bi, hzb_on) = (po.hzb.map_or(0, |h| h.1), po.hzb.is_some() as u32);
+                let mut ap = g.add_pass("ao", PassKind::Compute).read(fd_res, ResourceState::ShaderRead).read(depth, ResourceState::ShaderRead);
+                if let Some((h, _)) = po.hzb {
+                    ap = ap.read(h, ResourceState::ShaderRead);
+                }
+                ap.write(ra, sw)
                     .write(rb, sw)
                     .exec(move |ctx| {
                         let di = ctx.bindless(depth).0;
@@ -1318,7 +1324,7 @@ impl Renderer {
                             if mode == 1 {
                                 ctx.enc.transition(&[Transition::Buffer { buffer: raw_id, from: sw, to: sw }]);
                             }
-                            ctx.enc.set_compute_constants(&constants(&[fd_bi, di, raw_bi, out_bi, mode, ao_w, ao_h, radius.to_bits()]));
+                            ctx.enc.set_compute_constants(&constants(&[fd_bi, di, raw_bi, out_bi, mode, ao_w, ao_h, radius.to_bits(), sv_radius.to_bits(), sv_on, hzb_bi, hzb_on]));
                             ctx.enc.dispatch(ao_w.div_ceil(8), ao_h.div_ceil(8), 1);
                         }
                     });

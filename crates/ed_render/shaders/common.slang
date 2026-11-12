@@ -13,10 +13,11 @@ struct LightData {
     float4 split;           // view distance where each cascade ends (m)
     float4 cfg;             // x: cascade count (0 = shadows off), y: tile size (px), z: blend band (fraction), w: edge margin (texels)
     float4 filter;          // x: fade start (m), y: shadow distance (m), z: normal bias (texels), w: depth bias (texels)
-    uint4 flags;            // x: shadows, y: ao, z: sky ambient (SH), w: debug view (1 shadow, 2 ao)
-    float4 ao;              // x: intensity (exponent), y: half-res width, z: half-res height, w: unused
+    uint4 flags;            // x: shadows, y: ao, z: sky ambient (SH), w: debug view (1 shadow, 2 ao, 3 depth, 4 sky visibility)
+    float4 ao;              // x: intensity (exponent), y: half-res width, z: half-res height, w: radius (m)
     float4 sky;             // x: sun disc scale, y: AO multi-bounce (0..1), z: shadow filter radius (m), w: max filter radius (texels)
     float4 sh[9];           // ambient (skylight + ground bounce) irradiance / pi as SH9 (rgb), basis constants folded in (src/light.rs)
+    float4 skyvis;          // x: sky visibility on (1) / off (0), y: bounce fill of the occluded sky, z: search radius (m), w: unused
 };
 
 // Per-view data, one cpu_write buffer read through the bindless buffer table.
@@ -233,12 +234,19 @@ float3 filmic(uint lut_buf, float3 x) {
     return lerp(lerp(c00, c10, g.y), lerp(c01, c11, g.y), g.z);
 }
 
-// HDR scene radiance -> display value (gamma 2.2 encoded, 0..1), as the alpha wrote it.
+// HDR scene radiance -> display value (gamma 2.2 encoded, 0..1): the alpha's tone mapper
+// (exposure, Filmic LUT, gamma 2.2) with its warm grade neutralised (M4f). The alpha multiplied
+// by a white balance of (1.10, 1, 0.86) and tinted highlights by (1.03, 1, 0.95), which
+// compensated for its blue ambient; with the calibrated light of M4e (warm sun, skylight
+// R : B 0.5) it turned sunlit whites yellow. A camera on daylight white balance renders
+// sunlit white neutral, so both are 1 now (tonemap.rs `WHITE_BALANCE`, `HIGHLIGHT_TINT`).
+static const float3 TM_WHITE_BALANCE = float3(1.0, 1.0, 1.0);
+static const float3 TM_HIGHLIGHT_TINT = float3(1.0, 1.0, 1.0);
 float3 alpha_tonemap(uint lut_buf, float3 hdr, float exposure) {
     float3 c = hdr * exposure;
-    c *= float3(1.10, 1.0, 0.86);
+    c *= TM_WHITE_BALANCE;
     c = filmic(lut_buf, c);
     float l = dot(c, float3(0.2126, 0.7152, 0.0722));
-    c *= lerp(float3(1.0), float3(1.03, 1.0, 0.95), smoothstep(0.35, 0.9, l));
+    c *= lerp(float3(1.0), TM_HIGHLIGHT_TINT, smoothstep(0.35, 0.9, l));
     return pow(saturate(c), float3(1.0 / 2.2));
 }

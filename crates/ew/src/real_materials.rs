@@ -85,7 +85,11 @@ pub fn nominal(s: [f32; 3]) -> [f32; 3] {
 }
 
 /// Metric box-projection UVs (metres) for `positions` / `normals`: each vertex projects along
-/// its normal's dominant axis (top and bottom: x,z; X faces: z,y; Z faces: x,y).
+/// its normal's dominant axis (top and bottom: x,z; X faces: z,y; Z faces: x,y). Side faces are
+/// mapped the way a viewer outside sees them: the image's up is world up (glTF V runs down the
+/// image, so v = -y) and its right is the face's right (u along up x normal), so scans with a
+/// direction (weathering streaks, stains running down) read the right way and nothing is
+/// mirrored.
 pub fn box_uvs(positions: &[[f32; 3]], normals: &[[f32; 3]]) -> Vec<[f32; 2]> {
     positions
         .iter()
@@ -95,9 +99,9 @@ pub fn box_uvs(positions: &[[f32; 3]], normals: &[[f32; 3]]) -> Vec<[f32; 2]> {
             if a[1] >= a[0] && a[1] >= a[2] {
                 [p[0], p[2]]
             } else if a[0] >= a[2] {
-                [p[2], p[1]]
+                [-p[2] * n[0].signum(), -p[1]]
             } else {
-                [p[0], p[1]]
+                [p[0] * n[2].signum(), -p[1]]
             }
         })
         .collect()
@@ -127,7 +131,14 @@ mod tests {
     #[test]
     fn uvs_are_metric_and_quantised_scales_merge() {
         let uv = box_uvs(&[[1.0, 2.0, 3.0], [1.0, 2.0, 3.0], [1.0, 2.0, 3.0]], &[[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0]]);
-        assert_eq!(uv, vec![[1.0, 3.0], [3.0, 2.0], [1.0, 2.0]]);
+        assert_eq!(uv, vec![[1.0, 3.0], [-3.0, -2.0], [-1.0, -2.0]]);
+        // Right on the image is right on the face seen from outside; up is up.
+        let right = |n: [f32; 3], d: [f32; 3]| box_uvs(&[d], &[n])[0][0] - box_uvs(&[[0.0; 3]], &[n])[0][0];
+        assert!(right([1.0, 0.0, 0.0], [0.0, 0.0, -1.0]) > 0.0, "+X face: right is -Z");
+        assert!(right([-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]) > 0.0, "-X face: right is +Z");
+        assert!(right([0.0, 0.0, 1.0], [1.0, 0.0, 0.0]) > 0.0, "+Z face: right is +X");
+        assert!(right([0.0, 0.0, -1.0], [-1.0, 0.0, 0.0]) > 0.0, "-Z face: right is -X");
+        assert!(box_uvs(&[[0.0, 1.0, 0.0]], &[[1.0, 0.0, 0.0]])[0][1] < 0.0, "up the wall is up the image (v down)");
         assert_eq!(nominal([15.4, 31.1, 12.6]), [15.0, 36.0, 12.0]);
         assert_eq!(nominal([4000.0, 2.0, 4000.0])[0], 4000.0);
     }

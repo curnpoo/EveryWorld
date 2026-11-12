@@ -70,13 +70,23 @@ fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// Scene radiance -> display value (gamma 2.2 encoded, 0..1), as the alpha wrote it.
+/// White balance applied before the film curve (common.slang `TM_WHITE_BALANCE`). Neutral
+/// since M4f: the alpha's (1.10, 1, 0.86) offset its blue ambient and, on top of the
+/// calibrated M4e light, turned sunlit whites yellow (daylight white balance keeps them
+/// neutral).
+pub const WHITE_BALANCE: [f32; 3] = [1.0, 1.0, 1.0];
+/// Highlight tint blended in above display luminance 0.35..0.9 (common.slang
+/// `TM_HIGHLIGHT_TINT`). Neutral since M4f (the alpha's was (1.03, 1, 0.95)).
+pub const HIGHLIGHT_TINT: [f32; 3] = [1.0, 1.0, 1.0];
+
+/// Scene radiance -> display value (gamma 2.2 encoded, 0..1): the alpha's tone mapper with
+/// [`WHITE_BALANCE`] and [`HIGHLIGHT_TINT`] (neutral since M4f).
 pub fn alpha_tonemap(hdr: [f32; 3], exposure: f32) -> [f32; 3] {
-    let wb = [1.10, 1.0, 0.86];
+    let wb = WHITE_BALANCE;
     let c = filmic([0, 1, 2].map(|k| hdr[k] * exposure * wb[k]));
     let l = c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722;
     let s = smoothstep(0.35, 0.9, l);
-    let tint = [1.03, 1.0, 0.95];
+    let tint = HIGHLIGHT_TINT;
     [0, 1, 2].map(|k| (c[k] * (1.0 + (tint[k] - 1.0) * s)).clamp(0.0, 1.0).powf(1.0 / 2.2))
 }
 

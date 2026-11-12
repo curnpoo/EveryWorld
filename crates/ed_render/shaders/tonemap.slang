@@ -1,6 +1,6 @@
 // tonemap pass: HDR scene target -> output target, with the alpha's tone mapper ported exactly
-// (common.slang `alpha_tonemap`, P1-D18): exposure, warm white balance, the Filmic LUT, a
-// highlight tint and gamma 2.2. The alpha wrote that gamma-encoded value to a UNORM drawable;
+// (common.slang `alpha_tonemap`, P1-D18): exposure, white balance (neutral since M4f), the
+// Filmic LUT, a highlight tint (neutral since M4f) and gamma 2.2. The alpha wrote that gamma-encoded value to a UNORM drawable;
 // here a UNORM target gets it as is, and an *Srgb or float target (encoded by the display path)
 // gets its sRGB-decoded value, so the bytes on screen are the alpha's either way.
 #include "shader_abi.slang"

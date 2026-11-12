@@ -19,7 +19,7 @@ use glam::{DVec3, Mat4, Vec3, Vec4};
 /// Most cascades a frame can have (the atlas holds 2 x 2 tiles).
 pub const MAX_CASCADES: usize = 4;
 /// `LightData` words (common.slang).
-pub const LIGHT_WORDS: usize = 140;
+pub const LIGHT_WORDS: usize = 144;
 
 /// Scene exposure into the tone map (the `FrameParams` default), set photographically: the
 /// "sunny 16" rule (EV100 15) for a clear day. The sun is 6.4 units for about 100 klx, so a
@@ -32,7 +32,7 @@ pub const EXPOSURE: f32 = 0.7;
 
 /// Lighting switches and tunables. Every feature has an off switch (P1 rule): `--no-shadows`,
 /// `--no-ao`, `--no-sky-ambient` in `ew`, or `EW_NO_SHADOWS=1`, `EW_NO_AO=1`,
-/// `EW_NO_SKY_AMBIENT=1` ([`LightingSettings::from_env`]).
+/// `EW_NO_SKY_AMBIENT=1`, `EW_NO_SKYVIS=1` ([`LightingSettings::from_env`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LightingSettings {
     /// Cascaded sun shadows (cost: shadow_cull + shadow_raster passes, PCF in resolve).
@@ -71,6 +71,19 @@ pub struct LightingSettings {
     pub ao_radius: f32,
     /// GTAO strength (exponent on visibility).
     pub ao_intensity: f32,
+    /// Large-scale sky visibility (M4f): the GTAO slices are searched a second time out to
+    /// [`Self::sky_vis_radius`], and the share of the sky that street canyons hide is lit by
+    /// bounce light instead of skylight. Needs `ao`. Cost: about 0.1 ms in the "ao" pass at
+    /// 1280x720 (four more taps per slice side), nothing extra in resolve.
+    pub sky_vis: bool,
+    /// Sky-visibility search radius (m): the canyon scale (the proving ground's streets are
+    /// 20 m wide between buildings up to 120 m). Screen-space, so occluders off screen do not
+    /// count, and the search stops at 0.75 of the screen height.
+    pub sky_vis_radius: f32,
+    /// Radiance of the occluded sky, as a fraction of the ground-bounce radiance (the lower
+    /// hemisphere of the ambient): building faces are lit about like the street, a bit less
+    /// (half of them face away from the sun).
+    pub sky_vis_fill: f32,
     /// Diffuse skylight strength relative to the visible sky model. The analytic sky is a clear
     /// gradient with no haze or multiple scattering, so its integral is about half of real
     /// skylight against the sun; 2.1 puts sky : sun on open ground at 0.20 for the default
@@ -92,7 +105,8 @@ pub struct LightingSettings {
     pub ao_multibounce: f32,
     /// Debug view in resolve (`EW_LIGHT_DEBUG`): 0 off, 1 sun visibility tinted by cascade
     /// (red, green, blue, yellow; grey past the last), 2 ambient occlusion, 3 receiver minus
-    /// stored light depth (red: receiver nearer the sun, green: behind an occluder).
+    /// stored light depth (red: receiver nearer the sun, green: behind an occluder), 4 sky
+    /// visibility.
     pub debug: u32,
 }
 
@@ -115,7 +129,10 @@ impl Default for LightingSettings {
             normal_bias: 1.0,
             depth_bias: 1.0,
             ao_radius: 2.5,
-            ao_intensity: 3.0,
+            ao_intensity: 2.0,
+            sky_vis: true,
+            sky_vis_radius: 60.0,
+            sky_vis_fill: 0.8,
             sky_ambient_gain: 2.1,
             sky_ambient_saturation: 0.3,
             bounce_albedo: Vec3::new(0.25, 0.22, 0.18),
@@ -128,16 +145,17 @@ impl Default for LightingSettings {
 
 impl LightingSettings {
     /// Defaults with the `EW_NO_SHADOWS`, `EW_NO_AO`, `EW_NO_SKY_AMBIENT` switches and
-    /// `EW_LIGHT_DEBUG=shadow|ao` applied.
+    /// `EW_LIGHT_DEBUG=shadow|ao|depth|skyvis` applied.
     pub fn from_env() -> Self {
         let on = |v: &str| std::env::var(v).is_ok_and(|s| s != "0" && !s.is_empty());
         let debug = match std::env::var("EW_LIGHT_DEBUG").as_deref() {
             Ok("shadow") | Ok("1") => 1,
             Ok("ao") | Ok("2") => 2,
             Ok("depth") | Ok("3") => 3,
+            Ok("skyvis") | Ok("4") => 4,
             _ => 0,
         };
-        Self { shadows: !on("EW_NO_SHADOWS"), ao: !on("EW_NO_AO"), sky_ambient: !on("EW_NO_SKY_AMBIENT"), debug, ..Self::default() }
+        Self { shadows: !on("EW_NO_SHADOWS"), ao: !on("EW_NO_AO"), sky_ambient: !on("EW_NO_SKY_AMBIENT"), sky_vis: !on("EW_NO_SKYVIS"), debug, ..Self::default() }
     }
     /// Cascades actually drawn (0 with shadows off).
     pub fn cascade_count(&self) -> u32 {
@@ -412,6 +430,7 @@ pub fn light_words(s: &LightingSettings, plan: &CascadePlan, sh: &[[f32; 4]; 9],
     for (k, c) in sh.iter().enumerate() {
         put(&mut w, 104 + k * 4, c);
     }
+    put(&mut w, 140, &[(s.ao && s.sky_vis) as u32 as f32, s.sky_vis_fill.max(0.0), s.sky_vis_radius, 0.0]);
     w
 }
 

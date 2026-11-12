@@ -105,7 +105,7 @@ mod tests {
 
     #[test]
     fn frame_layout_offsets() {
-        assert_eq!(FRAME_WORDS, 308);
+        assert_eq!(FRAME_WORDS, 312);
         assert_eq!(FD_LIGHT + crate::light::LIGHT_WORDS, FRAME_WORDS);
         assert_eq!(FD_SUN_DIR, FD_PLANES + 20);
         assert_eq!(FD_CULL, FD_SUN_DIR + 32);

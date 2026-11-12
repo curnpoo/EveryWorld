@@ -101,8 +101,8 @@ float3 filmic_0(uint lut_buf_0, float3 x_0, KernelContext_0 thread* kernelContex
 
 float3 alpha_tonemap_0(uint lut_buf_1, float3 hdr_1, float exposure_1, KernelContext_0 thread* kernelContext_2)
 {
-    float3 _S17 = filmic_0(lut_buf_1, hdr_1 * float3(exposure_1)  * float3(1.1000000238418579f, 1.0f, 0.86000001430511475f), kernelContext_2);
-    return pow(saturate(_S17 * mix(float3(1.0f) , float3(1.0299999713897705f, 1.0f, 0.94999998807907104f), float3(smoothstep(0.34999999403953552f, 0.89999997615814209f, dot(_S17, float3(0.2125999927520752f, 0.71520000696182251f, 0.072200000286102295f)))) )), float3(0.45454543828964233f) );
+    float3 _S17 = filmic_0(lut_buf_1, hdr_1 * float3(exposure_1) , kernelContext_2);
+    return pow(saturate(_S17 * mix(float3(1.0f) , float3(1.0f, 1.0f, 1.0f), float3(smoothstep(0.34999999403953552f, 0.89999997615814209f, dot(_S17, float3(0.2125999927520752f, 0.71520000696182251f, 0.072200000286102295f)))) )), float3(0.45454543828964233f) );
 }
 
 float3 srgb_decode_0(float3 c_0)

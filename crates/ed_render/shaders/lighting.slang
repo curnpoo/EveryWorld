@@ -155,34 +155,46 @@ uint shadow_cascade(FrameData* f, float3 p, float dist) {
     return 4u;
 }
 
-// Ambient occlusion at a full-res pixel from the half-res GTAO result (ao.slang): the four
-// nearest half-res texels, weighted bilinearly and by how close their linear depth is to this
-// pixel's (`zlin`), so occlusion does not bleed across depth edges.
-float ao_upsample(FrameData* f, uint ao_buf, float2 pixel, float zlin) {
+// Ambient occlusion and sky visibility at a full-res pixel from the half-res GTAO result
+// (ao.slang): the four nearest half-res texels, weighted bilinearly and by how close their
+// linear depth is to this pixel's (`zlin`), so occlusion does not bleed across depth edges.
+// Half-res texel t is the full-res pixel 2t (its centre at 2t + 0.5), and the blur keeps it
+// there. Returns (ao ^ intensity, sky visibility).
+float2 ao_upsample(FrameData* f, uint ao_buf, float2 pixel, float zlin) {
     if (f.light.flags.y == 0) {
-        return 1.0;
+        return float2(1.0);
     }
-    float2* buf = ed_buf<float2>(ao_buf);
+    float4* buf = ed_buf<float4>(ao_buf);
     uint hw = uint(f.light.ao.y);
     uint hh = uint(f.light.ao.z);
     float2 h = (pixel - 0.5) * 0.5;
     float2 b = floor(h);
     float2 g = h - b;
-    float sum = 0.0;
+    float2 sum = float2(0.0);
     float wsum = 0.0;
     for (int y = 0; y < 2; y++) {
         for (int x = 0; x < 2; x++) {
             int2 t = clamp(int2(b) + int2(x, y), int2(0), int2(int(hw) - 1, int(hh) - 1));
-            float2 s = buf[uint(t.y) * hw + uint(t.x)];
+            float4 s = buf[uint(t.y) * hw + uint(t.x)];
             float wb = (x == 0 ? 1.0 - g.x : g.x) * (y == 0 ? 1.0 - g.y : g.y);
-            float wz = 1.0 / (1e-3 + abs(s.y - zlin) / max(zlin, 1e-3) * 50.0);
+            float wz = 1.0 / (1e-3 + abs(s.z - zlin) / max(zlin, 1e-3) * 50.0);
             float w = max(wb, 1e-3) * wz;
-            sum += s.x * w;
+            sum += s.xy * w;
             wsum += w;
         }
     }
-    float ao = wsum > 0.0 ? sum / wsum : 1.0;
-    return pow(saturate(ao), f.light.ao.x);
+    float2 r = wsum > 0.0 ? sum / wsum : float2(1.0);
+    float sv = f.light.skyvis.x > 0.0 ? saturate(r.y) : 1.0;
+    return float2(pow(saturate(r.x), f.light.ao.x), sv);
+}
+
+// Ambient light with large-scale sky occlusion (M4f): the share of the hemisphere a street
+// canyon hides (1 - `sv`) sees building and ground surfaces instead of sky, lit about like
+// the ground the bounce term models, so it gets the lower hemisphere's bounce radiance scaled
+// by `f.light.skyvis.y` instead of skylight. sv = 1 is the open-ground ambient unchanged.
+float3 occluded_ambient(FrameData* f, float3 open, float sv) {
+    float3 bounce = ambient_light(f, float3(0.0, -1.0, 0.0)) * f.light.skyvis.y;
+    return lerp(bounce, open, sv);
 }
 
 // Multi-bounce ambient occlusion (Jimenez et al. 2016): light bouncing inside a crease fills

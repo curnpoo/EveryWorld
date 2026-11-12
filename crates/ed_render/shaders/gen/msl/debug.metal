@@ -247,8 +247,8 @@ float3 filmic_0(uint lut_buf_0, float3 x_1, KernelContext_0 thread* kernelContex
 
 float3 alpha_tonemap_0(uint lut_buf_1, float3 hdr_1, float exposure_1, KernelContext_0 thread* kernelContext_7)
 {
-    float3 _S31 = filmic_0(lut_buf_1, hdr_1 * float3(exposure_1)  * float3(1.1000000238418579f, 1.0f, 0.86000001430511475f), kernelContext_7);
-    return pow(saturate(_S31 * mix(float3(1.0f) , float3(1.0299999713897705f, 1.0f, 0.94999998807907104f), float3(smoothstep(0.34999999403953552f, 0.89999997615814209f, dot(_S31, float3(0.2125999927520752f, 0.71520000696182251f, 0.072200000286102295f)))) )), float3(0.45454543828964233f) );
+    float3 _S31 = filmic_0(lut_buf_1, hdr_1 * float3(exposure_1) , kernelContext_7);
+    return pow(saturate(_S31 * mix(float3(1.0f) , float3(1.0f, 1.0f, 1.0f), float3(smoothstep(0.34999999403953552f, 0.89999997615814209f, dot(_S31, float3(0.2125999927520752f, 0.71520000696182251f, 0.072200000286102295f)))) )), float3(0.45454543828964233f) );
 }
 
 [[kernel]] void pop_stats(uint3 tid_1 [[thread_position_in_grid]], PickC_0 constant* ed_c_2 [[buffer(0)]], ulong device* ed_buffers_2 [[buffer(2)]], ulong device* ed_textures_2 [[buffer(1)]])

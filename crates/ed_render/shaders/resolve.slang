@@ -11,6 +11,8 @@
 // the same terms (lighting.slang).
 // M4e: the ambient SH is skylight plus ground bounce (light.rs `ambient_sh9`), AO is
 // multi-bounce, and ambient diffuse gives up the specular lobe's share.
+// M4f: large-scale sky visibility (ao.slang) swaps the sky a street canyon hides for bounce
+// light off the buildings, in the diffuse and the specular ambient.
 #include "shader_abi.slang"
 #include "common.slang"
 #include "lighting.slang"
@@ -65,7 +67,7 @@ float2 env_brdf(float nov, float rough) {
     return float2(-1.04, 1.04) * a004 + r.zw;
 }
 
-float3 shade_pbr(FrameData* f, float3 albedo, float metal, float rough, float ao, float sun_vis, float3 n, float3 v) {
+float3 shade_pbr(FrameData* f, float3 albedo, float metal, float rough, float ao, float sv, float sun_vis, float3 n, float3 v) {
     metal = saturate(metal);
     rough = clamp(rough, 0.04, 1.0);
     float a = rough * rough;
@@ -83,21 +85,22 @@ float3 shade_pbr(FrameData* f, float3 albedo, float metal, float rough, float ao
     float2 ab = env_brdf(nov, rough);
     float3 r = reflect(-v, n);
     float3 env = f.light.flags.z != 0 ? lerp(sky_rad(f, r, 0.0), sh_irradiance(f, r), rough) : hemi_ambient(f, r);
+    env = occluded_ambient(f, env, sv);
     // Specular occlusion from AO (Lagarde 2014).
     float spec_occ = saturate(pow(nov + ao, exp2(-16.0 * a - 1.0)) - 1.0 + ao);
     // The specular lobe's share of the ambient light does not also reach the diffuse term.
     float3 f_env = f0 * ab.x + ab.y;
-    float3 amb = diff_col * (1.0 - f_env) * ambient_light(f, n) * ao_multibounce(f, ao, diff_col) + env * f_env * spec_occ;
+    float3 amb = diff_col * (1.0 - f_env) * occluded_ambient(f, ambient_light(f, n), sv) * ao_multibounce(f, ao, diff_col) + env * f_env * spec_occ;
     return direct + amb;
 }
 
-float3 shade_toon(FrameData* f, GpuMaterial m, float3 albedo, float3 n, float3 v, float ao, float sun_vis) {
+float3 shade_toon(FrameData* f, GpuMaterial m, float3 albedo, float3 n, float3 v, float ao, float sv, float sun_vis) {
     float3 l = f.sun_dir.xyz;
     float ndl = dot(n, l);
     float bands = max(m.params.z, 1.0);
     float lit = floor(saturate(ndl * 0.5 + 0.5) * bands + 0.5) / bands * sun_vis;
     float3 c = lerp(albedo * m.shade.rgb, albedo, lit);
-    float3 light = f.sun_color.rgb * (lit / PI) + ambient_light(f, n) * ao_multibounce(f, ao, albedo);
+    float3 light = f.sun_color.rgb * (lit / PI) + occluded_ambient(f, ambient_light(f, n), sv) * ao_multibounce(f, ao, albedo);
     float rim = pow(1.0 - saturate(dot(n, v)), 4.0) * m.shade.w * saturate(ndl + 0.3) * sun_vis;
     return c * light + rim * f.sun_color.rgb * 0.15;
 }
@@ -232,8 +235,10 @@ float4 fs_resolve(FsOut i) : SV_Target0 {
         ng = -ng;
     }
     float sun_vis = sun_shadow(f, ed_c.shadow, p, ng, zlin, i.pos.xy);
-    ao *= ao_upsample(f, ed_c.ao, i.pos.xy, zlin);
-    float3 col = m.base.w > 0.5 ? shade_toon(f, m, albedo, n, v, ao, sun_vis) : shade_pbr(f, albedo, metal, rough, ao, sun_vis, n, v);
+    float2 occ = ao_upsample(f, ed_c.ao, i.pos.xy, zlin);
+    ao *= occ.x;
+    float sv = occ.y;
+    float3 col = m.base.w > 0.5 ? shade_toon(f, m, albedo, n, v, ao, sv, sun_vis) : shade_pbr(f, albedo, metal, rough, ao, sv, sun_vis, n, v);
     if (f.light.flags.w == 1u) {
         // Sun visibility (bright = lit) tinted by the cascade that served it.
         static const float3 TINT[5] = { float3(1.0, 0.25, 0.25), float3(0.25, 1.0, 0.25), float3(0.3, 0.45, 1.0), float3(1.0, 1.0, 0.25), float3(0.6, 0.6, 0.6) };
@@ -245,6 +250,8 @@ float4 fs_resolve(FsOut i) : SV_Target0 {
         col = float3(max(d, 0.0), max(-d, 0.0), 0.0) * 0.1;  // 1 m of depth = 0.1
     } else if (f.light.flags.w == 2u) {
         col = float3(0.5 * ao);
+    } else if (f.light.flags.w == 4u) {
+        col = float3(0.5 * sv);
     }
     return float4(col, 1.0);
 }

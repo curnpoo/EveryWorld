@@ -1,3 +1,29 @@
+## 2026-11-12: Phase 1, M4f — Opus graphics review with real textures
+
+- **Sky visibility at canyon scale.** A screen-space horizon march out to 60 m, with far taps read from the HZB. Occluded sky is replaced by 0.8× ground bounce. Street floors no longer get the full sky dome.
+  - Settings: `sky_vis`, `sky_vis_radius`, `sky_vis_fill`.
+  - Debug and off switch: `EW_LIGHT_DEBUG=skyvis`, `EW_NO_SKYVIS=1`.
+  - Cost: about 0.07 ms, plus 0.06 ms for `hzb_final`.
+- **AO fixes.**
+  - The blur is a centred 5×5 tent (it was shifted by a pixel).
+  - Depth weights follow the local plane (no banding on grazing floors).
+  - `ao_intensity` 3 → 2.
+- **Determinism bug.** AO read the early HZB, which misses objects drawn only in the late phase, so the image depended on the previous frame. AO now reads a new `hzb_final` built after `raster_late`. This also fixes `render_m3`, `render_m4` and the overlay test.
+- **Neutral white balance.** The alpha LUT's (1.10, 1, 0.86) white balance and highlight tint are now (1, 1, 1) on GPU and CPU together; parity is unchanged.
+- **Real-material UVs.** Box-projected UVs no longer flip textures vertically or mirror half the side faces.
+- **Budgets** (1280×720, means; the machine was noisy):
+  - GPU frame 2.79 → 3.04 ms (≤3.5).
+  - ao 0.26 → 0.36 ms (≤0.5).
+  - Shadows 1.10–1.16 ms (≤1.2).
+  - CPU build with the Megascans pack is 0.27+ ms against the 0.2 budget, and was over before this change (2006 draws).
+- **Open:**
+  - The filmic toe crushes shadowed asphalt (AgX, Phase 2).
+  - Sky visibility in world space instead of screen space.
+  - Contrast of material detail.
+  - Binning draws for the CPU build.
+  - Close-up shadow aliasing (VSM).
+  - Check for halos behind thin occluders.
+
 ## 2026-11-12: Phase 1 hand-test fixes — editor feedback, interim shadows, real textures
 
 - **Editor (owner hand test).** No code bug in click routing. Two things made it look broken: the mode only showed in a `println`, and the camera started 300 m from the four editable props, so clicks hit read-only generated objects that have no gizmo. Fixes:

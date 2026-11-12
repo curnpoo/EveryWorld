@@ -57,6 +57,10 @@ pub struct VisTargets {
     pub vis: Res,
     /// Sun shadow casters to draw after the view (M4d), or none.
     pub shadow: Option<ShadowTargets>,
+    /// Rebuild the depth pyramid from the final (early + late) depth after `raster_late`, for
+    /// passes after the provider (the AO sky-visibility search). Costs one more `hzb` pass
+    /// (~0.07 ms at 1280x720 on an M3 Pro); without it [`ProviderOutputs::hzb`] is `None`.
+    pub final_hzb: bool,
 }
 
 /// The cascade atlas a provider draws sun shadow casters into: `cascades` square tiles of
@@ -75,6 +79,11 @@ pub struct ProviderOutputs {
     pub meshes: (Res, u32),
     /// Per-instance state words (LOD, fade), for the pop detector.
     pub state: (Res, u32),
+    /// The depth pyramid (common.slang `FrameData.hzb` levels) of the final depth, when
+    /// [`VisTargets::final_hzb`] asked for it: the sky-visibility search reads it (ao.slang).
+    /// The early-phase pyramid is not handed out: it misses what only the late phase drew,
+    /// so reading it would make the image depend on the previous frame.
+    pub hzb: Option<(Res, u32)>,
 }
 
 /// A source of geometry for the visibility buffer (renderer.md §3). Provider 1 is
@@ -761,10 +770,10 @@ impl GeometryProvider for DiscreteLod {
         };
         raster(g, "raster_early", 0, true);
 
-        if occlusion {
-            let (pf, pd) = (pipes.hzb_first, pipes.hzb_down);
+        let (pf, pd) = (pipes.hzb_first, pipes.hzb_down);
+        let build_hzb = |g: &mut FrameGraph<'a>, name: &'static str| {
             let levels = hzb_levels.clone();
-            g.add_pass("hzb", PassKind::Compute).read(out.depth, ResourceState::ShaderRead).write(hzb, sw).exec(move |ctx| {
+            g.add_pass(name, PassKind::Compute).read(out.depth, ResourceState::ShaderRead).write(hzb, sw).exec(move |ctx| {
                 let depth_bi = ctx.bindless(out.depth).0;
                 let (mut sw_, mut sh_, mut soff) = (dw, dh, 0u32);
                 for (i, &(off, w, h)) in levels.iter().enumerate() {
@@ -777,6 +786,9 @@ impl GeometryProvider for DiscreteLod {
                     (sw_, sh_, soff) = (w, h, off);
                 }
             });
+        };
+        if occlusion {
+            build_hzb(g, "hzb");
         }
 
         let late = cull_pass(g, "cull_late", inp, bufs);
@@ -787,6 +799,9 @@ impl GeometryProvider for DiscreteLod {
             ctx.enc.dispatch(groups, 1, 1);
         });
         raster(g, "raster_late", 1, false);
+        if out.final_hzb {
+            build_hzb(g, "hzb_final");
+        }
 
         // Sun shadow casters (M4d): cull every instance against every cascade on the GPU, then
         // one depth pass that draws each cascade's bins into its atlas tile.
@@ -837,7 +852,7 @@ impl GeometryProvider for DiscreteLod {
                     }
                 });
         }
-        ProviderOutputs { meshes: (meshes, mesh_table.bindless.0), state: (state, v.state.bindless.0) }
+        ProviderOutputs { meshes: (meshes, mesh_table.bindless.0), state: (state, v.state.bindless.0), hzb: out.final_hzb.then_some((hzb, hzb_bi)) }
     }
 
     fn finish(&mut self, plan: &Plan) {

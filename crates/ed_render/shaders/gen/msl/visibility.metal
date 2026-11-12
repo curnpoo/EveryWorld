@@ -108,6 +108,7 @@ struct LightData_natural_0
     packed_float4 ao_0;
     packed_float4 sky_0;
     _Array_natural_vectorx3Cfloatx2C4x3E9_0 sh_0;
+    packed_float4 skyvis_0;
 };
 
 struct FrameData_natural_0
