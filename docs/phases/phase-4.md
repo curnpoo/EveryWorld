@@ -52,6 +52,10 @@ atmosphere tables, GTAO, screen-space reflections with sky fallback. This is com
 budgeted for Low before any advanced feature starts, so there is always a shippable frame.
 
 ### P4-D4 — Virtual shadow maps
+**Moved to Phase 2 (P2-D20, owner 2026-11-12), with contact hardening and the far height
+term.** Phase 4 keeps only the hardening: local-light (spot/point) virtual shadows, the
+ray-marched penumbra upgrade if Phase 2 shipped PCSS, and the tier budgets below. The
+original text follows for reference.
 A sun clipmap of virtual pages, 128² texels each, backed by one physical depth atlas: 8192²
 on High (256 MB), 16384² on Ultra. Pages are requested from the depth buffer of the
 previous frame, rendered through provider 1 with per-page culling, and cached while no
@@ -137,7 +141,7 @@ Derived by splitting 16.6 ms; the geometry figure comes from the Phase 3 gate me
 | # | Scope | Owns | Done when |
 |---|---|---|---|
 | W1 | Baseline hardening and Low tier | `ed_render/src/shadows_csm*`, `gtao*`, `ssr*` | Low budget held on all scenes |
-| W2 | Virtual shadow maps | `ed_render/src/vsm*` | Page pool never exhausted on the reference paths; budget held or feature parked on Ultra with numbers |
+| W2 | Virtual shadows hardening (sun VSM itself landed in Phase 2 W13): local-light pages, penumbra upgrade | `ed_render/src/vsm*` | Page pool never exhausted on the reference paths; budget held |
 | W3 | Voxel GI | `ed_render/src/gi*` | Same |
 | W4 | Water | `ed_render/src/water*`, `ed_world/src/water*` (bodies, river plan), an engine-free `waterfield` module | Phase 4 items of `water.md` §7 |
 | W5 | Volumetric clouds | `ed_render/src/clouds*` | Shell and volume agree at the blend in a capture test |

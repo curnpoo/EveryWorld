@@ -159,6 +159,40 @@ The harness can render with the clear colour set to a reserved value and count p
 keep it where a body's analytic disc says ground must be. The count is a CSV column. The
 exit gate is zero on every frame of the gate path.
 
+### P2-D20 — Sun shadows: virtual shadow maps, contact hardening, far height term
+*Moved from Phase 4 (was P4-D4), owner 2026-11-12: cascade seams and the distance cutoff
+are not acceptable. Phase 2 is where view distance becomes real.*
+
+- **Near and mid: virtual shadow maps (VSM).** A sun clipmap of virtual pages, 128² texels
+  each, backed by one physical depth atlas: 8192² on High (256 MB), 16384² on Ultra.
+  - Pages are requested from the previous frame's visibility/depth buffer at the
+    resolution each pixel needs. There are no screen-visible cascade bands.
+  - Pages are rendered through the cluster provider with per-page culling, and cached
+    until an instance or the sun moves over them. The sun moves slowly, so re-rendering
+    is spread over frames.
+  - If page rendering exceeds budget in a city, cap the pages rendered per frame and
+    accept one-frame-late shadows.
+- **Contact hardening (owner requirement).** Shadows look like ray-traced shadows from a
+  real sun: sharp where the caster touches the receiver, softer the farther the receiver
+  is from the blocker.
+  - Penumbra width = 2·tan(sun angular radius)·(receiver depth − blocker depth). The sun's
+    angular radius is about 0.27°, taken from the sun model.
+  - v1 is PCSS-style on the VSM pages: a blocker search, then a filter sized in world
+    units.
+  - High/Ultra can upgrade to shadow-map ray marching (a few rays toward the sun disc
+    through the page depth). The choice is made by measurement.
+  - No fixed-texel filter anywhere.
+- **Far: one height term, no distance limit.** Beyond the VSM's finest useful rung, a
+  2.5D height field casts the shadow: terrain, plus building tops rasterised from the
+  layer data, plus forest canopy height. A whole city is a lumpy height map at that range.
+  - It is ray-marched or horizon-mapped toward the sun, with the same angular-radius
+    penumbra, which is naturally wide at distance.
+  - The alpha's `horizon.rs`/`farshadow` maths is the starting point. It also shadows
+    from orbit (mountain shadows at dawn).
+- **Transitions.** VSM and the far term overlap over a distance band and take the darker
+  of the two there, not a crossfade to "lit". No cutoff line anywhere.
+- **Fallback.** Phase 1 cascades stay as the Low tier and as the A/B reference.
+
 ## 5. Budgets (M3 Pro, 1440p, High, local packs)
 
 From `../reference/alpha-baseline.md` §5 for load and worst-frame; pass budgets split a
@@ -175,6 +209,8 @@ From `../reference/alpha-baseline.md` §5 for load and worst-frame; pass budgets
 | Atmosphere (tables amortised, sky, aerial perspective) | 1.5 ms |
 | Cloud shell and cloud shadow | 1.0 ms |
 | Ocean v0 | 1.0 ms |
+| Sun shadows (VSM pages + contact-hardening filter + far height term) | 2.5 ms High, 1.5 ms Low (cascades) |
+| Shadow page atlas | 256 MB High |
 | Total GPU frame on bare planet | 8 ms |
 | Upload per frame | 8 MB and 2 ms |
 | Terrain and layer GPU memory | 1.5 GB |
@@ -200,6 +236,7 @@ A missed number is reported with its diagnosis, not adjusted.
 | W10 | Sim on the planet: gravity, heightfield collision chunks, mover and placeholder car on terrain | `crates/ed_sim`, `crates/ew` | Mover stands still on a slope at three latitudes; a box dropped from 100 m lands on the rendered surface within 2 cm |
 | W11 | Editor stage E2: go-to, time and body, node overlays, selector freeze, streaming monitor, chunk inspector | `crates/ed_editor` | Each overlay is exercised by a headless UI test that reads back the overlay image |
 | W12 | Harness: gate path script, hole detector, load-time and upload columns, alpha comparison on the same path (carried from Phase 0) | `crates/ew` harness, `tools/` | The gate path produces one CSV and one frame strip per run |
+| W13 | Sun shadows per P2-D20: VSM page request/alloc/cache/render, contact-hardening filter, far height term, transition band. **Opus** designs and builds; Sonnet writes the test battery; Fable reviews the look against `docs/reference/look-reference.md` | `crates/ed_render/src/vsm*`, `farshadow*`, `shaders/shadow*` | No cutoff or seam at any distance from 1 m to orbit on the gate path; penumbra width within 20% of the analytic sun-disc value at 1, 10 and 100 m blocker distance; page pool never exhausted; budget held |
 
 ## 7. Order
 
@@ -209,6 +246,7 @@ W1 ─────┤               │                           ├─> W9 ─
 W2 ─────┴─> W7 ─────────┴─> W8 ──> W11 ────────────┘
 W10 after W1+W2 (needs height query and collision chunks)
 W12 from the first terrain frame on
+W13 starts with W1 (VSM on the proving ground first); the far height term joins after W3
 ```
 
 W1 and W2 start together and share no files. W7 (bake) and W3 (render) both need W2 and
