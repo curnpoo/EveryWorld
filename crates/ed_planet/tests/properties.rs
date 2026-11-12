@@ -269,9 +269,9 @@ fn height_matches_page_data_to_1mm() {
             let pos = body.point(leaf.grid_point(i, j, 256), rng.range(-100.0, 10_000.0));
             let (h, l) = p.height(&res, body.id, pos).expect("resident");
             assert_eq!(l, level, "finest resident level");
-            let err = (h - page.get(i as usize, j as usize)).abs();
+            let err = (h - page.height(i as usize, j as usize)).abs();
             worst = worst.max(err);
-            assert!(err < 1e-3, "{leaf} ({i},{j}) {h} vs {}", page.get(i as usize, j as usize));
+            assert!(err < 1e-3, "{leaf} ({i},{j}) {h} vs {}", page.height(i as usize, j as usize));
         }
         // Arbitrary interior points against the page's own triangle rule.
         for _ in 0..50 {

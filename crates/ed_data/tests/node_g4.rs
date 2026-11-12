@@ -13,7 +13,7 @@ fn border(id: NodeId, p: &HeightPage) -> Vec<([u64; 3], u32)> {
         for i in 0..257u32 {
             if i == 0 || j == 0 || i == 256 || j == 256 {
                 let q = id.grid_point(i, j, 256);
-                v.push(([q.x.to_bits(), q.y.to_bits(), q.z.to_bits()], p.height(i as usize, j as usize).to_bits()));
+                v.push(([q.x.to_bits(), q.y.to_bits(), q.z.to_bits()], (p.height(i as usize, j as usize) as f32).to_bits()));
             }
         }
     }

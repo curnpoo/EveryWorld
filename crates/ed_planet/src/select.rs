@@ -193,7 +193,7 @@ impl Planet {
         n.bytes = res.bytes(id).max(1);
         n.last_wanted_frame = frame;
         if let Some(p) = res.height_page(id) {
-            n.set_range(b, p.min, p.max, true);
+            n.set_range(b, p.min_m, p.max_m, true);
         } else if !n.h_known {
             n.set_range(b, range.0, range.1, false);
         }

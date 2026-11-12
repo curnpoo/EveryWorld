@@ -10,10 +10,12 @@
 //! - **ENU**: local East/North/Up tangent plane anchored at an origin.
 //! - **Render (Y-up)**: ENU remapped to Bevy's convention: x=East, y=Up, z=-North.
 
+pub mod height_page;
 pub mod node;
 pub mod sun;
 pub mod tile;
 
+pub use height_page::{HEIGHT_STEP_M, HeightPage, PAGE_CELLS, PAGE_N, PAGE_SAMPLES};
 pub use node::{BodyId, NodeId, ObjectId};
 
 use glam::{DMat3, DVec3};

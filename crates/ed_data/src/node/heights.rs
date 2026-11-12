@@ -11,58 +11,22 @@ use ed_geo::{WGS84_A, WGS84_B, WGS84_E2};
 use std::f64::consts::PI;
 use std::sync::Arc;
 
-pub const PAGE_CELLS: usize = 256;
-/// Samples per page side.
-pub const PAGE_N: usize = PAGE_CELLS + 1;
-pub const PAGE_SAMPLES: usize = PAGE_N * PAGE_N;
-/// Quantisation step in metres: 65535 steps cover 32.7 km, more than sea floor to summit.
-pub const HEIGHT_STEP_M: f32 = 0.5;
+pub use ed_geo::{HEIGHT_STEP_M, HeightPage, PAGE_CELLS, PAGE_N, PAGE_SAMPLES};
 
-/// `height(i, j) = offset + samples[j * 257 + i] as f32 * scale`; `i` runs along the node's x
-/// (lattice `grid_point(i, j, 256)`), `j` along its y.
-#[derive(Debug, Clone, PartialEq)]
-pub struct HeightPage {
-    pub samples: Vec<u16>,
-    pub scale: f32,
-    pub offset: f32,
-    pub min_m: f32,
-    pub max_m: f32,
+/// Build from quantised heights in units of [`HEIGHT_STEP_M`] (global grid indices).
+fn page_from_quantised(q: &[i64]) -> HeightPage {
+    debug_assert_eq!(q.len(), PAGE_SAMPLES);
+    let lo = *q.iter().min().unwrap();
+    let hi = *q.iter().max().unwrap();
+    let samples = q.iter().map(|&v| (v - lo).min(u16::MAX as i64) as u16).collect();
+    let step = HEIGHT_STEP_M as f64;
+    let offset = (lo as f64 * step) as f32;
+    HeightPage { samples, scale: HEIGHT_STEP_M, offset, min_m: offset, max_m: (hi as f64 * step) as f32 }
 }
 
-impl HeightPage {
-    /// Decoded height at lattice index `(i, j)`; exact (multiples of 0.5 m below 2^22).
-    #[inline]
-    pub fn height(&self, i: usize, j: usize) -> f32 {
-        self.offset + self.samples[j * PAGE_N + i] as f32 * self.scale
-    }
-
-    /// Canonical byte form (little endian) for hashing and byte-identity tests.
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut b = Vec::with_capacity(self.samples.len() * 2 + 16);
-        for s in &self.samples {
-            b.extend_from_slice(&s.to_le_bytes());
-        }
-        for f in [self.scale, self.offset, self.min_m, self.max_m] {
-            b.extend_from_slice(&f.to_bits().to_le_bytes());
-        }
-        b
-    }
-
-    /// Build from quantised heights in units of [`HEIGHT_STEP_M`] (global grid indices).
-    fn from_quantised(q: &[i64]) -> HeightPage {
-        debug_assert_eq!(q.len(), PAGE_SAMPLES);
-        let lo = *q.iter().min().unwrap();
-        let hi = *q.iter().max().unwrap();
-        let samples = q.iter().map(|&v| (v - lo).min(u16::MAX as i64) as u16).collect();
-        let step = HEIGHT_STEP_M as f64;
-        let offset = (lo as f64 * step) as f32;
-        HeightPage { samples, scale: HEIGHT_STEP_M, offset, min_m: offset, max_m: (hi as f64 * step) as f32 }
-    }
-
-    fn quantised(&self) -> Vec<i64> {
-        let base = (self.offset as f64 / HEIGHT_STEP_M as f64).round() as i64;
-        self.samples.iter().map(|&s| base + s as i64).collect()
-    }
+fn page_quantised(p: &HeightPage) -> Vec<i64> {
+    let base = (p.offset as f64 / HEIGHT_STEP_M as f64).round() as i64;
+    p.samples.iter().map(|&s| base + s as i64).collect()
 }
 
 fn quantise(h: f64) -> i64 {
@@ -157,7 +121,7 @@ pub fn node_heights(src: &dyn SourceView, id: NodeId) -> HeightPage {
             q.push(quantise(a * (1.0 - ty) + b * ty));
         }
     }
-    HeightPage::from_quantised(&q)
+    page_from_quantised(&q)
 }
 
 /// Geodetic lat/lon of a lattice point: unit vector scaled by the WGS84 radii (P0-R1).
@@ -198,7 +162,7 @@ pub fn parent_heights(children: [&HeightPage; 4]) -> HeightPage {
     let mut g = vec![0i64; W * W];
     for (c, page) in children.iter().enumerate() {
         let (ox, oy) = ((c & 1) * PAGE_CELLS, (c >> 1) * PAGE_CELLS);
-        let q = page.quantised();
+        let q = page_quantised(page);
         for j in 0..PAGE_N {
             for i in 0..PAGE_N {
                 // Shared child borders are identical by G4; later children overwrite equal values.
@@ -220,7 +184,7 @@ pub fn parent_heights(children: [&HeightPage; 4]) -> HeightPage {
             q.push(v.round() as i64);
         }
     }
-    HeightPage::from_quantised(&q)
+    page_from_quantised(&q)
 }
 
 #[cfg(test)]

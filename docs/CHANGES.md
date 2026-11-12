@@ -1,3 +1,8 @@
+## 2026-11-12: One `HeightPage`, in `ed_geo`
+
+- W1 and W2 had each written their own 257×257 height page. The layering rules (`xtask/deps.toml`) forbid `ed_planet → ed_data`, so the single type now lives in `ed_geo::height_page` (`PAGE_N`, `HEIGHT_STEP_M` = 0.5 m, `sample(u,v)` with the 00–11 diagonal rule). `ed_data::node` and `ed_planet` re-export it.
+- The determinism digest is unchanged. ed_geo, ed_data and ed_planet tests pass, and clippy is clean on the touched code. Nothing to check on the Mac.
+
 ## 2026-11-12: Phase 2 W1 — `ed_planet` core (quadtree, budgeted selector, height query)
 
 - **Modules:** `body` (Earth WGS84, max level 17; Moon sphere, level 16), `page`, `residency` (`Residency` trait, `FakeResidency`, `ByteLru` that never evicts a wanted node), `quadtree` (slab + lookup-only map), `cull` (horizon cone, 4-plane frustum in f64), `select` (`Planet::select`, `height`).
