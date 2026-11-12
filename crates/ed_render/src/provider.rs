@@ -61,6 +61,9 @@ pub struct VisTargets {
     /// passes after the provider (the AO sky-visibility search). Costs one more `hzb` pass
     /// (~0.07 ms at 1280x720 on an M3 Pro); without it [`ProviderOutputs::hzb`] is `None`.
     pub final_hzb: bool,
+    /// An earlier provider already drew into `depth`, `vis` and the shadow atlas this frame
+    /// (the terrain provider, which draws first): load them instead of clearing.
+    pub preloaded: bool,
 }
 
 /// The cascade atlas a provider draws sun shadow casters into: `cascades` square tiles of
@@ -742,7 +745,7 @@ impl GeometryProvider for DiscreteLod {
         let idx_id = inp.indices.2;
         let raster = |g: &mut FrameGraph<'a>, name, phase: u32, first: bool| {
             let timer = draw_loop.clone();
-            let (cl, dl) = if first { (LoadOp::Clear([0.0; 4]), LoadOp::Clear([0.0; 4])) } else { (LoadOp::Load, LoadOp::Load) };
+            let (cl, dl) = if first && !out.preloaded { (LoadOp::Clear([0.0; 4]), LoadOp::Clear([0.0; 4])) } else { (LoadOp::Load, LoadOp::Load) };
             g.add_pass(name, PassKind::Raster)
                 .read(inp.frame.0, ResourceState::ShaderRead)
                 .read(inp.instances.0, ResourceState::ShaderRead)
@@ -824,6 +827,7 @@ impl GeometryProvider for DiscreteLod {
             });
             let svc_base = [inp.frame.1, inp.instances.1, inp.nodes.1, v.shadow_visible.bindless.0, inp.verts.1];
             let (n, tile) = (sh.cascades.min(4), sh.tile);
+            let atlas_load = if out.preloaded { LoadOp::Load } else { LoadOp::Clear([0.0; 4]) };
             g.add_pass("shadow_raster", PassKind::Raster)
                 .read(inp.frame.0, ResourceState::ShaderRead)
                 .read(inp.instances.0, ResourceState::ShaderRead)
@@ -832,7 +836,7 @@ impl GeometryProvider for DiscreteLod {
                 .read(inp.indices.0, ResourceState::ShaderRead)
                 .read(svis, ResourceState::ShaderRead)
                 .read(sargs, ResourceState::IndirectArgs)
-                .depth(sh.atlas, LoadOp::Clear([0.0; 4]), StoreOp::Store, true)
+                .depth(sh.atlas, atlas_load, StoreOp::Store, true)
                 .exec(move |ctx| {
                     if s == 0 {
                         return;

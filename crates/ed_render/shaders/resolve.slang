@@ -19,6 +19,7 @@
 #include "shader_abi.slang"
 #include "common.slang"
 #include "lighting.slang"
+#include "terrain_common.slang"
 
 struct ResolveC {
     uint frame;
@@ -33,7 +34,10 @@ struct ResolveC {
     uint smp;       // bindless: linear, mipmapped, repeat, anisotropic
     uint shadow;    // bindless depth texture: the cascade atlas (when shadows are on)
     uint ao;        // bindless buffer: half-res AO (when AO is on)
-    uint pad[4];
+    uint t_draws;   // bindless buffer: the terrain provider's TerrainDraw table (terrain on)
+    uint t_pool;    // bindless buffer: the terrain height page pool (terrain on)
+    uint t_on;      // 1: a terrain provider drew this frame
+    uint pad[1];
 };
 ED_CONSTANTS(ResolveC)
 
@@ -129,14 +133,96 @@ float2 uv_xform(GpuMaterial m, float2 uv) {
     return float2(c * q.x + s * q.y, -s * q.x + c * q.y) + m.uv.xy;
 }
 
-[shader("fragment")]
-float4 fs_resolve(FsOut i) : SV_Target0 {
+// Terrain albedo (P-slice S1): a slope and altitude tint until real land cover arrives.
+// Albedos are physical (linear, 0..1); heights metres above the ellipsoid; slopes as the cosine
+// between the smooth normal and local up.
+static const float3 T_ALB_FOREST = float3(0.055, 0.075, 0.040);  // forest canopy
+static const float3 T_ALB_MEADOW = float3(0.125, 0.140, 0.070);  // grass, alpine meadow
+static const float3 T_ALB_ROCK = float3(0.210, 0.200, 0.185);    // bare rock, scree
+static const float3 T_ALB_SNOW = float3(0.800, 0.820, 0.860);    // old snow, firn
+static const float2 T_TREELINE_M = float2(1950.0, 2350.0);       // forest -> meadow
+static const float2 T_SNOWLINE_M = float2(2750.0, 3050.0);       // snow on gentle slopes above
+static const float2 T_ROCK_COS = float2(0.82, 0.72);             // 35 -> 44 deg: plants -> rock
+static const float2 T_SNOW_COS = float2(0.55, 0.70);             // snow holds below ~50 deg
+static const float T_ROUGH = 0.92;
+static const float T_SLOPE_M = 24.0;                             // material slope footprint (m)
+
+float3 terrain_albedo(float h, float slope_cos) {
+    float3 veg = lerp(T_ALB_FOREST, T_ALB_MEADOW, smoothstep(T_TREELINE_M.x, T_TREELINE_M.y, h));
+    float rock = smoothstep(T_ROCK_COS.x, T_ROCK_COS.y, slope_cos);
+    float3 a = lerp(veg, T_ALB_ROCK, rock);
+    float snow = smoothstep(T_SNOWLINE_M.x, T_SNOWLINE_M.y, h) * smoothstep(T_SNOW_COS.x, T_SNOW_COS.y, slope_cos);
+    return lerp(a, T_ALB_SNOW, snow);
+}
+
+// A terrain pixel: the rasterised triangle refetched from the draw record and page pool (exact
+// position on the drawn facet), a smooth normal from the height page, the slope/altitude tint,
+// then the same light as every opaque pixel.
+float4 terrain_pixel(FrameData* f, FsOut i, uint2 vis, float3 dir) {
+    TerrainDraw d = ed_buf<TerrainDraw>(ed_c.t_draws)[vis.x & ~TERRAIN_VIS_BIT];
+    uint pool = ed_c.t_pool;
+    uint3 tri = t_triangle(vis.y & 0x0FFFFFFFu);
+    float3 p0 = t_vertex(pool, d, tri.x);
+    float3 e1 = t_vertex(pool, d, tri.y) - p0;
+    float3 e2 = t_vertex(pool, d, tri.z) - p0;
+    float2 bb = ray_bary(dir, p0, e1, e2);
+    float b1 = saturate(bb.x);
+    float b2 = saturate(bb.y);
+    float bs = b1 + b2;
+    if (bs > 1.0) {
+        b1 /= bs;
+        b2 /= bs;
+    }
+    float b0 = 1.0 - b1 - b2;
+    float3 p = p0 + e1 * b1 + e2 * b2;  // camera-relative
+    float2 g = t_vertex_grid(tri.x) * b0 + t_vertex_grid(tri.y) * b1 + t_vertex_grid(tri.z) * b2;
+    float3 up;
+    float h;
+    float3 n = t_smooth_normal(pool, d, g, 1, up, h);
+    // Material slope over ~T_SLOPE_M: the landform, not source noise (lossy DEM tiles).
+    int r = clamp(int(T_SLOPE_M / max(t_sample_spacing(d, g), 0.01) + 0.5), 1, 6);
+    float3 nm = r == 1 ? n : t_smooth_normal(pool, d, g, r, up, h);
+    float3 albedo = terrain_albedo(h, dot(nm, up));
+    float3 v = -dir;
+    if (dot(n, v) < 0.0) {
+        n = normalize(n - 1.01 * dot(n, v) * v);
+    }
+    float zlin = -mul(f.view, float4(p, 1.0)).z;
+    float3 ng = cross(e1, e2);
+    ng = length_squared(ng) > 1e-20 ? normalize(ng) : n;
+    if (dot(ng, v) < 0.0) {
+        ng = -ng;
+    }
+    float sun_vis = sun_shadow(f, ed_c.shadow, p, ng, zlin, i.pos.xy);
+    float2 occ = ao_upsample(f, ed_c.ao, i.pos.xy, zlin);
+    float ao = occ.x;
+    float sv = occ.y;
+    float3 sun = sun_light_at(f, p);
+    float3 col = shade_pbr(f, sun, albedo, 0.0, T_ROUGH, ao, sv, sun_vis, n, v);
+    col = apply_aerial(f, col, p, i.pos.xy);
+    if (f.light.flags.w == 1u) {
+        static const float3 TINT[5] = { float3(1.0, 0.25, 0.25), float3(0.25, 1.0, 0.25), float3(0.3, 0.45, 1.0), float3(1.0, 1.0, 0.25), float3(0.6, 0.6, 0.6) };
+        col = TINT[shadow_cascade(f, p, zlin)] * (0.04 + 0.5 * sun_vis);
+    } else if (f.light.flags.w == 2u) {
+        col = float3(0.5 * ao);
+    } else if (f.light.flags.w == 4u) {
+        col = float3(0.5 * sv);
+    }
+    return float4(col, 1.0);
+}
+
+// The resolve; `terrain` is a compile-time constant per entry point, so `fs_resolve` (no
+// terrain provider) compiles to exactly the code it had before terrain existed.
+float4 resolve_px(FsOut i, bool terrain) {
     FrameData* f = ed_buf<FrameData>(ed_c.frame);
     uint2 px = uint2(i.pos.xy);
     uint2 vis = ed_tex2d_uint(ed_c.vis).Load(int3(int2(px), 0)).xy;
     float3 dir = view_dir(f, i.pos.xy);
     if (vis.x == 0) {
         return float4(sky_pixel(f, dir), 1.0);
+    }
+    if (terrain && (vis.x & TERRAIN_VIS_BIT) != 0) {
+        return terrain_pixel(f, i, vis, dir);
     }
     GpuInstance inst = ed_buf<GpuInstance>(ed_c.instances)[vis.x - 1u];
     GpuMesh* mesh = ed_buf<GpuMesh>(ed_c.meshes) + inst.mesh;
@@ -259,4 +345,15 @@ float4 fs_resolve(FsOut i) : SV_Target0 {
         col = float3(0.5 * sv);
     }
     return float4(col, 1.0);
+}
+
+[shader("fragment")]
+float4 fs_resolve(FsOut i) : SV_Target0 {
+    return resolve_px(i, false);
+}
+
+// With the terrain provider: terrain vis words (`TERRAIN_VIS_BIT`) shade as terrain.
+[shader("fragment")]
+float4 fs_resolve_terrain(FsOut i) : SV_Target0 {
+    return resolve_px(i, true);
 }

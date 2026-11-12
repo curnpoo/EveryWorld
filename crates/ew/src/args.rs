@@ -19,6 +19,8 @@ OPTIONS:
   --out DIR                    headless output directory (default target/headless)
   --path orbit|static|proving  headless camera path (default orbit; proving implies
                                --scene proving)
+  --path zermatt|blueridge     headless real terrain from EARTHDROP_CACHE (offline; no
+                               scene loaded): ground level, then a climb
   --scene test|proving         what to load (windowed default proving; headless default
                                test, or proving with --path proving)
   --speed X                    camera path speed multiplier (default 1)
@@ -234,7 +236,9 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Option<Args>, Str
                     Some("orbit") => PathKind::Orbit,
                     Some("static") => PathKind::Static,
                     Some("proving") => PathKind::Proving,
-                    v => return Err(format!("--path: expected orbit|static|proving, got {v:?}")),
+                    Some("zermatt") => PathKind::Zermatt,
+                    Some("blueridge") => PathKind::BlueRidge,
+                    v => return Err(format!("--path: expected orbit|static|proving|zermatt|blueridge, got {v:?}")),
                 }
             }
             other => return Err(format!("unknown argument {other:?} (see --help)")),

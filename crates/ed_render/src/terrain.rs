@@ -727,6 +727,7 @@ impl GeometryProvider for TerrainProvider {
     fn prepare(&mut self, dev: &dyn Device, _pools: &InstancePools, _width: u32, _height: u32, fd: &mut [u32]) -> Result<(), ed_gpu::Error> {
         let v = &mut self.views[self.cur];
         if v.entries.is_empty() {
+            v.ranges = [(0, 0); 4];
             return Ok(());
         }
         let mut words: Vec<u32> = v.entries.iter().flat_map(|e| e.words()).collect();

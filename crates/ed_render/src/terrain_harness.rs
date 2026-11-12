@@ -135,9 +135,11 @@ impl Source {
     }
 }
 
-/// ed_data's `lattice_geodetic`: unit vector scaled by the WGS84 radii, Bowring. (lat, lon) deg.
+/// ed_data's `lattice_geodetic`: the ellipsoid point straight along `d` (`d * r(d)`, where
+/// ed_planet places the lattice sample), Bowring. (lat, lon) deg.
 fn latlon(d: DVec3) -> (f64, f64) {
-    let (x, y, z) = (d.x * WGS84_A, d.y * WGS84_A, d.z * WGS84_B);
+    let r = 1.0 / ((d.x * d.x + d.y * d.y) / (WGS84_A * WGS84_A) + d.z * d.z / (WGS84_B * WGS84_B)).sqrt();
+    let (x, y, z) = (d.x * r, d.y * r, d.z * r);
     let lon = y.atan2(x);
     let r = (x * x + y * y).sqrt();
     if r < 1e-6 {
@@ -153,7 +155,7 @@ fn latlon(d: DVec3) -> (f64, f64) {
 /// Inverse of [`latlon`] at the surface: the body direction whose data is at (lat, lon).
 fn dir_of(lat: f64, lon: f64) -> DVec3 {
     let e = ed_geo::Geodetic::new(lat, lon, 0.0).to_ecef();
-    DVec3::new(e.x / WGS84_A, e.y / WGS84_A, e.z / WGS84_B).normalize()
+    DVec3::new(e.x, e.y, e.z).normalize()
 }
 
 struct Resident {
@@ -349,7 +351,7 @@ impl Gpu {
         let depth = g.create_texture("depth", TextureInfo { format: DEPTH_FORMAT, width: w, height: h });
         let atlas = g.create_texture("atlas", TextureInfo { format: DEPTH_FORMAT, width: 2 * SHADOW_TILE, height: 2 * SHADOW_TILE });
         let inp = SharedInputs { frame: (fr, self.frame.bindless.0), instances: (fr, 0), nodes: (fr, 0), verts: (fr, 0), indices: (fr, 0, self.frame.id), slots: 0 };
-        let out = VisTargets { depth, vis, shadow: Some(ShadowTargets { atlas, cascades: 4, tile: SHADOW_TILE }), final_hzb: false };
+        let out = VisTargets { depth, vis, shadow: Some(ShadowTargets { atlas, cascades: 4, tile: SHADOW_TILE }), final_hzb: false, preloaded: false };
         tp.record(&mut g, 0, &inp, out);
         let rb = g.import_buffer("vis readback", self.readback, ResourceState::Undefined, None);
         let pitch = VIS_FORMAT.copy_row_pitch(w);

@@ -28,6 +28,8 @@ pub struct ShaderSources {
     pub lighting: String,
     pub atmos: String,
     pub atmos_tables: String,
+    /// Terrain vertex rule (`terrain_common.slang`), included by `resolve` for terrain pixels.
+    pub terrain_common: String,
     pub ao: String,
     pub resolve: String,
     pub tonemap: String,
@@ -103,11 +105,12 @@ impl Module {
 impl ShaderSources {
     /// File names in a shader directory, in field order (after `abi`, which lives in ed_gpu:
     /// see [`Self::abi_path`]).
-    pub const FILES: [&'static str; 13] = [
+    pub const FILES: [&'static str; 14] = [
         "common.slang",
         "lighting.slang",
         "atmos.slang",
         "atmos_tables.slang",
+        "terrain_common.slang",
         "ao.slang",
         "resolve.slang",
         "tonemap.slang",
@@ -127,6 +130,7 @@ impl ShaderSources {
             lighting: include_str!("../shaders/lighting.slang").into(),
             atmos: include_str!("../shaders/atmos.slang").into(),
             atmos_tables: include_str!("../shaders/atmos_tables.slang").into(),
+            terrain_common: include_str!("../shaders/terrain_common.slang").into(),
             ao: include_str!("../shaders/ao.slang").into(),
             resolve: include_str!("../shaders/resolve.slang").into(),
             tonemap: include_str!("../shaders/tonemap.slang").into(),
@@ -153,6 +157,7 @@ impl ShaderSources {
             lighting: r("lighting.slang")?,
             atmos: r("atmos.slang")?,
             atmos_tables: r("atmos_tables.slang")?,
+            terrain_common: r("terrain_common.slang")?,
             ao: r("ao.slang")?,
             resolve: r("resolve.slang")?,
             tonemap: r("tonemap.slang")?,
@@ -205,7 +210,7 @@ macro_rules! builtin_set {
 
 // Every entry point of every module (a missing generated file fails the build).
 builtin_set! {
-    Resolve "resolve" ["vs_resolve", "fs_resolve"],
+    Resolve "resolve" ["vs_resolve", "fs_resolve", "fs_resolve_terrain"],
     Tonemap "tonemap" ["vs_fullscreen", "fs_tonemap"],
     Debug "debug" ["pick", "pop_stats"],
     Skin "skin" ["skin"],
@@ -250,6 +255,7 @@ impl ShaderSet {
                     ("common.slang", &src.common),
                     ("lighting.slang", &src.lighting),
                     ("atmos.slang", &src.atmos),
+                    ("terrain_common.slang", &src.terrain_common),
                     ("shader_abi.slang", &src.abi),
                 ],
             )

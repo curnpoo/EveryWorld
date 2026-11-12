@@ -369,6 +369,9 @@ impl Tracked {
 struct Pipelines {
     built: Built,
     resolve: RenderPipelineId,
+    /// The resolve with the terrain branch (`fs_resolve_terrain`), used while a terrain
+    /// provider is registered.
+    resolve_terrain: RenderPipelineId,
     tonemap_vs: ShaderId,
     tonemap_fs: ShaderId,
     /// Tonemap pipelines per output format, created on first use (not part of `built`).
@@ -398,22 +401,22 @@ impl Pipelines {
     fn build(dev: &dyn Device, src: &ShaderSet, b: &mut Built) -> Result<Self, ed_gpu::Error> {
         let vs = b.shader(dev, src, Module::Resolve, "resolve vs", ShaderStage::Vertex, "vs_resolve")?;
         let fs = b.shader(dev, src, Module::Resolve, "resolve fs", ShaderStage::Fragment, "fs_resolve")?;
+        let fs_terrain = b.shader(dev, src, Module::Resolve, "resolve terrain fs", ShaderStage::Fragment, "fs_resolve_terrain")?;
         let tonemap_vs = b.shader(dev, src, Module::Tonemap, "tonemap vs", ShaderStage::Vertex, "vs_fullscreen")?;
         let tonemap_fs = b.shader(dev, src, Module::Tonemap, "tonemap fs", ShaderStage::Fragment, "fs_tonemap")?;
-        let resolve = b.render(
-            dev,
-            &RenderPipelineDesc {
-                label: "resolve",
-                vertex: vs,
-                fragment: Some(fs),
-                color_formats: &[HDR_FORMAT],
-                blend: Blend::Opaque,
-                depth: None,
-                cull: Cull::None,
-                topology: Topology::Triangles,
-                samples: 1,
-            },
-        )?;
+        let desc = |label, fs| RenderPipelineDesc {
+            label,
+            vertex: vs,
+            fragment: Some(fs),
+            color_formats: &[HDR_FORMAT],
+            blend: Blend::Opaque,
+            depth: None,
+            cull: Cull::None,
+            topology: Topology::Triangles,
+            samples: 1,
+        };
+        let resolve = b.render(dev, &desc("resolve", fs))?;
+        let resolve_terrain = b.render(dev, &desc("resolve terrain", fs_terrain))?;
         let pick = b.compute(dev, src, Module::Debug, "pick", [1, 1, 1])?;
         let pop = b.compute(dev, src, Module::Debug, "pop_stats", [8, 8, 1])?;
         let skin = b.compute(dev, src, Module::Skin, "skin", [SKIN_GROUP, 1, 1])?;
@@ -421,7 +424,7 @@ impl Pipelines {
         let atmos = atmosphere::AtmosPipes::build(dev, src, b)?;
         let overlay_vs = b.shader(dev, src, Module::Overlay, "overlay vs", ShaderStage::Vertex, "vs_overlay")?;
         let overlay_fs = b.shader(dev, src, Module::Overlay, "overlay fs", ShaderStage::Fragment, "fs_overlay")?;
-        Ok(Self { built: std::mem::take(b), resolve, tonemap_vs, tonemap_fs, tonemap: Vec::new(), pick, pop, skin, ao, atmos, overlay_vs, overlay_fs, overlay: Vec::new() })
+        Ok(Self { built: std::mem::take(b), resolve, resolve_terrain, tonemap_vs, tonemap_fs, tonemap: Vec::new(), pick, pop, skin, ao, atmos, overlay_vs, overlay_fs, overlay: Vec::new() })
     }
     fn destroy(mut self, dev: &dyn Device) {
         for (_, p) in self.tonemap.drain(..) {
@@ -541,6 +544,9 @@ pub struct Renderer {
     /// Slots whose data has been flushed (the culling dispatch covers these).
     slots_flushed: u32,
     lod: DiscreteLod,
+    /// Optional terrain provider (Phase 2, P-slice S1): draws before provider 1 into the same
+    /// targets, so occlusion culling and the AO pyramid see the ground.
+    terrain: Option<terrain::TerrainProvider>,
     /// Per-view state, index = [`ViewFlags::slot`] (slot 0 exists from the start).
     views: Vec<ViewSlot>,
     /// Shared by all views: run it in one view at a time.
@@ -645,6 +651,7 @@ impl Renderer {
         Ok(Self {
             desc: *desc,
             lod: DiscreteLod::new(dev, src, desc.max_instances, desc.max_meshes, desc.lod)?,
+            terrain: None,
             pipes,
             vertices,
             uvs,
@@ -1063,6 +1070,9 @@ impl Renderer {
             self.materials_dirty = false;
         }
         self.lod.flush(dev, &self.pools)?;
+        if let Some(t) = &mut self.terrain {
+            t.flush(dev, &self.pools)?;
+        }
         Ok(st)
     }
 
@@ -1074,6 +1084,12 @@ impl Renderer {
                 let mut v = Vec::new();
                 if self.skins.iter().any(Option::is_some) {
                     v.push("skin");
+                }
+                if self.terrain.is_some() {
+                    v.push("terrain");
+                    if self.lighting.shadows {
+                        v.push("terrain_shadow");
+                    }
                 }
                 v.extend_from_slice(self.lod.pass_names());
                 if self.lighting.ao && self.lighting.sky_vis {
@@ -1158,6 +1174,9 @@ impl Renderer {
             return Err(ed_gpu::Error::Invalid(format!("view slot {si} not prepared: call Renderer::prepare_views outside a frame")).into());
         }
         self.lod.set_view(dev, si)?;
+        if let Some(t) = &mut self.terrain {
+            t.set_view(dev, si)?;
+        }
         let overlay_n = (self.overlay_lines.len() + self.overlay_tris.len()).min(MAX_OVERLAY_VERTICES as usize);
         let overlay = view.flags.overlay && overlay_n > 0;
         let overlay_pipes = if overlay { Some(self.overlay_pipelines(dev, view.target.format)?) } else { None };
@@ -1229,6 +1248,10 @@ impl Renderer {
         let ao_on = scene && lighting.ao;
         let lw = light::light_words(&LightingSettings { ao: ao_on, ..lighting }, &cplan, &sh, (ao_w, ao_h), 1.0);
         fd[FD_LIGHT..FD_LIGHT + light::LIGHT_WORDS].copy_from_slice(&lw);
+        // Terrain culls its casters per cascade: after the cascade matrices are in `fd`.
+        if let (true, Some(t)) = (scene, &mut self.terrain) {
+            t.prepare(dev, &self.pools, w, h, &mut fd)?;
+        }
         if scene {
             self.atmos.prepare(dev, si, cam.position, sky.sun_dir, &lighting, &mut fd)?;
         }
@@ -1317,7 +1340,10 @@ impl Renderer {
                 let atlas = g.create_texture("shadow atlas", TextureInfo { format: DEPTH_FORMAT, width: aw, height: ah });
                 ShadowTargets { atlas, cascades: cplan.count, tile: cplan.tile }
             });
-            let po = self.lod.record(&mut g, frame_index, &inputs, VisTargets { depth, vis, shadow, final_hzb: ao_on && lighting.sky_vis });
+            // Terrain first (it clears the targets), so provider 1's occlusion pyramid and the
+            // final pyramid the AO sky-visibility search reads both contain the ground.
+            let to = self.terrain.as_mut().map(|t| t.record(&mut g, frame_index, &inputs, VisTargets { depth, vis, shadow, final_hzb: false, preloaded: false }));
+            let po = self.lod.record(&mut g, frame_index, &inputs, VisTargets { depth, vis, shadow, final_hzb: ao_on && lighting.sky_vis, preloaded: to.is_some() });
             if ao_on {
                 let (a, b, _, _) = self.views[si].ao.as_ref().expect("allocated above");
                 let (ra, rb) = (g.import_buffer("ao raw", a.id, a.state, None), g.import_buffer("ao", b.id, b.state, None));
@@ -1359,8 +1385,11 @@ impl Renderer {
                 self.sampler.1.0,
                 0, // shadow atlas: a transient, known in the pass
                 self.views[si].ao.as_ref().filter(|_| ao_on).map_or(0, |a| a.1.bindless.0),
+                to.as_ref().map_or(0, |t| t.meshes.1), // terrain draw table (0: no terrain)
+                to.as_ref().map_or(0, |t| t.state.1),  // terrain height page pool
+                to.is_some() as u32,
             ]);
-            let resolve = self.pipes.resolve;
+            let resolve = if to.is_some() { self.pipes.resolve_terrain } else { self.pipes.resolve };
             let atlas = shadow.map(|s| s.atlas);
             let mut rp = g.add_pass("resolve", PassKind::Raster);
             if let Some(a) = atlas {
@@ -1371,6 +1400,9 @@ impl Renderer {
             }
             for r in atmos_frame.iter().flat_map(|a| a.reads()) {
                 rp = rp.read(r, ResourceState::ShaderRead);
+            }
+            if let Some(t) = &to {
+                rp = rp.read(t.meshes.0, ResourceState::ShaderRead).read(t.state.0, ResourceState::ShaderRead);
             }
             rp
                 .read(fd_res, ResourceState::ShaderRead)
@@ -1539,6 +1571,9 @@ impl Renderer {
         }
         if scene {
             self.lod.finish(&plan);
+            if let Some(t) = &mut self.terrain {
+                t.finish(&plan);
+            }
             let fs = |r: graph::Res| plan.final_states[r.index()];
             self.views[si].nodes_buf.state = fs(imports[0]);
             self.vertices.state = fs(imports[1]);
@@ -1602,6 +1637,30 @@ impl Renderer {
         self.lod.take_history()
     }
     /// Provider 1, for its counters and settings.
+    /// Registers the terrain provider (or removes it with `None`; the old one is destroyed
+    /// after the GPU is idle). It draws before provider 1 and clears the shared targets, so its
+    /// `clear_targets` is forced on. Without one the frame is exactly the provider-1 frame.
+    /// Feed it each frame with [`terrain::TerrainProvider::update`] (through
+    /// [`Renderer::terrain_mut`]) before [`Renderer::flush_uploads`].
+    pub fn set_terrain(&mut self, dev: &dyn Device, t: Option<terrain::TerrainProvider>) {
+        if let Some(old) = self.terrain.take() {
+            dev.wait_idle();
+            Box::new(old).destroy(dev);
+        }
+        self.terrain = t.map(|mut t| {
+            t.config.clear_targets = true;
+            t
+        });
+    }
+
+    pub fn terrain(&self) -> Option<&terrain::TerrainProvider> {
+        self.terrain.as_ref()
+    }
+
+    pub fn terrain_mut(&mut self) -> Option<&mut terrain::TerrainProvider> {
+        self.terrain.as_mut()
+    }
+
     pub fn lod_provider(&self) -> &DiscreteLod {
         &self.lod
     }
@@ -1704,6 +1763,9 @@ impl Renderer {
         dev.unbind_sampler(self.sampler.1);
         dev.destroy_sampler(self.sampler.0);
         Box::new(self.lod).destroy(dev);
+        if let Some(t) = self.terrain {
+            Box::new(t).destroy(dev);
+        }
         if let Some((r, _, _)) = self.pop_ring {
             r.destroy(dev);
         }

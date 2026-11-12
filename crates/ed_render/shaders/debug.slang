@@ -43,6 +43,9 @@ void pick(uint3 tid: SV_DispatchThreadID) {
     if (ed_c.x < ed_c.w && ed_c.y < ed_c.h) {
         v = ed_tex2d_uint(ed_c.vis).Load(int3(int(ed_c.x), int(ed_c.y), 0)).xy;
     }
+    if ((v.x & 0x80000000u) != 0) {
+        v.x = 0;  // terrain (TERRAIN_VIS_BIT): not an instance, nothing picked
+    }
     o[0] = v.x;
     o[1] = v.x == 0 ? 0u : ed_buf<GpuInstance>(ed_c.instances)[v.x - 1u].object_lo;
     o[2] = v.y;
@@ -77,7 +80,7 @@ void pop_stats(uint3 tid: SV_DispatchThreadID) {
             sum += dot(col, float3(0.2126, 0.7152, 0.0722));
             n += 1;
             uint id = vis.Load(int3(int2(p), 0)).x;
-            if (id != 0) {
+            if (id != 0 && (id & 0x80000000u) == 0) {
                 uint st = state[id - 1u];
                 if (((st >> ST_FADE_SHIFT) & 63u) != 0 || (st & ST_CHANGED) != 0) {
                     trans += 1;

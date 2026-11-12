@@ -86,6 +86,22 @@ pub enum PathKind {
     /// The M2 proving ground ([`crate::proving::path_pose`]): street level, rooftop pass, long
     /// sight line; 10 s at speed 1, then repeats.
     Proving,
+    /// Real terrain (P-slice S1): Zermatt toward the Matterhorn, then a climb
+    /// ([`crate::terrain::path_pose`]); 10 s at speed 1.
+    Zermatt,
+    /// Real terrain: the Black Mountains (Blue Ridge) toward Mount Mitchell, then a climb.
+    BlueRidge,
+}
+
+impl PathKind {
+    /// The real-terrain place of a terrain path.
+    pub fn place(self) -> Option<&'static crate::terrain::Place> {
+        match self {
+            PathKind::Zermatt => Some(&crate::terrain::ZERMATT),
+            PathKind::BlueRidge => Some(&crate::terrain::BLUE_RIDGE),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -123,6 +139,7 @@ impl ScriptedPath {
                 Pose::from_camera(&Camera::look_at(pos, focus))
             }
             PathKind::Proving => crate::proving::path_pose(step as f64 / 60.0 * speed),
+            PathKind::Zermatt | PathKind::BlueRidge => crate::terrain::path_pose(kind.place().expect("terrain path"), step as f64 / 60.0 * speed),
         }
     }
 

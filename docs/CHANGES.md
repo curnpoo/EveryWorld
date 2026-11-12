@@ -1,3 +1,29 @@
+## 2026-11-12: P-slice S3 — terrain collision from the render heights
+
+- **What:** `ed_planet::collide::node_surface` builds a node's 65×65 grid in the sim frame with the renderer's exact rule (`dir·(r(dir)+h)`, page stride 4, 00–11 diagonal), f64 then node-relative f32. `ew::terrain_collide::TerrainCollision` keeps static mesh bodies for the 3×3 level-16 nodes (~2.4 m spacing) around the player, falling back to the nearest resident ancestor, in sorted `NodeId` order.
+- **Frame:** `ed_planet::Anchor` is the one local frame: sim = ENU (z up) at an ellipsoid anchor, render = (E, U, −N), `Anchor::render_pose()` feeds the renderer.
+- **Checked:** 25° synthetic slope: settle and a 60 m walk up and back, feet on the render triangle within 0.1 mm. Real Zermatt (`--include-ignored`): same on slopes ≤ 30°.
+- **Open:** the `ed_sim` mover floats 0.10–0.17 m on facets ≥ ~38° (its down ray is contact depth + 0.1 m, `mover.rs` ~240). Gravity is uniform −z: the anchor must re-base beyond ~1 km. Geometry is never freed (one mesh per visited node).
+- **Mac check:** none (headless tests).
+
+## 2026-11-12: P-slice S1 — terrain in the frame
+
+- **What:** `Renderer::set_terrain` registers the W3 `TerrainProvider`. It records first; provider 1 then loads the targets (`VisTargets::preloaded`), so the final HZB, AO sky visibility and the shadow atlas include terrain. Resolve uses a separate `fs_resolve_terrain` pipeline with a smooth page normal and a slope/altitude tint (forest/meadow, rock above 35–44°, snow above 2750–3050 m on gentle slopes; ~24 m footprint for the material slope).
+- **App:** `ew --headless --path zermatt|blueridge` (`crates/ew/src/terrain.rs`: offline cache source, `PageStore` residency, `TerrainWorld`). Pages build synchronously; headless settles every frame.
+- **Harness** now uses the `d·r(d)` rule. Gate: 0 holes, no skirt run over 1 px; skirts off 14 crack px, widest 1 px.
+- **Proving unchanged:** frame, street and rooftop PNGs byte-identical to HEAD (a runtime branch in one resolve shader gave 1-LSB diffs, hence the second pipeline).
+- **Cost (M3 Pro):**
+
+  | Run | terrain | terrain shadow | frame |
+  |---|---|---|---|
+  | harness 1440p, 1 m AGL | 2.70 ms | 4.73 ms | — |
+  | harness 1440p, 10 km | 1.63 ms | 0.69 ms | — |
+  | ew 1600×900 zermatt | 1.80 ms | 0.67 ms (p99 10.9) | 5.47 ms (p99 14.3) |
+  | ew 1600×900 blueridge | 1.75 ms | 0.45 ms | 5.12 ms |
+
+- **Open:** shadow p99 on low frames (~300 cascade draws) is S6. Faint ripple from lossy DEM in close lighting. Cache holds z14; z15+ is upsampled. Windowed needs async page loads.
+- **Mac check:** none yet (headless shots looked right: Matterhorn, snow/rock/meadow bands, Black Mountains with haze).
+
 ## 2026-11-12: Node heights sampled where `ed_planet` draws them (10 km placement fix)
 
 - **The bug:** `ed_data::node_heights` sampled lattice direction `d` at the geodetic point of `(d.x·A, d.y·A, d.z·B)`. `ed_planet` draws that sample at `d·r(d)`, the ellipsoid point straight along `d`. The two are about 10.7 km apart at 46°N.

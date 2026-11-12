@@ -57,7 +57,21 @@ pub fn run(args: &Args) -> Result<Report, String> {
     let mut scene_lines = String::new();
     let mut content: Option<crate::content::Content> = None;
     let mut instance_count = 0usize;
-    if !args.empty {
+    // Real terrain paths (P-slice S1): the terrain provider and its world, no scene.
+    let place = args.path.place().filter(|_| !args.empty);
+    let mut world = match place {
+        Some(p) => {
+            let root = crate::terrain::cache_root();
+            let w = crate::terrain::TerrainWorld::new(&root, p);
+            renderer.set_terrain(&*dev, Some(w.provider(&*dev).map_err(|e| format!("terrain provider: {e}"))?));
+            let _ = writeln!(scene_lines, "scene: terrain {} from {} (zooms {:?}), anchor {:.4},{:.4}", p.name, root.display(), w.source().zooms(), p.lat, p.lon);
+            Some(w)
+        }
+        None => None,
+    };
+    let mut terrain_ms = 0.0f64;
+    let mut terrain_last = (crate::terrain::WorldStats::default(), None);
+    if !args.empty && place.is_none() {
         match scene {
             SceneKind::Test => {
                 instance_count = TestScene::load(&mut renderer, &*dev).map_err(|e| format!("test scene: {e}"))?.len();
@@ -148,6 +162,14 @@ pub fn run(args: &Args) -> Result<Report, String> {
             }
         }
     }
+    if place.is_some() {
+        for (name, t) in [("low", crate::terrain::LOW_SHOT_S), ("mid", crate::terrain::MID_SHOT_S)] {
+            let f = (t * 60.0 / args.speed.max(1e-6)).round() as u64;
+            if f + 1 < frames {
+                shots.push((name, f, readback_buf(name)?));
+            }
+        }
+    }
 
     let mode = if args.empty { SceneMode::Empty } else { SceneMode::Scene };
     let all_passes = renderer.pass_names(&FrameParams { mode, pop_stats: args.pop, pick: Some((0, 0)), ..Default::default() });
@@ -194,6 +216,13 @@ pub fn run(args: &Args) -> Result<Report, String> {
         if let Some(c) = &content {
             // Simulation time of this frame's pose: the fixed step count (deterministic).
             c.animate(&mut renderer, (path.step + 1) as f64 / 60.0)?;
+        }
+        if let Some(wd) = &mut world {
+            // Headless: every wanted page is built before the frame (no holes, deterministic).
+            let tw = Instant::now();
+            let st = wd.update(&camera, [w, h], usize::MAX, true);
+            terrain_last = (st, wd.feed(&mut renderer));
+            terrain_ms += tw.elapsed().as_secs_f64() * 1e3;
         }
         let tf = Instant::now();
         let up = renderer.flush_uploads(&*dev).map_err(|e| format!("flush_uploads: {e}"))?;
@@ -301,6 +330,8 @@ pub fn run(args: &Args) -> Result<Report, String> {
         "ew --headless: {w}x{h}, {frames} frames, mode {}, path {:?} at speed {}, frames in flight {}, validation {}",
         if args.empty {
             "empty (clear + tonemap + overlay)"
+        } else if place.is_some() {
+            "real terrain"
         } else if scene == SceneKind::Proving {
             "proving ground"
         } else {
@@ -318,6 +349,14 @@ pub fn run(args: &Args) -> Result<Report, String> {
     }
     if let Some(s) = &session {
         footer.push_str(&session_lines(s, &renderer, warmup));
+    }
+    if world.is_some() {
+        let (st, ts) = &terrain_last;
+        let _ = writeln!(
+            footer,
+            "terrain: last frame {} drawn, {} wanted, {} holes, {} resident pages; page builds + selection {:.0} ms over the run; provider {:?}",
+            st.drawn, st.wanted, st.holes, st.resident, terrain_ms, ts
+        );
     }
     let _ = write!(
         footer,

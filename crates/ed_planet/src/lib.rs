@@ -12,6 +12,7 @@
 
 pub mod anchor;
 pub mod body;
+pub mod collide;
 pub mod cull;
 pub mod page;
 pub mod quadtree;

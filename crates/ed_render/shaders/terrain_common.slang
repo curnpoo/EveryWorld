@@ -224,3 +224,91 @@ uint3 t_triangle(uint prim) {
     uint b = T_GRID_VERTS + s1;
     return (k & 1u) == 0 ? uint3(a, b, tq) : uint3(a, tq, tp);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Resolve helpers (P-slice S1): the smooth surface under a terrain pixel.
+// ---------------------------------------------------------------------------------------------
+
+// `t_lattice` at fractional grid coordinates (same formulas).
+float3 t_lattice_f(TerrainDraw d, float2 g, float h, out float3 dir) {
+    float tu = tan((g.x - 32.0) * d.shape.x);
+    float tv = tan((g.y - 32.0) * d.shape.x);
+    float du = tu * (1.0 + d.fu.w * d.fu.w) / (1.0 - d.fu.w * tu);
+    float dv = tv * (1.0 + d.fv.w * d.fv.w) / (1.0 - d.fv.w * tv);
+    float3 delta = du * d.fu.xyz + dv * d.fv.xyz;
+    float lc = d.cc.w;
+    float k = 2.0 * dot(d.cc.xyz, delta) + dot(delta, delta);
+    float l = sqrt(lc * lc + k);
+    float3 dd = delta / l - d.cc.xyz * (k / ((lc + l) * l * lc));
+    dir = d.dir_c.xyz + dd;
+    float dzc = dot(d.dir_c.xyz, d.polar.xyz);
+    float ddz = dot(dd, d.polar.xyz);
+    float dz = dzc + ddz;
+    float e = d.shape.z;
+    float s = sqrt(1.0 - e * dz * dz);
+    float sc = d.shape.w;
+    float dr = d.shape.y * e * ddz * (dz + dzc) / (s * sc * (s + sc));
+    float r = d.dir_c.w + dr;
+    return dd * r + d.dir_c.xyz * dr + dir * h;
+}
+
+// Grid coordinates (i, j) of vertex `v` of the shared mesh (a skirt vertex: its edge vertex).
+float2 t_vertex_grid(uint v) {
+    if (v < T_GRID_VERTS) {
+        return float2(float(v % T_SIDE), float(v / T_SIDE));
+    }
+    return float2(t_ring(v - T_GRID_VERTS));
+}
+
+// Own page height at integer page sample (a, b), clamped to the page.
+float t_page_at(uint pool, TerrainDraw d, int a, int b) {
+    uint i = uint(clamp(a, 0, int(T_PAGE_N) - 1));
+    uint j = uint(clamp(b, 0, int(T_PAGE_N) - 1));
+    return t_page(pool, d.slots.x, i, j, d.hq.x, d.hq.y);
+}
+
+// Height (m) and gradient (m per grid cell, along i and j) of the own page at grid
+// coordinates `g`: bilinear heights, central-difference gradients (over +-`r` page samples)
+// at the four page samples around the point blended bilinearly (a smooth normal, not the
+// facet's; a wider `r` gives the landform slope, without source noise).
+void t_surface(uint pool, TerrainDraw d, float2 g, int r, out float h, out float2 dh) {
+    float2 s = clamp(g * float(T_PAGE_STRIDE), 0.0, float(T_PAGE_N - 1));
+    int2 s0 = int2(min(floor(s), float2(float(T_PAGE_N - 2))));
+    float2 t = s - float2(s0);
+    h = 0.0;
+    dh = float2(0.0);
+    for (uint k = 0; k < 4; k++) {
+        int2 q = s0 + int2(int(k & 1u), int(k >> 1));
+        float w = ((k & 1u) != 0 ? t.x : 1.0 - t.x) * ((k >> 1) != 0 ? t.y : 1.0 - t.y);
+        int2 lo = max(q - r, int2(0));
+        int2 hi = min(q + r, int2(int(T_PAGE_N) - 1));
+        float gx = (t_page_at(pool, d, hi.x, q.y) - t_page_at(pool, d, lo.x, q.y)) / float(hi.x - lo.x);
+        float gy = (t_page_at(pool, d, q.x, hi.y) - t_page_at(pool, d, q.x, lo.y)) / float(hi.y - lo.y);
+        h += w * t_page_at(pool, d, q.x, q.y);
+        dh += w * float2(gx, gy);
+    }
+    dh *= float(T_PAGE_STRIDE);
+}
+
+// Smooth outward normal and radial up at grid coordinates `g` (world axes); `h` the height;
+// gradients over +-`r` page samples (see `t_surface`).
+float3 t_smooth_normal(uint pool, TerrainDraw d, float2 g, int r, out float3 up, out float h) {
+    float2 dh;
+    t_surface(pool, d, g, r, h, dh);
+    const float e = 0.25;
+    float3 dir;
+    float3 pu = t_lattice_f(d, g + float2(e, 0.0), h, dir) - t_lattice_f(d, g - float2(e, 0.0), h, dir);
+    float3 pv = t_lattice_f(d, g + float2(0.0, e), h, dir) - t_lattice_f(d, g - float2(0.0, e), h, dir);
+    t_lattice_f(d, g, h, up);
+    up = normalize(up);
+    float3 tu = pu / (2.0 * e) + up * dh.x;
+    float3 tv = pv / (2.0 * e) + up * dh.y;
+    float3 n = normalize(cross(tu, tv));
+    return dot(n, up) < 0.0 ? -n : n;
+}
+
+// Page sample spacing (m) at grid coordinates `g` (along i).
+float t_sample_spacing(TerrainDraw d, float2 g) {
+    float3 dir;
+    return length(t_lattice_f(d, g + float2(0.5, 0.0), 0.0, dir) - t_lattice_f(d, g - float2(0.5, 0.0), 0.0, dir)) / float(T_PAGE_STRIDE);
+}
