@@ -182,9 +182,18 @@ fn shadow_regions_are_dark_in_every_cascade() {
     rig.destroy();
 }
 
+/// Shadowed surfaces in the `EW_LIGHT_DEBUG=shadow` view (settings.debug = 1): resolve writes
+/// `tint(cascade) * (0.04 + 0.5 * sun_visibility)` for every shaded pixel, so sun visibility 0
+/// is near black and visibility 1 is at least ~13x brighter, whatever the lighting palette.
+/// Sky pixels are not resolved surfaces and keep their (bright) sky colour, so they never match.
 fn shadow_mask(px: &[[u8; 4]]) -> Vec<bool> {
-    // Shadowed ground is lit by the blue sky only; lit ground and boxes are not blue-dominant.
-    px.iter().map(|p| p[2] as i32 > p[0] as i32 + 40 && (p[2] as i32) < 200).collect()
+    px.iter().map(|p| p[0].max(p[1]).max(p[2]) < 60).collect()
+}
+
+/// Pixels of the debug-view frame that are lit (sun visibility high) surfaces: bright, and
+/// well below the sky's brightness is not required; used only as a sanity count.
+fn lit_mask(px: &[[u8; 4]]) -> Vec<bool> {
+    px.iter().map(|p| p[0].max(p[1]).max(p[2]) >= 120).collect()
 }
 
 /// Pixels of `a` whose mask value appears nowhere within 1 px in `b` (an edge moved > 1 px).
@@ -208,6 +217,8 @@ fn cascade_edges_stable_under_subtexel_camera_moves() {
     let base = TestScene::test_camera();
     let settings = *rig.r().lighting();
     let texel = light::plan_cascades(&settings, &base, W as f32 / H as f32, sun()).cascade[0][0] as f64;
+    // Shadow-factor debug view: independent of the lighting palette and tint.
+    rig.r().set_lighting(LightingSettings { debug: 1, ..settings });
     let right = base.right().as_dvec3();
     let mut prev: Option<Vec<bool>> = None;
     let mut worst = 0;
@@ -215,9 +226,31 @@ fn cascade_edges_stable_under_subtexel_camera_moves() {
     for k in 0..12 {
         let mut cam = base;
         cam.position += right * (texel * 0.25 * k as f64);
+        // The render shows sub-pixel swim only below one screen pixel, so also check the cause
+        // directly: every cascade centre must sit on its light-space texel grid at every
+        // camera position (this is what keeps the shadow map's texel phase fixed).
+        let plan = light::plan_cascades(&settings, &cam, W as f32 / H as f32, sun());
+        let (lx, ly, _) = light::light_basis(sun());
+        for c in 0..plan.count as usize {
+            let t = plan.cascade[c][0] as f64;
+            for v in [plan.centres[c].dot(lx) / t, plan.centres[c].dot(ly) / t] {
+                assert!((v - v.round()).abs() < 1e-3, "frame {k}: cascade {c} centre off the texel grid ({v}): texel snapping is broken");
+            }
+        }
         rig.frame(cam, SceneMode::Scene, false);
         let px = rig.image(cam);
         let m = shadow_mask(&px);
+        if k == 0 {
+            dump(&px, "m4d_cascade_edges_debug");
+            // The mask must be shadowed ground, never sky: nothing in the top rows (above the
+            // horizon) may match, and lit surfaces must exist too (else it is all-dark).
+            let sky_rows = (H / 8) as usize * W as usize;
+            let in_sky = m[..sky_rows].iter().filter(|&&v| v).count();
+            let lit = lit_mask(&px).iter().filter(|&&v| v).count();
+            println!("shadow mask: {} px, of which {in_sky} in the top eighth (sky); lit {lit} px", m.iter().filter(|&&v| v).count());
+            assert_eq!(in_sky, 0, "the shadow mask selected sky pixels");
+            assert!(lit > 200, "debug view shows no lit surfaces ({lit} px)");
+        }
         shadowed.push(m.iter().filter(|&&v| v).count());
         if let Some(p) = &prev {
             worst = worst.max(moved_more_than_1px(p, &m)).max(moved_more_than_1px(&m, p));
