@@ -1,3 +1,11 @@
+## 2026-11-12: P-slice S2 — atmosphere on the curved planet
+
+- **Finding:** the atmosphere shaders already march spherically from the camera altitude along `atmos.up`; only the inputs were flat (up = +Y, altitude = `cam.y − surface_y`).
+- **What:** `AtmosphereSettings::ground: Option<CameraGround>`; when set, `prepare` takes camera altitude, up, sun cosine and ground altitude from `TerrainProvider::camera_ground`. `ed_render::atmosphere::apply_camera_ground(&mut Renderer, CameraGround)` for the app; headless terrain paths call it every frame. No shader changes, no GPU cost.
+- **Checked:** new model test (a level ray 100 km out matches the radial altitude within 1 m, camera 0 m to 10 km; ≈ 785 m drop). `ed_render` 46/46, `render_atmos` unchanged, proving frame byte-identical to HEAD. At ~7 km above Zermatt the haze band follows the curved horizon, no slab line.
+- **Open:** the sky-view tables treat the ground as sea level (deep valleys); the body is a sphere of the mean radius; other +Y-up assumptions outside the atmosphere (ambient SH basis) not reviewed.
+- **Mac check:** none.
+
 ## 2026-11-12: P-slice S3 — terrain collision from the render heights
 
 - **What:** `ed_planet::collide::node_surface` builds a node's 65×65 grid in the sim frame with the renderer's exact rule (`dir·(r(dir)+h)`, page stride 4, 00–11 diagonal), f64 then node-relative f32. `ew::terrain_collide::TerrainCollision` keeps static mesh bodies for the 3×3 level-16 nodes (~2.4 m spacing) around the player, falling back to the nearest resident ancestor, in sorted `NodeId` order.

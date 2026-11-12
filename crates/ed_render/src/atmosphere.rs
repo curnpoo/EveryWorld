@@ -21,6 +21,7 @@
 //! resolve 0.07 ms at 1280x720, 0.37 ms at 2560x1440, 0.45 ms at 2880x1800 (frame +0.2 / +0.45
 //! / +0.57 ms).
 
+use crate::terrain::CameraGround;
 use crate::atmosphere_model::{self as model, Body};
 use crate::graph::{FrameGraph, PassKind, Plan, Res};
 use crate::gpu::{FD_ATMOS, FD_SUN_DIR, constants};
@@ -50,6 +51,10 @@ pub struct AtmosphereSettings {
     pub surface_y: f64,
     /// Altitude (km) of that surface above the body's radius.
     pub surface_alt_km: f64,
+    /// The camera's place on the curved body (see [`apply_camera_ground`]). When set it replaces
+    /// the flat-world inputs: up, camera altitude and ground altitude come from it, and every
+    /// ray is integrated spherically about the body's centre, `camera - up * (R + alt)`.
+    pub ground: Option<CameraGround>,
     /// Froxel depth slices: exponential, `x = log(1 + t/n) / log(1 + D/n)`, inside the
     /// atmosphere (n, D) in km...
     pub ap_inside_km: (f32, f32),
@@ -66,6 +71,7 @@ impl Default for AtmosphereSettings {
             body: Body::earth(),
             surface_y: 0.0,
             surface_alt_km: 0.0,
+            ground: None,
             ap_inside_km: (0.1, 150.0),
             ap_outside_km: (1.0, 1200.0),
             debug: 0,
@@ -187,8 +193,16 @@ impl Atmosphere {
         let body = s.body;
         let ht = body.top_km - body.radius_km;
         let sun = sun.normalize_or(Vec3::Y);
-        let h_cam = ((cam.y - s.surface_y) * 1e-3 + s.surface_alt_km).max(0.0005);
-        let h_surf = s.surface_alt_km.max(0.0) + 0.002;
+        // Flat world: up is +Y and heights come from the plane. Curved body: from the pose.
+        let (h_cam, h_surf, up) = match s.ground {
+            None => (((cam.y - s.surface_y) * 1e-3 + s.surface_alt_km).max(0.0005), s.surface_alt_km.max(0.0) + 0.002, Vec3::Y),
+            Some(g) => (
+                (g.camera_alt_m * 1e-3).max(0.0005),
+                g.ground_alt_m.map_or(0.0, |m| m * 1e-3).max(0.0) + 0.002,
+                g.up.normalize_or(Vec3::Y),
+            ),
+        };
+        let mu_s_cam = if s.ground.is_some() { up.dot(sun) } else { sun.y };
         let (n, d) = if h_cam > ht { s.ap_outside_km } else { s.ap_inside_km };
         let a = lighting.bounce_albedo;
         let sunlit = lighting.bounce_sunlit.clamp(0.0, 1.0);
@@ -202,7 +216,7 @@ impl Atmosphere {
             f(body.ozone, body.ozone_peak_km),
             [a.x, a.y, a.z, body.ozone_half_km as f32],
             f(body.sun_irradiance, body.sun_radius.cos()),
-            [0.0, 1.0, 0.0, sun.y],
+            [up.x, up.y, up.z, mu_s_cam],
             [n, d, sunlit, 0.0],
         ];
         let w = &mut fd[FD_ATMOS..FD_ATMOS + ATMOS_WORDS];
@@ -216,7 +230,7 @@ impl Atmosphere {
         w[44..48].copy_from_slice(&[1, s.debug, 0, 0]);
         // The sun at the camera, through the atmosphere (what the analytic model's warm sun
         // stood for); resolve evaluates it per shaded point.
-        let sc = model::sun_at(&body, h_cam, sun.y as f64);
+        let sc = model::sun_at(&body, h_cam, mu_s_cam as f64);
         for i in 0..3 {
             fd[FD_SUN_DIR + 4 + i] = (sc[i] as f32).to_bits();
         }
@@ -310,4 +324,13 @@ impl Atmosphere {
             }
         }
     }
+}
+
+/// Places the camera on the curved body for the next frame: call each frame with
+/// `TerrainProvider::camera_ground(..)`. Atmosphere up, camera altitude and ground altitude then
+/// follow the planet instead of the flat plane (output without it is unchanged).
+pub fn apply_camera_ground(r: &mut crate::Renderer, g: CameraGround) {
+    let mut a = *r.atmosphere();
+    a.ground = Some(g);
+    r.set_atmosphere(a);
 }

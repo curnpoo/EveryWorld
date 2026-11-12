@@ -425,6 +425,21 @@ mod tests {
     }
 
     #[test]
+    fn spherical_height_follows_the_curved_horizon() {
+        let rb = Body::earth().radius_km;
+        for h in [0.0, 0.002, 0.5, 10.0] {
+            // A level ray (mu = 0) 100 km out: the point's true radial altitude from the centre.
+            let t: f64 = 100.0;
+            let truth = ((rb + h) * (rb + h) + t * t).sqrt() - rb;
+            let got = height_at(rb, h, 0.0, t);
+            assert!((got - truth).abs() * 1e3 < 1.0, "h {h}: {got} vs {truth}");
+        }
+        // Near the ground: about d^2 / 2R = 785 m above a level camera at the surface.
+        let up = height_at(rb, 0.0, 0.0, 100.0) * 1e3;
+        assert!((up - 785.0).abs() < 3.0, "{up}");
+    }
+
+    #[test]
     fn transmittance_table_is_bounded_and_matches_direct_integration() {
         let t = earth_tables(0.0);
         assert!(t.trans.iter().all(|v| v.cmpgt(DVec3::ZERO).all() && v.cmple(DVec3::ONE).all()));

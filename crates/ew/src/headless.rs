@@ -221,6 +221,9 @@ pub fn run(args: &Args) -> Result<Report, String> {
             // Headless: every wanted page is built before the frame (no holes, deterministic).
             let tw = Instant::now();
             let st = wd.update(&camera, [w, h], usize::MAX, true);
+            // The atmosphere on the curved body: up, altitude and ground from the pose.
+            let g = ed_render::terrain::TerrainProvider::camera_ground(&wd.anchor.body, &wd.pose(), camera.position, wd.ground(camera.position));
+            ed_render::atmosphere::apply_camera_ground(&mut renderer, g);
             terrain_last = (st, wd.feed(&mut renderer));
             terrain_ms += tw.elapsed().as_secs_f64() * 1e3;
         }
