@@ -327,8 +327,11 @@ void cull_late(uint3 tid: SV_DispatchThreadID) {
 // cascade (range c = cascade c). shadow_reset copies the template into the shadow draw
 // arguments; shadow_cull tests every live instance's bounding sphere against each cascade's
 // light-space box (casters towards the sun are kept: the raster clamps them), drops casters
-// under 0.75 texel, picks a stateless LOD from the cascade's texel size and appends to that
+// under SHADOW_MIN_TEXELS texels, picks a stateless LOD from the cascade's texel size and appends to that
 // cascade's bin. No per-instance CPU work.
+static const float SHADOW_MIN_TEXELS = 12.0;  // casters smaller than this (texels) are dropped
+static const float SHADOW_LOD_BIAS[4] = { 8.0, 64.0, 128.0, 128.0 };     // per-cascade shadow LOD error budget, x the view threshold (px of shadow texel)
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void shadow_reset(uint3 tid: SV_DispatchThreadID) {
@@ -361,10 +364,10 @@ void shadow_cull(uint3 tid: SV_DispatchThreadID) {
                 float4 s = mul(f.light.shadow[c], float4(b.c, 1.0));
                 float rc = b.r / (cs.x * tile * 0.5);
                 float rz = b.r / cs.y;
-                if (abs(s.x) > 1.0 + rc || abs(s.y) > 1.0 + rc || s.z < -rz || 2.0 * b.r < 0.75 * cs.x) {
+                if (abs(s.x) > 1.0 + rc || abs(s.y) > 1.0 + rc || s.z < -rz || 2.0 * b.r < SHADOW_MIN_TEXELS * cs.x) {
                     continue;
                 }
-                uint lod = select_lod(m, b.scale / cs.x, 0u, false, f.params.y, 1.0);
+                uint lod = select_lod(m, b.scale / cs.x, 0u, false, f.params.y * SHADOW_LOD_BIAS[c], 1.0);
                 push(args, args_plain, visible, c * ed_c.bins_kind + m.bin_base + lod, i | (lod << 20), m.capacity, m.index_count[lod] / 3u, e);
                 cnt0 += c == 0 ? 1u : 0u;
                 cnt1 += c == 1 ? 1u : 0u;

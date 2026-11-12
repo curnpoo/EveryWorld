@@ -472,6 +472,8 @@ fn m2_lines(m: &M2Inputs<'_>) -> String {
     let _ = writeln!(s, "  LOD changes:     {}", mm(&|c| c.changed));
     let _ = writeln!(s, "  triangles:       {}", mm(&|c| c.triangles));
     let _ = writeln!(s, "  non-empty bins:  {}", mm(&|c| c.nonempty_bins));
+    let _ = writeln!(s, "  shadow casters:  c0 {} c1 {} c2 {} c3 {}", mm(&|c| c.shadow_casters[0]), mm(&|c| c.shadow_casters[1]), mm(&|c| c.shadow_casters[2]), mm(&|c| c.shadow_casters[3]));
+    let _ = writeln!(s, "  shadow triangles: {}", mm(&|c| c.shadow_triangles));
     let _ = writeln!(
         s,
         "draw calls per frame: {} ({} indirect = {} mesh x LOD bins x solid/dither x early/late; + resolve + tonemap)",

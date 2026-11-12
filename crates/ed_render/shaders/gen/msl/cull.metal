@@ -2,6 +2,7 @@
 #include <metal_math>
 #include <metal_texture>
 using namespace metal;
+constant array<float, int(4)> SHADOW_LOD_BIAS_0 = { { 8.0f, 64.0f, 128.0f, 128.0f } };
 struct CullC_0
 {
     uint frame_0;
@@ -861,14 +862,14 @@ bool occluded_0(FrameData_natural_0 device* f_1, float device* hzb_2, float3 c_r
                 }
                 else
                 {
-                    _S112 = (2.0f * _S104.r_0) < (0.75f * _S108);
+                    _S112 = (2.0f * _S104.r_0) < (12.0f * _S108);
                 }
                 if(_S112)
                 {
                     c_3 = c_3 + 1U;
                     continue;
                 }
-                uint _S113 = select_lod_0(_S103, _S104.scale_0 / _S108, 0U, false, (float4(_S94->params_0) ).y, 1.0f);
+                uint _S113 = select_lod_0(_S103, _S104.scale_0 / _S108, 0U, false, (float4(_S94->params_0) ).y * SHADOW_LOD_BIAS_0[c_3], 1.0f);
                 push_0(_S100, _S99, _S101, c_3 * (&kernelContext_12)->ed_c_0->bins_kind_0 + _S103->bin_base_0 + _S113, i_12 | (_S113 << 20U), _S103->capacity_0, _S103->index_count_0[_S113] / 3U, &e_4);
                 uint _S114;
                 if(c_3 == 0U)

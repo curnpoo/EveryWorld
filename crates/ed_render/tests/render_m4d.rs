@@ -233,7 +233,6 @@ fn cascade_edges_stable_under_subtexel_camera_moves() {
 /// GTAO darkens the ground in the corner where a box meets it and leaves open ground (no
 /// occluder within the radius) unchanged.
 #[test]
-#[ignore = "M4d unfinished: GTAO darkens the box corner by only ~2 of 255 (needs >4); AO strength/radius tuning not done"]
 fn ao_darkens_a_corner_and_leaves_a_plane_alone() {
     let Some(mut rig) = Rig::bare() else { return };
     load_boxes(&mut rig, &[GROUND, ([0.0, 1.0, 0.0], [2.0, 2.0, 2.0], [0.7, 0.7, 0.7])]);

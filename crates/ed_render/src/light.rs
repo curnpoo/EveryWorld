@@ -79,8 +79,8 @@ impl Default for LightingSettings {
             caster_extend: 150.0,
             normal_bias: 1.0,
             depth_bias: 1.0,
-            ao_radius: 1.0,
-            ao_intensity: 1.0,
+            ao_radius: 2.5,
+            ao_intensity: 3.0,
             debug: 0,
         }
     }

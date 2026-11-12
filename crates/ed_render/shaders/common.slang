@@ -196,11 +196,26 @@ float3 sky_rad(FrameData* f, float3 d, float disc_k) {
 // GPU agree (src/tonemap.rs mirrors every line).
 static const uint FILMIC_LUT_N = 64;
 
+// IEEE half -> float by integer math: exact for every half, and needs no Float16/Int16 shader
+// capability (Slang's f16tof32 declares both on SPIR-V, which Vulkan devices may lack).
+float half_bits_to_float(uint h) {
+    uint e = (h >> 10) & 0x1Fu;
+    uint m = h & 0x3FFu;
+    float s = (h & 0x8000u) != 0u ? -1.0 : 1.0;
+    if (e == 0u) {
+        return s * float(m) * 5.9604644775390625e-8;  // 2^-24
+    }
+    if (e == 31u) {
+        return asfloat(((h & 0x8000u) << 16) | 0x7F800000u | (m << 13));
+    }
+    return asfloat(((h & 0x8000u) << 16) | ((e + 112u) << 23) | (m << 13));
+}
+
 float3 lut_texel(uint* lut, uint3 t) {
     uint i = ((t.z * FILMIC_LUT_N + t.y) * FILMIC_LUT_N + t.x) * 2u;
     uint a = lut[i];
     uint b = lut[i + 1u];
-    return float3(f16tof32(a & 0xFFFFu), f16tof32(a >> 16), f16tof32(b & 0xFFFFu));
+    return float3(half_bits_to_float(a & 0xFFFFu), half_bits_to_float(a >> 16), half_bits_to_float(b & 0xFFFFu));
 }
 
 float3 filmic(uint lut_buf, float3 x) {

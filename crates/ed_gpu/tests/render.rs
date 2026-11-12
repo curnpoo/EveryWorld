@@ -12,6 +12,7 @@ backend_tests!(
     clear_and_exact_readback,
     triangle_covers_expected_pixels,
     reverse_z_nearer_wins_in_either_order,
+    depth_clamp_keeps_geometry_in_front_of_the_near_plane,
     compute_writes_buffer,
     dispatch_indirect_uses_compute_written_group_count,
     bindless_draw_picks_textures_by_buffer_index,
@@ -124,6 +125,32 @@ fn reverse_z_nearer_wins_in_either_order(dev: &dyn Device) {
         dev.end_frame(e).unwrap();
         let px = pixels(dev, rb);
         assert!(px.iter().all(|p| *p == [255, 0, 0, 255]), "{order}: nearer (red) must win, got {:?}", px[(W * H / 2) as usize]);
+    }
+}
+
+/// Shadow-map "pancaking": a caster in front of the near plane (clip z < 0) is clipped without
+/// `DepthDesc::clamp` and still written (at the clamped depth) with it.
+fn depth_clamp_keeps_geometry_in_front_of_the_near_plane(dev: &dyn Device) {
+    let rt = render_target(dev, "clamp target");
+    let depth = depth_target(dev);
+    let rb = rt_readback(dev);
+    for (clamp, expect) in [(false, CLEAR_PX), (true, [255, 0, 0, 255])] {
+        let pso = tri_pipeline(dev, Some(DepthDesc { format: Format::Depth32Float, write: true, compare: Compare::GreaterEqual, bias: 0.0, slope_bias: 0.0, clamp }));
+        let mut e = dev.begin_frame().unwrap();
+        e.transition(&[tex(rt, Undefined, RenderTarget), tex(depth, Undefined, DepthWrite)]);
+        e.begin_render_pass(&RenderPassDesc {
+            label: "clamp",
+            colors: &[color(rt, LoadOp::Clear(CLEAR))],
+            depth: Some(Attachment { texture: depth, sub: SUB0, load: LoadOp::Clear([0.0; 4]), store: StoreOp::Discard }),
+        });
+        e.set_render_pipeline(pso);
+        e.set_draw_constants(&tri_constants([1.0, 0.0, 0.0, 1.0], -0.5, 3));
+        e.draw(0..3, 0..1);
+        e.end_render_pass();
+        copy_out(&mut *e, rt, rb);
+        dev.end_frame(e).unwrap();
+        let px = pixels(dev, rb);
+        assert!(px.iter().all(|p| *p == expect), "clamp={clamp}: got {:?}", px[(W * H / 2) as usize]);
     }
 }
 

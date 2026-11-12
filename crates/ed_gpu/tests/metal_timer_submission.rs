@@ -11,7 +11,7 @@ fn submission_timer_fallback_measures_heavy_pass() {
     // SAFETY: set before any other thread of this test binary reads the environment (this
     // binary has one test).
     unsafe { std::env::set_var("ED_GPU_TIMERS", "submission") };
-    let dev = common::device(Backend::Metal).unwrap();
+    let Some(dev) = common::device(Backend::Metal) else { return };
     assert_eq!(dev.caps().timers, TimerSource::Submission);
     let (heavy, light) = common::heavy_and_light(&*dev);
     println!("timer path {:?}: heavy {heavy:.3} ms, light {light:.3} ms", dev.caps().timers);

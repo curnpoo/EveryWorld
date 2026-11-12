@@ -1,3 +1,26 @@
+## 2026-11-12: Phase 1, M4d (part 2) — shadow budget, AO tuning, Vulkan tone map
+
+- **Shadows:**
+  - `shadow_cull` drops casters smaller than 12 shadow-map texels (`SHADOW_MIN_TEXELS`) and picks coarser LODs per cascade (`SHADOW_LOD_BIAS` = {8, 64, 128, 128} times the view threshold).
+  - Shadow triangles fell from 16.6M to 0.45M per frame.
+  - Depth clamp (`DepthDesc::clamp`; Metal `setDepthClipMode(.clamp)`, Vulkan `depthClampEnable`) is used by the shadow pass. New test `depth_clamp_keeps_geometry_in_front_of_the_near_plane`, on Metal and on Vulkan with validation.
+- **AO:** GTAO radius 2.5 m, intensity 3.0, applied to ambient light only. `ao_darkens_a_corner_and_leaves_a_plane_alone` is re-enabled. `cascade_edges_stable_under_subtexel_camera_moves` still moves 0 px. Shadow maps must stay at 2048: at 1536 or less, edges move 5-8 px.
+- **Vulkan:** the tone map no longer uses Slang `f16tof32`, which pulled in the Int16/Float16 capabilities and failed validation. Half-to-float is now integer math in `common.slang`. The tone-map error against the CPU reference is ≤1/255 on both backends.
+- **CI:** `metal_timer_submission` skips instead of unwrapping on runners without residency sets. CI run 43157080685: Windows green, macOS failed only on this test.
+- **Proving ground, M3 Pro, 1280x720, headless 300 frames (mean ms):**
+
+| pass | before | after | target |
+|---|---|---|---|
+| shadows (cull + raster) | 8.6 | 1.17–1.29 | 1.2 |
+| AO | 0.34 | 0.27 | 0.5 |
+| GPU frame | ~9.9 | 2.65 (p99 3.78) | 3.5 |
+| CPU frame build | 0.18 | 0.187 (p99 0.58) | 0.2 |
+
+  - Shadows sit right at the target (two runs: 1.17 and 1.29).
+  - The harness line "culling < 1 ms" still reports MISSED: the mean is 0.37 ms, but p99 is 1.28 ms.
+- **Tests:** workspace 537 passed / 0 failed / 22 ignored on Metal and with no GPU (d3d12). golden, check-deps and credits pass.
+- **Needs a Mac look:** whether dropping small casters loses shadows you'd notice. Shadowed ground also reads quite saturated blue (strong sky ambient), which is for the realism pass.
+
 ## 2026-11-11: Phase 1, M4d (part 1) — lighting, shadows, AO and the alpha tone map; CI skips without a GPU
 
 - `ed_render` gains:
