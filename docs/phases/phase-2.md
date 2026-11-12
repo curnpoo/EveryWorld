@@ -312,6 +312,17 @@ is enough to judge haze, ridge layering and distance against the photos.
 
 At most three workers run at once, on disjoint files. W1, W2 and W5 start together.
 
+**Progress (2026-11-12):**
+- **Done:** W1 planet core, W2 node heights, W5 atmosphere, and W3 terrain provider. For W3 the hole and crack gate passed in its own harness.
+- **Height placement fix:** `ed_data` and `ed_planet` placed height samples about 10 km apart; they now agree, with one `HeightPage` in `ed_geo`.
+- **Next (in order):**
+  1. Wire terrain into `Renderer::render` and resolve, before the final HZB so AO and occlusion see it.
+  2. Put the atmosphere on the curved planet.
+  3. Add `ew --path zermatt|blueridge`.
+  4. Cut terrain plus its shadows to ≤ 2 ms at 1 m AGL (today 2.55 + 3.71 ms at 1440p).
+  5. Run the landscape slice: owner look #1, then the Fable look review.
+- **Waiting on the owner:** the clear-day aerosol choice (W5 CHANGES entry).
+
 ## 8. Exit gate
 
 - [ ] One unbroken recording street level → orbit → Moon view → back, with no holes (hole
