@@ -30,6 +30,10 @@ OPTIONS:
   --empty                      clear + tonemap only (the empty-frame budget)
   --packs DIR                  pack folder (default target/packs): proving.ewpack (required),
                                bench.ewpack and character.ewpack (optional)
+  --pack FILE                  mount one more .ewpack (repeatable), after the built-in packs;
+                               EW_PACKS=a.ewpack:b.ewpack does the same. A missing one warns.
+                               With a Megascans pack (assets-src/megascans.p1.toml) the proving
+                               ground draws real textured materials (ew::real_materials)
   --camera X,Y,Z,YAW,PITCH     headless: fixed camera (metres from the proving origin, y up;
                                radians) instead of the path; the path still drives time
   --layers DIR                 layer root with authored placements (default assets-src/layers)
@@ -82,6 +86,8 @@ pub struct Args {
     pub dump_vis: bool,
     /// Pack folder ([`crate::content`]).
     pub packs: PathBuf,
+    /// Extra packs (`--pack`, repeatable), mounted after the built-in ones.
+    pub extra_packs: Vec<PathBuf>,
     /// Fixed headless camera: x, y, z (from the proving origin), yaw, pitch.
     pub camera: Option<[f64; 5]>,
     /// Layer root (authored placements, `assets-src/layers`).
@@ -142,6 +148,7 @@ impl Default for Args {
             pop: false,
             dump_vis: false,
             packs: crate::content::default_pack_dir(),
+            extra_packs: Vec::new(),
             camera: None,
             layers: crate::authored::default_layer_root(),
             sim_route: false,
@@ -205,6 +212,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Option<Args>, Str
             "--frames" => a.frames = Some(num(&arg, it.next())?),
             "--frames-in-flight" => a.frames_in_flight = num(&arg, it.next())?,
             "--packs" => a.packs = PathBuf::from(it.next().ok_or("--packs needs a value")?),
+            "--pack" => a.extra_packs.push(PathBuf::from(it.next().ok_or("--pack needs a value")?)),
             "--camera" => {
                 let v = it.next().ok_or("--camera needs X,Y,Z,YAW,PITCH")?;
                 let n: Vec<f64> = v.split(',').map(|x| x.trim().parse::<f64>()).collect::<Result<_, _>>().map_err(|_| format!("--camera: bad value {v:?}"))?;
@@ -277,5 +285,7 @@ mod tests {
         assert_eq!(p("--camera 1,2,3,0.5,-0.1").unwrap().unwrap().camera, Some([1.0, 2.0, 3.0, 0.5, -0.1]));
         assert!(p("--camera 1,2,3").is_err());
         assert_eq!(p("--packs x/p").unwrap().unwrap().packs, PathBuf::from("x/p"));
+        assert_eq!(p("--pack a.ewpack --pack b.ewpack").unwrap().unwrap().extra_packs, vec![PathBuf::from("a.ewpack"), PathBuf::from("b.ewpack")]);
+        assert!(p("--pack").is_err());
     }
 }

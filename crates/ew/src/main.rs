@@ -14,6 +14,7 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    ew::content::set_extra_packs(&args.extra_packs);
     if args.sim_route {
         return match ew::route::run(&args.packs, &args.layers) {
             Ok(r) => {

@@ -21,6 +21,7 @@ pub mod headless;
 pub mod hot;
 pub mod perf;
 pub mod proving;
+pub mod real_materials;
 pub mod route;
 pub mod session;
 pub mod windowed;

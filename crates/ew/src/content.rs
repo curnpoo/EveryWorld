@@ -52,6 +52,35 @@ pub const PACKS: [PackSpec; 3] = [
     PackSpec { name: "character", required: false, bake: CHARACTER_BAKE },
 ];
 
+static EXTRA_PACKS: std::sync::OnceLock<Vec<PathBuf>> = std::sync::OnceLock::new();
+
+fn expand_home(p: &str) -> PathBuf {
+    match (p.strip_prefix("~/"), std::env::var_os("HOME")) {
+        (Some(rest), Some(h)) => Path::new(&h).join(rest),
+        _ => PathBuf::from(p),
+    }
+}
+
+/// Records the `--pack` files (call once from `main`); `EW_PACKS` (':'-separated) is appended.
+/// Without a call the environment variable alone is used.
+pub fn set_extra_packs(cli: &[PathBuf]) {
+    let mut v = cli.to_vec();
+    v.extend(env_packs());
+    let _ = EXTRA_PACKS.set(v);
+}
+
+fn env_packs() -> Vec<PathBuf> {
+    std::env::var("EW_PACKS").map(|s| s.split(':').filter(|p| !p.is_empty()).map(expand_home).collect()).unwrap_or_default()
+}
+
+/// Extra packs to mount after the built-in ones. They are mounted last on purpose: the first
+/// pack holding a key wins, so an extra pack adds content (the Megascans materials) and can
+/// never shadow the required proving pack, which keeps the golden scenes and the layouts
+/// stable. A missing one is a warning in [`Content::notes`], not an error.
+pub fn extra_packs() -> Vec<PathBuf> {
+    EXTRA_PACKS.get().cloned().unwrap_or_else(env_packs)
+}
+
 /// Extra bound-sphere margin of skinned meshes (the sway bends limbs out of the bind pose).
 const POSE_MARGIN: f32 = 1.4;
 
@@ -155,6 +184,15 @@ pub struct Content {
     pub collision: crate::collide::PackCollision,
     /// Bumped whenever [`Content::collision`] changes (hot reload rebuilds the sim statics).
     pub collision_gen: u64,
+    /// Real-material overrides ([`crate::real_materials`]): rule index -> renderer material,
+    /// rebuilt on every apply for rules whose pack material is mounted.
+    real_mats: BTreeMap<usize, MaterialId>,
+    /// Proving material asset -> index in `ed_assets::proving::materials()`.
+    proving_mats: BTreeMap<AssetId, usize>,
+    /// Decoded proving parts (kept for scaled, UV-generated copies).
+    raw_meshes: BTreeMap<AssetId, MeshAsset>,
+    /// (part, quantised scale in mm, whether UVs were generated) -> mesh copy.
+    scaled: BTreeMap<(AssetId, [i32; 3]), MeshId>,
     /// Notes for the log (optional packs missing, ...).
     pub notes: Vec<String>,
     pub load_ms: f64,
@@ -272,6 +310,19 @@ impl Content {
             };
             packs.push(Mounted { spec: *s, stamp: stamp(&path), path, reader });
         }
+        for path in extra_packs() {
+            // Names live as `&'static str` in `PackSpec`; a handful per run, leaked once.
+            let name: &'static str = Box::leak(path.file_stem().and_then(|n| n.to_str()).unwrap_or("extra").to_string().into_boxed_str());
+            let spec = PackSpec { name, required: false, bake: "an extra pack: pass its path with --pack or EW_PACKS" };
+            let reader = match PackReader::open_file(&path) {
+                Ok(rd) => Some(rd),
+                Err(e) => {
+                    notes.push(format!("warning: extra pack {} not mounted: {e}", path.display()));
+                    None
+                }
+            };
+            packs.push(Mounted { spec, stamp: stamp(&path), path, reader });
+        }
         let node = r.instances().add_node(ORIGIN).ok_or("node table full")?;
         let default_material = r.add_material(Material::pbr(Vec3::splat(0.6), 0.0, 0.6)).ok_or("material table full")?;
         let mut c = Content {
@@ -292,6 +343,10 @@ impl Content {
             names: ed_assets::proving::asset_names().into_iter().map(|n| (AssetId::from_path(&n), n)).collect(),
             collision: Default::default(),
             collision_gen: 0,
+            real_mats: BTreeMap::new(),
+            proving_mats: (0..ed_assets::proving::materials().len()).map(|i| (AssetId::from_path(&ed_assets::proving::material_asset(i)), i)).collect(),
+            raw_meshes: BTreeMap::new(),
+            scaled: BTreeMap::new(),
             notes,
             load_ms: 0.0,
             stats: LoadStats::default(),
@@ -394,6 +449,7 @@ impl Content {
             }
             st.materials += 1;
         }
+        self.apply_real_materials(r);
         for old in old_textures {
             r.remove_texture(dev, old);
         }
@@ -420,6 +476,9 @@ impl Content {
             let c = self.read(&ChunkKey::asset(a, ChunkKind::Mesh))?;
             let pmesh: PackMesh<'_> = c.decode().map_err(|e| format!("mesh: {e}"))?;
             let (asset, joints, weights) = mesh_asset(&pmesh)?;
+            if self.names.contains_key(&a) {
+                self.raw_meshes.insert(a, asset.clone());
+            }
             match self.skeletons.get(&a) {
                 Some(sk) if !joints.is_empty() => {
                     let s = SkinnedMeshAsset { mesh: asset, joints, weights, joint_count: sk.joints.len() as u32, pose_margin: POSE_MARGIN };
@@ -520,6 +579,62 @@ impl Content {
         Ok(st)
     }
 
+    /// (Re)builds the renderer material of every [`crate::real_materials::RULES`] entry whose
+    /// pack material is mounted: the pack material with its UVs in metres.
+    fn apply_real_materials(&mut self, r: &mut Renderer) {
+        for (i, rule) in crate::real_materials::RULES.iter().enumerate() {
+            let Some((_, pmat)) = self.materials.get(&AssetId::from_path(&format!("megascans/{}", rule.real))) else {
+                if self.real_mats.remove(&i).is_some() {
+                    self.scaled.clear();
+                }
+                continue;
+            };
+            let mut m = material(pmat, |t| self.textures.get(t).copied());
+            m.uv.scale = Vec2::splat(1.0 / rule.tile_m);
+            match self.real_mats.get(&i) {
+                Some(id) => r.set_material(*id, m),
+                None => {
+                    if let Some(id) = r.add_material(m) {
+                        self.real_mats.insert(i, id);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The real-material override of one placed mesh: (mesh with metric UVs, material, the
+    /// instance transform to use). `None`: draw as the pack says.
+    fn real_override(&mut self, r: &mut Renderer, dev: &dyn Device, mesh: AssetId, mat: Option<AssetId>, src: &Instance, xf: Affine3A) -> Result<Option<(MeshId, MaterialId, Affine3A)>, String> {
+        if self.real_mats.is_empty() {
+            return Ok(None);
+        }
+        let (Some(part), Some(&mi)) = (self.names.get(&mesh).and_then(|n| n.strip_prefix("proving/parts/")), mat.and_then(|m| self.proving_mats.get(&m))) else {
+            return Ok(None);
+        };
+        let Some(ri) = crate::real_materials::select(part, mi) else {
+            return Ok(None);
+        };
+        let (Some(&mat_id), Some(raw)) = (self.real_mats.get(&ri), self.raw_meshes.get(&mesh)) else { return Ok(None) };
+        let rule = &crate::real_materials::RULES[ri];
+        let nom = if rule.bake_scale { crate::real_materials::nominal(src.transform.scale) } else { [1.0; 3] };
+        let key = (mesh, [(nom[0] * 1000.0) as i32, (nom[1] * 1000.0) as i32, (nom[2] * 1000.0) as i32]);
+        let id = match self.scaled.get(&key) {
+            Some(id) => *id,
+            None => {
+                // Same unit mesh; only the UVs differ (metres at the nominal instance size).
+                let s = Vec3::from(nom);
+                let mut m = raw.clone();
+                let scaled: Vec<[f32; 3]> = m.positions.iter().map(|p| (Vec3::from(*p) * s).to_array()).collect();
+                let nrm: Vec<[f32; 3]> = m.normals.iter().map(|n| (Vec3::from(*n) / s).normalize_or_zero().to_array()).collect();
+                m.uvs = crate::real_materials::box_uvs(&scaled, &nrm);
+                let id = r.add_mesh(dev, &m).map_err(|e| format!("real-material mesh: {e}"))?;
+                self.scaled.insert(key, id);
+                id
+            }
+        };
+        Ok(Some((id, mat_id, xf)))
+    }
+
     fn despawn_parts(r: &mut Renderer, parts: Vec<Part>) {
         for p in parts {
             match p {
@@ -566,12 +681,16 @@ impl Content {
         let mut parts = Vec::with_capacity(nodes.len());
         let inv = base.inverse();
         let mut locals = Vec::with_capacity(nodes.len());
-        for (mesh, xf, mat) in nodes {
-            let material = self.material_id(mat);
+        for (mesh, mut xf, mat) in nodes {
+            let mut material = self.material_id(mat);
+            let mut real_mesh = None;
+            if let Some((mid, mat_id, xf2)) = self.real_override(r, dev, mesh, mat, &src, xf)? {
+                (real_mesh, material, xf) = (Some(mid), mat_id, xf2);
+            }
             let desc = |m: MeshId| InstanceDesc { node: self.node, transform: xf, mesh: m, material, object: src.object, flags: 0 };
             match self.meshes.get(&mesh) {
                 Some(MeshEntry::Static(id)) => {
-                    let d = desc(*id);
+                    let d = desc(real_mesh.unwrap_or(*id));
                     parts.push(Part::Static(r.instances().add(&d).ok_or("instance pool full")?));
                     locals.push(inv * xf);
                 }

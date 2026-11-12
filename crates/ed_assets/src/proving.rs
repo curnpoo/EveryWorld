@@ -632,6 +632,11 @@ pub fn materials() -> Vec<Material> {
 pub const PAL: usize = 50;
 pub const PAL_COLOURS: usize = 8;
 
+/// Slot of the part called `name` (`None` for the ground slab or an unknown name).
+pub fn part_slot(name: &str) -> Option<Slot> {
+    PARTS.iter().find(|p| p.name == name).map(|p| p.slot)
+}
+
 fn part_index(name: &str) -> usize {
     PARTS.iter().position(|p| p.name == name).expect("part")
 }
