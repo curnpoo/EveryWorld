@@ -7,7 +7,7 @@ looks.
 ## Direction (read before planning any work)
 
 `main` is the custom-engine rebuild. The Bevy alpha is frozen on branch `alpha-early`.
-**Current phase: 0 — Prepare** (`docs/phases/phase-0.md`). Read in this order:
+**Current phase: 1, closing the gate** (`docs/phases/phase-1.md` §7); Phase 2 is next. Read in this order:
 `docs/MASTER.md` (overview and document map) → `docs/VISION.md` (goals) →
 `docs/DECISIONS.md` (locked decisions, by id) → `docs/ARCHITECTURE.md` → `docs/ROADMAP.md`
 → the brief in `docs/plans/` for the system you are touching.
@@ -41,6 +41,32 @@ Rules for every session:
 10. **Data licensing.** Registry entry before use; RED never ships (`docs/data/README.md`).
 11. **Docs.** Decisions change only in `docs/DECISIONS.md`. Plans carry gates, not dates
     (D18). Add a `docs/CHANGES.md` entry when work lands. Do not commit or push unless asked.
+
+## Who does what: Fable 5.2, Opus 5.5, Sonnet 5.5 (owner, 2026-11-12)
+
+Put the horsepower where it decides the outcome and save it everywhere else. Every Agent
+call names its `model`.
+
+| Model | Role | Give it | Never give it |
+|---|---|---|---|
+| **Fable 5.2** (`fable`) | Planner and strategist, called as a subagent and **sparingly**: about one call per milestone or hard problem | Designs for complicated or novel systems (VSM, cluster LOD, GI, planet streaming, netcode); a milestone's split into Opus and Sonnet work; the creative look pass against `docs/reference/look-reference.md`; review of a finished milestone end to end | Routine coordination, small fixes, test writing, re-running checks |
+| **Opus 5.5** (`opus`) | **The main session (conductor) and the implementer of what matters** | Running the session; anything that decides how the game looks or feels (renderer, lighting, shadows, materials, camera, controls, editor UX); core architecture; hard bugs; checking Sonnet's work; turning Fable's design into the phase doc | Bulk busywork Sonnet can do from a brief |
+| **Sonnet 5.5** (`sonnet`) | **The finisher** | Tests and test batteries; measurement runs (`--headless`, perf, CI); plumbing (flags, loaders, data tables); mechanical refactors; follow-up fixes from a precise brief; finishing work Opus started | Choosing how something looks or feels; open-ended design |
+
+The flow for a hard piece of work:
+1. **Fable plans.** It writes the design and the work split: what is hard, what is mechanical, and the gate.
+2. **Opus builds** the core and every look/feel decision.
+3. **Sonnet finishes.** It writes tests, measures, does the plumbing and the follow-up fixes.
+4. **Opus checks** Sonnet's batch.
+5. **Fable reviews** the finished milestone once.
+
+Easy work skips Fable entirely: Opus scopes it and Sonnet does it.
+
+Rules:
+- **Don't run the main session on Fable.** The conductor is talking every turn, so a Fable main session drains usage fast. Keep the main session on Opus and call Fable as a subagent when a decision needs it.
+- **Run at most about 3 workers at once.** Give each its own files, and tell it to run no state-changing git and to edit no docs. The conductor verifies, commits, and writes the phase docs and `CHANGES.md`.
+- **Escalate by evidence.** If Sonnet fails a brief twice, or reaches a judgement call about look or feel, Opus takes it over. If Opus is stuck on a design question, ask Fable once with a focused question.
+- **Long Opus runs are expensive.** Split them into a scoped Opus core plus Sonnet follow-ups instead of one open-ended run.
 
 ---
 

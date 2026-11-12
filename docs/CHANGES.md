@@ -1,3 +1,23 @@
+## 2026-11-12: Phase 1 hand-test fixes — editor feedback, interim shadows, real textures
+
+- **Editor (owner hand test).** No code bug in click routing. Two things made it look broken: the mode only showed in a `println`, and the camera started 300 m from the four editable props, so clicks hit read-only generated objects that have no gizmo. Fixes:
+  - The window title and a top banner show the mode and the keys.
+  - The camera starts framed on the editable props.
+  - The inspector says "read-only: no gizmo" when nothing can be edited.
+  - A per-second log splits update, GPU wait, acquire and record.
+- **Windowed fps.** The 65–70 fps is GPU-bound at full screen (2880×1800: GPU 6.5–13 ms; 1280×720: 3.7–5 ms). The CPU frame is under 0.5 ms. Next steps: budget at near-fullscreen sizes, and render scale with a MetalFX upscale.
+- **Shadows, interim until VSM (P2-D20):**
+  - PCF radius is 0.4 m in world space, clamped to 1–8 texels.
+  - `shadow_distance` 500 → 1000 m, with a smoothstep fade from 450 m; `cascade_blend` 0.15; lambda 0.95.
+  - Receiver bias follows the surface plane.
+  - shadow cull + raster 1.04 → 1.10 ms (budget 1.2); GPU frame 2.41 → 2.72 ms.
+- **Real textures.**
+  - `--pack <path>` / `EW_PACKS` mount extra packs after the built-in ones.
+  - With the Megascans pack, `real_materials.rs` maps the proving-ground street to asphalt and the facades to brick, concrete and granite, at physical tile size.
+  - Resolve +0.06 ms; about 600 MiB more texture memory.
+  - The resolve path already sampled albedo, normal and ORM. Only UVs and UV scale were missing.
+- **Model split.** CLAUDE.md "Who does what" sets the roles: Fable plans, Opus conducts and builds, Sonnet finishes.
+
 ## 2026-11-12: Phase 1, M4e — lighting calibrated to physical daylight
 
 - **Target changed:** real life, not the alpha (P1-D18 revised). The owner's reference photos are described in `docs/reference/look-reference.md`; the image files stay local in a gitignored folder (the repo is public).
