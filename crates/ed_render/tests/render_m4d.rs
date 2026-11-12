@@ -145,7 +145,7 @@ fn cascade_of(plan: &light::CascadePlan, p: glam::Vec3) -> u32 {
 fn shadow_regions_are_dark_in_every_cascade() {
     let Some(mut rig) = Rig::bare() else { return };
     let l = sun();
-    let dists = [12.0f32, 90.0, 200.0, 380.0];
+    let dists = [12.0f32, 90.0, 200.0, 440.0];
     let mut boxes = vec![GROUND];
     let mut cases = Vec::new();
     for (i, &d) in dists.iter().enumerate() {

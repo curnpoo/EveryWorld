@@ -47,6 +47,11 @@ pub struct LightingSettings {
     pub shadow_distance: f32,
     /// Practical split scheme: 0 = linear, 1 = logarithmic.
     pub split_lambda: f32,
+    /// Shadow filter (penumbra) radius in metres, the same in every cascade where the texel
+    /// size allows (`filter_texels`).
+    pub shadow_filter_m: f32,
+    /// Largest filter radius in texels (tap budget: the 5x5 grid is spread over it).
+    pub shadow_filter_max_texels: f32,
     /// Explicit cascade far distances (m), overriding `split_lambda` (the first `cascades` used).
     pub splits: Option<[f32; MAX_CASCADES]>,
     /// Texels per cascade tile side.
@@ -98,12 +103,14 @@ impl Default for LightingSettings {
             ao: true,
             sky_ambient: true,
             cascades: 4,
-            shadow_distance: 500.0,
-            split_lambda: 0.8,
+            shadow_distance: 1000.0,
+            split_lambda: 0.95,
+            shadow_filter_m: 0.4,
+            shadow_filter_max_texels: 8.0,
             splits: None,
             shadow_resolution: 2048,
-            cascade_blend: 0.1,
-            fade_start: 0.8,
+            cascade_blend: 0.15,
+            fade_start: 0.45,
             caster_extend: 150.0,
             normal_bias: 1.0,
             depth_bias: 1.0,
@@ -299,6 +306,16 @@ pub fn cascade_splits(s: &LightingSettings, near: f32) -> Vec<f32> {
         .collect()
 }
 
+/// Smallest PCF radius in texels (mirrors `PCF_KMIN` in lighting.slang).
+pub const PCF_KMIN: f32 = 1.0;
+
+/// PCF radius of a cascade with `texel` metres per texel, in texels (mirrors
+/// `pcf_radius_texels` in lighting.slang): the world filter radius, clamped to
+/// [`PCF_KMIN`, `shadow_filter_max_texels`].
+pub fn filter_texels(s: &LightingSettings, texel: f32) -> f32 {
+    (s.shadow_filter_m / texel).clamp(PCF_KMIN, s.shadow_filter_max_texels.max(PCF_KMIN))
+}
+
 /// One frame's cascades.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CascadePlan {
@@ -391,7 +408,7 @@ pub fn light_words(s: &LightingSettings, plan: &CascadePlan, sh: &[[f32; 4]; 9],
     put(&mut w, 88, &[last * s.fade_start, last, s.normal_bias, s.depth_bias]);
     w[92..96].copy_from_slice(&[(plan.count > 0) as u32, s.ao as u32, s.sky_ambient as u32, s.debug]);
     put(&mut w, 96, &[s.ao_intensity, ao_half.0 as f32, ao_half.1 as f32, s.ao_radius]);
-    put(&mut w, 100, &[sun_disc, s.ao_multibounce.clamp(0.0, 1.0), 0.0, 0.0]);
+    put(&mut w, 100, &[sun_disc, s.ao_multibounce.clamp(0.0, 1.0), s.shadow_filter_m, s.shadow_filter_max_texels]);
     for (k, c) in sh.iter().enumerate() {
         put(&mut w, 104 + k * 4, c);
     }
@@ -469,6 +486,35 @@ mod tests {
                 assert!((0.0..=1.0).contains(&q.z));
             }
         }
-        assert!(p.splits.windows(2).all(|w| w[0] < w[1]) && (p.splits[3] - 500.0).abs() < 1e-3);
+        assert!(p.splits.windows(2).all(|w| w[0] < w[1]) && (p.splits[3] - s.shadow_distance).abs() < 1e-3);
+    }
+
+    #[test]
+    fn filter_radius_is_constant_in_world_units_across_cascades() {
+        let cam = Camera::look_at(DVec3::new(1000.25, 1.7, -300.6), DVec3::new(1010.0, 3.0, -800.0));
+        let sun = Vec3::new(0.3, 0.7, 0.4).normalize();
+        // A distance whose texels all fit the clamp range: the world radius is equal (+-10%).
+        let s = LightingSettings { shadow_distance: 120.0, split_lambda: 0.5, shadow_filter_m: 0.2, ..LightingSettings::default() };
+        let p = plan_cascades(&s, &cam, 16.0 / 9.0, sun);
+        for c in 0..p.count as usize {
+            let t = p.cascade[c][0];
+            let r = filter_texels(&s, t) * t;
+            assert!((r / s.shadow_filter_m - 1.0).abs() <= 0.10, "cascade {c}: radius {r} m vs {}", s.shadow_filter_m);
+        }
+        // Defaults: radius is the world value wherever the clamps allow; where texels are too
+        // coarse (far) the filter is the 1-texel minimum, below one pixel at the cascade's range.
+        let s = LightingSettings::default();
+        let p = plan_cascades(&s, &cam, 16.0 / 9.0, sun);
+        for c in 0..p.count as usize {
+            let t = p.cascade[c][0];
+            let k = filter_texels(&s, t);
+            let r = k * t;
+            if k > PCF_KMIN && k < s.shadow_filter_max_texels {
+                assert!((r / s.shadow_filter_m - 1.0).abs() <= 0.10, "cascade {c}: {r}");
+            } else if k <= PCF_KMIN {
+                let px = 2.0 * p.splits[c] * (0.5 * cam.fov_y).tan() / 720.0;
+                assert!(r <= 2.5 * px, "cascade {c}: min filter {r} m vs pixel {px} m");
+            }
+        }
     }
 }

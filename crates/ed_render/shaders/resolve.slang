@@ -231,7 +231,7 @@ float4 fs_resolve(FsOut i) : SV_Target0 {
     if (dot(ng, v) < 0.0) {
         ng = -ng;
     }
-    float sun_vis = sun_shadow(f, ed_c.shadow, p, ng, zlin);
+    float sun_vis = sun_shadow(f, ed_c.shadow, p, ng, zlin, i.pos.xy);
     ao *= ao_upsample(f, ed_c.ao, i.pos.xy, zlin);
     float3 col = m.base.w > 0.5 ? shade_toon(f, m, albedo, n, v, ao, sun_vis) : shade_pbr(f, albedo, metal, rough, ao, sun_vis, n, v);
     if (f.light.flags.w == 1u) {

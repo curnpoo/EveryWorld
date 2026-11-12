@@ -26,35 +26,67 @@ float3 ambient_light(FrameData* f, float3 n) {
     return f.light.flags.z != 0 ? sh_irradiance(f, n) : hemi_ambient(f, n);
 }
 
-// One cascade lookup: 4x4 point loads with tent weights (a 3x3-texel box filtered bilinearly),
-// compared in light depth. `p` is the camera-relative position, `ng` the geometric normal
-// facing the viewer. The normal offset grows with the receiver's slope to the sun: a plane
-// tilted by theta drops tan(theta) texels of depth per texel, so the 2-texel filter radius
-// needs 2 sin(theta) texels of offset along the normal on top of the constant bias.
-float cascade_lookup(FrameData* f, uint atlas, uint c, float3 p, float3 ng) {
+// Filter radius in texels of cascade `c`: the world radius f.light.sky.z (m) divided by the
+// cascade's texel size, clamped to [KMIN, f.light.sky.w]. Mirrors light.rs `filter_texels`, so
+// penumbra width is the same in metres in every cascade until the texel size (far cascades)
+// or the tap budget (near ones) clamps it.
+static const float PCF_KMIN = 1.0;
+float pcf_radius_texels(FrameData* f, float texel) {
+    return clamp(f.light.sky.z / texel, PCF_KMIN, max(f.light.sky.w, PCF_KMIN));
+}
+
+// One cascade lookup: a 5x5 grid of point taps over a tent of radius k texels (k from
+// pcf_radius_texels, so constant in metres), the grid jittered per pixel by up to one tap
+// spacing so a wide kernel turns banding into fine noise. Compared in light depth. `p` is the
+// camera-relative position, `ng` the geometric normal facing the viewer, `px` the pixel for the
+// jitter. The normal offset grows with the receiver's slope to the sun: a plane tilted by theta
+// drops tan(theta) texels of depth per texel, so a kernel of radius k needs about k sin(theta)
+// texels of offset along the normal on top of the constant bias.
+float cascade_lookup(FrameData* f, uint atlas, uint c, float3 p, float3 ng, float2 px) {
     float4 cs = f.light.cascade[c];
     float tile = f.light.cfg.y;
+    float k = pcf_radius_texels(f, cs.x);
+    float sp = k * 0.5;
     float nol = saturate(dot(ng, f.sun_dir.xyz));
     float slope = sqrt(1.0 - nol * nol);
     float3 q = p + ng * (cs.x * (f.light.filter.z + 2.0 * slope));
     float4 s = mul(f.light.shadow[c], float4(q, 1.0));
-    float2 uv = float2(s.x * 0.5 + 0.5, 0.5 - s.y * 0.5) * tile - 0.5;
-    float2 b = floor(uv);
-    float2 g = uv - b;
-    float zr = s.z + f.light.filter.w * cs.x / cs.y;
-    float wx[4] = { 1.0 - g.x, 1.0, 1.0, g.x };
-    float wy[4] = { 1.0 - g.y, 1.0, 1.0, g.y };
+    float2 uv = float2(s.x * 0.5 + 0.5, 0.5 - s.y * 0.5) * tile;
+    float ign = frac(52.9829189 * frac(dot(px, float2(0.06711056, 0.00583715))));
+    float ign2 = frac(ign * 7.31 + 0.37);
+    float2 jit = (float2(ign, ign2) - 0.5) * 0.0;
+    // Receiver plane in light space (metres of light depth per metre along lx and ly): a tap
+    // reads the stored depth at its own texel, so the receiver depth is moved to that texel
+    // along the surface (no acne at a wide kernel), plus half a texel of slack for the cell.
+    float3 ns = mul(f.light.shadow[c], float4(ng, 0.0)).xyz;
+    float rl = cs.x * tile * 0.5;
+    float3 nl = float3(ns.x * rl, ns.y * rl, ns.z * cs.y);
+    float izn = 1.0 / max(abs(nl.z), 0.12);
+    float gx = clamp(-nl.x * izn * sign(nl.z), -8.0, 8.0);
+    float gy = clamp(-nl.y * izn * sign(nl.z), -8.0, 8.0);
+    float zr = s.z + (f.light.filter.w + 0.5 * (abs(gx) + abs(gy))) * cs.x / cs.y;
+    float zk = cs.x / cs.y;
     float lit = 0.0;
+    float wsum = 0.0;
     int2 lo = int2(cs.zw);
     int2 hi = lo + int2(int(tile) - 1);
-    for (int y = 0; y < 4; y++) {
-        for (int x = 0; x < 4; x++) {
-            int2 t = clamp(lo + int2(b) + int2(x - 1, y - 1), lo, hi);
+    float inv = 1.0 / (k + sp);
+    for (int y = -2; y <= 2; y++) {
+        float oy = float(y) * sp;
+        float wy = 1.0 - abs(oy) * inv;
+        for (int x = -2; x <= 2; x++) {
+            float ox = float(x) * sp;
+            float w = (1.0 - abs(ox) * inv) * wy;
+            float2 tp = floor(uv + float2(ox, oy) + jit);
+            float2 d = tp + 0.5 - uv;
+            int2 t = clamp(lo + int2(tp), lo, hi);
             float zs = ed_depth_read(atlas, uint2(t));
-            lit += (zr >= zs ? 1.0 : 0.0) * wx[x] * wy[y];
+            float zt = zr + (gx * d.x - gy * d.y) * zk;
+            lit += (zt >= zs ? 1.0 : 0.0) * w;
+            wsum += w;
         }
     }
-    return lit / 9.0;
+    return lit / wsum;
 }
 
 // Debug: (receiver - stored) light depth in metres at the centre texel of cascade `c`.
@@ -81,7 +113,7 @@ float cascade_extent(FrameData* f, uint c, float3 p) {
 // tile holds the point (minus the filter margin) is used; inside the blend band near its edge
 // the next cascade is blended in; the last cascade fades to lit between the fade start and the
 // shadow distance; past every cascade the sun is unshadowed.
-float sun_shadow(FrameData* f, uint atlas, float3 p, float3 ng, float dist) {
+float sun_shadow(FrameData* f, uint atlas, float3 p, float3 ng, float dist, float2 px) {
     uint n = uint(f.light.cfg.x);
     if (f.light.flags.x == 0 || n == 0 || dist >= f.light.filter.y) {
         return 1.0;
@@ -93,16 +125,16 @@ float sun_shadow(FrameData* f, uint atlas, float3 p, float3 ng, float dist) {
         if (e > 1.0) {
             continue;
         }
-        float v = cascade_lookup(f, atlas, c, p, ng);
+        float v = cascade_lookup(f, atlas, c, p, ng, px);
         float blend = smoothstep(1.0 - band, 1.0, e);
         if (blend > 0.0) {
             float next = 1.0;
             if (c + 1 < n && cascade_extent(f, c + 1, p) / margin <= 1.0) {
-                next = cascade_lookup(f, atlas, c + 1, p, ng);
+                next = cascade_lookup(f, atlas, c + 1, p, ng, px);
             }
             v = lerp(v, next, blend);
         }
-        float fade = saturate((dist - f.light.filter.x) / max(f.light.filter.y - f.light.filter.x, 1e-3));
+        float fade = smoothstep(0.0, 1.0, saturate((dist - f.light.filter.x) / max(f.light.filter.y - f.light.filter.x, 1e-3)));
         return lerp(v, 1.0, fade);
     }
     return 1.0;
