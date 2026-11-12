@@ -80,19 +80,35 @@ impl Default for HotReload {
     }
 }
 
-/// Log lines for a poll's events.
-pub fn report(ev: &HotEvents) {
+/// A poll's events as (is_error, text) lines (the editor log shows them too).
+pub fn lines(ev: &HotEvents) -> Vec<(bool, String)> {
+    let mut v = Vec::new();
     match &ev.shaders {
-        Some(Ok(())) => println!("ew: shaders reloaded"),
-        Some(Err(e)) => eprintln!("ew: shader reload failed, keeping the old pipelines: {e}"),
+        Some(Ok(())) => v.push((false, "shaders reloaded".to_string())),
+        Some(Err(e)) => v.push((true, format!("shader reload failed, keeping the old pipelines: {e}"))),
         None => {}
     }
     match &ev.packs {
-        Some(Ok(s)) => println!(
-            "ew: packs reloaded: {} changed keys ({} metadata-only skipped) -> {} textures ({} B), {} materials, {} meshes, {} skinned, {} prefabs, {} placements respawned",
-            s.changed_keys, s.metadata_only, s.textures, s.texture_bytes, s.materials, s.meshes, s.skinned_meshes, s.prefabs, s.placements
-        ),
-        Some(Err(e)) => eprintln!("ew: pack reload failed: {e}"),
+        Some(Ok(s)) => v.push((
+            false,
+            format!(
+                "packs reloaded: {} changed keys ({} metadata-only skipped) -> {} textures ({} B), {} materials, {} meshes, {} skinned, {} prefabs, {} placements respawned",
+                s.changed_keys, s.metadata_only, s.textures, s.texture_bytes, s.materials, s.meshes, s.skinned_meshes, s.prefabs, s.placements
+            ),
+        )),
+        Some(Err(e)) => v.push((true, format!("pack reload failed: {e}"))),
         None => {}
+    }
+    v
+}
+
+/// Prints a poll's events.
+pub fn report(ev: &HotEvents) {
+    for (err, l) in lines(ev) {
+        if err {
+            eprintln!("ew: {l}");
+        } else {
+            println!("ew: {l}");
+        }
     }
 }

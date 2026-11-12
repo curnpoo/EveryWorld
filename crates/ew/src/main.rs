@@ -14,6 +14,18 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if args.sim_route {
+        return match ew::route::run(&args.packs, &args.layers) {
+            Ok(r) => {
+                print!("{}", r.lines());
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("ew: error: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     let result = if args.headless {
         ew::headless::run(&args).map(|r| {
             print!("{}", r.summary);

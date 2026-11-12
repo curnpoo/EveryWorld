@@ -58,6 +58,7 @@ impl Rig {
             camera,
             viewport: Viewport { x: 0, y: 0, width: W, height: H },
             target: ViewTarget { texture: self.target, format: OUT_FORMAT, width: W, height: H, initial: ResourceState::Undefined, final_state: None },
+            flags: Default::default(),
         }
     }
 

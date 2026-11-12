@@ -1,0 +1,32 @@
+[[op]]
+id = "80000000000000000000000000000001"
+op = "place"
+prefab = "prefabs/planter_bench"
+position = [6378144.5, 0.0, -1249758.0]
+rotation = [0.0, 0.0, -0.7071067811865476, 0.7071067811865476]
+
+[[op]]
+id = "80000000000000000000000000000002"
+op = "marker"
+name = "spawn"
+kind = "spawn"
+position = [6378135.5, 0.0, -1249756.0]
+rotation = [0.0, 0.0, 0.0, 1.0]
+
+[[op]]
+id = "80000000000000000000000000000003"
+op = "place"
+prefab = "proving/parts/kiosk"
+position = [6378132.0, 0.0, -1249770.0]
+
+[[op]]
+id = "80000000000000000000000000000004"
+op = "place"
+prefab = "proving/parts/crate"
+position = [6378135.5, 0.0, -1249764.0]
+
+[[op]]
+id = "80000000000000000000000000000005"
+op = "place"
+prefab = "proving/parts/barrel"
+position = [6378140.0, 0.0, -1249749.0]

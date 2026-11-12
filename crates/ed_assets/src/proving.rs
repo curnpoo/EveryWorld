@@ -36,6 +36,10 @@ pub fn part_asset(name: &str) -> String {
     format!("proving/parts/{name}")
 }
 pub const GROUND_ASSET: &str = "proving/parts/ground";
+/// Asset paths of every proving part and the ground (names only, for tools and the editor).
+pub fn asset_names() -> Vec<String> {
+    PARTS.iter().map(|d| part_asset(d.name)).chain([GROUND_ASSET.to_string()]).collect()
+}
 pub fn material_asset(i: usize) -> String {
     format!("proving/materials/{i:03}")
 }
@@ -755,6 +759,34 @@ fn yard_prop(yard: &[usize], seed: u64, k: u64, p: Vec3) -> Placed {
 /// Object id of layout instance `i`.
 pub fn object(i: usize) -> ObjectId {
     ObjectId(OBJECT_BASE + i as u128)
+}
+
+/// Height (part-local metres) below which a thin prop's collider is cut: trees, conifers,
+/// lamps and signs collide with their trunk or post only, so you can walk under the canopy.
+pub const TRUNK_CUT: f32 = 2.2;
+
+/// A part's collision shapes in its own (y-up, unit or metre) frame: a box around the mesh,
+/// a sphere for the sphere part, and only the lower [`TRUNK_CUT`] metres for tall thin props.
+pub fn part_collision(name: &str, positions: &[[f32; 3]]) -> Vec<ed_pack::kinds::CollisionShape> {
+    use crate::collision::{aabb_box, bounds, surface};
+    let pts = positions.iter().map(|p| Vec3::from(*p));
+    let Some((lo, hi)) = bounds(pts) else { return Vec::new() };
+    let slot = PARTS.iter().find(|d| d.name == name).map(|d| d.slot);
+    let surf = if slot == Some(Slot::Building) { surface::BUILDING } else { surface::PROP };
+    match name {
+        "sphere" => {
+            let c = (lo + hi) * 0.5;
+            let r = (hi - lo).max_element() * 0.5;
+            vec![ed_pack::kinds::CollisionShape { shape: ed_pack::kinds::Shape::Sphere { centre: c.to_array(), radius: r }, surface: surf }]
+        }
+        "tree" | "conifer" | "lamp" | "sign" => {
+            let cut = lo.y + TRUNK_CUT;
+            let low = bounds(positions.iter().map(|p| Vec3::from(*p)).filter(|p| p.y <= cut));
+            let (l, h) = low.unwrap_or((lo, hi));
+            vec![aabb_box(l, h.with_y(cut.min(hi.y)), surf)]
+        }
+        _ => vec![aabb_box(lo, hi, surf)],
+    }
 }
 
 #[cfg(test)]

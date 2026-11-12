@@ -19,11 +19,12 @@ pub struct ShaderSources {
     pub cull: String,
     pub hzb: String,
     pub vis: String,
+    pub overlay: String,
 }
 
 impl ShaderSources {
     /// File names in a shader directory, in field order.
-    pub const FILES: [&'static str; 8] = ["common.metal", "resolve.metal", "tonemap.metal", "debug.metal", "skin.metal", "cull.metal", "hzb.metal", "visibility.metal"];
+    pub const FILES: [&'static str; 9] = ["common.metal", "resolve.metal", "tonemap.metal", "debug.metal", "skin.metal", "cull.metal", "hzb.metal", "visibility.metal", "overlay.metal"];
 
     /// The sources compiled into the crate.
     pub fn builtin() -> Self {
@@ -36,13 +37,14 @@ impl ShaderSources {
             cull: include_str!("../shaders/cull.metal").into(),
             hzb: include_str!("../shaders/hzb.metal").into(),
             vis: include_str!("../shaders/visibility.metal").into(),
+            overlay: include_str!("../shaders/overlay.metal").into(),
         }
     }
 
     /// Loads [`Self::FILES`] from `dir` (for hot reload, normally `crates/ed_render/shaders`).
     pub fn load(dir: &Path) -> std::io::Result<Self> {
         let r = |f: &str| std::fs::read_to_string(dir.join(f));
-        Ok(Self { common: r("common.metal")?, resolve: r("resolve.metal")?, tonemap: r("tonemap.metal")?, debug: r("debug.metal")?, skin: r("skin.metal")?, cull: r("cull.metal")?, hzb: r("hzb.metal")?, vis: r("visibility.metal")? })
+        Ok(Self { common: r("common.metal")?, resolve: r("resolve.metal")?, tonemap: r("tonemap.metal")?, debug: r("debug.metal")?, skin: r("skin.metal")?, cull: r("cull.metal")?, hzb: r("hzb.metal")?, vis: r("visibility.metal")?, overlay: r("overlay.metal")? })
     }
 
     /// The crate's own shader directory (source checkout), for development hot reload.

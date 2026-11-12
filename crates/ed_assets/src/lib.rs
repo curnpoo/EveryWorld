@@ -15,6 +15,7 @@
 //! - [`fixtures`]: generated glTF files for tests and the determinism corpus.
 
 pub mod bake;
+pub mod collision;
 pub mod fixtures;
 pub mod geom;
 pub mod gltf_import;

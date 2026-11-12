@@ -148,14 +148,48 @@ pub struct ViewTarget {
     pub final_state: Option<ResourceState>,
 }
 
-/// One view: camera, viewport and target. Multi-view (cascades, editor viewports) builds
-/// on this later (P1-D24).
+/// One view: camera, viewport, target and flags (P1-D24). Several views can be rendered in
+/// one frame (e.g. the main view and an editor inset); each [`ViewFlags::slot`] has its own
+/// per-view state (frame data, culling state, pick ring, transient textures), so nothing
+/// leaks from one view into another.
 #[derive(Clone, Copy, Debug)]
 pub struct View {
     pub camera: Camera,
     pub viewport: Viewport,
     pub target: ViewTarget,
+    pub flags: ViewFlags,
 }
+
+/// Per-view options.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ViewFlags {
+    /// Per-view state slot. Use a distinct slot for every view rendered in the same frame,
+    /// and the same slot for the same view across frames (LOD history, occlusion).
+    pub slot: u8,
+    /// Keep what the target holds outside the viewport (an inset drawn over an earlier
+    /// view). Otherwise a partial viewport clears the rest of the target.
+    pub keep_output: bool,
+    /// Draw the overlay batch ([`Renderer::set_overlay`]) in this view.
+    pub overlay: bool,
+}
+
+impl Default for ViewFlags {
+    fn default() -> Self {
+        Self { slot: 0, keep_output: false, overlay: true }
+    }
+}
+
+/// One overlay vertex: position relative to the batch origin, RGBA8 colour (sRGB, straight
+/// alpha). Matches `OverlayV` in `shaders/overlay.metal`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[repr(C)]
+pub struct OverlayVertex {
+    pub pos: [f32; 3],
+    pub color: [u8; 4],
+}
+
+/// Most overlay vertices per frame (lines + triangles); more are dropped.
+pub const MAX_OVERLAY_VERTICES: u32 = 1 << 18;
 
 /// What to draw this frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -328,6 +362,10 @@ struct Pipelines {
     pick: ComputePipelineId,
     pop: ComputePipelineId,
     skin: ComputePipelineId,
+    overlay_vs: ShaderId,
+    overlay_fs: ShaderId,
+    /// Overlay pipelines (lines, triangles) per output format, created on first use.
+    overlay: Vec<(Format, RenderPipelineId, RenderPipelineId)>,
 }
 
 impl Pipelines {
@@ -363,11 +401,17 @@ impl Pipelines {
         let pick = b.compute(dev, src, &src.debug, "pick", [1, 1, 1])?;
         let pop = b.compute(dev, src, &src.debug, "pop_stats", [8, 8, 1])?;
         let skin = b.compute(dev, src, &src.skin, "skin", [SKIN_GROUP, 1, 1])?;
-        Ok(Self { built: std::mem::take(b), resolve, tonemap_vs, tonemap_fs, tonemap: Vec::new(), pick, pop, skin })
+        let overlay_vs = b.shader(dev, src, &src.overlay, "overlay vs", ShaderStage::Vertex, "vs_overlay")?;
+        let overlay_fs = b.shader(dev, src, &src.overlay, "overlay fs", ShaderStage::Fragment, "fs_overlay")?;
+        Ok(Self { built: std::mem::take(b), resolve, tonemap_vs, tonemap_fs, tonemap: Vec::new(), pick, pop, skin, overlay_vs, overlay_fs, overlay: Vec::new() })
     }
     fn destroy(mut self, dev: &dyn Device) {
         for (_, p) in self.tonemap.drain(..) {
             dev.destroy_render_pipeline(p);
+        }
+        for (_, l, t) in self.overlay.drain(..) {
+            dev.destroy_render_pipeline(l);
+            dev.destroy_render_pipeline(t);
         }
         self.built.destroy(dev);
     }
@@ -452,8 +496,6 @@ pub struct Renderer {
     indices: Tracked,
     instance_buf: Tracked,
     materials_buf: Tracked,
-    frame_data: Tracked,
-    nodes_buf: Tracked,
     skin_src: Tracked,
     palette_buf: Tracked,
     vert_alloc: RangeAlloc,
@@ -481,15 +523,54 @@ pub struct Renderer {
     /// Slots whose data has been flushed (the culling dispatch covers these).
     slots_flushed: u32,
     lod: DiscreteLod,
-    pick_ring: Ring,
-    pick_requests: [(u32, u32); provider::RING],
-    pick: Option<PickResult>,
+    /// Per-view state, index = [`ViewFlags::slot`] (slot 0 exists from the start).
+    views: Vec<ViewSlot>,
+    /// Shared by all views: run it in one view at a time.
     pop_ring: Option<(Ring, u32, u32)>,
     pop_frames: Vec<PopFrame>,
     frame_counter: u32,
-    pool: TransientPool,
+    /// Frame whose skinning pass has been recorded (the first view of a frame skins; later
+    /// views of the same frame read the result).
+    skinned_frame: Option<u64>,
+    overlay_buf: Tracked,
+    overlay_origin: DVec3,
+    overlay_lines: Vec<OverlayVertex>,
+    overlay_tris: Vec<OverlayVertex>,
+    /// Frame whose overlay data has been written into `overlay_buf`.
+    overlay_filled: Option<u64>,
     scratch: Vec<Timing>,
     bytes_scratch: Vec<u8>,
+}
+
+/// One view slot's state: per-frame buffers (filled once per frame per view), the pick ring
+/// and the transient textures.
+struct ViewSlot {
+    frame_data: Tracked,
+    nodes_buf: Tracked,
+    pick_ring: Ring,
+    pick_requests: [(u32, u32); provider::RING],
+    pick: Option<PickResult>,
+    pool: TransientPool,
+}
+
+impl ViewSlot {
+    fn new(dev: &dyn Device, max_nodes: u32) -> Result<Self, ed_gpu::Error> {
+        let per_frame = Usage { shader_read: true, cpu_write: true, ..Default::default() };
+        Ok(Self {
+            frame_data: Tracked::new(dev, "frame data", (FRAME_WORDS * 4) as u64, per_frame)?,
+            nodes_buf: Tracked::new(dev, "nodes", max_nodes as u64 * 16, per_frame)?,
+            pick_ring: Ring::new(dev, "pick", 16)?,
+            pick_requests: [(0, 0); provider::RING],
+            pick: None,
+            pool: TransientPool::new(),
+        })
+    }
+    fn destroy(mut self, dev: &dyn Device) {
+        self.pool.destroy(dev);
+        self.frame_data.destroy(dev);
+        self.nodes_buf.destroy(dev);
+        self.pick_ring.destroy(dev);
+    }
 }
 
 fn invalid<T>(what: &str, s: &str) -> Result<T, ed_gpu::Error> {
@@ -517,8 +598,8 @@ impl Renderer {
         let indices = Tracked::new(dev, "indices", desc.max_indices as u64 * 4, upload)?;
         let instance_buf = Tracked::new(dev, "instances", desc.max_instances as u64 * (INSTANCE_WORDS * 4) as u64, upload)?;
         let materials_buf = Tracked::new(dev, "materials", desc.max_materials as u64 * (MATERIAL_WORDS * 4) as u64, upload)?;
-        let frame_data = Tracked::new(dev, "frame data", (FRAME_WORDS * 4) as u64, per_frame)?;
-        let nodes_buf = Tracked::new(dev, "nodes", desc.max_nodes as u64 * 16, per_frame)?;
+        let view0 = ViewSlot::new(dev, desc.max_nodes)?;
+        let overlay_buf = Tracked::new(dev, "overlay", MAX_OVERLAY_VERTICES as u64 * 16, per_frame)?;
         let skin_src = Tracked::new(dev, "skin source", desc.max_skin_vertices as u64 * (SKIN_SRC_WORDS * 4) as u64, upload)?;
         let palette_buf = Tracked::new(dev, "skin palette", desc.max_joints as u64 * (PALETTE_WORDS * 4) as u64, per_frame)?;
         let smp = dev.create_sampler(&SamplerDesc { min_mag: Filter::Linear, mip: Filter::Linear, address: AddressMode::Repeat, anisotropy: 8, compare: None })?;
@@ -532,8 +613,6 @@ impl Renderer {
             indices,
             instance_buf,
             materials_buf,
-            frame_data,
-            nodes_buf,
             skin_src,
             palette_buf,
             vert_alloc: RangeAlloc::new(desc.max_vertices),
@@ -555,13 +634,16 @@ impl Renderer {
             materials_dirty: false,
             pools: InstancePools::new(desc.max_instances, desc.max_nodes),
             slots_flushed: 0,
-            pick_ring: Ring::new(dev, "pick", 16)?,
-            pick_requests: [(0, 0); provider::RING],
-            pick: None,
+            views: vec![view0],
             pop_ring: None,
             pop_frames: Vec::new(),
             frame_counter: 0,
-            pool: TransientPool::new(),
+            skinned_frame: None,
+            overlay_buf,
+            overlay_origin: DVec3::ZERO,
+            overlay_lines: Vec::new(),
+            overlay_tris: Vec::new(),
+            overlay_filled: None,
             scratch: Vec::new(),
             bytes_scratch: Vec::new(),
         })
@@ -985,14 +1067,16 @@ impl Renderer {
     /// Reads finished frames' counters, pick answers and pop tiles.
     pub fn poll(&mut self, dev: &dyn Device) {
         self.lod.poll(dev);
-        let (reqs, pools, out) = (&self.pick_requests, &self.pools, &mut self.pick);
-        self.pick_ring.poll(dev, &mut self.bytes_scratch, |frame, b| {
-            let w = gpu::words(b);
-            let (x, y) = reqs[(frame % provider::RING as u64) as usize];
-            let instance = (w[0] != 0).then(|| w[0] - 1);
-            let object = instance.and_then(|i| pools.object(i)).filter(|o| o.0 as u32 == w[1]);
-            *out = Some(PickResult { frame, x, y, instance, object, lod: w[2] >> 28, primitive: w[2] & 0x0FFF_FFFF });
-        });
+        for v in &mut self.views {
+            let (reqs, pools, out) = (&v.pick_requests, &self.pools, &mut v.pick);
+            v.pick_ring.poll(dev, &mut self.bytes_scratch, |frame, b| {
+                let w = gpu::words(b);
+                let (x, y) = reqs[(frame % provider::RING as u64) as usize];
+                let instance = (w[0] != 0).then(|| w[0] - 1);
+                let object = instance.and_then(|i| pools.object(i)).filter(|o| o.0 as u32 == w[1]);
+                *out = Some(PickResult { frame, x, y, instance, object, lod: w[2] >> 28, primitive: w[2] & 0x0FFF_FFFF });
+            });
+        }
         if let Some((ring, tx, ty)) = self.pop_ring.as_mut() {
             let (tx, ty) = (*tx, *ty);
             let frames = &mut self.pop_frames;
@@ -1013,6 +1097,25 @@ impl Renderer {
         let (w, h) = (vp.width.max(1), vp.height.max(1));
         let tonemap = self.tonemap_pipeline(dev, view.target.format)?;
         let frame_index = enc.frame_index();
+        let si = view.flags.slot as usize;
+        if si >= self.views.len() {
+            return Err(ed_gpu::Error::Invalid(format!("view slot {si} not prepared: call Renderer::prepare_views outside a frame")).into());
+        }
+        self.lod.set_view(dev, si)?;
+        let overlay_n = (self.overlay_lines.len() + self.overlay_tris.len()).min(MAX_OVERLAY_VERTICES as usize);
+        let overlay = view.flags.overlay && overlay_n > 0;
+        let overlay_pipes = if overlay { Some(self.overlay_pipelines(dev, view.target.format)?) } else { None };
+        if overlay && self.overlay_filled != Some(frame_index) {
+            let mut bytes = Vec::with_capacity(overlay_n * 16);
+            for v in self.overlay_lines.iter().chain(&self.overlay_tris).take(overlay_n) {
+                for c in v.pos {
+                    bytes.extend_from_slice(&c.to_ne_bytes());
+                }
+                bytes.extend_from_slice(&v.color);
+            }
+            dev.fill_frame_buffer(self.overlay_buf.id, &mut |dst| dst[..bytes.len()].copy_from_slice(&bytes))?;
+            self.overlay_filled = Some(frame_index);
+        }
         self.frames_seen = self.frames_seen.max(frame_index + 1);
         if !self.new_textures.is_empty() {
             let t: Vec<Transition> = self.new_textures.drain(..).map(|texture| Transition::Texture { texture, sub: None, from: ResourceState::CopyDst, to: ResourceState::ShaderRead }).collect();
@@ -1058,7 +1161,7 @@ impl Renderer {
         fd[gpu::FD_CULL + 2] = self.frame_counter;
         self.frame_counter = self.frame_counter.wrapping_add(1);
         let fd_bytes = gpu::bytes(&fd);
-        dev.fill_frame_buffer(self.frame_data.id, &mut |dst| dst[..fd_bytes.len()].copy_from_slice(&fd_bytes))?;
+        dev.fill_frame_buffer(self.views[si].frame_data.id, &mut |dst| dst[..fd_bytes.len()].copy_from_slice(&fd_bytes))?;
         // The only use of the f64 camera position: one camera-relative origin per node.
         let nodes: Vec<u32> = self
             .pools
@@ -1070,7 +1173,7 @@ impl Renderer {
             })
             .collect();
         let node_bytes = gpu::bytes(&nodes);
-        dev.fill_frame_buffer(self.nodes_buf.id, &mut |dst| dst[..node_bytes.len()].copy_from_slice(&node_bytes))?;
+        dev.fill_frame_buffer(self.views[si].nodes_buf.id, &mut |dst| dst[..node_bytes.len()].copy_from_slice(&node_bytes))?;
 
         let encode_srgb = !matches!(view.target.format, Format::Rgba8Srgb | Format::Bgra8Srgb | Format::Rgba16Float);
         let exposure = params.exposure;
@@ -1078,11 +1181,13 @@ impl Renderer {
         let hdr = g.create_texture("hdr", TextureInfo { format: HDR_FORMAT, width: w, height: h });
         let out_info = TextureInfo { format: view.target.format, width: view.target.width, height: view.target.height };
         let out = g.import_texture("output", view.target.texture, out_info, view.target.initial, view.target.final_state);
-        let fd_res = g.import_buffer("frame data", self.frame_data.id, self.frame_data.state, None);
+        let fd_res = g.import_buffer("frame data", self.views[si].frame_data.id, self.views[si].frame_data.state, None);
         let mut imports = Vec::new();
+        let mut imports_tail: Vec<graph::Res> = Vec::new();
+        let mut skin_here = false;
         if scene {
             let cd = Some(ResourceState::CopyDst);
-            let nodes_res = g.import_buffer("nodes", self.nodes_buf.id, self.nodes_buf.state, None);
+            let nodes_res = g.import_buffer("nodes", self.views[si].nodes_buf.id, self.views[si].nodes_buf.state, None);
             let verts = g.import_buffer("vertices", self.vertices.id, self.vertices.state, cd);
             let idx = g.import_buffer("indices", self.indices.id, self.indices.state, cd);
             let inst = g.import_buffer("instances", self.instance_buf.id, self.instance_buf.state, cd);
@@ -1091,7 +1196,9 @@ impl Renderer {
             imports = vec![nodes_res, verts, idx, inst, mats, uvs];
             // Skinning: every skinned output's vertices, before anything reads them.
             let live: Vec<Skin> = self.skins.iter().flatten().copied().collect();
-            if !live.is_empty() {
+            skin_here = !live.is_empty() && self.skinned_frame != Some(frame_index);
+            if skin_here {
+                self.skinned_frame = Some(frame_index);
                 let pal_bytes = gpu::bytes(&self.palette);
                 dev.fill_frame_buffer(self.palette_buf.id, &mut |dst| dst[..pal_bytes.len()].copy_from_slice(&pal_bytes))?;
                 let src = g.import_buffer("skin source", self.skin_src.id, self.skin_src.state, cd);
@@ -1107,9 +1214,9 @@ impl Renderer {
                 });
             }
             let inputs = SharedInputs {
-                frame: (fd_res, self.frame_data.bindless.0),
+                frame: (fd_res, self.views[si].frame_data.bindless.0),
                 instances: (inst, self.instance_buf.bindless.0),
-                nodes: (nodes_res, self.nodes_buf.bindless.0),
+                nodes: (nodes_res, self.views[si].nodes_buf.bindless.0),
                 verts: (verts, self.vertices.bindless.0),
                 indices: (idx, self.indices.bindless.0, self.indices.id),
                 slots: self.slots_flushed,
@@ -1118,10 +1225,10 @@ impl Renderer {
             let vis = g.create_texture("visibility", TextureInfo { format: VIS_FORMAT, width: w, height: h });
             let po = self.lod.record(&mut g, frame_index, &inputs, VisTargets { depth, vis });
             let rc = constants(&[
-                self.frame_data.bindless.0,
+                self.views[si].frame_data.bindless.0,
                 0, // vis: bindless index of a transient, known in the pass
                 self.instance_buf.bindless.0,
-                self.nodes_buf.bindless.0,
+                self.views[si].nodes_buf.bindless.0,
                 po.meshes.1,
                 self.materials_buf.bindless.0,
                 self.vertices.bindless.0,
@@ -1175,9 +1282,9 @@ impl Renderer {
                     });
             }
             if let Some((px, py)) = params.pick {
-                let slot = self.pick_ring.slot(frame_index);
-                self.pick_requests[slot] = (px, py);
-                let b = &self.pick_ring.bufs[slot];
+                let slot = self.views[si].pick_ring.slot(frame_index);
+                self.views[si].pick_requests[slot] = (px, py);
+                let b = &self.views[si].pick_ring.bufs[slot];
                 let res = g.import_buffer("pick", b.id, b.state, Some(ResourceState::ShaderRead));
                 imports.push(res);
                 let (bi, pipe, inst_bi) = (b.bindless.0, self.pipes.pick, self.instance_buf.bindless.0);
@@ -1196,7 +1303,13 @@ impl Renderer {
             g.add_pass("clear", PassKind::Raster).color(hdr, LoadOp::Clear([0.62, 0.72, 0.86, 1.0]), StoreOp::Store).done();
         }
         let full = vp.x == 0 && vp.y == 0 && vp.width == view.target.width && vp.height == view.target.height;
-        let out_load = if full { LoadOp::Discard } else { LoadOp::Clear([0.0, 0.0, 0.0, 1.0]) };
+        let out_load = if full {
+            LoadOp::Discard
+        } else if view.flags.keep_output {
+            LoadOp::Load
+        } else {
+            LoadOp::Clear([0.0, 0.0, 0.0, 1.0])
+        };
         g.add_pass("tonemap", PassKind::Raster).read(hdr, ResourceState::ShaderRead).color(out, out_load, StoreOp::Store).exec(move |ctx| {
             if !full {
                 ctx.enc.set_viewport(vp.x as f32, vp.y as f32, w as f32, h as f32);
@@ -1215,9 +1328,46 @@ impl Renderer {
             ]));
             ctx.enc.draw(0..3, 0..1);
         });
-        // Reserved for the egui painter (P1-D14). Declares the output so it orders after
-        // tonemap; records nothing yet.
-        g.add_pass("overlay", PassKind::Manual).write(out, ResourceState::RenderTarget).done();
+        // Editor gizmo / physics debug lines, camera-relative, no depth test. Without overlay
+        // data the pass records nothing (the M3 frame shape); the egui painter draws after the
+        // graph, on the same target (P1-D14).
+        if let Some((lines_p, tris_p)) = overlay_pipes {
+            let ov = g.import_buffer("overlay vertices", self.overlay_buf.id, self.overlay_buf.state, None);
+            imports_tail.push(ov);
+            let nl = self.overlay_lines.len().min(overlay_n) as u32;
+            let nt = overlay_n as u32 - nl;
+            let off = (self.overlay_origin - cam.position).as_vec3();
+            let fd_bi = self.views[si].frame_data.bindless.0;
+            let ov_bi = self.overlay_buf.bindless.0;
+            let linear_out = !encode_srgb as u32;
+            g.add_pass("overlay", PassKind::Raster)
+                .read(fd_res, ResourceState::ShaderRead)
+                .read(ov, ResourceState::ShaderRead)
+                .color(out, LoadOp::Load, StoreOp::Store)
+                .exec(move |ctx| {
+                    if !full {
+                        ctx.enc.set_viewport(vp.x as f32, vp.y as f32, w as f32, h as f32);
+                    }
+                    let c = |first: u32| {
+                        let mut words = [0u32; 8];
+                        words[..4].copy_from_slice(&[fd_bi, ov_bi, first, linear_out]);
+                        words[4..7].copy_from_slice(&[off.x.to_bits(), off.y.to_bits(), off.z.to_bits()]);
+                        constants(&words)
+                    };
+                    if nl >= 2 {
+                        ctx.enc.set_render_pipeline(lines_p);
+                        ctx.enc.set_draw_constants(&c(0));
+                        ctx.enc.draw(0..nl / 2 * 2, 0..1);
+                    }
+                    if nt >= 3 {
+                        ctx.enc.set_render_pipeline(tris_p);
+                        ctx.enc.set_draw_constants(&c(nl));
+                        ctx.enc.draw(0..nt / 3 * 3, 0..1);
+                    }
+                });
+        } else {
+            g.add_pass("overlay", PassKind::Manual).write(out, ResourceState::RenderTarget).done();
+        }
         if let Some(rb) = params.readback {
             let rb_res = g.import_buffer("readback", rb, ResourceState::Undefined, None);
             let pitch = view.target.format.copy_row_pitch(view.target.width);
@@ -1226,19 +1376,22 @@ impl Renderer {
                 ctx.enc.copy_texture_to_buffer(t, Subresource { mip: 0, layer: 0 }, b, 0, pitch);
             });
         }
-        let plan = g.execute(dev, enc, &mut self.pool)?;
-        self.frame_data.state = plan.final_states[fd_res.index()];
+        let plan = g.execute(dev, enc, &mut self.views[si].pool)?;
+        self.views[si].frame_data.state = plan.final_states[fd_res.index()];
+        if let Some(&ov) = imports_tail.first() {
+            self.overlay_buf.state = plan.final_states[ov.index()];
+        }
         if scene {
             self.lod.finish(&plan);
             let fs = |r: graph::Res| plan.final_states[r.index()];
-            self.nodes_buf.state = fs(imports[0]);
+            self.views[si].nodes_buf.state = fs(imports[0]);
             self.vertices.state = fs(imports[1]);
             self.indices.state = fs(imports[2]);
             self.instance_buf.state = fs(imports[3]);
             self.materials_buf.state = fs(imports[4]);
             self.uvs.state = fs(imports[5]);
             let mut k = 6;
-            if self.skins.iter().any(Option::is_some) {
+            if imports.len() > 6 && skin_here {
                 self.skin_src.state = fs(imports[6]);
                 self.palette_buf.state = fs(imports[7]);
                 k = 8;
@@ -1252,7 +1405,7 @@ impl Renderer {
             }
             if params.pick.is_some() {
                 let slot = (frame_index % provider::RING as u64) as usize;
-                self.pick_ring.bufs[slot].state = fs(imports[k]);
+                self.views[si].pick_ring.bufs[slot].state = fs(imports[k]);
             }
         }
         Ok(())
@@ -1281,7 +1434,72 @@ impl Renderer {
     }
     /// The latest pick answer.
     pub fn pick_result(&self) -> Option<PickResult> {
-        self.pick
+        self.views[0].pick
+    }
+    /// The latest pick answer of view slot `slot`.
+    pub fn pick_result_for(&self, slot: u8) -> Option<PickResult> {
+        self.views.get(slot as usize).and_then(|v| v.pick)
+    }
+    /// GPU culling counters of view slot `slot`'s latest finished frame.
+    pub fn cull_stats_for(&self, slot: u8) -> Option<CullStats> {
+        self.lod.stats_for(slot as usize)
+    }
+    /// View slots with state.
+    pub fn view_slots(&self) -> usize {
+        self.views.len()
+    }
+
+    /// Creates per-view state for slots `0..count` (P1-D24). Call outside a frame (the
+    /// state's initial uploads land at the next frame start), before rendering a view with
+    /// [`ViewFlags::slot`] `>= 1`.
+    pub fn prepare_views(&mut self, dev: &dyn Device, count: usize) -> Result<(), ed_gpu::Error> {
+        while self.views.len() < count {
+            let v = ViewSlot::new(dev, self.desc.max_nodes)?;
+            self.views.push(v);
+        }
+        for slot in (0..count).rev() {
+            self.lod.set_view(dev, slot)?;
+        }
+        Ok(())
+    }
+
+    /// Sets the overlay batch drawn by every view with [`ViewFlags::overlay`] until the next
+    /// call: `lines` (pairs) and `triangles` (triples), positions relative to `origin`
+    /// (world, f64). Pass empty slices to draw nothing.
+    pub fn set_overlay(&mut self, origin: DVec3, lines: &[OverlayVertex], triangles: &[OverlayVertex]) {
+        self.overlay_origin = origin;
+        self.overlay_lines.clear();
+        self.overlay_lines.extend_from_slice(&lines[..lines.len() / 2 * 2]);
+        self.overlay_tris.clear();
+        self.overlay_tris.extend_from_slice(&triangles[..triangles.len() / 3 * 3]);
+        self.overlay_filled = None;
+    }
+
+    fn overlay_pipelines(&mut self, dev: &dyn Device, format: Format) -> Result<(RenderPipelineId, RenderPipelineId), ed_gpu::Error> {
+        if let Some((_, l, t)) = self.pipes.overlay.iter().find(|(f, _, _)| *f == format) {
+            return Ok((*l, *t));
+        }
+        let desc = |label, topology| RenderPipelineDesc {
+            label,
+            vertex: self.pipes.overlay_vs,
+            fragment: Some(self.pipes.overlay_fs),
+            color_formats: std::slice::from_ref(&format),
+            blend: Blend::Alpha,
+            depth: None,
+            cull: Cull::None,
+            topology,
+            samples: 1,
+        };
+        let l = dev.create_render_pipeline(&desc("overlay lines", Topology::Lines))?;
+        let t = match dev.create_render_pipeline(&desc("overlay triangles", Topology::Triangles)) {
+            Ok(t) => t,
+            Err(e) => {
+                dev.destroy_render_pipeline(l);
+                return Err(e);
+            }
+        };
+        self.pipes.overlay.push((format, l, t));
+        Ok((l, t))
     }
     /// Pop-detector tiles of finished frames since the last call, oldest first.
     pub fn take_pop_frames(&mut self) -> Vec<PopFrame> {
@@ -1295,13 +1513,15 @@ impl Renderer {
 
     /// Transient textures created so far (stops growing after warm-up at a fixed size).
     pub fn transient_textures_created(&self) -> u64 {
-        self.pool.textures_created()
+        self.views.iter().map(|v| v.pool.textures_created()).sum()
     }
 
     /// Release every GPU object. Call after `wait_idle`, before dropping the device.
     pub fn destroy(mut self, dev: &dyn Device) {
-        self.pool.destroy(dev);
-        for t in [self.vertices, self.uvs, self.indices, self.instance_buf, self.materials_buf, self.frame_data, self.nodes_buf, self.skin_src, self.palette_buf] {
+        for v in self.views {
+            v.destroy(dev);
+        }
+        for t in [self.vertices, self.uvs, self.indices, self.instance_buf, self.materials_buf, self.overlay_buf, self.skin_src, self.palette_buf] {
             t.destroy(dev);
         }
         for e in self.textures.drain(..).flatten() {
@@ -1311,7 +1531,6 @@ impl Renderer {
         dev.unbind_sampler(self.sampler.1);
         dev.destroy_sampler(self.sampler.0);
         Box::new(self.lod).destroy(dev);
-        self.pick_ring.destroy(dev);
         if let Some((r, _, _)) = self.pop_ring {
             r.destroy(dev);
         }

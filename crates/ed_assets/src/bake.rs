@@ -47,10 +47,10 @@ use crate::geom::{Lod, MeshBuild};
 use crate::licence::{MEGASCANS, PackInfo, Registry, info_key};
 use crate::lod::LodReport;
 use crate::texture::{self, Role};
-use crate::{GEN_VERSION, TOOL, gltf_import, material, megascans, proving};
+use crate::{GEN_VERSION, TOOL, collision, gltf_import, material, megascans, proving};
 use anyhow::{Context, Result, anyhow, bail};
 use ed_geo::{BodyId, NodeId, ObjectId};
-use ed_pack::kinds::{Instance, Instances, Material, PointKind, Prefab, PrefabPoint, Transform};
+use ed_pack::kinds::{Collision, CollisionShape, Instance, Instances, Material, PointKind, Prefab, PrefabPoint, Transform};
 use ed_pack::{AssetId, Chunk, ChunkBody, ChunkHash, ChunkKey, ChunkKind, ChunkMeta, PackWriter, Rung};
 use glam::{Affine3A, Quat, Vec3};
 use rayon::prelude::*;
@@ -342,6 +342,28 @@ pub fn build_writer(source: &Path) -> Result<(PackWriter, BakeReport)> {
         for (a, m) in &imp.materials {
             cx.put_material(a, m, &p)?;
         }
+        // Static (unskinned) prefabs get one box around all their mesh nodes, in the prefab
+        // frame. Skinned characters are driven by the mover and get none.
+        let prefab_collision = if imp.skeletons.is_empty() {
+            let meshes: std::collections::BTreeMap<AssetId, &Vec<[f32; 3]>> = imp.meshes.iter().map(|m| (AssetId::from_path(&m.asset), &m.build.positions)).collect();
+            let mut globals: Vec<Affine3A> = Vec::new();
+            let mut pts = Vec::new();
+            for n in &imp.prefab.1.nodes {
+                let parent = n.parent.and_then(|k| globals.get(k as usize).copied()).unwrap_or(Affine3A::IDENTITY);
+                let t = &n.transform;
+                let g = parent * Affine3A::from_scale_rotation_translation(Vec3::from(t.scale), Quat::from_array(t.rotation), Vec3::from(t.translation));
+                globals.push(g);
+                if let Some(pos) = n.mesh.and_then(|m| meshes.get(&m)) {
+                    pts.extend(pos.iter().map(|q| g.transform_point3(Vec3::from(*q))));
+                }
+            }
+            collision::bounds(pts).map(|(lo, hi)| vec![collision::aabb_box(lo, hi, collision::surface::PROP)])
+        } else {
+            None
+        };
+        if let Some(shapes) = prefab_collision {
+            cx.put(ChunkKey::asset(AssetId::from_path(&g.asset), ChunkKind::CollisionAsset), &Collision { for_asset: true, shapes }, &p)?;
+        }
         for m in imp.meshes {
             cx.put_mesh(&m.asset, &m.build, &m.lods, m.report, &p)?;
         }
@@ -402,10 +424,20 @@ pub fn build_writer(source: &Path) -> Result<(PackWriter, BakeReport)> {
     if let Some(pg) = &src.proving {
         let p = Prov { src: hash_hex(format!("{src_name}#proving").as_bytes()), content: hash_hex(format!("ed_assets::proving gen {GEN_VERSION}").as_bytes()), registry: pg.registry.clone(), extra: vec![] };
         let parts: Vec<_> = proving::PARTS.par_iter().map(|d| (d.name, proving::build_part(&(d.build)()))).collect();
+        // Collision per part (asset frame), kept for placing below.
+        let mut part_shapes: Vec<Vec<CollisionShape>> = Vec::with_capacity(parts.len());
         for (name, (b, lods, rep)) in parts {
+            let shapes = proving::part_collision(name, &b.positions);
+            cx.put(ChunkKey::asset(AssetId::from_path(&proving::part_asset(name)), ChunkKind::CollisionAsset), &Collision { for_asset: true, shapes: shapes.clone() }, &p)?;
+            part_shapes.push(shapes);
             cx.put_mesh(&proving::part_asset(name), &b, &lods, rep, &p)?;
         }
         let cube = proving::cube();
+        let ground_shapes = {
+            let (lo, hi) = collision::bounds(cube.positions.iter().map(|q| Vec3::from(*q))).expect("cube has vertices");
+            vec![collision::aabb_box(lo, hi, collision::surface::GROUND)]
+        };
+        cx.put(ChunkKey::asset(AssetId::from_path(proving::GROUND_ASSET), ChunkKind::CollisionAsset), &Collision { for_asset: true, shapes: ground_shapes.clone() }, &p)?;
         cx.put_mesh(proving::GROUND_ASSET, &cube, &[Lod { indices: cube.indices.clone(), error: 0.0 }], vec![], &p)?;
         for (i, m) in proving::materials().iter().enumerate() {
             cx.put_material(&proving::material_asset(i), m, &p)?;
@@ -434,6 +466,14 @@ pub fn build_writer(source: &Path) -> Result<(PackWriter, BakeReport)> {
                 flags: 0,
             });
         }
+        // Node collision: every generated placement's part shapes in the node frame (the
+        // game turns these into static bodies; it derives no collision of its own).
+        let mut node_shapes = Vec::new();
+        for (pl, i) in layout.iter().zip(&inst) {
+            let shapes = if pl.part == usize::MAX { &ground_shapes } else { &part_shapes[pl.part] };
+            node_shapes.extend(shapes.iter().map(|s| collision::place(s, &i.transform)));
+        }
+        cx.put(ChunkKey::node(proving_node(), ChunkKind::Collision, Rung::R0), &Collision { for_asset: false, shapes: node_shapes }, &p)?;
         let body = Instances::sorted(inst);
         cx.put(ChunkKey::node(proving_node(), ChunkKind::Instances, Rung::R0), &body, &p)?;
     } else if !src.place.is_empty() {

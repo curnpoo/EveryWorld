@@ -1,22 +1,10 @@
 # Proving ground pack: 27 procedural parts (with LOD chains), 50 materials, the ground slab and
-# the 100k-instance layout, plus the planter bench and Solarcat placements (their meshes come
-# from bench.ewpack / character.ewpack, mounted next to this pack).
+# the 100k-instance layout, with collision for every part and placement. Authored placements
+# (the planter bench, the character spawn marker, a few props) live in the layer files under
+# assets-src/layers, not here.
 #   cargo run --release -p ed_assets --bin ew-bake -- build assets-src/proving.toml -o target/packs/proving.ewpack
 [pack]
 name = "proving"
 
 [proving]
 registry = "everyworld-original"
-
-# Planter bench on the central avenue's east side, 8 m ahead of the street shot (path x = 3,
-# z = 250 at t = 2 s, looking north = -z); its seat faces the avenue (west).
-[[place]]
-asset = "prefabs/planter_bench"
-position = [7.5, 0.0, 242.0]
-yaw_deg = -90.0
-
-# Solarcat on the avenue's west side, facing the street camera (south = +z).
-[[place]]
-asset = "characters/solarcat"
-position = [-1.5, 0.0, 244.0]
-yaw_deg = 0.0

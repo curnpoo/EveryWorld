@@ -4,7 +4,7 @@ use crate::camera::PathKind;
 use std::path::PathBuf;
 
 pub const USAGE: &str = "\
-ew: EveryWorld engine shell (Phase 1, M3)
+ew: EveryWorld engine shell (Phase 1, M4)
 
 USAGE:
   ew [OPTIONS]                 open a window in the proving ground (fly camera)
@@ -31,13 +31,23 @@ OPTIONS:
                                bench.ewpack and character.ewpack (optional)
   --camera X,Y,Z,YAW,PITCH     headless: fixed camera (metres from the proving origin, y up;
                                radians) instead of the path; the path still drives time
+  --layers DIR                 layer root with authored placements (default assets-src/layers)
+  --mode game|editor           start mode (default editor; Tab or F1 switches). Headless game
+                               mode walks the character along the scripted route
+  --editor-ui                  headless: paint the editor panels over the frame
+  --inset                      second editor viewport (top-down inset, P1-D24)
+  --collision-debug            draw the collision wireframe (C toggles it windowed)
+  --bare                       headless: no sim, layers or editor (the M3 benchmark)
+  --sim-route                  run the scripted character route without a GPU, print hashes
   --validation                 GPU validation on (default in debug builds)
   --frames-in-flight 2|3       default 2
   -h, --help
 
 KEYS (windowed):
-  W A S D move, Q/E down/up, Shift faster, hold left mouse to look, right click picks,
-  V vsync, Esc quit";
+  Tab / F1 switch game <-> editor. Game: W A S D run, Shift sprint, Space jump, mouse
+  looks (hold left mouse). Editor: W A S D Q E fly, hold right mouse to look, left click
+  picks, gizmo drags, Cmd+S saves layers, Cmd+Z undo. C collision wireframe, I inset view,
+  V vsync, Esc quit (game) or clear selection (editor)";
 
 /// What the renderer is given.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,6 +81,20 @@ pub struct Args {
     pub packs: PathBuf,
     /// Fixed headless camera: x, y, z (from the proving origin), yaw, pitch.
     pub camera: Option<[f64; 5]>,
+    /// Layer root (authored placements, `assets-src/layers`).
+    pub layers: PathBuf,
+    /// Run the scripted character route without a GPU and print its hashes.
+    pub sim_route: bool,
+    /// Start in this mode (windowed; headless: the frame mode, see `--mode`).
+    pub mode: crate::session::Mode,
+    /// Headless: draw the editor UI (panels) over the frame.
+    pub editor_ui: bool,
+    /// Second (top-down inset) editor viewport.
+    pub inset: bool,
+    /// Collision debug draw (wireframe).
+    pub collision_debug: bool,
+    /// No sim, no layers, no editor (the M3 benchmark exactly).
+    pub bare: bool,
 }
 
 impl Args {
@@ -115,6 +139,13 @@ impl Default for Args {
             pop: false,
             packs: crate::content::default_pack_dir(),
             camera: None,
+            layers: crate::authored::default_layer_root(),
+            sim_route: false,
+            mode: crate::session::Mode::Editor,
+            editor_ui: false,
+            inset: false,
+            collision_debug: false,
+            bare: false,
         }
     }
 }
@@ -135,6 +166,19 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Option<Args>, Str
             "--validation" => a.validation = true,
             "--no-occlusion" => a.no_occlusion = true,
             "--pop" => a.pop = true,
+            "--sim-route" => a.sim_route = true,
+            "--editor-ui" => a.editor_ui = true,
+            "--inset" => a.inset = true,
+            "--collision-debug" => a.collision_debug = true,
+            "--bare" => a.bare = true,
+            "--layers" => a.layers = PathBuf::from(it.next().ok_or("--layers needs a value")?),
+            "--mode" => {
+                a.mode = match it.next().as_deref() {
+                    Some("game") => crate::session::Mode::Game,
+                    Some("editor") => crate::session::Mode::Editor,
+                    v => return Err(format!("--mode: expected game|editor, got {v:?}")),
+                }
+            }
             "--speed" => a.speed = num(&arg, it.next())?,
             "--lod-px" => a.lod_px = Some(num(&arg, it.next())?),
             "--lod-fade" => {

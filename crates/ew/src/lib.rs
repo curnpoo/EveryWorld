@@ -10,13 +10,19 @@
 //! [`fixed_step::Simulation`]; for now the only simulations are cameras.
 
 pub mod args;
+pub mod authored;
 pub mod camera;
+pub mod collide;
 pub mod content;
 pub mod fixed_step;
+pub mod game;
+pub mod harness;
 pub mod headless;
 pub mod hot;
 pub mod perf;
 pub mod proving;
+pub mod route;
+pub mod session;
 pub mod windowed;
 
 /// One line describing the device capabilities (summary files and logs).

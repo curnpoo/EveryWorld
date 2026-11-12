@@ -84,6 +84,10 @@ pub trait GeometryProvider {
     fn record<'a>(&mut self, g: &mut FrameGraph<'a>, frame_index: u64, inputs: &SharedInputs, out: VisTargets) -> ProviderOutputs;
     /// After the graph ran: final resource states.
     fn finish(&mut self, plan: &Plan);
+    /// Selects the view whose per-view state the next `prepare`/`record`/`finish` use
+    /// (`ViewFlags::slot`), creating it on first use (outside a frame: its initial upload
+    /// lands at the next frame start).
+    fn set_view(&mut self, dev: &dyn Device, slot: usize) -> Result<(), ed_gpu::Error>;
     /// Timer labels of the provider's passes, in run order.
     fn pass_names(&self) -> &'static [&'static str];
     fn destroy(self: Box<Self>, dev: &dyn Device);
@@ -259,19 +263,80 @@ pub struct DiscreteLod {
     layout_dirty: bool,
     bins: u32,
     mesh_table: Tracked,
+    templ: Tracked,
+    max_instances: u32,
+    /// Visible-list bytes the current layout needs (a new view starts at this size).
+    visible_bytes: u64,
+    /// Per-view culling state (P1-D24), index = `ViewFlags::slot`. Nothing in here is shared
+    /// between views: LOD selection, fades, the occlusion pyramid, "visible last frame" and
+    /// the counters of one view never leak into another's.
+    views: Vec<CullView>,
+    cur: usize,
+    scratch: Vec<u8>,
+}
+
+/// One view's culling state.
+struct CullView {
     state: Tracked,
     args: Tracked,
-    templ: Tracked,
     visible: Tracked,
     hzb: Option<(Tracked, u32, u32)>,
     stats_ring: Ring,
     stats: Option<CullStats>,
     history: std::collections::VecDeque<CullStats>,
-    scratch: Vec<u8>,
     draw_loop: Rc<Cell<f64>>,
     last_draw_loop_ms: f64,
     imports: Vec<(Res, Imported)>,
     hzb_levels: Vec<(u32, u32, u32)>,
+}
+
+impl CullView {
+    fn new(dev: &dyn Device, max_instances: u32, bins_max: u64, visible_bytes: u64) -> Result<Self, ed_gpu::Error> {
+        let rw = Usage { shader_read: true, shader_write: true, ..Default::default() };
+        let mut state = Tracked::new(dev, "instance state", max_instances as u64 * 4, Usage { copy_dst: true, ..rw })?;
+        dev.write_buffer(state.id, 0, &vec![0u8; max_instances as usize * 4])?;
+        state.state = ResourceState::CopyDst;
+        let args = Tracked::new(dev, "draw args", bins_max * ARGS_WORDS as u64 * 4, Usage { indirect_args: true, ..rw })?;
+        let visible = Tracked::new(dev, "visible list", visible_bytes, rw)?;
+        let stats_ring = Ring::new(dev, "cull stats", (STAT_WORDS * 4) as u64)?;
+        Ok(Self {
+            state,
+            args,
+            visible,
+            hzb: None,
+            stats_ring,
+            stats: None,
+            history: std::collections::VecDeque::new(),
+            draw_loop: Rc::new(Cell::new(0.0)),
+            last_draw_loop_ms: 0.0,
+            imports: Vec::new(),
+            hzb_levels: Vec::new(),
+        })
+    }
+    fn destroy(self, dev: &dyn Device) {
+        for t in [self.state, self.args, self.visible] {
+            t.destroy(dev);
+        }
+        if let Some((h, _, _)) = self.hzb {
+            h.destroy(dev);
+        }
+        self.stats_ring.destroy(dev);
+    }
+    fn poll(&mut self, dev: &dyn Device, scratch: &mut Vec<u8>) {
+        let mut latest = None;
+        let hist = &mut self.history;
+        self.stats_ring.poll(dev, scratch, |fr, b| {
+            let s = CullStats::from_words(fr, &gpu::words(b));
+            if hist.len() == HISTORY {
+                hist.pop_front();
+            }
+            hist.push_back(s);
+            latest = Some(s);
+        });
+        if latest.is_some() {
+            self.stats = latest;
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -357,18 +422,12 @@ impl LodPipelines {
 impl DiscreteLod {
     pub(crate) fn new(dev: &dyn Device, src: &ShaderSources, max_instances: u32, max_meshes: u32, config: LodConfig) -> Result<Self, ed_gpu::Error> {
         let p = LodPipelines::new(dev, src)?;
-        let rw = Usage { shader_read: true, shader_write: true, ..Default::default() };
         let mesh_table = Tracked::new(dev, "mesh table", (max_meshes as usize * MESH_WORDS * 4) as u64, Usage { shader_read: true, copy_dst: true, ..Default::default() })?;
-        let mut state = Tracked::new(dev, "instance state", max_instances as u64 * 4, Usage { copy_dst: true, ..rw })?;
-        dev.write_buffer(state.id, 0, &vec![0u8; max_instances as usize * 4])?;
-        state.state = ResourceState::CopyDst;
         let bins_max = max_meshes as u64 * MAX_LODS as u64 * 4;
-        let args = Tracked::new(dev, "draw args", bins_max * ARGS_WORDS as u64 * 4, Usage { indirect_args: true, ..rw })?;
         let templ = Tracked::new(dev, "draw args template", bins_max * ARGS_WORDS as u64 * 4, Usage { shader_read: true, copy_dst: true, ..Default::default() })?;
         // Every live instance can sit in one bin per kind and phase: 4 slots, plus rounding.
-        let vis_words = (max_instances as u64 + bins_max / 4 * BIN_ROUND as u64) * 4;
-        let visible = Tracked::new(dev, "visible list", vis_words * 4, rw)?;
-        let stats_ring = Ring::new(dev, "cull stats", (STAT_WORDS * 4) as u64)?;
+        let visible_bytes = (max_instances as u64 + bins_max / 4 * BIN_ROUND as u64) * 4 * 4;
+        let view0 = CullView::new(dev, max_instances, bins_max, visible_bytes)?;
         Ok(Self {
             config,
             p,
@@ -377,20 +436,25 @@ impl DiscreteLod {
             layout_dirty: true,
             bins: 0,
             mesh_table,
-            state,
-            args,
             templ,
-            visible,
-            hzb: None,
-            stats_ring,
-            stats: None,
-            history: std::collections::VecDeque::new(),
+            max_instances,
+            visible_bytes,
+            views: vec![view0],
+            cur: 0,
             scratch: Vec::new(),
-            draw_loop: Rc::new(Cell::new(0.0)),
-            last_draw_loop_ms: 0.0,
-            imports: Vec::new(),
-            hzb_levels: Vec::new(),
         })
+    }
+
+    fn bins_max(&self) -> u64 {
+        self.mesh_table.size / (MESH_WORDS as u64 * 4) * MAX_LODS as u64 * 4
+    }
+    /// Views that have culling state.
+    pub fn view_count(&self) -> usize {
+        self.views.len()
+    }
+    /// Counters of view `slot`'s latest finished frame.
+    pub fn stats_for(&self, slot: usize) -> Option<CullStats> {
+        self.views.get(slot).and_then(|v| v.stats)
     }
 
     pub(crate) fn add_mesh(&mut self, m: MeshRecord) {
@@ -413,12 +477,12 @@ impl DiscreteLod {
 
     /// Latest finished frame's counters.
     pub fn stats(&self) -> Option<CullStats> {
-        self.stats
+        self.views[0].stats
     }
     /// Every finished frame's counters since the last call, oldest first (the newest
     /// [`HISTORY`] are kept when nobody takes them).
     pub fn take_history(&mut self) -> Vec<CullStats> {
-        self.history.drain(..).collect()
+        self.views[0].history.drain(..).collect()
     }
     /// Bins (mesh x LOD) per kind and phase; a frame issues `4 * bins()` indirect draws.
     pub fn bins(&self) -> u32 {
@@ -430,11 +494,11 @@ impl DiscreteLod {
     }
     /// CPU time of the last frame's multi-draw loops (both raster passes), ms.
     pub fn draw_loop_ms(&self) -> f64 {
-        self.last_draw_loop_ms
+        self.views.iter().map(|v| v.last_draw_loop_ms).sum()
     }
     /// Readbacks overwritten before they were read.
     pub fn lost_readbacks(&self) -> u64 {
-        self.stats_ring.lost
+        self.views.iter().map(|v| v.stats_ring.lost).sum()
     }
 
     fn relayout(&mut self, dev: &dyn Device, pools: &InstancePools) -> Result<(), ed_gpu::Error> {
@@ -467,11 +531,18 @@ impl DiscreteLod {
         // Each (mesh, LOD, kind, phase) bin reserves the mesh's capacity: grow the visible
         // list when the layout needs more (rare: scene load or a big jump in instance count).
         // The old buffer may still be read by frames in flight, so wait for them first.
-        if offset as u64 > self.visible.size / 4 {
+        if offset as u64 > self.visible_bytes / 4 {
+            self.visible_bytes = (offset as u64).next_multiple_of(1 << 16) * 4;
+        }
+        if self.views.iter().any(|v| v.visible.size < self.visible_bytes) {
             dev.wait_idle();
             let rw = Usage { shader_read: true, shader_write: true, ..Default::default() };
-            let grown = Tracked::new(dev, "visible list", (offset as u64).next_multiple_of(1 << 16) * 4, rw)?;
-            std::mem::replace(&mut self.visible, grown).destroy(dev);
+            for v in &mut self.views {
+                if v.visible.size < self.visible_bytes {
+                    let grown = Tracked::new(dev, "visible list", self.visible_bytes, rw)?;
+                    std::mem::replace(&mut v.visible, grown).destroy(dev);
+                }
+            }
         }
         let mut table = vec![0u32; self.meshes.len() * MESH_WORDS];
         for (m, rec) in self.meshes.iter().enumerate() {
@@ -503,31 +574,31 @@ impl GeometryProvider for DiscreteLod {
     }
 
     fn poll(&mut self, dev: &dyn Device) {
-        let mut latest = None;
-        let hist = &mut self.history;
-        self.stats_ring.poll(dev, &mut self.scratch, |fr, b| {
-            let s = CullStats::from_words(fr, &gpu::words(b));
-            if hist.len() == HISTORY {
-                hist.pop_front();
-            }
-            hist.push_back(s);
-            latest = Some(s);
-        });
-        if latest.is_some() {
-            self.stats = latest;
+        for v in &mut self.views {
+            v.poll(dev, &mut self.scratch);
         }
     }
 
+    fn set_view(&mut self, dev: &dyn Device, slot: usize) -> Result<(), ed_gpu::Error> {
+        while self.views.len() <= slot {
+            let v = CullView::new(dev, self.max_instances, self.bins_max(), self.visible_bytes)?;
+            self.views.push(v);
+        }
+        self.cur = slot;
+        Ok(())
+    }
+
     fn prepare(&mut self, dev: &dyn Device, _pools: &InstancePools, width: u32, height: u32, fd: &mut [u32]) -> Result<(), ed_gpu::Error> {
-        self.last_draw_loop_ms = self.draw_loop.replace(0.0);
+        let v = &mut self.views[self.cur];
+        v.last_draw_loop_ms = v.draw_loop.replace(0.0);
         let levels = hzb_levels(width, height);
         let floats: u32 = levels.iter().map(|l| l.1 * l.2).sum();
-        if self.hzb.as_ref().map(|h| (h.1, h.2)) != Some((width, height)) {
-            if let Some((h, _, _)) = self.hzb.take() {
+        if v.hzb.as_ref().map(|h| (h.1, h.2)) != Some((width, height)) {
+            if let Some((h, _, _)) = v.hzb.take() {
                 h.destroy(dev);
             }
             let t = Tracked::new(dev, "hzb", floats as u64 * 4, Usage { shader_read: true, shader_write: true, ..Default::default() })?;
-            self.hzb = Some((t, width, height));
+            v.hzb = Some((t, width, height));
         }
         let c = &self.config;
         fd[FD_CULL] = if c.occlusion { levels.len() as u32 } else { 0 };
@@ -535,12 +606,14 @@ impl GeometryProvider for DiscreteLod {
         for (i, l) in levels.iter().enumerate() {
             fd[FD_HZB + i * 4..FD_HZB + i * 4 + 4].copy_from_slice(&[l.0, l.1, l.2, 0]);
         }
-        self.hzb_levels = levels;
+        v.hzb_levels = levels;
         Ok(())
     }
 
     fn record<'a>(&mut self, g: &mut FrameGraph<'a>, frame_index: u64, inp: &SharedInputs, out: VisTargets) -> ProviderOutputs {
-        self.imports.clear();
+        let (mesh_table, templ_t, bins, config, pipes) = (&self.mesh_table, &self.templ, self.bins, self.config, &self.p);
+        let v = &mut self.views[self.cur];
+        v.imports.clear();
         let fin = |s| Some(s);
         let imp = |g: &mut FrameGraph<'_>, name, t: &Tracked, f: Option<ResourceState>, which: Imported, list: &mut Vec<(Res, Imported)>| {
             let r = g.import_buffer(name, t.id, t.state, f);
@@ -550,39 +623,41 @@ impl GeometryProvider for DiscreteLod {
         let mut list = Vec::new();
         // Final states that differ from the first use force a transition (a barrier) at the
         // start of the next frame, so the GPU never overlaps two frames' culling.
-        let meshes = imp(g, "mesh table", &self.mesh_table, fin(ResourceState::CopyDst), Imported::MeshTable, &mut list);
-        let templ = imp(g, "draw args template", &self.templ, fin(ResourceState::CopyDst), Imported::Templ, &mut list);
-        let state = imp(g, "instance state", &self.state, fin(ResourceState::ShaderRead), Imported::State, &mut list);
-        let args = imp(g, "draw args", &self.args, fin(ResourceState::IndirectArgs), Imported::Args, &mut list);
-        let visible = imp(g, "visible list", &self.visible, fin(ResourceState::ShaderRead), Imported::Visible, &mut list);
-        let slot = self.stats_ring.slot(frame_index);
-        let stats = imp(g, "cull stats", &self.stats_ring.bufs[slot], fin(ResourceState::ShaderRead), Imported::Stats(slot), &mut list);
-        let occlusion = self.config.occlusion;
-        let (hzb_t, dw, dh) = self.hzb.as_ref().expect("prepare before record");
+        let meshes = imp(g, "mesh table", mesh_table, fin(ResourceState::CopyDst), Imported::MeshTable, &mut list);
+        let templ = imp(g, "draw args template", templ_t, fin(ResourceState::CopyDst), Imported::Templ, &mut list);
+        let state = imp(g, "instance state", &v.state, fin(ResourceState::ShaderRead), Imported::State, &mut list);
+        let args = imp(g, "draw args", &v.args, fin(ResourceState::IndirectArgs), Imported::Args, &mut list);
+        let visible = imp(g, "visible list", &v.visible, fin(ResourceState::ShaderRead), Imported::Visible, &mut list);
+        let slot = v.stats_ring.slot(frame_index);
+        let stats = imp(g, "cull stats", &v.stats_ring.bufs[slot], fin(ResourceState::ShaderRead), Imported::Stats(slot), &mut list);
+        let occlusion = config.occlusion;
+        let (hzb_t, dw, dh) = v.hzb.as_ref().expect("prepare before record");
         let hzb = imp(g, "hzb", hzb_t, fin(ResourceState::ShaderRead), Imported::Hzb, &mut list);
         let (hzb_id, hzb_bi, dw, dh) = (hzb_t.id, hzb_t.bindless.0, *dw, *dh);
-        self.imports = list;
+        v.imports = list;
+        let draw_loop = v.draw_loop.clone();
+        let hzb_levels = v.hzb_levels.clone();
 
-        let s = self.bins;
+        let s = bins;
         let cw = [
             inp.frame.1,
             inp.instances.1,
-            self.mesh_table.bindless.0,
-            self.state.bindless.0,
-            self.args.bindless.0,
-            self.visible.bindless.0,
-            self.stats_ring.bufs[slot].bindless.0,
+            mesh_table.bindless.0,
+            v.state.bindless.0,
+            v.args.bindless.0,
+            v.visible.bindless.0,
+            v.stats_ring.bufs[slot].bindless.0,
             hzb_bi,
             inp.slots,
             s,
-            self.templ.bindless.0,
+            templ_t.bindless.0,
             inp.nodes.1,
         ];
         let cc = constants(&cw);
-        let (args_id, stats_id) = (self.args.id, self.stats_ring.bufs[slot].id);
+        let (args_id, stats_id) = (v.args.id, v.stats_ring.bufs[slot].id);
         let groups = inp.slots.div_ceil(CULL_GROUP).max(1);
         let reset_groups = (s * 4 * ARGS_WORDS as u32).max(STAT_WORDS as u32).div_ceil(CULL_GROUP);
-        let (p_reset, p_early, p_late) = (self.p.cull_reset, self.p.cull_early, self.p.cull_late);
+        let (p_reset, p_early, p_late) = (pipes.cull_reset, pipes.cull_early, pipes.cull_late);
         let sw = ResourceState::ShaderWrite;
         let bufs = [meshes, state, args, visible, stats];
         cull_pass(g, "cull_early", inp, bufs).read(templ, ResourceState::ShaderRead).exec(move |ctx| {
@@ -598,11 +673,11 @@ impl GeometryProvider for DiscreteLod {
             ctx.enc.dispatch(groups, 1, 1);
         });
 
-        let vc = constants(&[inp.frame.1, inp.instances.1, inp.nodes.1, self.visible.bindless.0, inp.verts.1]);
-        let (solid, dither) = (self.p.vis_solid, self.p.vis_dither);
+        let vc = constants(&[inp.frame.1, inp.instances.1, inp.nodes.1, v.visible.bindless.0, inp.verts.1]);
+        let (solid, dither) = (pipes.vis_solid, pipes.vis_dither);
         let idx_id = inp.indices.2;
         let raster = |g: &mut FrameGraph<'a>, name, phase: u32, first: bool| {
-            let timer = self.draw_loop.clone();
+            let timer = draw_loop.clone();
             let (cl, dl) = if first { (LoadOp::Clear([0.0; 4]), LoadOp::Clear([0.0; 4])) } else { (LoadOp::Load, LoadOp::Load) };
             g.add_pass(name, PassKind::Raster)
                 .read(inp.frame.0, ResourceState::ShaderRead)
@@ -632,8 +707,8 @@ impl GeometryProvider for DiscreteLod {
         raster(g, "raster_early", 0, true);
 
         if occlusion {
-            let (pf, pd) = (self.p.hzb_first, self.p.hzb_down);
-            let levels = self.hzb_levels.clone();
+            let (pf, pd) = (pipes.hzb_first, pipes.hzb_down);
+            let levels = hzb_levels.clone();
             g.add_pass("hzb", PassKind::Compute).read(out.depth, ResourceState::ShaderRead).write(hzb, sw).exec(move |ctx| {
                 let depth_bi = ctx.bindless(out.depth).0;
                 let (mut sw_, mut sh_, mut soff) = (dw, dh, 0u32);
@@ -657,24 +732,25 @@ impl GeometryProvider for DiscreteLod {
             ctx.enc.dispatch(groups, 1, 1);
         });
         raster(g, "raster_late", 1, false);
-        ProviderOutputs { meshes: (meshes, self.mesh_table.bindless.0), state: (state, self.state.bindless.0) }
+        ProviderOutputs { meshes: (meshes, mesh_table.bindless.0), state: (state, v.state.bindless.0) }
     }
 
     fn finish(&mut self, plan: &Plan) {
-        for &(r, which) in &self.imports {
+        let v = &mut self.views[self.cur];
+        for &(r, which) in &v.imports {
             let s = plan.final_states[r.index()];
             match which {
                 Imported::MeshTable => self.mesh_table.state = s,
-                Imported::State => self.state.state = s,
-                Imported::Args => self.args.state = s,
+                Imported::State => v.state.state = s,
+                Imported::Args => v.args.state = s,
                 Imported::Templ => self.templ.state = s,
-                Imported::Visible => self.visible.state = s,
+                Imported::Visible => v.visible.state = s,
                 Imported::Hzb => {
-                    if let Some(h) = self.hzb.as_mut() {
+                    if let Some(h) = v.hzb.as_mut() {
                         h.0.state = s;
                     }
                 }
-                Imported::Stats(i) => self.stats_ring.bufs[i].state = s,
+                Imported::Stats(i) => v.stats_ring.bufs[i].state = s,
             }
         }
     }
@@ -689,13 +765,11 @@ impl GeometryProvider for DiscreteLod {
 
     fn destroy(self: Box<Self>, dev: &dyn Device) {
         let s = *self;
-        for t in [s.mesh_table, s.state, s.args, s.templ, s.visible] {
-            t.destroy(dev);
+        s.mesh_table.destroy(dev);
+        s.templ.destroy(dev);
+        for v in s.views {
+            v.destroy(dev);
         }
-        if let Some((h, _, _)) = s.hzb {
-            h.destroy(dev);
-        }
-        s.stats_ring.destroy(dev);
         s.p.destroy(dev);
     }
 }

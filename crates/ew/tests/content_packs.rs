@@ -114,6 +114,7 @@ impl Shot {
                 camera: cam.clone(),
                 viewport: Viewport { x: 0, y: 0, width: self.w, height: self.h },
                 target: ViewTarget { texture: self.target, format: Format::Rgba8Srgb, width: self.w, height: self.h, initial: ResourceState::Undefined, final_state: None },
+                flags: Default::default(),
             };
             let params = FrameParams { readback: (i + 1 == frames).then_some(self.readback), ..Default::default() };
             r.render(dev, &mut *enc, &view, &params).unwrap();
@@ -190,8 +191,13 @@ fn prefab_reexport_hot_reloads_and_changes_only_the_prefab() {
     let mut r = Renderer::new(dev).unwrap();
     let specs: Vec<PackSpec> = PACKS.iter().copied().filter(|s| s.name != "character").collect();
     let mut c = Content::load_specs(&mut r, dev, &packs, &specs).unwrap();
-    assert_eq!(c.stats.missing, 1, "Solarcat is not mounted here; everything else is");
-    // Camera on the avenue looking at the bench (placed at x 7.5, z 242 in assets-src/proving.toml).
+    assert_eq!(c.stats.missing, 0, "every generated placement resolves (Solarcat and the bench are authored in the layers)");
+    // The bench is a layer `place` (M4b): author the layer objects the way the session does.
+    let auth = ew::authored::Authored::load(&ws.join("assets-src/layers")).unwrap();
+    let list: Vec<_> = auth.places.iter().map(|p| (p.id, p.asset, p.affine(), p.prefab.clone())).collect();
+    let st = c.set_authored(&mut r, dev, &list).unwrap();
+    assert_eq!(st.missing, 0, "the layer prefabs resolve: {st:?}");
+    // Camera on the avenue looking at the bench (layer place at x 7.5, z 242 from the origin).
     let o = ew::proving::ORIGIN;
     let cam = Camera::look_at(o + DVec3::new(3.0, 1.5, 237.5), o + DVec3::new(7.5, 0.9, 242.0));
     let (w, h) = (640, 360);

@@ -79,10 +79,33 @@ pub fn run(args: &Args) -> Result<Report, String> {
                 for n in &c.notes {
                     eprintln!("ew: {n}");
                 }
-                instance_count = c.instance_count();
                 content = Some(c);
             }
         }
+    }
+    // M4b session: authored layers, the character, the sim, the editor (not with --bare).
+    let mut session = match &mut content {
+        Some(c) if !args.bare => {
+            let mut s = crate::session::Session::new(&mut renderer, &*dev, c, args.layers.clone(), args.mode, args.editor_ui)?;
+            s.inset = args.inset;
+            s.collision_debug = args.collision_debug;
+            let _ = writeln!(
+                scene_lines,
+                "session: mode {:?}, character {}, {} authored places from {}, editor ui {}, inset {}, collision debug {}",
+                args.mode,
+                s.character_asset,
+                s.authored.places.len(),
+                args.layers.display(),
+                args.editor_ui,
+                args.inset,
+                args.collision_debug
+            );
+            Some(s)
+        }
+        _ => None,
+    };
+    if let Some(c) = &content {
+        instance_count = c.instance_count();
     }
     let target = dev
         .create_texture(&TextureDesc {
@@ -130,6 +153,32 @@ pub fn run(args: &Args) -> Result<Report, String> {
     let mut upload_bytes = 0u64;
 
     for i in 0..frames {
+        // Camera (scripted path; game mode: the follow camera) and the session's fixed step.
+        let alpha = fixed.run(fixed.dt(), &mut path, |_| ());
+        let path_cam = match args.camera {
+            Some(p) => crate::camera::Pose { position: crate::proving::ORIGIN + glam::DVec3::new(p[0], p[1], p[2]), yaw: p[3] as f32, pitch: p[4] as f32 }.camera(),
+            None => path.interpolated(alpha),
+        };
+        let mut camera = path_cam;
+        if let (Some(s), Some(c)) = (&mut session, &mut content) {
+            let (game, look) = scripted_game(i);
+            let o = s.update(
+                &mut renderer,
+                &*dev,
+                c,
+                crate::session::FrameIn {
+                    dt: s.fixed.dt(),
+                    time: i as f64 / 60.0,
+                    game,
+                    look,
+                    size: [w, h],
+                    pixels_per_point: 1.0,
+                    camera: (args.mode == crate::session::Mode::Editor).then_some(path_cam),
+                    ..Default::default()
+                },
+            )?;
+            camera = o.camera;
+        }
         if let Some(c) = &content {
             // Simulation time of this frame's pose: the fixed step count (deterministic).
             c.animate(&mut renderer, (path.step + 1) as f64 / 60.0)?;
@@ -149,19 +198,18 @@ pub fn run(args: &Args) -> Result<Report, String> {
         if c1 > last_completed && dev.completed_frames() == c1 {
             if let Some(t) = t {
                 log.set_gpu(c1.saturating_sub(1 + first) as usize, &t);
+                if let Some(s) = &mut session {
+                    s.set_timings(&t);
+                }
             }
             last_completed = c1;
         }
 
-        let alpha = fixed.run(fixed.dt(), &mut path, |_| ());
-        let camera = match args.camera {
-            Some(p) => crate::camera::Pose { position: crate::proving::ORIGIN + glam::DVec3::new(p[0], p[1], p[2]), yaw: p[3] as f32, pitch: p[4] as f32 }.camera(),
-            None => path.interpolated(alpha),
-        };
         let view = View {
             camera,
             viewport: Viewport { x: 0, y: 0, width: w, height: h },
             target: ViewTarget { texture: target, format: OUT_FORMAT, width: w, height: h, initial: ResourceState::Undefined, final_state: None },
+            flags: Default::default(),
         };
         let shot = shots.iter().find(|s| s.1 == i).map(|s| s.2);
         let last = i + 1 == frames;
@@ -172,7 +220,10 @@ pub fn run(args: &Args) -> Result<Report, String> {
             pop_stats: args.pop && !args.empty,
             ..Default::default()
         };
-        renderer.render(&*dev, &mut *enc, &view, &params).map_err(|e| format!("render: {e}"))?;
+        match &mut session {
+            Some(s) => s.record(&mut renderer, &*dev, &mut *enc, view.target, FrameParams { readback: None, ..params }, params.readback)?,
+            None => renderer.render(&*dev, &mut *enc, &view, &params).map_err(|e| format!("render: {e}"))?,
+        }
         if let Err(e) = dev.end_frame(enc) {
             validation_error.get_or_insert(format!("frame {i}: {e}"));
         }
@@ -184,6 +235,10 @@ pub fn run(args: &Args) -> Result<Report, String> {
             ..Default::default()
         });
         collect(&mut renderer, &mut log, first, &mut pops, &mut last_pick);
+        if let Some(s) = &mut session {
+            s.after_frame(&renderer, &*dev);
+            s.set_cpu_ms(log.rows.last().map_or(0.0, |r| r.cpu_ms));
+        }
         if i + 1 == warmup as u64 {
             dev.wait_idle();
             alloc_after_warmup = dev.allocated_bytes();
@@ -237,6 +292,9 @@ pub fn run(args: &Args) -> Result<Report, String> {
         let first = first_frame_index.unwrap_or(0);
         footer.push_str(&m2_lines(&M2Inputs { args, r: &renderer, log: &log, warmup, pops: &pops, first, pick: last_pick, upload_bytes, scene: &scene_lines }));
     }
+    if let Some(s) = &session {
+        footer.push_str(&session_lines(s, &renderer, warmup));
+    }
     let _ = write!(
         footer,
         "allocated_bytes: {alloc_after_warmup} after warm-up, {alloc_end} at end ({:+} B)\ntransient textures created: {}\n{caps}\n{}\n",
@@ -250,6 +308,9 @@ pub fn run(args: &Args) -> Result<Report, String> {
     let summary = log.summary(warmup, &header, &footer);
     std::fs::write(args.out.join("summary.txt"), &summary).map_err(|e| format!("summary.txt: {e}"))?;
 
+    if let Some(s) = &mut session {
+        s.destroy(&*dev);
+    }
     if let Some(mut c) = content {
         c.clear(&mut renderer);
     }
@@ -264,6 +325,64 @@ pub fn run(args: &Args) -> Result<Report, String> {
         return Err(format!("GPU validation error: {e}"));
     }
     Ok(Report { summary, frames, alloc_after_warmup, alloc_end, frame_png, shots: shot_paths, instances: instance_count })
+}
+
+/// Headless game-mode input: stand 1 s, walk 3 s while turning, sprint 2 s and jump, then
+/// keep walking with the camera swinging back (deterministic in the frame index).
+pub fn scripted_game(frame: u64) -> (crate::game::GameInput, glam::Vec2) {
+    let t = frame as f64 / 60.0;
+    let mut g = crate::game::GameInput::default();
+    let mut look = glam::Vec2::ZERO;
+    if t >= 1.0 {
+        g.axes = glam::Vec2::Y;
+    }
+    if (2.0..4.0).contains(&t) {
+        look.x = 3.0;
+    }
+    if (4.0..6.0).contains(&t) {
+        g.sprint = true;
+    }
+    if (5.0..5.05).contains(&t) {
+        g.jump = true;
+    }
+    if (6.0..8.0).contains(&t) {
+        look.x = -3.0;
+    }
+    (g, look)
+}
+
+/// Sim step, editor UI and view lines for the summary.
+fn session_lines(s: &crate::session::Session, r: &Renderer, warmup: usize) -> String {
+    let mut out = String::new();
+    if let Some(g) = &s.game {
+        let mut v: Vec<f64> = g.step_ms.iter().skip(warmup).copied().collect();
+        v.sort_by(f64::total_cmp);
+        if !v.is_empty() {
+            let mean = v.iter().sum::<f64>() / v.len() as f64;
+            let p99 = v[((v.len() - 1) as f64 * 0.99).round() as usize];
+            let _ = writeln!(
+                out,
+                "sim step (ed_sim World::step, {} steps after warm-up, {} static bodies): mean {:.3} ms, p99 {:.3} ms, max {:.3} ms; budget 2 ms: {}",
+                v.len(),
+                g.static_body_count(),
+                mean,
+                p99,
+                v[v.len() - 1],
+                if p99 <= 2.0 { "met" } else { "MISSED" }
+            );
+        }
+        let _ = writeln!(out, "character feet (node ENU) at end: ({:.2}, {:.2}, {:.2}), grounded {}", g.cur.x, g.cur.y, g.cur.z, g.grounded());
+    }
+    if !s.ui_ms.is_empty() {
+        let (m, p99) = s.ui_stats();
+        let _ = writeln!(out, "editor frame (Editor::frame + paint upload, CPU, {} frames): mean {m:.3} ms, p99 {p99:.3} ms", s.ui_ms.len());
+    }
+    if s.inset
+        && let Some(c) = r.cull_stats_for(1)
+    {
+        let _ = writeln!(out, "inset view (slot 1) culling, last frame: total {}, after frustum {}, after occlusion {}, drawn {}", c.total, c.after_frustum, c.after_occlusion, c.drawn());
+    }
+    out
 }
 
 /// Moves finished frames' counters, pop tiles and pick answers out of the renderer.
@@ -400,7 +519,7 @@ fn m2_lines(m: &M2Inputs<'_>) -> String {
     s
 }
 
-fn write_png(path: &std::path::Path, w: u32, h: u32, rgba: &[u8]) -> Result<(), String> {
+pub fn write_png(path: &std::path::Path, w: u32, h: u32, rgba: &[u8]) -> Result<(), String> {
     let file = std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
     enc.set_color(png::ColorType::Rgba);

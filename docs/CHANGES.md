@@ -1,3 +1,58 @@
+## 2026-11-11: Phase 1, M4b — editor in `ew`, character mover, collision in packs
+
+`ew` now runs the editor and the game in one session. Tab or F1 switches between them.
+Per P1-D17 the sim keeps stepping in editor mode.
+
+- **Collision ships in packs.** The bake writes collision chunks
+  (`ed_assets/src/collision.rs`). `ew/src/collide.rs` loads them into ed_sim.
+  A hot reload that changes collision rebuilds the game; no test covers this yet.
+- **The character.**
+  - An ed_sim mover at a fixed 60 Hz step with interpolation.
+  - A third-person camera that avoids collision.
+  - Solarcat when `character.ewpack` is mounted, otherwise a capsule.
+  - The spawn comes from the layer's `spawn` marker.
+- **Authored objects come from layers.** They live in `assets-src/layers/`, and the
+  `[[place]]` entries were removed from `proving.toml`. Instances generated from packs
+  are read-only.
+- **The `EditorHost` is implemented** (`ew/src/session.rs`). It covers:
+  - GPU pick;
+  - the inspector;
+  - transforms that move the render instance and the collider together;
+  - the log;
+  - pass timings.
+- **Also added:** an overlay pass (gizmo, plus a collision wireframe with
+  `--collision-debug`), a second view slot (`--inset`), and an offscreen input harness
+  (`ew/src/harness.rs`).
+- **Tests, checked by the conductor:**
+  - 177 passed, 0 failed, 2 ignored;
+  - `check-deps` clean;
+  - the `--sim-route` final hash is `647f42726a0a56de` in two separate processes.
+  - `tests/editor_host.rs` covers pick, a 2 m gizmo drag, Cmd+S, and a restart where
+    the layer transform, render instance and collider all come back in place.
+  - `tests/character_route.rs` covers walking, sprinting, jumping onto the barrel and
+    stopping at a building wall. Maximum penetration is 5 mm.
+- **Perf** at 2560x1440 over 600 frames, on a loaded machine:
+
+  | Run | GPU mean / p99 | CPU mean |
+  |---|---|---|
+  | Editor mode | 1.556 / 2.451 ms | 0.105 ms |
+  | `--bare` (no session) | 1.550 ms | |
+  | Inset view | 1.603 ms | 0.325 ms |
+
+  - Culling mean is 0.41 ms. Memory growth is 0 B.
+  - The sim step is 0.005 ms mean against a 2 ms budget.
+  - The GPU mean is 0.05 ms over the 1.5 ms budget, and so is the bare baseline on the
+    same loaded machine. Re-measure on an idle machine.
+- **Captures:** `docs/captures/phase-1/m4-{game,editor,inset}.png`.
+
+Needs checking on the Mac, by a person:
+- In a window: cursor lock, real Cmd+S, egui sharpness at Retina scale 2, typing in
+  Inspector fields.
+- Try it with `./target/release/ew --path proving --validation`.
+- The character has no animation yet (T-pose); locomotion is Phase 5.
+- HZB is the largest pass at 0.94 ms in the editor capture. Look into it during GPU
+  measurement.
+
 ## 2026-11-11: Phase 1, M4b — Vulkan backend in `ed_gpu` (P0-R5)
 
 `ed_gpu` has a second backend: Vulkan 1.3 through `ash` 0.38 (feature `vulkan`), run on

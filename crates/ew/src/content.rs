@@ -82,10 +82,27 @@ enum Part {
     Skinned { inst: InstanceId, skin: SkinId, skeleton: AssetId },
 }
 
-/// One entry of the Instances chunk.
+/// One entry of the Instances chunk, or an authored placement ([`Content::set_authored`]).
 struct Placement {
     src: Instance,
     parts: Vec<Part>,
+    /// Each part's transform relative to the placement (prefab node globals).
+    locals: Vec<Affine3A>,
+    /// From the layer files (editable), not the pack.
+    authored: bool,
+}
+
+/// What [`Content::object`] knows about one object.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ObjectDesc {
+    pub asset: AssetId,
+    /// Asset path when known (proving parts, authored prefabs).
+    pub asset_name: Option<String>,
+    /// Placement transform, node frame (y-up, relative to the proving origin).
+    pub transform: Affine3A,
+    pub parts: usize,
+    pub authored: bool,
+    pub material: Option<AssetId>,
 }
 
 /// What one load or reload did.
@@ -130,6 +147,14 @@ pub struct Content {
     /// metadata (provenance names the source file's bytes, so every chunk of a re-exported
     /// glTF gets a new hash) is not re-uploaded.
     payloads: BTreeMap<ChunkKey, [u8; 32]>,
+    /// Object id -> placement index.
+    by_object: BTreeMap<ed_geo::ObjectId, usize>,
+    /// Known asset paths (proving parts, authored prefabs) for the inspector.
+    names: BTreeMap<AssetId, String>,
+    /// Pack collision (node shapes and per-asset shapes), re-read when its chunks change.
+    pub collision: crate::collide::PackCollision,
+    /// Bumped whenever [`Content::collision`] changes (hot reload rebuilds the sim statics).
+    pub collision_gen: u64,
     /// Notes for the log (optional packs missing, ...).
     pub notes: Vec<String>,
     pub load_ms: f64,
@@ -251,6 +276,10 @@ impl Content {
             placements: Vec::new(),
             skinned: Vec::new(),
             payloads: BTreeMap::new(),
+            by_object: BTreeMap::new(),
+            names: ed_assets::proving::asset_names().into_iter().map(|n| (AssetId::from_path(&n), n)).collect(),
+            collision: Default::default(),
+            collision_gen: 0,
             notes,
             load_ms: 0.0,
             stats: LoadStats::default(),
@@ -430,19 +459,31 @@ impl Content {
             }
             dirty_assets.insert(a);
         }
-        // 6. Placements.
+        // 6. Placements (generated ones from the instances chunk; authored ones are kept and
+        // only respawn when their asset changed).
         let inst_key = ChunkKey::node(proving_node(), ChunkKind::Instances, Rung::R0);
         if changed.contains(&inst_key) || removed.contains(&inst_key) {
-            for p in std::mem::take(&mut self.placements) {
+            let (authored, generated): (Vec<Placement>, Vec<Placement>) = std::mem::take(&mut self.placements).into_iter().partition(|p| p.authored);
+            for p in generated {
                 Self::despawn(r, p);
             }
             if self.keys.contains_key(&inst_key) {
                 let c = self.read(&inst_key)?;
                 let list: Instances = c.decode().map_err(|e| format!("instances: {e}"))?;
-                self.placements = list.instances.into_iter().map(|src| Placement { src, parts: Vec::new() }).collect();
+                self.placements = list.instances.into_iter().map(|src| Placement { src, parts: Vec::new(), locals: Vec::new(), authored: false }).collect();
             }
             for i in 0..self.placements.len() {
                 self.spawn(r, dev, i, &mut st)?;
+            }
+            for p in authored {
+                let dirty = dirty_assets.contains(&p.src.asset);
+                self.placements.push(p);
+                if dirty {
+                    let i = self.placements.len() - 1;
+                    let parts = std::mem::take(&mut self.placements[i].parts);
+                    Self::despawn_parts(r, parts);
+                    self.spawn(r, dev, i, &mut st)?;
+                }
             }
         } else if !dirty_assets.is_empty() {
             for i in 0..self.placements.len() {
@@ -456,6 +497,12 @@ impl Content {
         }
         for id in retire_meshes {
             r.remove_mesh(id).map_err(|e| format!("retire mesh: {e}"))?;
+        }
+        // 7. Collision: re-read when any collision chunk changed.
+        if changed.iter().chain(removed).any(crate::collide::PackCollision::is_collision_key) {
+            let keys: Vec<ChunkKey> = self.keys.keys().copied().collect();
+            self.collision = crate::collide::PackCollision::from_keys(keys, |k| self.read(k)?.decode().map_err(|e| format!("collision: {e}")))?;
+            self.collision_gen += 1;
         }
         self.reindex_skinned();
         Ok(st)
@@ -505,6 +552,8 @@ impl Content {
             return Ok(());
         }
         let mut parts = Vec::with_capacity(nodes.len());
+        let inv = base.inverse();
+        let mut locals = Vec::with_capacity(nodes.len());
         for (mesh, xf, mat) in nodes {
             let material = self.material_id(mat);
             let desc = |m: MeshId| InstanceDesc { node: self.node, transform: xf, mesh: m, material, object: src.object, flags: 0 };
@@ -512,6 +561,7 @@ impl Content {
                 Some(MeshEntry::Static(id)) => {
                     let d = desc(*id);
                     parts.push(Part::Static(r.instances().add(&d).ok_or("instance pool full")?));
+                    locals.push(inv * xf);
                 }
                 Some(MeshEntry::Skinned(b)) => {
                     let (skin, mid) = r.add_skinned_mesh(dev, &b.0).map_err(|e| format!("skinned mesh: {e}"))?;
@@ -520,6 +570,7 @@ impl Content {
                     let d = desc(mid);
                     let inst = r.instances().add(&d).ok_or("instance pool full")?;
                     parts.push(Part::Skinned { inst, skin, skeleton: mesh });
+                    locals.push(inv * xf);
                 }
                 None => st.missing += 1,
             }
@@ -527,7 +578,74 @@ impl Content {
         st.instances += parts.len();
         st.placements += 1;
         self.placements[i].parts = parts;
+        self.placements[i].locals = locals;
         Ok(())
+    }
+
+    /// Replaces the authored placements (layer `place` ops, the character) with `list`:
+    /// (object, asset, node-frame y-up transform, asset path).
+    pub fn set_authored(&mut self, r: &mut Renderer, dev: &dyn Device, list: &[(ed_geo::ObjectId, AssetId, Affine3A, String)]) -> Result<LoadStats, String> {
+        let (old, keep): (Vec<Placement>, Vec<Placement>) = std::mem::take(&mut self.placements).into_iter().partition(|p| p.authored);
+        self.placements = keep;
+        for p in old {
+            Self::despawn(r, p);
+        }
+        let mut st = LoadStats::default();
+        for (object, asset, xf, name) in list {
+            self.names.insert(*asset, name.clone());
+            let src = Instance { object: *object, transform: ed_assets::proving::to_enu(xf), asset: *asset, material: None, variant: 0, flags: 0 };
+            self.placements.push(Placement { src, parts: Vec::new(), locals: Vec::new(), authored: true });
+            let i = self.placements.len() - 1;
+            self.spawn(r, dev, i, &mut st)?;
+        }
+        self.reindex_skinned();
+        Ok(st)
+    }
+
+    /// Moves an authored object's instances (node-frame y-up transform). Generated objects are
+    /// read-only: `false`.
+    pub fn move_object(&mut self, r: &mut Renderer, object: ed_geo::ObjectId, xf: &Affine3A) -> bool {
+        let Some(&i) = self.by_object.get(&object) else { return false };
+        let p = &mut self.placements[i];
+        if !p.authored {
+            return false;
+        }
+        p.src.transform = ed_assets::proving::to_enu(xf);
+        for (part, local) in p.parts.iter().zip(&p.locals) {
+            let inst = match part {
+                Part::Static(i) => *i,
+                Part::Skinned { inst, .. } => *inst,
+            };
+            r.instances().set_transform(inst, &(*xf * *local));
+        }
+        true
+    }
+
+    /// What is known about an object (a generated or authored placement).
+    pub fn object(&self, object: ed_geo::ObjectId) -> Option<ObjectDesc> {
+        let p = &self.placements[*self.by_object.get(&object)?];
+        Some(ObjectDesc {
+            asset: p.src.asset,
+            asset_name: self.names.get(&p.src.asset).cloned(),
+            transform: from_enu(&p.src.transform),
+            parts: p.parts.len(),
+            authored: p.authored,
+            material: p.src.material,
+        })
+    }
+
+    /// Every placed object: (id, authored).
+    pub fn objects(&self) -> impl Iterator<Item = (ed_geo::ObjectId, bool)> + '_ {
+        self.placements.iter().map(|p| (p.src.object, p.authored))
+    }
+
+    /// Whether a mesh or prefab asset is loaded.
+    pub fn has_asset(&self, a: AssetId) -> bool {
+        self.meshes.contains_key(&a) || self.prefabs.contains_key(&a)
+    }
+
+    pub fn asset_name(&self, a: AssetId) -> Option<&str> {
+        self.names.get(&a).map(String::as_str)
     }
 
     /// Poses every skinned placement at simulation time `t` seconds ([`ed_anim::sine_pose`]).
@@ -542,6 +660,7 @@ impl Content {
     }
 
     fn reindex_skinned(&mut self) {
+        self.by_object = self.placements.iter().enumerate().map(|(i, p)| (p.src.object, i)).collect();
         self.skinned = self
             .placements
             .iter()
