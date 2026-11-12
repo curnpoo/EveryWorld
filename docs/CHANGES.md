@@ -1,3 +1,46 @@
+## 2026-11-11: Phase 1, M4b — Vulkan backend in `ed_gpu` (P0-R5)
+
+`ed_gpu` has a second backend: Vulkan 1.3 through `ash` 0.38 (feature `vulkan`), run on
+MoltenVK 1.4 on the M3 Pro. Code is in `crates/ed_gpu/src/vulkan/`. Set the backend with
+`ED_GPU_BACKEND=metal|vulkan`. Metal is unchanged.
+
+- **Shared test suite.** Every test body in `tests/{render,bc,alloc,timer,present}.rs`
+  runs once per backend; the `metal_*` test files were renamed to these.
+  - Metal: 23 integration tests and 4 unit tests.
+  - With the feature: 37 integration tests (17 on Vulkan) and 5 unit tests.
+  - The conductor re-ran everything with `ED_GPU_VK_VALIDATION=require` and
+    `ED_GPU_REQUIRE_VULKAN=1`: all green. Clippy `-D warnings` is clean.
+- **Validation.** Khronos validation plus sync validation, read uncaptured by the
+  conductor: zero errors and zero warnings.
+  - One waiver, MoltenVK only: `VUID-vkCreateDescriptorSetLayout-support-09582`.
+    MoltenVK reports a 1212-descriptor per-set limit even though its update-after-bind
+    limits are 1,000,000.
+- **Design:**
+  - bindless set 0 through descriptor indexing (sampled images, storage images,
+    read-write storage buffers, samplers), update-after-bind;
+  - 64-byte push constants, as on Metal;
+  - a timeline semaphore paces frames and drives deferred destroy;
+  - dynamic rendering and sync2;
+  - a negative-height viewport keeps Metal's clip-space convention;
+  - specialization constants 0..2 carry the workgroup size;
+  - presents into a `CAMetalLayer` through `VK_EXT_metal_surface`.
+- **MoltenVK limits.** No `drawIndirectCount` (all `max_draws` are drawn and the tail
+  must have zero instances), no 64-bit atomics, and a detached layer reports
+  suboptimal.
+- **Test shaders** are GLSL. The checked-in SPIR-V is kept in sync by
+  `tests/shaders_fresh.rs`.
+
+Needs checking:
+- Present into a real window.
+- Linux and Windows drivers.
+- Vulkan performance.
+- Validation errors raised at submit time are printed but do not fail a test; only
+  creation calls check them. To be fixed with the Slang port.
+- `ed_render` and `ew` still create `Backend::Metal` and load MSL only. The Slang shader
+  port is next. Its main blocker is the bindless buffer ABI; the proposal is buffer
+  device addresses.
+- Fragment `PrimitiveId` on MoltenVK is unverified. The visibility buffer needs it.
+
 ## 2026-11-11: Phase 1, milestone M3 (real content path) and editor core
 
 Measured by the conductor on the M3 Pro at 2560x1440, 600-frame scripted path.

@@ -1,0 +1,10 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "shader_abi.glsl"
+layout(local_size_x = 64) in;
+ED_CONSTANTS { uint buf; uint n; uint add; } ed_c;
+ED_BUFFER(uint)
+void main() {
+    uint g = gl_GlobalInvocationID.x;
+    if (g < ed_c.n) { ed_buf(uint, ed_c.buf)[g] = g * 3u + ed_c.add; }
+}

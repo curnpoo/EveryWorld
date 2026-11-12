@@ -7,7 +7,12 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Second backend (P1-D22): Vulkan through ash. Off by default; on macOS it runs on MoltenVK.
+vulkan = ["dep:ash"]
+
 [dependencies]
+ash = { version = "0.38", optional = true }
 
 # Metal backend (P1-D2): objc2 bindings inside the private `metal` module only.
 [target.'cfg(target_os = "macos")'.dependencies]

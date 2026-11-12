@@ -1,0 +1,13 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "shader_abi.glsl"
+layout(local_size_x = 4) in;
+struct Args { uint index_count; uint instance_count; uint first_index; int base_vertex; uint first_instance; };
+ED_CONSTANTS { uint args; } ed_c;
+ED_BUFFER(Args)
+void main() {
+    uint g = gl_GlobalInvocationID.x;
+    if (g == 0u) { ed_buf(Args, ed_c.args)[0] = Args(3u, 1u, 0u, 0, 0u); }  // triangle 0, red
+    if (g == 1u) { ed_buf(Args, ed_c.args)[1] = Args(3u, 1u, 0u, 0, 1u); }  // triangle 1, green
+    if (g == 2u) { ed_buf(Args, ed_c.args)[2] = Args(0u, 0u, 0u, 0, 0u); }  // empty entry
+}

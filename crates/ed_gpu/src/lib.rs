@@ -4,8 +4,12 @@
 //!
 //! Allowed workspace dependencies: none. Enforced by `cargo xtask check-deps`.
 //!
-//! **Status: Metal backend (Phase 1, W2).** `create_device(Backend::Metal, ..)` works on
-//! macOS; Vulkan and D3D12 return `Unsupported`. The contract, and the walk of every item
+//! **Status: Metal backend (Phase 1, W2) and the minimal Vulkan backend (P1-D22, M4b-2).**
+//! `create_device(Backend::Metal, ..)` works on macOS. `Backend::Vulkan` works when the crate
+//! is built with the `vulkan` feature and a Vulkan loader is found (on macOS: Homebrew's
+//! `vulkan-loader` + `molten-vk`; `ED_GPU_VULKAN_LIB` names the loader library explicitly).
+//! D3D12 returns `Unsupported`. [`default_backend`] picks the backend at run time
+//! (`ED_GPU_BACKEND=metal|vulkan|d3d12`). The contract, and the walk of every item
 //! below against Metal, D3D12 and Vulkan, is `docs/contracts/rhi.md` (its last section lists
 //! what the Metal bring-up changed). Change the contract and this file together.
 //!
@@ -29,6 +33,8 @@ pub mod shader_abi;
 mod track;
 #[cfg(target_os = "macos")]
 mod metal;
+#[cfg(feature = "vulkan")]
+mod vulkan;
 
 // ---------------------------------------------------------------------------------------------
 // Handles
@@ -331,7 +337,10 @@ pub enum ShaderStage {
 }
 
 /// Precompiled code for one backend. Slang produces all of these at build time (P1-D1); the
-/// device rejects code for another backend.
+/// device rejects code for another backend (`Caps::backend` says which one to pass).
+///
+/// Metal takes `MslSource` or `MetalLib`; Vulkan takes `SpirV` (the entry point is
+/// [`ShaderDesc::entry`] inside the module; the binding ABI is in [`shader_abi`]).
 #[derive(Clone, Copy, Debug)]
 pub enum ShaderCode<'a> {
     /// Metal shading language source: the escape hatch for hand-written shaders.
@@ -670,6 +679,23 @@ pub fn create_device(backend: Backend, desc: &DeviceDesc) -> Result<Box<dyn Devi
     match backend {
         #[cfg(target_os = "macos")]
         Backend::Metal => Ok(Box::new(metal::MetalDevice::new(desc)?)),
+        #[cfg(feature = "vulkan")]
+        Backend::Vulkan => Ok(Box::new(vulkan::VulkanDevice::new(desc)?)),
         _ => Err(Error::Unsupported(format!("{backend:?}: backend not available in this build"))),
+    }
+}
+
+/// The backend to use on this machine: `ED_GPU_BACKEND` (`metal`, `vulkan` or `d3d12`, any
+/// case) when set, otherwise the platform's native one (Metal on Apple platforms, D3D12 on
+/// Windows, Vulkan elsewhere). A named backend that is not compiled in still comes back here;
+/// `create_device` then returns `Unsupported`.
+pub fn default_backend() -> Backend {
+    match std::env::var("ED_GPU_BACKEND").map(|v| v.to_ascii_lowercase()).as_deref() {
+        Ok("metal") => Backend::Metal,
+        Ok("vulkan") | Ok("vk") => Backend::Vulkan,
+        Ok("d3d12") | Ok("dx12") => Backend::D3D12,
+        _ if cfg!(any(target_os = "macos", target_os = "ios")) => Backend::Metal,
+        _ if cfg!(windows) => Backend::D3D12,
+        _ => Backend::Vulkan,
     }
 }

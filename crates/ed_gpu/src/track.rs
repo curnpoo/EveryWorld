@@ -68,6 +68,22 @@ impl States {
         }
     }
 
+    /// Tracked state of one subresource (`None` for out-of-range).
+    #[allow(dead_code)]
+    pub fn get(&self, mip: u32, layer: u32) -> Option<ResourceState> {
+        if mip < self.mips && layer < self.layers { Some(self.states[(layer * self.mips + mip) as usize]) } else { None }
+    }
+
+    #[allow(dead_code)]
+    pub fn mips(&self) -> u32 {
+        self.mips
+    }
+
+    #[allow(dead_code)]
+    pub fn layers(&self) -> u32 {
+        self.layers
+    }
+
     /// Sets without checking (backend-internal moves such as an upload into `Undefined`).
     pub fn set(&mut self, sub: Option<Subresource>, to: ResourceState) {
         if let Ok(r) = self.range(sub) {

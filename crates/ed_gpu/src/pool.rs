@@ -61,6 +61,16 @@ impl<T> Pool<T> {
     pub fn len(&self) -> usize {
         self.live
     }
+
+    /// Removes every live value (device teardown).
+    #[allow(dead_code)]
+    pub fn drain(&mut self) -> Vec<T> {
+        self.free.clear();
+        self.live = 0;
+        let out = self.slots.iter_mut().filter_map(|s| s.1.take()).collect();
+        self.slots.clear();
+        out
+    }
 }
 
 /// Bindless slot allocator. Freed slots wait until the frame that freed them has finished on

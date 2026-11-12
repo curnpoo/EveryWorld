@@ -1,0 +1,13 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "shader_abi.glsl"
+// Workgroup size from specialization constant 0 (set from ComputePipelineDesc::workgroup_size).
+layout(local_size_x_id = 0) in;
+ED_CONSTANTS { uint buf; uint iters; } ed_c;
+ED_BUFFER(float)
+void main() {
+    uint g = gl_GlobalInvocationID.x;
+    float x = float(g);
+    for (uint i = 0u; i < ed_c.iters; i++) { x = fma(x, 1.000001, 0.5); x = sin(x); }
+    ed_buf(float, ed_c.buf)[g] = x;
+}

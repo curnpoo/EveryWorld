@@ -1,11 +1,13 @@
 //! Block-compressed textures (M3): BC7 (colour, ORM) and BC5 (normals) upload with mips and
-//! sample correctly. Gated on `Caps::bc_textures`. Compiles to nothing off macOS.
-#![cfg(target_os = "macos")]
+//! sample correctly, on every compiled-in backend. Gated on `Caps::bc_textures`.
 
+#[macro_use]
 mod common;
 use common::*;
 use ed_gpu::ResourceState::*;
 use ed_gpu::*;
+
+backend_tests!(bc7_and_bc5_upload_with_mips_and_sample);
 
 /// LSB-first bit writer for hand-built blocks.
 struct Bits {
@@ -69,6 +71,7 @@ fn bc_texture(dev: &dyn Device, format: Format, size: u32, mips: u32, block: imp
     t
 }
 
+/// MSL side of `full.vert` + `bc_lod.frag`.
 const SRC: &str = r#"
 struct VOut { float4 pos [[position]]; float2 uv; };
 struct Empty { uint pad[16]; };
@@ -88,8 +91,8 @@ fragment float4 fs_lod(VOut in [[stage_in]], ED_BINDLESS(LodC)) {
 
 /// Draws `t` at each mip level and returns the centre pixel per level.
 fn sample_levels(dev: &dyn Device, t: TextureId, levels: u32) -> Vec<[u8; 4]> {
-    let vs = shader(dev, ShaderStage::Vertex, "vs_full", SRC);
-    let fs = shader(dev, ShaderStage::Fragment, "fs_lod", SRC);
+    let vs = shader(dev, ShaderStage::Vertex, "vs_full", SRC, spv!("full.vert"));
+    let fs = shader(dev, ShaderStage::Fragment, "fs_lod", SRC, spv!("bc_lod.frag"));
     let pso = pipeline(dev, vs, fs, None);
     let ti = dev.bind_texture(t).unwrap();
     let smp = dev.bind_sampler(dev.create_sampler(&SamplerDesc { min_mag: Filter::Linear, mip: Filter::Nearest, address: AddressMode::Repeat, anisotropy: 1, compare: None }).unwrap()).unwrap();
@@ -122,30 +125,28 @@ fn close(a: [u8; 4], b: [u8; 4], tol: i32) -> bool {
     a.iter().zip(b).all(|(x, y)| (*x as i32 - y as i32).abs() <= tol)
 }
 
-#[test]
-fn bc7_and_bc5_upload_with_mips_and_sample() {
-    let dev = device();
+fn bc7_and_bc5_upload_with_mips_and_sample(dev: &dyn Device) {
     if !dev.caps().bc_textures {
         eprintln!("device has no BC texture support (Caps::bc_textures = false); skipping");
         return;
     }
     // BC7 Unorm: a different solid colour per mip, 16 x 16 -> 5 levels (down to 1 x 1, one block each).
     let cols7 = [[127, 0, 0, 127], [0, 127, 0, 127], [0, 0, 127, 127], [127, 127, 0, 127], [64, 32, 100, 127]];
-    let t = bc_texture(&*dev, Format::Bc7Unorm, 16, 5, |m| bc7_solid(cols7[m as usize], 0));
-    for (lod, got) in sample_levels(&*dev, t, 5).into_iter().enumerate() {
+    let t = bc_texture(dev, Format::Bc7Unorm, 16, 5, |m| bc7_solid(cols7[m as usize], 0));
+    for (lod, got) in sample_levels(dev, t, 5).into_iter().enumerate() {
         let c = cols7[lod];
         let want = [(c[0] << 1) as u8, (c[1] << 1) as u8, (c[2] << 1) as u8, 255];
         assert!(close(got, want, 1), "BC7 level {lod}: got {got:?}, want {want:?}");
     }
     // BC7 sRGB: 254 encoded -> linear ~0.991 -> 253 in a Unorm target.
-    let t = bc_texture(&*dev, Format::Bc7Srgb, 8, 1, |_| bc7_solid([127, 64, 0, 127], 0));
-    let got = sample_levels(&*dev, t, 1)[0];
+    let t = bc_texture(dev, Format::Bc7Srgb, 8, 1, |_| bc7_solid([127, 64, 0, 127], 0));
+    let got = sample_levels(dev, t, 1)[0];
     let lin = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
     let want = [(lin(254.0 / 255.0) * 255.0).round() as u8, (lin(128.0 / 255.0) * 255.0).round() as u8, 0, 255];
     assert!(close(got, want, 2), "BC7 sRGB: got {got:?}, want {want:?}");
     // BC5: two channels, blue reads 0.
-    let t = bc_texture(&*dev, Format::Bc5Unorm, 8, 2, |m| if m == 0 { bc5_solid(200, 100) } else { bc5_solid(30, 240) });
-    let got = sample_levels(&*dev, t, 2);
+    let t = bc_texture(dev, Format::Bc5Unorm, 8, 2, |m| if m == 0 { bc5_solid(200, 100) } else { bc5_solid(30, 240) });
+    let got = sample_levels(dev, t, 2);
     assert!(close(got[0], [200, 100, 0, 255], 1), "BC5 level 0: {:?}", got[0]);
     assert!(close(got[1], [30, 240, 0, 255], 1), "BC5 level 1: {:?}", got[1]);
 }

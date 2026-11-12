@@ -1,0 +1,12 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "shader_abi.glsl"
+// Writes one dispatch_indirect entry: (ed_c.groups, 1, 1).
+layout(local_size_x = 1) in;
+ED_CONSTANTS { uint args; uint groups; } ed_c;
+ED_BUFFER(uint)
+void main() {
+    ed_buf(uint, ed_c.args)[0] = ed_c.groups;
+    ed_buf(uint, ed_c.args)[1] = 1u;
+    ed_buf(uint, ed_c.args)[2] = 1u;
+}

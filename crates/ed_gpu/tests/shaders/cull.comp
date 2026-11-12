@@ -1,0 +1,24 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "shader_abi.glsl"
+// GPU culling into indirect draws, three dispatches separated by ShaderWrite barriers:
+// mode 0 zeroes the count, mode 1 appends one draw per visible object, mode 2 zeroes the
+// entries past the count (a backend without indirect_count draws all max_draws entries).
+layout(local_size_x = 64) in;
+struct Args { uint index_count; uint instance_count; uint first_index; int base_vertex; uint first_instance; };
+ED_CONSTANTS { uint objs; uint args; uint count; uint n; uint mode; } ed_c;
+ED_BUFFER(uint)
+ED_BUFFER(Args)
+void main() {
+    uint g = gl_GlobalInvocationID.x;
+    if (ed_c.mode == 0u) {
+        if (g == 0u) { ed_buf(uint, ed_c.count)[0] = 0u; }
+    } else if (ed_c.mode == 1u) {
+        if (g < ed_c.n && ed_buf(uint, ed_c.objs)[g] != 0u) {
+            uint slot = atomicAdd(ed_buf(uint, ed_c.count)[0], 1u);
+            ed_buf(Args, ed_c.args)[slot] = Args(6u, 1u, 0u, 0, g);
+        }
+    } else {
+        if (g < ed_c.n && g >= ed_buf(uint, ed_c.count)[0]) { ed_buf(Args, ed_c.args)[g] = Args(0u, 0u, 0u, 0, 0u); }
+    }
+}
