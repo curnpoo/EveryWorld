@@ -564,16 +564,23 @@ float3 ambient_light_0(FrameData_natural_0 device* f_8, float3 n_6)
     return _S48;
 }
 
-float3 shade_toon_0(FrameData_natural_0 device* f_9, const GpuMaterial_natural_0 thread* m_2, float3 albedo_0, float3 n_7, float3 v_2, float ao_3, float sun_vis_0)
+float3 ao_multibounce_0(FrameData_natural_0 device* f_9, float ao_3, float3 albedo_0)
 {
-    float ndl_0 = dot(n_7, (float4(f_9->sun_dir_0) ).xyz);
-    float _S51 = max((float4(m_2->params_0) ).z, 1.0f);
-    float lit_2 = floor(saturate(ndl_0 * 0.5f + 0.5f) * _S51 + 0.5f) / _S51 * sun_vis_0;
-    float4 _S52 = float4(m_2->shade_0) ;
-    float3 c_5 = mix(albedo_0 * _S52.xyz, albedo_0, float3(lit_2) );
-    float3 _S53 = (float4(f_9->sun_color_0) ).xyz * float3((lit_2 / 3.1415927410125732f)) ;
-    float3 _S54 = ambient_light_0(f_9, n_7);
-    return c_5 * (_S53 + _S54 * float3(ao_3) ) + float3((pow(1.0f - saturate(dot(n_7, v_2)), 4.0f) * _S52.w * saturate(ndl_0 + 0.30000001192092896f) * sun_vis_0))  * (float4(f_9->sun_color_0) ).xyz * float3(0.15000000596046448f) ;
+    float3 _S51 = float3(ao_3) ;
+    return mix(_S51, max(_S51, ((_S51 * (float3(2.0404000282287598f)  * albedo_0 - float3(0.33239999413490295f) ) + (float3(-4.795100212097168f)  * albedo_0 + float3(0.64170002937316895f) )) * _S51 + (float3(2.7551999092102051f)  * albedo_0 + float3(0.69029998779296875f) )) * _S51), float3((float4((&f_9->light_0)->sky_0) ).y) );
+}
+
+float3 shade_toon_0(FrameData_natural_0 device* f_10, const GpuMaterial_natural_0 thread* m_2, float3 albedo_1, float3 n_7, float3 v_2, float ao_4, float sun_vis_0)
+{
+    float ndl_0 = dot(n_7, (float4(f_10->sun_dir_0) ).xyz);
+    float _S52 = max((float4(m_2->params_0) ).z, 1.0f);
+    float lit_2 = floor(saturate(ndl_0 * 0.5f + 0.5f) * _S52 + 0.5f) / _S52 * sun_vis_0;
+    float4 _S53 = float4(m_2->shade_0) ;
+    float3 c_5 = mix(albedo_1 * _S53.xyz, albedo_1, float3(lit_2) );
+    float3 _S54 = (float4(f_10->sun_color_0) ).xyz * float3((lit_2 / 3.1415927410125732f)) ;
+    float3 _S55 = ambient_light_0(f_10, n_7);
+    float3 _S56 = ao_multibounce_0(f_10, ao_4, albedo_1);
+    return c_5 * (_S54 + _S55 * _S56) + float3((pow(1.0f - saturate(dot(n_7, v_2)), 4.0f) * _S53.w * saturate(ndl_0 + 0.30000001192092896f) * sun_vis_0))  * (float4(f_10->sun_color_0) ).xyz * float3(0.15000000596046448f) ;
 }
 
 float3 f_schlick_0(float3 f0_0, float voh_0)
@@ -591,78 +598,83 @@ float d_ggx_0(float noh_0, float a_0)
 float v_smith_0(float nov_0, float nol_1, float a_1)
 {
     float a2_2 = a_1 * a_1;
-    float _S55 = 1.0f - a2_2;
-    return 0.5f / max(nol_1 * sqrt(nov_0 * nov_0 * _S55 + a2_2) + nov_0 * sqrt(nol_1 * nol_1 * _S55 + a2_2), 9.9999997473787516e-06f);
+    float _S57 = 1.0f - a2_2;
+    return 0.5f / max(nol_1 * sqrt(nov_0 * nov_0 * _S57 + a2_2) + nov_0 * sqrt(nol_1 * nol_1 * _S57 + a2_2), 9.9999997473787516e-06f);
 }
 
 float2 env_brdf_0(float nov_1, float rough_0)
 {
     float4 r_1 = float4(rough_0)  * float4(-1.0f, -0.027499999850988388f, -0.57200002670288086f, 0.02199999988079071f) + float4(1.0f, 0.042500000447034836f, 1.0399999618530273f, -0.039999999105930328f);
-    float _S56 = r_1.x;
-    return float2(-1.0399999618530273f, 1.0399999618530273f) * float2((min(_S56 * _S56, exp2(-9.2799997329711914f * nov_1)) * _S56 + r_1.y))  + r_1.zw;
+    float _S58 = r_1.x;
+    return float2(-1.0399999618530273f, 1.0399999618530273f) * float2((min(_S58 * _S58, exp2(-9.2799997329711914f * nov_1)) * _S58 + r_1.y))  + r_1.zw;
 }
 
-float3 shade_pbr_0(FrameData_natural_0 device* f_10, float3 albedo_1, float metal_0, float rough_1, float ao_4, float sun_vis_1, float3 n_8, float3 v_3)
+float3 shade_pbr_0(FrameData_natural_0 device* f_11, float3 albedo_2, float metal_0, float rough_1, float ao_5, float sun_vis_1, float3 n_8, float3 v_3)
 {
-    float _S57 = saturate(metal_0);
-    float _S58 = clamp(rough_1, 0.039999999105930328f, 1.0f);
-    float a_2 = _S58 * _S58;
-    float3 l_0 = (float4(f_10->sun_dir_0) ).xyz;
+    float _S59 = saturate(metal_0);
+    float _S60 = clamp(rough_1, 0.039999999105930328f, 1.0f);
+    float a_2 = _S60 * _S60;
+    float3 l_0 = (float4(f_11->sun_dir_0) ).xyz;
     float3 h_2 = normalize(l_0 + v_3);
     float nol_2 = saturate(dot(n_8, l_0));
-    float _S59 = max(dot(n_8, v_3), 9.9999997473787516e-05f);
-    float3 f0_1 = mix(float3(0.039999999105930328f) , albedo_1, float3(_S57) );
-    float3 diff_col_0 = albedo_1 * float3((1.0f - _S57)) ;
+    float _S61 = max(dot(n_8, v_3), 9.9999997473787516e-05f);
+    float3 f0_1 = mix(float3(0.039999999105930328f) , albedo_2, float3(_S59) );
+    float3 diff_col_0 = albedo_2 * float3((1.0f - _S59)) ;
     float3 F_0 = f_schlick_0(f0_1, saturate(dot(v_3, h_2)));
-    float3 direct_0 = (diff_col_0 * (float3(1.0f)  - F_0) / float3(3.1415927410125732f)  + float3((d_ggx_0(saturate(dot(n_8, h_2)), a_2) * v_smith_0(_S59, nol_2, a_2)))  * F_0) * (float4(f_10->sun_color_0) ).xyz * float3((nol_2 * sun_vis_1)) ;
-    float2 ab_0 = env_brdf_0(_S59, _S58);
+    float3 _S62 = float3(1.0f) ;
+    float3 direct_0 = (diff_col_0 * (_S62 - F_0) / float3(3.1415927410125732f)  + float3((d_ggx_0(saturate(dot(n_8, h_2)), a_2) * v_smith_0(_S61, nol_2, a_2)))  * F_0) * (float4(f_11->sun_color_0) ).xyz * float3((nol_2 * sun_vis_1)) ;
+    float2 ab_0 = env_brdf_0(_S61, _S60);
     float3 r_2 = reflect(- v_3, n_8);
     float3 env_0;
-    if(((uint4((&f_10->light_0)->flags_0) ).z) != 0U)
+    if(((uint4((&f_11->light_0)->flags_0) ).z) != 0U)
     {
-        float3 _S60 = sky_rad_0(f_10, r_2, 0.0f);
-        float3 _S61 = sh_irradiance_0(f_10, r_2);
-        env_0 = mix(_S60, _S61, float3(_S58) );
+        float3 _S63 = sky_rad_0(f_11, r_2, 0.0f);
+        float3 _S64 = sh_irradiance_0(f_11, r_2);
+        env_0 = mix(_S63, _S64, float3(_S60) );
     }
     else
     {
-        float3 _S62 = hemi_ambient_0(f_10, r_2);
-        env_0 = _S62;
+        float3 _S65 = hemi_ambient_0(f_11, r_2);
+        env_0 = _S65;
     }
-    float spec_occ_0 = saturate(pow(_S59 + ao_4, exp2(-16.0f * a_2 - 1.0f)) - 1.0f + ao_4);
-    float3 _S63 = ambient_light_0(f_10, n_8);
-    return direct_0 + (diff_col_0 * _S63 * float3(ao_4)  + env_0 * (f0_1 * float3(ab_0.x)  + float3(ab_0.y) ) * float3(spec_occ_0) );
+    float spec_occ_0 = saturate(pow(_S61 + ao_5, exp2(-16.0f * a_2 - 1.0f)) - 1.0f + ao_5);
+    float3 f_env_0 = f0_1 * float3(ab_0.x)  + float3(ab_0.y) ;
+    float3 _S66 = diff_col_0 * (_S62 - f_env_0);
+    float3 _S67 = ambient_light_0(f_11, n_8);
+    float3 _S68 = _S66 * _S67;
+    float3 _S69 = ao_multibounce_0(f_11, ao_5, diff_col_0);
+    return direct_0 + (_S68 * _S69 + env_0 * f_env_0 * float3(spec_occ_0) );
 }
 
-uint shadow_cascade_0(FrameData_natural_0 device* f_11, float3 p_7, float dist_1)
+uint shadow_cascade_0(FrameData_natural_0 device* f_12, float3 p_7, float dist_1)
 {
-    uint _S64 = uint((float4((&f_11->light_0)->cfg_0) ).x);
-    bool _S65;
-    if(((uint4((&f_11->light_0)->flags_0) ).x) == 0U)
+    uint _S70 = uint((float4((&f_12->light_0)->cfg_0) ).x);
+    bool _S71;
+    if(((uint4((&f_12->light_0)->flags_0) ).x) == 0U)
     {
-        _S65 = true;
+        _S71 = true;
     }
     else
     {
-        _S65 = dist_1 >= ((float4((&f_11->light_0)->filter_0) ).y);
+        _S71 = dist_1 >= ((float4((&f_12->light_0)->filter_0) ).y);
     }
-    if(_S65)
+    if(_S71)
     {
         return 4U;
     }
-    float _S66 = 1.0f - (float4((&f_11->light_0)->cfg_0) ).w * 2.0f / (float4((&f_11->light_0)->cfg_0) ).y;
+    float _S72 = 1.0f - (float4((&f_12->light_0)->cfg_0) ).w * 2.0f / (float4((&f_12->light_0)->cfg_0) ).y;
     uint c_6 = 0U;
     for(;;)
     {
-        if(c_6 < _S64)
+        if(c_6 < _S70)
         {
         }
         else
         {
             break;
         }
-        float _S67 = cascade_extent_0(f_11, c_6, p_7);
-        if((_S67 / _S66) <= 1.0f)
+        float _S73 = cascade_extent_0(f_12, c_6, p_7);
+        if((_S73 / _S72) <= 1.0f)
         {
             return c_6;
         }
@@ -671,15 +683,15 @@ uint shadow_cascade_0(FrameData_natural_0 device* f_11, float3 p_7, float dist_1
     return 4U;
 }
 
-float cascade_depth_delta_0(FrameData_natural_0 device* f_12, uint atlas_2, uint c_7, float3 p_8, KernelContext_0 thread* kernelContext_12)
+float cascade_depth_delta_0(FrameData_natural_0 device* f_13, uint atlas_2, uint c_7, float3 p_8, KernelContext_0 thread* kernelContext_12)
 {
-    float4 _S68 = float4((&(&f_12->light_0)->cascade_0)->data_4[c_7]) ;
-    float tile_1 = (float4((&f_12->light_0)->cfg_0) ).y;
-    float4 s_3 = (((float4(p_8, 1.0f)) * (matrix<float,int(4),int(4)> ((&(&f_12->light_0)->shadow_1)->data_3[c_7].data_1[int(0)][int(0)], (&(&f_12->light_0)->shadow_1)->data_3[c_7].data_1[int(1)][int(0)], (&(&f_12->light_0)->shadow_1)->data_3[c_7].data_1[int(2)][int(0)], (&(&f_12->light_0)->shadow_1)->data_3[c_7].data_1[int(3)][int(0)], (&(&f_12->light_0)->shadow_1)->data_3[c_7].data_1[int(0)][int(1)], (&(&f_12->light_0)->shadow_1)->data_3[c_7].data_1[int(1)][int(1)], (&(&f_12->light_0)->shadow_1)->data_3[c_7].data_1[int(2)][int(1)], (&(&f_12->light_0)->shadow_1)->data_3[c_7].data_1[int(3)][int(1)], (&(&f_12->light_0)->shadow_1)->data_3[c_7].data_1[int(0)][int(2)], (&(&f_12->light_0)->shadow_1)->data_3[c_7].data_1[int(1)][int(2)], (&(&f_12->light_0)->shadow_1)->data_3[c_7].data_1[int(2)][int(2)], (&(&f_12->light_0)->shadow_1)->data_3[c_7].data_1[int(3)][int(2)], (&(&f_12->light_0)->shadow_1)->data_3[c_7].data_1[int(0)][int(3)], (&(&f_12->light_0)->shadow_1)->data_3[c_7].data_1[int(1)][int(3)], (&(&f_12->light_0)->shadow_1)->data_3[c_7].data_1[int(2)][int(3)], (&(&f_12->light_0)->shadow_1)->data_3[c_7].data_1[int(3)][int(3)]))));
-    int2 _S69 = int2(_S68.zw);
-    float _S70 = s_3.z;
-    float _S71 = ed_depth_read_0(atlas_2, uint2(clamp(_S69 + int2(floor(float2(s_3.x * 0.5f + 0.5f, 0.5f - s_3.y * 0.5f) * float2(tile_1) )), _S69, _S69 + int2((int(tile_1) - int(1))) )), kernelContext_12);
-    return (_S70 - _S71) * _S68.y;
+    float4 _S74 = float4((&(&f_13->light_0)->cascade_0)->data_4[c_7]) ;
+    float tile_1 = (float4((&f_13->light_0)->cfg_0) ).y;
+    float4 s_3 = (((float4(p_8, 1.0f)) * (matrix<float,int(4),int(4)> ((&(&f_13->light_0)->shadow_1)->data_3[c_7].data_1[int(0)][int(0)], (&(&f_13->light_0)->shadow_1)->data_3[c_7].data_1[int(1)][int(0)], (&(&f_13->light_0)->shadow_1)->data_3[c_7].data_1[int(2)][int(0)], (&(&f_13->light_0)->shadow_1)->data_3[c_7].data_1[int(3)][int(0)], (&(&f_13->light_0)->shadow_1)->data_3[c_7].data_1[int(0)][int(1)], (&(&f_13->light_0)->shadow_1)->data_3[c_7].data_1[int(1)][int(1)], (&(&f_13->light_0)->shadow_1)->data_3[c_7].data_1[int(2)][int(1)], (&(&f_13->light_0)->shadow_1)->data_3[c_7].data_1[int(3)][int(1)], (&(&f_13->light_0)->shadow_1)->data_3[c_7].data_1[int(0)][int(2)], (&(&f_13->light_0)->shadow_1)->data_3[c_7].data_1[int(1)][int(2)], (&(&f_13->light_0)->shadow_1)->data_3[c_7].data_1[int(2)][int(2)], (&(&f_13->light_0)->shadow_1)->data_3[c_7].data_1[int(3)][int(2)], (&(&f_13->light_0)->shadow_1)->data_3[c_7].data_1[int(0)][int(3)], (&(&f_13->light_0)->shadow_1)->data_3[c_7].data_1[int(1)][int(3)], (&(&f_13->light_0)->shadow_1)->data_3[c_7].data_1[int(2)][int(3)], (&(&f_13->light_0)->shadow_1)->data_3[c_7].data_1[int(3)][int(3)]))));
+    int2 _S75 = int2(_S74.zw);
+    float _S76 = s_3.z;
+    float _S77 = ed_depth_read_0(atlas_2, uint2(clamp(_S75 + int2(floor(float2(s_3.x * 0.5f + 0.5f, 0.5f - s_3.y * 0.5f) * float2(tile_1) )), _S75, _S75 + int2((int(tile_1) - int(1))) )), kernelContext_12);
+    return (_S76 - _S77) * _S74.y;
 }
 
 struct pixelOutput_0
@@ -694,45 +706,45 @@ struct pixelOutput_0
     (&kernelContext_13)->ed_buffers_0 = ed_buffers_1;
     (&kernelContext_13)->ed_textures_0 = ed_textures_1;
     (&kernelContext_13)->ed_samplers_0 = ed_samplers_1;
-    FrameData_natural_0 device* _S72 = ed_buf_7(ed_c_1->frame_0, &kernelContext_13);
-    float2 _S73 = pos_1.xy;
-    uint2 _S74 = uint2(_S73);
-    texture2d<uint, access::sample> _S75 = ((reinterpret_cast<device texture2d<uint, access::sample>*>(((&kernelContext_13)->ed_textures_0))[((&kernelContext_13)->ed_c_0->vis_0)]));
-    int3 _S76 = int3(int2(_S74), int(0));
-    uint2 vis_1 = ((_S75).read(vec<uint,2>(((_S76)).xy), uint(((_S76)).z))).xy;
-    float3 _S77 = view_dir_0(_S72, _S73);
-    uint _S78 = vis_1.x;
-    if(_S78 == 0U)
+    FrameData_natural_0 device* _S78 = ed_buf_7(ed_c_1->frame_0, &kernelContext_13);
+    float2 _S79 = pos_1.xy;
+    uint2 _S80 = uint2(_S79);
+    texture2d<uint, access::sample> _S81 = ((reinterpret_cast<device texture2d<uint, access::sample>*>(((&kernelContext_13)->ed_textures_0))[((&kernelContext_13)->ed_c_0->vis_0)]));
+    int3 _S82 = int3(int2(_S80), int(0));
+    uint2 vis_1 = ((_S81).read(vec<uint,2>(((_S82)).xy), uint(((_S82)).z))).xy;
+    float3 _S83 = view_dir_0(_S78, _S79);
+    uint _S84 = vis_1.x;
+    if(_S84 == 0U)
     {
-        float3 _S79 = sky_rad_0(_S72, _S77, (float4((&_S72->light_0)->sky_0) ).x);
-        pixelOutput_0 _S80 = { float4(_S79, 1.0f) };
-        return _S80;
+        float3 _S85 = sky_rad_0(_S78, _S83, (float4((&_S78->light_0)->sky_0) ).x);
+        pixelOutput_0 _S86 = { float4(_S85, 1.0f) };
+        return _S86;
     }
-    GpuInstance_natural_0 device* _S81 = ed_buf_6((&kernelContext_13)->ed_c_0->instances_0, &kernelContext_13);
-    thread GpuInstance_natural_0 _S82 = *(_S81 + (_S78 - 1U));
-    GpuMesh_natural_0 device* _S83 = ed_buf_5((&kernelContext_13)->ed_c_0->meshes_0, &kernelContext_13);
-    GpuMesh_natural_0 device* _S84 = _S83 + (&_S82)->mesh_0;
-    uint _S85 = vis_1.y;
-    uint lod_0 = _S85 >> 28U;
-    uint prim_0 = (_S85 & 268435455U) % max(_S84->index_count_0[lod_0] / 3U, 1U);
-    uint device* _S86 = ed_buf_4((&kernelContext_13)->ed_c_0->indices_0, &kernelContext_13);
-    uint device* idx_0 = _S86 + _S84->first_index_0[lod_0] + prim_0 * 3U;
-    Vtx_0 device* _S87 = ed_buf_3((&kernelContext_13)->ed_c_0->verts_0, &kernelContext_13);
-    int i0_0 = int(*(idx_0 + int(0))) + _S84->base_vertex_0[lod_0];
-    int i1_0 = int(*(idx_0 + int(1))) + _S84->base_vertex_0[lod_0];
-    int i2_0 = int(*(idx_0 + int(2))) + _S84->base_vertex_0[lod_0];
-    Vtx_0 v0_0 = *(_S87 + i0_0);
-    Vtx_0 v1_0 = *(_S87 + i1_0);
-    Vtx_0 v2_0 = *(_S87 + i2_0);
-    packed_float4 device* _S88 = ed_buf_2((&kernelContext_13)->ed_c_0->nodes_0, &kernelContext_13);
-    float3 node_0 = (float4(*(_S88 + (((&_S82)->node_flags_0) & 65535U))) ).xyz;
-    float3 _S89 = xform_point_0(&_S82, float3(v0_0.px_0, v0_0.py_0, v0_0.pz_0));
-    float3 _S90 = xform_point_0(&_S82, float3(v1_0.px_0, v1_0.py_0, v1_0.pz_0));
-    float3 _S91 = xform_point_0(&_S82, float3(v2_0.px_0, v2_0.py_0, v2_0.pz_0));
-    float3 p0_1 = node_0 + _S89;
-    float3 e1_1 = _S90 - _S89;
-    float3 e2_1 = _S91 - _S89;
-    float2 bb_0 = ray_bary_0(_S77, p0_1, e1_1, e2_1);
+    GpuInstance_natural_0 device* _S87 = ed_buf_6((&kernelContext_13)->ed_c_0->instances_0, &kernelContext_13);
+    thread GpuInstance_natural_0 _S88 = *(_S87 + (_S84 - 1U));
+    GpuMesh_natural_0 device* _S89 = ed_buf_5((&kernelContext_13)->ed_c_0->meshes_0, &kernelContext_13);
+    GpuMesh_natural_0 device* _S90 = _S89 + (&_S88)->mesh_0;
+    uint _S91 = vis_1.y;
+    uint lod_0 = _S91 >> 28U;
+    uint prim_0 = (_S91 & 268435455U) % max(_S90->index_count_0[lod_0] / 3U, 1U);
+    uint device* _S92 = ed_buf_4((&kernelContext_13)->ed_c_0->indices_0, &kernelContext_13);
+    uint device* idx_0 = _S92 + _S90->first_index_0[lod_0] + prim_0 * 3U;
+    Vtx_0 device* _S93 = ed_buf_3((&kernelContext_13)->ed_c_0->verts_0, &kernelContext_13);
+    int i0_0 = int(*(idx_0 + int(0))) + _S90->base_vertex_0[lod_0];
+    int i1_0 = int(*(idx_0 + int(1))) + _S90->base_vertex_0[lod_0];
+    int i2_0 = int(*(idx_0 + int(2))) + _S90->base_vertex_0[lod_0];
+    Vtx_0 v0_0 = *(_S93 + i0_0);
+    Vtx_0 v1_0 = *(_S93 + i1_0);
+    Vtx_0 v2_0 = *(_S93 + i2_0);
+    packed_float4 device* _S94 = ed_buf_2((&kernelContext_13)->ed_c_0->nodes_0, &kernelContext_13);
+    float3 node_0 = (float4(*(_S94 + (((&_S88)->node_flags_0) & 65535U))) ).xyz;
+    float3 _S95 = xform_point_0(&_S88, float3(v0_0.px_0, v0_0.py_0, v0_0.pz_0));
+    float3 _S96 = xform_point_0(&_S88, float3(v1_0.px_0, v1_0.py_0, v1_0.pz_0));
+    float3 _S97 = xform_point_0(&_S88, float3(v2_0.px_0, v2_0.py_0, v2_0.pz_0));
+    float3 p0_1 = node_0 + _S95;
+    float3 e1_1 = _S96 - _S95;
+    float3 e2_1 = _S97 - _S95;
+    float2 bb_0 = ray_bary_0(_S83, p0_1, e1_1, e2_1);
     float b1_0 = saturate(bb_0.x);
     float b2_0 = saturate(bb_0.y);
     float bs_0 = b1_0 + b2_0;
@@ -749,29 +761,29 @@ struct pixelOutput_0
         b1_1 = b1_0;
         b2_1 = b2_0;
     }
-    float3 _S92 = float3((1.0f - b1_1 - b2_1)) ;
-    float3 local_0 = _S89 * _S92 + _S90 * float3(b1_1)  + _S91 * float3(b2_1) ;
-    float3 _S93 = xform_normal_0(&_S82, oct_decode_0(v0_0.n_0) * _S92 + oct_decode_0(v1_0.n_0) * float3(b1_1)  + oct_decode_0(v2_0.n_0) * float3(b2_1) );
-    float3 n_9 = normalize(_S93);
-    float3 v_4 = - _S77;
-    GpuMaterial_natural_0 device* _S94 = ed_buf_1((&kernelContext_13)->ed_c_0->materials_0, &kernelContext_13);
-    thread GpuMaterial_natural_0 _S95 = *(_S94 + (&_S82)->material_0);
-    float4 _S96 = float4((&_S95)->base_0) ;
-    float3 albedo_2 = _S96.xyz;
-    float4 _S97 = float4((&_S95)->params_0) ;
-    float metal_1 = _S97.x;
-    float rough_2 = _S97.y;
-    uint4 _S98 = uint4((&_S95)->tex_0) ;
-    uint _S99 = _S98.x;
-    bool _S100 = _S99 != 4294967295U;
+    float3 _S98 = float3((1.0f - b1_1 - b2_1)) ;
+    float3 local_0 = _S95 * _S98 + _S96 * float3(b1_1)  + _S97 * float3(b2_1) ;
+    float3 _S99 = xform_normal_0(&_S88, oct_decode_0(v0_0.n_0) * _S98 + oct_decode_0(v1_0.n_0) * float3(b1_1)  + oct_decode_0(v2_0.n_0) * float3(b2_1) );
+    float3 n_9 = normalize(_S99);
+    float3 v_4 = - _S83;
+    GpuMaterial_natural_0 device* _S100 = ed_buf_1((&kernelContext_13)->ed_c_0->materials_0, &kernelContext_13);
+    thread GpuMaterial_natural_0 _S101 = *(_S100 + (&_S88)->material_0);
+    float4 _S102 = float4((&_S101)->base_0) ;
+    float3 albedo_3 = _S102.xyz;
+    float4 _S103 = float4((&_S101)->params_0) ;
+    float metal_1 = _S103.x;
+    float rough_2 = _S103.y;
+    uint4 _S104 = uint4((&_S101)->tex_0) ;
+    uint _S105 = _S104.x;
+    bool _S106 = _S105 != 4294967295U;
     bool textured_0;
-    if(_S100)
+    if(_S106)
     {
         textured_0 = true;
     }
     else
     {
-        textured_0 = (_S98.y) != 4294967295U;
+        textured_0 = (_S104.y) != 4294967295U;
     }
     if(textured_0)
     {
@@ -779,75 +791,75 @@ struct pixelOutput_0
     }
     else
     {
-        textured_0 = (_S98.z) != 4294967295U;
+        textured_0 = (_S104.z) != 4294967295U;
     }
-    float ao_5;
+    float ao_6;
     float metal_2;
     float rough_3;
     float d_2;
-    float3 albedo_3;
+    float3 albedo_4;
     float3 n_10;
     if(textured_0)
     {
-        packed_float2 device* _S101 = ed_buf_0((&kernelContext_13)->ed_c_0->uvs_0, &kernelContext_13);
-        float2 _S102 = float2(*(_S101 + i0_0)) ;
-        float2 d1_0 = float2(*(_S101 + i1_0))  - _S102;
-        float2 d2_0 = float2(*(_S101 + i2_0))  - _S102;
-        float2 _S103 = uv_xform_0(&_S95, _S102 + d1_0 * float2(b1_1)  + d2_0 * float2(b2_1) );
-        float3 _S104 = view_dir_0(_S72, _S73 + float2(1.0f, 0.0f));
-        float2 bx_0 = ray_bary_0(_S104, p0_1, e1_1, e2_1);
-        float3 _S105 = view_dir_0(_S72, _S73 + float2(0.0f, 1.0f));
-        float2 by_0 = ray_bary_0(_S105, p0_1, e1_1, e2_1);
-        float2 _S106 = uv_xform_0(&_S95, _S102 + d1_0 * float2(bx_0.x)  + d2_0 * float2(bx_0.y) );
-        float2 ux_0 = _S106 - _S103;
-        float2 _S107 = uv_xform_0(&_S95, _S102 + d1_0 * float2(by_0.x)  + d2_0 * float2(by_0.y) );
-        float2 uy_0 = _S107 - _S103;
-        sampler _S108 = ((reinterpret_cast<device sampler*>(((&kernelContext_13)->ed_samplers_0))[((&kernelContext_13)->ed_c_0->smp_0)]));
-        if(_S100)
+        packed_float2 device* _S107 = ed_buf_0((&kernelContext_13)->ed_c_0->uvs_0, &kernelContext_13);
+        float2 _S108 = float2(*(_S107 + i0_0)) ;
+        float2 d1_0 = float2(*(_S107 + i1_0))  - _S108;
+        float2 d2_0 = float2(*(_S107 + i2_0))  - _S108;
+        float2 _S109 = uv_xform_0(&_S101, _S108 + d1_0 * float2(b1_1)  + d2_0 * float2(b2_1) );
+        float3 _S110 = view_dir_0(_S78, _S79 + float2(1.0f, 0.0f));
+        float2 bx_0 = ray_bary_0(_S110, p0_1, e1_1, e2_1);
+        float3 _S111 = view_dir_0(_S78, _S79 + float2(0.0f, 1.0f));
+        float2 by_0 = ray_bary_0(_S111, p0_1, e1_1, e2_1);
+        float2 _S112 = uv_xform_0(&_S101, _S108 + d1_0 * float2(bx_0.x)  + d2_0 * float2(bx_0.y) );
+        float2 ux_0 = _S112 - _S109;
+        float2 _S113 = uv_xform_0(&_S101, _S108 + d1_0 * float2(by_0.x)  + d2_0 * float2(by_0.y) );
+        float2 uy_0 = _S113 - _S109;
+        sampler _S114 = ((reinterpret_cast<device sampler*>(((&kernelContext_13)->ed_samplers_0))[((&kernelContext_13)->ed_c_0->smp_0)]));
+        if(_S106)
         {
-            texture2d<float, access::sample> _S109 = ((reinterpret_cast<device texture2d<float, access::sample>*>(((&kernelContext_13)->ed_textures_0))[(_S99)]));
-            albedo_3 = albedo_2 * ((_S109).sample((_S108), (_S103), gradient2d((ux_0), (uy_0)))).xyz;
+            texture2d<float, access::sample> _S115 = ((reinterpret_cast<device texture2d<float, access::sample>*>(((&kernelContext_13)->ed_textures_0))[(_S105)]));
+            albedo_4 = albedo_3 * ((_S115).sample((_S114), (_S109), gradient2d((ux_0), (uy_0)))).xyz;
         }
         else
         {
-            albedo_3 = albedo_2;
+            albedo_4 = albedo_3;
         }
-        uint _S110 = _S98.z;
-        if(_S110 != 4294967295U)
+        uint _S116 = _S104.z;
+        if(_S116 != 4294967295U)
         {
-            texture2d<float, access::sample> _S111 = ((reinterpret_cast<device texture2d<float, access::sample>*>(((&kernelContext_13)->ed_textures_0))[(_S110)]));
-            float3 orm_0 = ((_S111).sample((_S108), (_S103), gradient2d((ux_0), (uy_0)))).xyz;
+            texture2d<float, access::sample> _S117 = ((reinterpret_cast<device texture2d<float, access::sample>*>(((&kernelContext_13)->ed_textures_0))[(_S116)]));
+            float3 orm_0 = ((_S117).sample((_S114), (_S109), gradient2d((ux_0), (uy_0)))).xyz;
             float rough_4 = rough_2 * orm_0.y;
             float metal_3 = metal_1 * orm_0.z;
-            ao_5 = orm_0.x;
+            ao_6 = orm_0.x;
             metal_2 = metal_3;
             rough_3 = rough_4;
         }
         else
         {
-            ao_5 = 1.0f;
+            ao_6 = 1.0f;
             metal_2 = metal_1;
             rough_3 = rough_2;
         }
-        uint _S112 = _S98.y;
-        if(_S112 != 4294967295U)
+        uint _S118 = _S104.y;
+        if(_S118 != 4294967295U)
         {
-            float _S113 = d1_0.x;
-            float _S114 = d2_0.y;
-            float _S115 = d1_0.y;
-            float _S116 = d2_0.x;
-            float det_1 = _S113 * _S114 - _S115 * _S116;
+            float _S119 = d1_0.x;
+            float _S120 = d2_0.y;
+            float _S121 = d1_0.y;
+            float _S122 = d2_0.x;
+            float det_1 = _S119 * _S120 - _S121 * _S122;
             if((abs(det_1)) > 9.999999960041972e-13f)
             {
-                float3 _S117 = float3((1.0f / det_1)) ;
-                float3 tg_0 = (e1_1 * float3(_S114)  - e2_1 * float3(_S115) ) * _S117;
-                float3 bt_0 = (e2_1 * float3(_S113)  - e1_1 * float3(_S116) ) * _S117;
+                float3 _S123 = float3((1.0f / det_1)) ;
+                float3 tg_0 = (e1_1 * float3(_S120)  - e2_1 * float3(_S121) ) * _S123;
+                float3 bt_0 = (e2_1 * float3(_S119)  - e1_1 * float3(_S122) ) * _S123;
                 float3 tg_1 = tg_0 - n_9 * float3(dot(n_9, tg_0)) ;
                 if((length_squared_0(tg_1)) > 9.99999968265522539e-21f)
                 {
                     float3 tg_2 = normalize(tg_1);
-                    float3 _S118 = cross(n_9, tg_2);
-                    if((dot(_S118, bt_0)) < 0.0f)
+                    float3 _S124 = cross(n_9, tg_2);
+                    if((dot(_S124, bt_0)) < 0.0f)
                     {
                         d_2 = -1.0f;
                     }
@@ -855,9 +867,9 @@ struct pixelOutput_0
                     {
                         d_2 = 1.0f;
                     }
-                    float3 bn_0 = _S118 * float3(- d_2) ;
-                    texture2d<float, access::sample> _S119 = ((reinterpret_cast<device texture2d<float, access::sample>*>(((&kernelContext_13)->ed_textures_0))[(_S112)]));
-                    float2 xy_0 = ((_S119).sample((_S108), (_S103), gradient2d((ux_0), (uy_0)))).xy * float2(2.0f)  - float2(1.0f) ;
+                    float3 bn_0 = _S124 * float3(- d_2) ;
+                    texture2d<float, access::sample> _S125 = ((reinterpret_cast<device texture2d<float, access::sample>*>(((&kernelContext_13)->ed_textures_0))[(_S118)]));
+                    float2 xy_0 = ((_S125).sample((_S114), (_S109), gradient2d((ux_0), (uy_0)))).xy * float2(2.0f)  - float2(1.0f) ;
                     n_10 = normalize(tg_2 * float3(xy_0.x)  + bn_0 * float3(xy_0.y)  + n_9 * float3(sqrt(saturate(1.0f - dot(xy_0, xy_0)))) );
                 }
                 else
@@ -878,23 +890,23 @@ struct pixelOutput_0
     else
     {
         n_10 = n_9;
-        albedo_3 = albedo_2;
-        ao_5 = 1.0f;
+        albedo_4 = albedo_3;
+        ao_6 = 1.0f;
         metal_2 = metal_1;
         rough_3 = rough_2;
     }
-    float _S120 = dot(n_10, v_4);
-    if(_S120 < 0.0f)
+    float _S126 = dot(n_10, v_4);
+    if(_S126 < 0.0f)
     {
-        n_10 = normalize(n_10 - float3((1.0099999904632568f * _S120))  * v_4);
+        n_10 = normalize(n_10 - float3((1.0099999904632568f * _S126))  * v_4);
     }
-    if((_S97.w) > 0.5f)
+    if((_S103.w) > 0.5f)
     {
         float2 c_8 = floor(local_0.xz * float2(0.5f) );
-        albedo_3 = albedo_3 * float3(mix(0.80000001192092896f, 1.1499999761581421f, fmod(abs(c_8.x + c_8.y), 2.0f))) ;
+        albedo_4 = albedo_4 * float3(mix(0.80000001192092896f, 1.1499999761581421f, fmod(abs(c_8.x + c_8.y), 2.0f))) ;
     }
     float3 p_9 = node_0 + local_0;
-    float zlin_1 = - (((float4(p_9, 1.0f)) * (matrix<float,int(4),int(4)> (_S72->view_0.data_1[int(0)][int(0)], _S72->view_0.data_1[int(1)][int(0)], _S72->view_0.data_1[int(2)][int(0)], _S72->view_0.data_1[int(3)][int(0)], _S72->view_0.data_1[int(0)][int(1)], _S72->view_0.data_1[int(1)][int(1)], _S72->view_0.data_1[int(2)][int(1)], _S72->view_0.data_1[int(3)][int(1)], _S72->view_0.data_1[int(0)][int(2)], _S72->view_0.data_1[int(1)][int(2)], _S72->view_0.data_1[int(2)][int(2)], _S72->view_0.data_1[int(3)][int(2)], _S72->view_0.data_1[int(0)][int(3)], _S72->view_0.data_1[int(1)][int(3)], _S72->view_0.data_1[int(2)][int(3)], _S72->view_0.data_1[int(3)][int(3)])))).z;
+    float zlin_1 = - (((float4(p_9, 1.0f)) * (matrix<float,int(4),int(4)> (_S78->view_0.data_1[int(0)][int(0)], _S78->view_0.data_1[int(1)][int(0)], _S78->view_0.data_1[int(2)][int(0)], _S78->view_0.data_1[int(3)][int(0)], _S78->view_0.data_1[int(0)][int(1)], _S78->view_0.data_1[int(1)][int(1)], _S78->view_0.data_1[int(2)][int(1)], _S78->view_0.data_1[int(3)][int(1)], _S78->view_0.data_1[int(0)][int(2)], _S78->view_0.data_1[int(1)][int(2)], _S78->view_0.data_1[int(2)][int(2)], _S78->view_0.data_1[int(3)][int(2)], _S78->view_0.data_1[int(0)][int(3)], _S78->view_0.data_1[int(1)][int(3)], _S78->view_0.data_1[int(2)][int(3)], _S78->view_0.data_1[int(3)][int(3)])))).z;
     float3 ng_2 = cross(e1_1, e2_1);
     float3 ng_3;
     if((length_squared_0(ng_2)) > 9.99999968265522539e-21f)
@@ -909,34 +921,34 @@ struct pixelOutput_0
     {
         ng_3 = - ng_3;
     }
-    float _S121 = sun_shadow_0(_S72, (&kernelContext_13)->ed_c_0->shadow_0, p_9, ng_3, zlin_1, &kernelContext_13);
-    float _S122 = ao_upsample_0(_S72, (&kernelContext_13)->ed_c_0->ao_0, _S73, zlin_1, &kernelContext_13);
-    float ao_6 = ao_5 * _S122;
-    if((_S96.w) > 0.5f)
+    float _S127 = sun_shadow_0(_S78, (&kernelContext_13)->ed_c_0->shadow_0, p_9, ng_3, zlin_1, &kernelContext_13);
+    float _S128 = ao_upsample_0(_S78, (&kernelContext_13)->ed_c_0->ao_0, _S79, zlin_1, &kernelContext_13);
+    float ao_7 = ao_6 * _S128;
+    if((_S102.w) > 0.5f)
     {
-        float3 _S123 = shade_toon_0(_S72, &_S95, albedo_3, n_10, v_4, ao_6, _S121);
-        albedo_3 = _S123;
+        float3 _S129 = shade_toon_0(_S78, &_S101, albedo_4, n_10, v_4, ao_7, _S127);
+        albedo_4 = _S129;
     }
     else
     {
-        float3 _S124 = shade_pbr_0(_S72, albedo_3, metal_2, rough_3, ao_6, _S121, n_10, v_4);
-        albedo_3 = _S124;
+        float3 _S130 = shade_pbr_0(_S78, albedo_4, metal_2, rough_3, ao_7, _S127, n_10, v_4);
+        albedo_4 = _S130;
     }
     float3 col_0;
-    if(((uint4((&_S72->light_0)->flags_0) ).w) == 1U)
+    if(((uint4((&_S78->light_0)->flags_0) ).w) == 1U)
     {
-        uint _S125 = shadow_cascade_0(_S72, p_9, zlin_1);
-        col_0 = TINT_0[_S125] * float3((0.039999999105930328f + 0.5f * _S121)) ;
+        uint _S131 = shadow_cascade_0(_S78, p_9, zlin_1);
+        col_0 = TINT_0[_S131] * float3((0.039999999105930328f + 0.5f * _S127)) ;
     }
     else
     {
-        if(((uint4((&_S72->light_0)->flags_0) ).w) == 3U)
+        if(((uint4((&_S78->light_0)->flags_0) ).w) == 3U)
         {
-            uint _S126 = shadow_cascade_0(_S72, p_9, zlin_1);
-            if(_S126 < 4U)
+            uint _S132 = shadow_cascade_0(_S78, p_9, zlin_1);
+            if(_S132 < 4U)
             {
-                float _S127 = cascade_depth_delta_0(_S72, (&kernelContext_13)->ed_c_0->shadow_0, _S126, p_9, &kernelContext_13);
-                d_2 = _S127;
+                float _S133 = cascade_depth_delta_0(_S78, (&kernelContext_13)->ed_c_0->shadow_0, _S132, p_9, &kernelContext_13);
+                d_2 = _S133;
             }
             else
             {
@@ -946,18 +958,18 @@ struct pixelOutput_0
         }
         else
         {
-            if(((uint4((&_S72->light_0)->flags_0) ).w) == 2U)
+            if(((uint4((&_S78->light_0)->flags_0) ).w) == 2U)
             {
-                col_0 = float3((0.5f * ao_6)) ;
+                col_0 = float3((0.5f * ao_7)) ;
             }
             else
             {
-                col_0 = albedo_3;
+                col_0 = albedo_4;
             }
         }
     }
-    pixelOutput_0 _S128 = { float4(col_0, 1.0f) };
-    return _S128;
+    pixelOutput_0 _S134 = { float4(col_0, 1.0f) };
+    return _S134;
 }
 
 struct vs_resolve_Result_0
@@ -972,8 +984,8 @@ struct vs_resolve_Result_0
     (&kernelContext_14)->ed_buffers_0 = ed_buffers_2;
     (&kernelContext_14)->ed_textures_0 = ed_textures_2;
     (&kernelContext_14)->ed_samplers_0 = ed_samplers_2;
-    thread vs_resolve_Result_0 _S129;
-    (&_S129)->pos_2 = fullscreen_vertex_0(vid_1).pos_0;
-    return _S129;
+    thread vs_resolve_Result_0 _S135;
+    (&_S135)->pos_2 = fullscreen_vertex_0(vid_1).pos_0;
+    return _S135;
 }
 

@@ -9,6 +9,8 @@
 // M4d: the sun is shadowed by cascades (PCF), ambient light is the sky as SH9 (diffuse) and
 // the sky model blended towards it by roughness (specular), both darkened by GTAO; toon reads
 // the same terms (lighting.slang).
+// M4e: the ambient SH is skylight plus ground bounce (light.rs `ambient_sh9`), AO is
+// multi-bounce, and ambient diffuse gives up the specular lobe's share.
 #include "shader_abi.slang"
 #include "common.slang"
 #include "lighting.slang"
@@ -83,7 +85,9 @@ float3 shade_pbr(FrameData* f, float3 albedo, float metal, float rough, float ao
     float3 env = f.light.flags.z != 0 ? lerp(sky_rad(f, r, 0.0), sh_irradiance(f, r), rough) : hemi_ambient(f, r);
     // Specular occlusion from AO (Lagarde 2014).
     float spec_occ = saturate(pow(nov + ao, exp2(-16.0 * a - 1.0)) - 1.0 + ao);
-    float3 amb = diff_col * ambient_light(f, n) * ao + env * (f0 * ab.x + ab.y) * spec_occ;
+    // The specular lobe's share of the ambient light does not also reach the diffuse term.
+    float3 f_env = f0 * ab.x + ab.y;
+    float3 amb = diff_col * (1.0 - f_env) * ambient_light(f, n) * ao_multibounce(f, ao, diff_col) + env * f_env * spec_occ;
     return direct + amb;
 }
 
@@ -93,7 +97,7 @@ float3 shade_toon(FrameData* f, GpuMaterial m, float3 albedo, float3 n, float3 v
     float bands = max(m.params.z, 1.0);
     float lit = floor(saturate(ndl * 0.5 + 0.5) * bands + 0.5) / bands * sun_vis;
     float3 c = lerp(albedo * m.shade.rgb, albedo, lit);
-    float3 light = f.sun_color.rgb * (lit / PI) + ambient_light(f, n) * ao;
+    float3 light = f.sun_color.rgb * (lit / PI) + ambient_light(f, n) * ao_multibounce(f, ao, albedo);
     float rim = pow(1.0 - saturate(dot(n, v)), 4.0) * m.shade.w * saturate(ndl + 0.3) * sun_vis;
     return c * light + rim * f.sun_color.rgb * 0.15;
 }

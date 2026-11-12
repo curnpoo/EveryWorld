@@ -228,7 +228,7 @@ pub struct FrameParams {
 
 impl Default for FrameParams {
     fn default() -> Self {
-        Self { mode: SceneMode::Scene, sun_dir: Vec3::new(0.45, 0.62, 0.35).normalize(), exposure: tonemap::ALPHA_EXPOSURE, readback: None, pick: None, pop_stats: false, vis_readback: None }
+        Self { mode: SceneMode::Scene, sun_dir: Vec3::new(0.45, 0.62, 0.35).normalize(), exposure: light::EXPOSURE, readback: None, pick: None, pop_stats: false, vis_readback: None }
     }
 }
 
@@ -556,8 +556,8 @@ pub struct Renderer {
     lighting: LightingSettings,
     /// The tone mapper's Filmic LUT (RGBA16F texels as words).
     lut: Tracked,
-    /// Sky SH9 for the last sun ([`light::sky_sh9`] runs only when the sun moves).
-    sky_cache: Option<(Sky, [[f32; 4]; 9])>,
+    /// Ambient SH9 for the last sun and ambient settings ([`light::ambient_sh9`] runs only when they change).
+    sky_cache: Option<((Sky, [f32; 6]), [[f32; 4]; 9])>,
 }
 
 /// One view slot's state: per-frame buffers (filled once per frame per view), the pick ring
@@ -1204,8 +1204,10 @@ impl Renderer {
         // Lighting (M4d): cascades re-fit every frame (cheap, CPU), sky SH only when the sun moves.
         let lighting = self.lighting;
         let cplan = light::plan_cascades(&lighting, cam, w as f32 / h as f32, sky.sun_dir);
-        if self.sky_cache.as_ref().map(|c| c.0) != Some(sky) {
-            self.sky_cache = Some((sky, light::sky_sh9(&sky)));
+        let b = lighting.bounce_albedo;
+        let sky_key = (sky, [lighting.sky_ambient_gain, lighting.sky_ambient_saturation, b.x, b.y, b.z, lighting.bounce_sunlit]);
+        if self.sky_cache.as_ref().map(|c| c.0) != Some(sky_key) {
+            self.sky_cache = Some((sky_key, light::ambient_sh9(&sky, &lighting)));
         }
         let sh = self.sky_cache.as_ref().expect("just set").1;
         let (ao_w, ao_h) = (w.div_ceil(2), h.div_ceil(2));

@@ -1,3 +1,25 @@
+## 2026-11-12: Phase 1, M4e — lighting calibrated to physical daylight
+
+- **Target changed:** real life, not the alpha (P1-D18 revised). The owner's reference photos are described in `docs/reference/look-reference.md`; the image files stay local in a gitignored folder (the repo is public).
+- **Lighting (data in `ed_render/src/light.rs`):**
+  - Ambient now comes from `ambient_sh9` = skylight (gain 2.1, saturation 0.3) + ground bounce (albedo × sun and sky, warm).
+  - Sky:sun on a horizontal surface is 0.20 at a 48° sun; skylight R:B ≈ 0.5.
+  - Exposure 1.7 → 0.7 (sunny 16, EV100 15). The alpha was ~1.3 stops over.
+  - AO keeps intensity 3.0 and adds the Jimenez multi-bounce term.
+  - Resolve scales ambient diffuse by (1 − F_env), so ambient diffuse + specular no longer exceeds 1.
+- **Result:** the shadowed-ground pixel went from (47,66,102) blue to (58,61,70) neutral. Captures are `docs/captures/phase-1/m4e-{street,frame}.png`.
+- **Budgets (mean ms, quiet run):** shadows 1.128 (≤1.2), AO 0.244, GPU frame 2.511, CPU build 0.128. Busy-machine runs read up to 1.184 ms for shadows. Re-measure quietly for the gate.
+- **Tests:**
+  - workspace 541/0 on Metal and on d3d12 (no GPU);
+  - `render_m4d` passes on Metal and on Vulkan with validation;
+  - tone-map parity ≤1/255; golden is unchanged.
+- **Known gaps:**
+  - no haze or aerial perspective (Phase 2);
+  - no sky occlusion in street canyons;
+  - shadow penumbra fixed in texels;
+  - the alpha tone-map wrapper bakes a warm white balance, so sunlit whites look yellow. Swap to AgX with white balance as data in Phase 2;
+  - `cascade_edges_stable_under_subtexel_camera_moves` masks by blueness and no longer finds shadows (fix in progress).
+
 ## 2026-11-12: Phase 1, M4d (part 2) — shadow budget, AO tuning, Vulkan tone map
 
 - **Shadows:**

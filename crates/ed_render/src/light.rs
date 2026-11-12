@@ -21,6 +21,15 @@ pub const MAX_CASCADES: usize = 4;
 /// `LightData` words (common.slang).
 pub const LIGHT_WORDS: usize = 140;
 
+/// Scene exposure into the tone map (the `FrameParams` default), set photographically: the
+/// "sunny 16" rule (EV100 15) for a clear day. The sun is 6.4 units for about 100 klx, so a
+/// radiance of 1 is about 15.6 kcd/m2; EV100 15 meters 4096 cd/m2 (0.26 units) as mid-grey,
+/// which the film curve expects at 0.18: 0.18 / 0.26 = 0.7. Sunlit concrete (albedo 0.3) then
+/// lands about 1.3 stops over mid-grey and white paint stays below clipping. The alpha ran 1.7
+/// ([`crate::tonemap::ALPHA_EXPOSURE`]), 1.3 stops over, which pushed every sunlit surface into
+/// the curve's shoulder (pastel, with shadow and AO contrast compressed).
+pub const EXPOSURE: f32 = 0.7;
+
 /// Lighting switches and tunables. Every feature has an off switch (P1 rule): `--no-shadows`,
 /// `--no-ao`, `--no-sky-ambient` in `ew`, or `EW_NO_SHADOWS=1`, `EW_NO_AO=1`,
 /// `EW_NO_SKY_AMBIENT=1` ([`LightingSettings::from_env`]).
@@ -57,6 +66,25 @@ pub struct LightingSettings {
     pub ao_radius: f32,
     /// GTAO strength (exponent on visibility).
     pub ao_intensity: f32,
+    /// Diffuse skylight strength relative to the visible sky model. The analytic sky is a clear
+    /// gradient with no haze or multiple scattering, so its integral is about half of real
+    /// skylight against the sun; 2.1 puts sky : sun on open ground at 0.20 for the default
+    /// sun (48 degrees up): about 100 klx direct, 15-25 klx diffuse on a clear day.
+    pub sky_ambient_gain: f32,
+    /// Saturation of the diffuse skylight (1 = the sky model's colours, 0 = grey). The visible
+    /// sky is a saturated blue (R : B 0.13 from above); real clear-sky irradiance is about
+    /// 10000-15000 K, R : B near 0.5, which 0.3 gives.
+    pub sky_ambient_saturation: f32,
+    /// Albedo of the surroundings below the horizon for the bounce term: the lower hemisphere
+    /// of the ambient light is this times the light reaching the ground (sun and sky). A city
+    /// mix of asphalt (0.1) and concrete or stone (0.3), slightly warm.
+    pub bounce_albedo: Vec3,
+    /// Fraction of the surrounding ground taken as sunlit for the bounce term (streets are
+    /// partly in shadow).
+    pub bounce_sunlit: f32,
+    /// AO multi-bounce (Jimenez 2016): occlusion is weaker on bright albedo, where light
+    /// bouncing inside the crease fills it back in. 0 off, 1 full.
+    pub ao_multibounce: f32,
     /// Debug view in resolve (`EW_LIGHT_DEBUG`): 0 off, 1 sun visibility tinted by cascade
     /// (red, green, blue, yellow; grey past the last), 2 ambient occlusion, 3 receiver minus
     /// stored light depth (red: receiver nearer the sun, green: behind an occluder).
@@ -81,6 +109,11 @@ impl Default for LightingSettings {
             depth_bias: 1.0,
             ao_radius: 2.5,
             ao_intensity: 3.0,
+            sky_ambient_gain: 2.1,
+            sky_ambient_saturation: 0.3,
+            bounce_albedo: Vec3::new(0.25, 0.22, 0.18),
+            bounce_sunlit: 0.5,
+            ao_multibounce: 1.0,
             debug: 0,
         }
     }
@@ -178,6 +211,11 @@ const SH_A: [f32; 9] = [1.0, 2.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0, 0.25, 0.25, 0.25, 
 /// irradiance at normal `n` divided by pi (no sun disc: the direct term has it). Numerical
 /// integration over 64 x 128 directions; deterministic (fixed order, f64 sums).
 pub fn sky_sh9(sky: &Sky) -> [[f32; 4]; 9] {
+    sh9_of(|d| sky_rad(sky, d, 0.0))
+}
+
+/// SH9 (shader form, see [`sky_sh9`]) of a radiance function over the sphere.
+fn sh9_of(rad: impl Fn(Vec3) -> Vec3) -> [[f32; 4]; 9] {
     const NT: usize = 64;
     const NP: usize = 128;
     let mut acc = [[0.0f64; 3]; 9];
@@ -187,7 +225,7 @@ pub fn sky_sh9(sky: &Sky) -> [[f32; 4]; 9] {
         for j in 0..NP {
             let ph = (j as f64 + 0.5) / NP as f64 * std::f64::consts::TAU;
             let d = Vec3::new((st * ph.cos()) as f32, (st * ph.sin()) as f32, ct as f32);
-            let l = sky_rad(sky, d, 0.0);
+            let l = rad(d);
             let y = sh_poly(d);
             for k in 0..9 {
                 let w = (y[k] * SH_K[k]) as f64;
@@ -204,6 +242,34 @@ pub fn sky_sh9(sky: &Sky) -> [[f32; 4]; 9] {
         out[k] = [(acc[k][0] * s) as f32, (acc[k][1] * s) as f32, (acc[k][2] * s) as f32, 0.0];
     }
     out
+}
+
+/// Ambient light as SH9 for the shader: the sky ([`sky_sh9`] without its flat ground colour)
+/// scaled and desaturated to real skylight (`sky_ambient_gain`, `sky_ambient_saturation`), plus
+/// the bounce off the surroundings in the lower hemisphere: `bounce_albedo` times the light on
+/// open ground (the sun over `bounce_sunlit` of it, and the skylight). Baked when the sun or
+/// the settings change.
+pub fn ambient_sh9(sky: &Sky, s: &LightingSettings) -> [[f32; 4]; 9] {
+    let open = Sky { ground: Vec3::ZERO, ..*sky };
+    let mut sh = sh9_of(|d| sky_rad(&open, d, 0.0));
+    for c in &mut sh {
+        let v = Vec3::new(c[0], c[1], c[2]);
+        let l = Vec3::splat(v.dot(Vec3::new(0.2126, 0.7152, 0.0722)));
+        let v = l.lerp(v, s.sky_ambient_saturation) * s.sky_ambient_gain;
+        *c = [v.x, v.y, v.z, 0.0];
+    }
+    // Radiance leaving lit ground (Lambert): albedo * irradiance / pi.
+    let sky_up = sh_eval(&sh, Vec3::Y);
+    let sun_up = sky.sun_color * sky.sun_dir.y.max(0.0) / std::f32::consts::PI * s.bounce_sunlit.clamp(0.0, 1.0);
+    let bounce = s.bounce_albedo * (sun_up + sky_up);
+    // The same horizon blend as the sky model's ground.
+    let below = sh9_of(|d| bounce * (-d.y * 6.0).clamp(0.0, 1.0));
+    for k in 0..9 {
+        for i in 0..3 {
+            sh[k][i] += below[k][i];
+        }
+    }
+    sh
 }
 
 /// Evaluates [`sky_sh9`] coefficients at `n` (the shader's `sh_irradiance`).
@@ -325,7 +391,7 @@ pub fn light_words(s: &LightingSettings, plan: &CascadePlan, sh: &[[f32; 4]; 9],
     put(&mut w, 88, &[last * s.fade_start, last, s.normal_bias, s.depth_bias]);
     w[92..96].copy_from_slice(&[(plan.count > 0) as u32, s.ao as u32, s.sky_ambient as u32, s.debug]);
     put(&mut w, 96, &[s.ao_intensity, ao_half.0 as f32, ao_half.1 as f32, s.ao_radius]);
-    put(&mut w, 100, &[sun_disc, 0.0, 0.0, 0.0]);
+    put(&mut w, 100, &[sun_disc, s.ao_multibounce.clamp(0.0, 1.0), 0.0, 0.0]);
     for (k, c) in sh.iter().enumerate() {
         put(&mut w, 104 + k * 4, c);
     }
@@ -357,6 +423,25 @@ mod tests {
             let s = sh_eval(&sh, n);
             assert!((e - s).abs().max_element() < 0.1 * e.max_element() + 0.01, "n {n}: brute {e} sh {s}");
         }
+    }
+
+    #[test]
+    fn ambient_is_paler_and_brighter_than_the_sky_and_bounces_warm() {
+        let sky = Sky::for_sun(Vec3::new(0.45, 0.62, 0.35).normalize());
+        let s = LightingSettings::default();
+        let (raw, amb) = (sh_eval(&sky_sh9(&sky), Vec3::Y), sh_eval(&ambient_sh9(&sky, &s), Vec3::Y));
+        let lum = |c: Vec3| c.dot(Vec3::new(0.2126, 0.7152, 0.0722));
+        assert!(lum(amb) > lum(raw) && amb.z / amb.x < 0.6 * raw.z / raw.x, "raw {raw} ambient {amb}");
+        // Open ground: sky to sun 0.15-0.25 (clear day, 100 klx direct, 15-25 klx diffuse).
+        let sun = lum(sky.sun_color) * sky.sun_dir.y / std::f32::consts::PI;
+        assert!((4.0..6.7).contains(&(sun / lum(amb))), "sun {sun} sky {}", lum(amb));
+        // Facing down: the bounce, warmer than the sky and dimmer than the sunlit ground.
+        let down = sh_eval(&ambient_sh9(&sky, &s), Vec3::NEG_Y);
+        assert!(down.z / down.x < 0.75 * amb.z / amb.x && lum(down) < sun * 0.5, "down {down} up {amb}");
+        // Unit settings and no bounce give the sky above the horizon back.
+        let plain = LightingSettings { sky_ambient_gain: 1.0, sky_ambient_saturation: 1.0, bounce_albedo: Vec3::ZERO, ..s };
+        let up = sh_eval(&ambient_sh9(&sky, &plain), Vec3::Y);
+        assert!((up - raw).abs().max_element() < 0.02, "plain {up} raw {raw}");
     }
 
     #[test]

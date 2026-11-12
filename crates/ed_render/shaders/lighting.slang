@@ -3,7 +3,8 @@
 // switches) is src/light.rs; the data is FrameData.light (common.slang `LightData`).
 #pragma once
 
-// Diffuse sky light reaching a surface with normal `n`, divided by pi (multiply by albedo).
+// Diffuse ambient light (skylight above, ground bounce below: light.rs `ambient_sh9`) reaching
+// a surface with normal `n`, divided by pi (multiply by albedo).
 // The SH9 coefficients already include the basis constants and the cosine lobe.
 float3 sh_irradiance(FrameData* f, float3 n) {
     float3 c = f.light.sh[0].rgb;
@@ -150,4 +151,15 @@ float ao_upsample(FrameData* f, uint ao_buf, float2 pixel, float zlin) {
     }
     float ao = wsum > 0.0 ? sum / wsum : 1.0;
     return pow(saturate(ao), f.light.ao.x);
+}
+
+// Multi-bounce ambient occlusion (Jimenez et al. 2016): light bouncing inside a crease fills
+// it back in, more on bright albedo, so occlusion is per channel and never darker than `ao`.
+// `f.light.sky.y` blends it in (0 = plain AO).
+float3 ao_multibounce(FrameData* f, float ao, float3 albedo) {
+    float3 a = 2.0404 * albedo - 0.3324;
+    float3 b = -4.7951 * albedo + 0.6417;
+    float3 c = 2.7552 * albedo + 0.6903;
+    float3 mb = max(float3(ao), ((ao * a + b) * ao + c) * ao);
+    return lerp(float3(ao), mb, f.light.sky.y);
 }

@@ -15,8 +15,8 @@ struct LightData {
     float4 filter;          // x: fade start (m), y: shadow distance (m), z: normal bias (texels), w: depth bias (texels)
     uint4 flags;            // x: shadows, y: ao, z: sky ambient (SH), w: debug view (1 shadow, 2 ao)
     float4 ao;              // x: intensity (exponent), y: half-res width, z: half-res height, w: unused
-    float4 sky;             // x: sun disc scale, yzw: unused
-    float4 sh[9];           // sky irradiance / pi as SH9 (rgb), basis constants folded in (src/light.rs)
+    float4 sky;             // x: sun disc scale, y: AO multi-bounce (0..1), zw: unused
+    float4 sh[9];           // ambient (skylight + ground bounce) irradiance / pi as SH9 (rgb), basis constants folded in (src/light.rs)
 };
 
 // Per-view data, one cpu_write buffer read through the bindless buffer table.

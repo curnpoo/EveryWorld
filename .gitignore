@@ -6,3 +6,6 @@
 .earthdrop-cache/
 .DS_Store
 earthdrop.bundle
+
+# Look reference photos: third-party images, local only (repo is public). Notes in docs/reference/look-reference.md
+docs/reference/photos/

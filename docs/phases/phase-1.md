@@ -107,7 +107,7 @@ The sim reads only (fixed dt, input snapshot, seed, data version, UTC). Renderin
 audio may read the wall clock. Interpolation uses the accumulator fraction.
 
 ### P1-D18 — Salvage from the alpha Metal path
-The alpha's Metal renderer is the **look reference**, using the Phase 0 captures. Its
+**Revised 2026-11-12 (owner):** the look target is **real life** (physical daylight values, real photographs), not the alpha. The alpha's Phase 0 captures are only a "not worse than" floor. The alpha's Metal renderer remains a source of salvageable shader maths. Its
 structure (entity mirror, merged meshes, per-tile draws) is not reused. Pure shader maths
 (atmosphere, clouds, tone mapping, terrain material, MetalFX setup) is ported with a test
 that compares against the reference capture. The ocean FFT, probe GI and shadow caching are
@@ -219,8 +219,8 @@ contracts.
 - [ ] No per-instance CPU work in the frame; culling and LOD selection are on the GPU.
 - [ ] LOD cross-fades are free of popping on the scripted path.
 - [ ] The same scene renders on the second backend.
-- [ ] PBR and toon materials render under the same lighting; tone mapping matches the
-      alpha reference capture within the agreed tolerance.
+- [ ] PBR and toon materials render under the same lighting; tone mapping matches its CPU
+      reference within 1/255, and lighting is calibrated to physical daylight (P1-D18, revised).
 - [ ] `ew-bake` output is deterministic, carries provenance, and passes the licence gate.
 - [ ] Blender export → on screen without restarting.
 - [ ] Sim replay hash is stable across runs and processes; CI green on macOS and Windows
