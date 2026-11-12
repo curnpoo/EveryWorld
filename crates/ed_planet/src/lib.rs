@@ -10,6 +10,7 @@
 //! Determinism: lookups may use hash maps; every output is produced by iterating sorted
 //! `NodeId` collections, and transcendental functions come from `libm`.
 
+pub mod anchor;
 pub mod body;
 pub mod cull;
 pub mod page;
@@ -17,6 +18,7 @@ pub mod quadtree;
 pub mod residency;
 pub mod select;
 
+pub use anchor::Anchor;
 pub use body::{Body, BodyPose};
 pub use cull::{Frustum, Horizon};
 pub use page::{FacePos, HeightPage, PAGE_CELLS, PAGE_N};
