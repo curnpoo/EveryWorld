@@ -291,3 +291,49 @@ pub fn corpus_item(seed: u32, grid: u32, tex: u32) -> Result<Vec<u8>> {
     });
     Ok(g.finish(doc))
 }
+
+/// A lumpy "rock" as a supplied LOD chain (Megascans-style): one node and mesh per level,
+/// named `<name>_LOD<k>`, each a UV sphere with `levels[k]` = (segments, rings), positions
+/// times `scale` (1 = metres, 100 = a centimetre file). Normals and UV0 included.
+pub fn lod_chain_glb(name: &str, levels: &[(u32, u32)], scale: f32) -> Vec<u8> {
+    let mut g = Glb::default();
+    let mut meshes = Vec::new();
+    let mut nodes = Vec::new();
+    for (k, &(segs, rings)) in levels.iter().enumerate() {
+        let (mut pos, mut nrm, mut uv) = (Vec::new(), Vec::new(), Vec::new());
+        for r in 0..=rings {
+            let th = r as f32 / rings as f32 * std::f32::consts::PI;
+            for s in 0..=segs {
+                let ph = s as f32 / segs as f32 * std::f32::consts::TAU;
+                let d = [th.sin() * ph.cos(), th.cos(), th.sin() * ph.sin()];
+                let rad = 0.5 * (1.0 + 0.15 * (3.0 * d[0] + 1.0).sin() * (2.0 * d[1]).cos() + 0.1 * (5.0 * d[2]).sin());
+                pos.extend_from_slice(&[d[0] * rad * scale, (d[1] * rad * 0.8 + 0.4) * scale, d[2] * rad * scale]);
+                nrm.extend_from_slice(&d);
+                uv.extend_from_slice(&[s as f32 / segs as f32, r as f32 / rings as f32]);
+            }
+        }
+        let mut idx = Vec::new();
+        for r in 0..rings {
+            for s in 0..segs {
+                let a = r * (segs + 1) + s;
+                let b = a + segs + 1;
+                idx.extend_from_slice(&[a, a + 1, b, a + 1, b + 1, b]);
+            }
+        }
+        let ap = g.f32s(&pos, 3, Some(34962));
+        let an = g.f32s(&nrm, 3, Some(34962));
+        let au = g.f32s(&uv, 2, Some(34962));
+        let ai = g.u32s(&idx);
+        meshes.push(json!({"name": format!("{name}_LOD{k}"), "primitives": [{"attributes": {"POSITION": ap, "NORMAL": an, "TEXCOORD_0": au}, "indices": ai}]}));
+        nodes.push(json!({"name": format!("{name}_LOD{k}"), "mesh": k}));
+    }
+    let roots: Vec<usize> = (0..levels.len()).collect();
+    let doc = json!({
+        "asset": {"version": "2.0"},
+        "scenes": [{"nodes": roots}],
+        "scene": 0,
+        "nodes": nodes,
+        "meshes": meshes,
+    });
+    g.finish(doc)
+}

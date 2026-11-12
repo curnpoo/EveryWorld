@@ -70,6 +70,68 @@ pub fn build_chain(positions: &[[f32; 3]], indices: &[u32], max_levels: usize) -
     (lods, report)
 }
 
+/// A chain from LODs someone else made (Megascans LOD0..LODn), sharing `positions`.
+///
+/// `supplied[0]` is LOD 0. Each later level's error is **measured** against LOD 0's surface
+/// with [`surface_distance`] (the same measurement [`build_chain`] stores), kept
+/// non-decreasing. Levels that do not have fewer triangles than the one before are skipped.
+/// When fewer than `min_levels` remain, coarser levels are generated from the last one with
+/// the same simplifier steps as [`build_chain`] (a quarter of the triangles per step) until
+/// `min_levels` is reached or the mesh is under 8 triangles. Returns the levels, their
+/// reports, and the index (into `supplied`) of each kept supplied level.
+pub fn measured_chain(positions: &[[f32; 3]], supplied: &[Vec<u32>], min_levels: usize) -> (Vec<Lod>, Vec<LodReport>, Vec<usize>) {
+    let lod0 = &supplied[0];
+    let samples = surface_samples(positions, lod0);
+    let mut lods = vec![Lod { indices: lod0.clone(), error: 0.0 }];
+    let mut report = vec![LodReport { triangles: (lod0.len() / 3) as u32, error: 0.0, reported: 0.0, measured: 0.0, sloppy: false }];
+    let mut kept = vec![0usize];
+    let mut prev_err = 0.0f32;
+    for (k, idx) in supplied.iter().enumerate().skip(1) {
+        if idx.len() < 3 || idx.len() >= lods.last().expect("lod 0").indices.len() {
+            continue;
+        }
+        let measured = surface_distance(positions, idx, &samples);
+        prev_err = prev_err.max(measured);
+        report.push(LodReport { triangles: (idx.len() / 3) as u32, error: prev_err, reported: 0.0, measured, sloppy: false });
+        lods.push(Lod { indices: idx.clone(), error: prev_err });
+        kept.push(k);
+    }
+    let scale = meshopt::simplify_scale_decoder(positions);
+    while lods.len() < min_levels {
+        let last = &lods.last().expect("lod 0").indices;
+        let prev_len = last.len();
+        let target_tris = prev_len / 3 / 4;
+        if target_tris < 8 {
+            break;
+        }
+        let target = target_tris * 3;
+        let mut err = 0.0f32;
+        let mut idx = meshopt::simplify_decoder(last, positions, target, f32::MAX, meshopt::SimplifyOptions::ErrorAbsolute, Some(&mut err));
+        let mut sloppy = false;
+        if idx.len() as f32 > prev_len as f32 * 0.6 || idx.len() < 24 {
+            sloppy = true;
+            idx.clear();
+            for mul in [1usize, 2, 4, 8] {
+                let mut e = 0.0f32;
+                let r = meshopt::simplify_sloppy_decoder(last, positions, target * mul, f32::MAX, Some(&mut e));
+                if r.len() >= 24 && (r.len() as f32) <= prev_len as f32 * 0.6 {
+                    idx = r;
+                    err = e * scale;
+                    break;
+                }
+            }
+        }
+        if idx.len() < 24 || idx.len() >= prev_len {
+            break;
+        }
+        let measured = surface_distance(positions, &idx, &samples);
+        prev_err = prev_err.max(err).max(measured);
+        report.push(LodReport { triangles: (idx.len() / 3) as u32, error: prev_err, reported: err, measured, sloppy });
+        lods.push(Lod { indices: idx, error: prev_err });
+    }
+    (lods, report, kept)
+}
+
 /// Points on LOD 0's surface: every referenced vertex and every triangle centroid, in a fixed
 /// order.
 pub fn surface_samples(positions: &[[f32; 3]], indices: &[u32]) -> Vec<Vec3> {
@@ -308,5 +370,22 @@ mod tests {
         assert!((point_triangle_distance(Vec3::new(0.2, 0.2, 1.0), a, b, c) - 1.0).abs() < 1e-6);
         assert!((point_triangle_distance(Vec3::new(-1.0, 0.0, 0.0), a, b, c) - 1.0).abs() < 1e-6);
         assert!((point_triangle_distance(Vec3::new(1.0, 1.0, 0.0), a, b, c) - 0.5f32.sqrt()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn measured_chain_keeps_supplied_levels_and_extends_short_ones() {
+        let (p, idx) = test_mesh();
+        let sphere_tris = 48 * 96 * 2 * 3;
+        // A "supplied" LOD 1: the sphere without the boxes.
+        let (lods, rep, kept) = measured_chain(&p, &[idx.clone(), idx[..sphere_tris].to_vec()], 3);
+        assert_eq!(kept, [0, 1]);
+        assert!(lods.len() >= 3, "{rep:?}");
+        assert!(rep[1].measured > 0.3 && rep[1].error == rep[1].measured, "{rep:?}");
+        for w in rep.windows(2) {
+            assert!(w[1].error >= w[0].error && w[1].triangles < w[0].triangles, "{rep:?}");
+        }
+        // A level that is not coarser is skipped.
+        let (_, _, kept) = measured_chain(&p, &[idx.clone(), idx.clone()], 1);
+        assert_eq!(kept, [0]);
     }
 }

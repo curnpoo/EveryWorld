@@ -1,0 +1,76 @@
+# Megascans (Fab) pack: example manifest. Copy to megascans.toml, uncomment entries, then
+#
+#     ew-bake megascans scan                       # list what the library holds, writes nothing
+#     ew-bake build assets-src/megascans.toml OUT.pack
+#
+# The library is NEVER in this repository (licence: registry "megascans"; ew-bake refuses a
+# folder inside the repo). Point at it with EW_MEGASCANS_DIR (wins) or `megascans_dir` below.
+#
+# ---------------------------------------------------------------------------------------------
+# DOWNLOADING FROM FAB (what the importer needs; Fab's option names may differ slightly)
+# ---------------------------------------------------------------------------------------------
+# Every kind:
+#   - One folder per asset, named by (or containing) its Fab id, directly under the library root.
+#     Extract the .zip there (scan reports unextracted archives). Keep the metadata .json if the
+#     download has one: it decides the kind; without it the kind is guessed from file names.
+#   - Texture maps as PNG or JPEG (8-bit). NOT EXR: EXR maps are skipped and reported.
+#   - One resolution per asset is simplest (2K is plenty for most; 4K for hero surfaces). If you
+#     download several, the largest is used unless the entry says `resolution = "2K"`.
+#   - Normal map: OpenGL convention (green up). If you only have DirectX, set normal_y = "dx".
+#   - Roughness preferred; Gloss also works (inverted automatically).
+#
+# Surface (ground, wall, rock face):
+#   Maps: Albedo, Normal, Roughness (or Gloss), AO, Displacement. Metalness only if offered.
+#   No mesh.
+#
+# 3D asset (rock, debris, prop):
+#   Mesh: FBX (or glTF/GLB) with ALL LODs (LOD0..LODn). Either one file containing every LOD or
+#   one file per LOD both work. The "High"/source scan is not needed (skipped when LODs exist).
+#   FBX is converted by headless Blender (EW_BLENDER, /Applications/Blender.app or PATH);
+#   Megascans centimetres become metres. glTF is read directly and assumed to be in metres
+#   (set `scale = 0.01` if a glTF is in centimetres; scan warns on suspicious sizes).
+#   Maps: Albedo, Normal, Roughness (or Gloss), AO. Displacement optional (not used yet).
+#   At most 4 LODs are kept; with fewer than 3, coarser LODs are generated.
+#
+# 3D plant (grass, shrub, flower, small tree):
+#   Mesh: FBX (or glTF) with all LODs and all variants (Var1, Var2, ... as folders or names).
+#   Maps: Albedo, Opacity (required: alpha-tested leaves), Normal, Roughness (or Gloss),
+#   Translucency (recommended). Billboard/impostor LODs are not used yet; leave them out or ignore.
+#   LOD0 over 500k triangles imports with a warning.
+#
+# Decal / imperfection (leaks, grime, smudges, scratches):
+#   Maps only: Albedo + Opacity for decals; imperfections are usually a single Roughness or
+#   mask map. Produces textures + a material tagged with its kind, no mesh.
+# ---------------------------------------------------------------------------------------------
+
+# megascans_dir = "~/Megascans"            # EW_MEGASCANS_DIR overrides this
+
+[pack]
+name = "megascans"
+game_packaged = true                       # the Megascans licence allows packaged game use
+
+# --- Surface: asset megascans/mossy_ground (textures + material) --------------------------------
+# [[megascans]]
+# fab_id = "ugmkdcxl"                       # folder name (or part of it) in the library
+# alias = "mossy_ground"                    # asset path becomes megascans/mossy_ground
+# resolution = "2K"                         # only needed when several resolutions are downloaded
+# # normal_y = "dx"                         # only if the normal map is DirectX
+
+# --- Rock (3d): prefab megascans/granite_boulder + /mesh + /material + AABB collision ------------
+# [[megascans]]
+# fab_id = "tdfsbcfda"
+# alias = "granite_boulder"
+# # kind = "3d"                             # force the kind if detection gets it wrong
+# # asset = "props/granite_boulder"         # explicit asset path instead of megascans/<alias>
+
+# --- Plant (3d-plant): prefab megascans/fern (+ /var<N> per variant), alpha-tested, no collision -
+# [[megascans]]
+# fab_id = "wkqmbdnja"
+# alias = "fern"
+# resolution = "2K"
+
+# --- Legacy: an explicit folder (still supported) ----------------------------------------------
+# [[megascans]]
+# dir_env = "EW_MY_SURFACE_DIR"             # or dir = "/abs/path/outside/the/repo"
+# asset = "surfaces/my_surface"
+# fab_id = "abcdefgh"

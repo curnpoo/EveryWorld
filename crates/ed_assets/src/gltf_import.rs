@@ -406,6 +406,83 @@ pub fn import(bytes: &[u8], dir: Option<&Path>, base: &str) -> Result<Imported> 
     Ok(Imported { meshes, textures, materials, skeletons, prefab: (base.to_string(), prefab), baked_uv_transforms })
 }
 
+/// One mesh primitive placed in the scene, for geometry-only imports (Megascans 3D assets:
+/// materials and images are ignored; the textures come through the surface path).
+#[derive(Clone, Debug)]
+pub struct GeomPiece {
+    pub node_name: String,
+    pub mesh_name: String,
+    /// Position in the depth-first scene order (stable for a given file).
+    pub order: usize,
+    /// Vertices in scene space (the node's global transform applied, normals included).
+    pub build: MeshBuild,
+}
+
+/// Reads every triangle primitive in the default scene, transformed to scene space, without
+/// touching materials or images. Skins are ignored (bind pose).
+pub fn read_geometry(bytes: &[u8], dir: Option<&Path>) -> Result<Vec<GeomPiece>> {
+    let g = gltf::Gltf::from_slice_without_validation(bytes).context("parsing glTF")?;
+    let doc = &g.document;
+    check_required(doc)?;
+    let mut buffers: Vec<Vec<u8>> = Vec::new();
+    for b in doc.buffers() {
+        let data = match b.source() {
+            gltf::buffer::Source::Bin => g.blob.clone().ok_or_else(|| anyhow!("GLB has no BIN chunk"))?,
+            gltf::buffer::Source::Uri(u) => load_uri(u, dir)?,
+        };
+        if data.len() < b.length() {
+            bail!("buffer {} is {} bytes, needs {}", b.index(), data.len(), b.length());
+        }
+        buffers.push(data);
+    }
+    let roots: Vec<gltf::Node> = match doc.default_scene().or_else(|| doc.scenes().next()) {
+        Some(s) => s.nodes().collect(),
+        None => {
+            let mut child = vec![false; doc.nodes().len()];
+            for n in doc.nodes() {
+                for c in n.children() {
+                    child[c.index()] = true;
+                }
+            }
+            doc.nodes().filter(|n| !child[n.index()]).collect()
+        }
+    };
+    let mut out = Vec::new();
+    let mut stack: Vec<(gltf::Node, Mat4, usize)> = roots.into_iter().rev().map(|n| (n, Mat4::IDENTITY, 0)).collect();
+    while let Some((node, parent, depth)) = stack.pop() {
+        if depth > 256 {
+            bail!("glTF node hierarchy is too deep (cycle?)");
+        }
+        let global = parent * Mat4::from_cols_array_2d(&node.transform().matrix());
+        if let Some(mesh) = node.mesh() {
+            let nmat = Mat4::from_mat3(glam::Mat3::from_mat4(global).inverse().transpose());
+            for prim in mesh.primitives() {
+                if prim.mode() != gltf::mesh::Mode::Triangles {
+                    bail!("mesh {} primitive {}: only triangle lists are supported ({:?})", mesh.index(), prim.index(), prim.mode());
+                }
+                let mut build = read_primitive(&prim, &buffers).with_context(|| format!("mesh {} primitive {}", mesh.index(), prim.index()))?;
+                build.joints.clear();
+                build.weights.clear();
+                for p in &mut build.positions {
+                    *p = global.transform_point3(Vec3::from(*p)).to_array();
+                }
+                for n in &mut build.normals {
+                    *n = nmat.transform_vector3(Vec3::from(*n)).normalize_or(Vec3::Y).to_array();
+                }
+                if global.determinant() < 0.0 {
+                    for t in build.indices.as_chunks_mut::<3>().0 {
+                        t.swap(1, 2);
+                    }
+                }
+                out.push(GeomPiece { node_name: node.name().unwrap_or("").to_string(), mesh_name: mesh.name().unwrap_or("").to_string(), order: out.len(), build });
+            }
+        }
+        let ch: Vec<gltf::Node> = node.children().collect();
+        stack.extend(ch.into_iter().rev().map(|c| (c, global, depth + 1)));
+    }
+    Ok(out)
+}
+
 /// ORM from glTF metal-rough (G roughness, B metal) and occlusion (R). Occlusion of a
 /// different size than the metal-rough image is dropped (R = 1).
 fn compose_orm(mr: Option<&Rgba8>, occ: Option<&Rgba8>) -> Rgba8 {

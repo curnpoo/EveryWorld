@@ -1,3 +1,22 @@
+## 2026-11-11: Phase 1 data path — Megascans library import (3D scans, plants, surfaces, decals)
+
+- `ed_assets::megascans_lib` reads a local Megascans library, one folder per Fab id:
+  - The root comes from `EW_MEGASCANS_DIR` or the manifest key `megascans_dir`.
+  - The asset kind comes from the metadata JSON, else from file names.
+  - LOD0 maps are preferred, at the chosen resolution.
+- FBX is converted to GLB by headless Blender (`tools/blender/megascans/fbx_to_gltf.py`, cm -> m, y-up). On Blender 5.1.0, two separate Blender processes produce byte-identical output.
+- Supplied LODs become the chain, each with its error measured against LOD0, up to 4 kept. Fewer than 3 are topped up with meshopt.
+- `[[megascans]]` bake entries:
+  - new keys `fab_id`, `alias`, `kind`, `resolution`, `scale`;
+  - output: a prefab plus mesh and material, plus `/var<N>` variants;
+  - collision is an AABB, for 3d only;
+  - every chunk's provenance carries `fab-id=`.
+  - The bake is refused when the source folder is inside the repo.
+- `ew-bake megascans scan [DIR]` reports kinds, maps, LODs, triangle counts and problems without writing anything. `assets-src/megascans.example.toml` lists what to download for each kind.
+- Tests: `ed_assets/tests/megascans.rs` (9 tests, synthetic, including a two-process byte-identical pack through Blender) and the existing ed_assets and ed_pack suites pass.
+- **Needs checking:** not yet run on a real Fab download, so the metadata field names and file naming are inferred. When the P1 batch from `data/megascans/shortlist.md` lands, run `ew-bake megascans scan ~/Downloads/Megascans`.
+- **Not done yet:** translucency and displacement are stored but not rendered; there is no decal rendering and no plant impostors.
+
 ## 2026-11-11: Phase 1, M4c — Slang is the only shader source; proving ground on Vulkan
 
 Closes P1-D1 and P1-D22.

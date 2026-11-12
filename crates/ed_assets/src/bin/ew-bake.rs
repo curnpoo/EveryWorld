@@ -5,10 +5,11 @@
 //! ew-bake watch <source.toml> -o <out.ewpack>    rebake whenever an input changes
 //! ew-bake verify <pack> [--registry DIR]         licence gate + chunk hash check
 //! ew-bake hash <pack>                            BLAKE3 of the file
+//! ew-bake megascans scan [LIBRARY_DIR]           list a Megascans library (writes nothing)
 //! ```
 
 use anyhow::{Context, Result, bail};
-use ed_assets::{bake, licence};
+use ed_assets::{bake, licence, megascans_lib};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -16,7 +17,8 @@ const USAGE: &str = "usage:
   ew-bake build <source.toml> -o <out.ewpack> [-q]
   ew-bake watch <source.toml> -o <out.ewpack> [--interval-ms N] [--once-after N]
   ew-bake verify <pack.ewpack> [--registry DIR]
-  ew-bake hash <pack.ewpack>";
+  ew-bake hash <pack.ewpack>
+  ew-bake megascans scan [LIBRARY_DIR]   (default: $EW_MEGASCANS_DIR)";
 
 fn main() {
     if let Err(e) = run() {
@@ -56,6 +58,9 @@ fn parse() -> Result<Args> {
 }
 
 fn print_build(rep: &bake::BakeReport, out: &Path, quiet: bool) {
+    for w in &rep.warnings {
+        eprintln!("ew-bake: {w}");
+    }
     println!(
         "built {} -> {}  hash {}  {} bytes  {} keys  {} chunks  {} meshes  {} textures  {:.2} s",
         rep.name,
@@ -148,6 +153,17 @@ fn run() -> Result<()> {
             let pack = PathBuf::from(a.pos.get(1).context(USAGE)?);
             println!("{}  {}", bake::file_hash(&pack)?, pack.display());
         }
+        "megascans" => match a.pos.get(1).map(String::as_str) {
+            Some("scan") => {
+                let root = match a.pos.get(2) {
+                    Some(d) => PathBuf::from(d),
+                    None => megascans_lib::library_root(None, Path::new(".")).with_context(|| format!("give LIBRARY_DIR or set {}", megascans_lib::ENV_DIR))?,
+                };
+                let entries = megascans_lib::scan(&root)?;
+                print!("{}", megascans_lib::format_scan(&root, &entries));
+            }
+            _ => bail!("{USAGE}"),
+        },
         _ => bail!("{USAGE}"),
     }
     Ok(())

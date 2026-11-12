@@ -35,7 +35,18 @@
 //! dir_env = "EW_MEGASCANS_ROCK"
 //! asset = "surfaces/rock"
 //! fab_id = "xxxxxxxx"
+//!
+//! [[megascans]]              # by Fab id in the library (EW_MEGASCANS_DIR or a top-level
+//! fab_id = "yyyyyyyy"        # `megascans_dir = "..."`): <library>/<fab_id>/
+//! alias = "mossy_boulder"    # asset path megascans/mossy_boulder (or give `asset`)
+//! kind = "3d"                # optional: surface | 3d | 3d-plant | decal | imperfection
+//! resolution = "2K"          # optional: which resolution when several were downloaded
 //! ```
+//!
+//! Megascans 3D assets and plants become `<asset>/mesh` (supplied LODs, measured error),
+//! `<asset>/material` + textures, and a prefab `<asset>` (per variant `<asset>/var<N>` too);
+//! 3D assets also get a box collision like glTF prefabs (plants none). See
+//! [`crate::megascans_lib`].
 //!
 //! Every chunk carries a licence (the registry id) and provenance:
 //! `src=<blake3 of the source path as written, or env:<VAR>/<file name>>`,
@@ -47,7 +58,7 @@ use crate::geom::{Lod, MeshBuild};
 use crate::licence::{MEGASCANS, PackInfo, Registry, info_key};
 use crate::lod::LodReport;
 use crate::texture::{self, Role};
-use crate::{GEN_VERSION, TOOL, collision, gltf_import, material, megascans, proving};
+use crate::{GEN_VERSION, TOOL, collision, gltf_import, material, megascans_lib, proving};
 use anyhow::{Context, Result, anyhow, bail};
 use ed_geo::{BodyId, NodeId, ObjectId};
 use ed_pack::kinds::{Collision, CollisionShape, Instance, Instances, Material, PointKind, Prefab, PrefabPoint, Transform};
@@ -125,16 +136,31 @@ pub struct MatSrc {
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct MegaSrc {
+    /// The asset folder itself (legacy; otherwise found by `fab_id` in the library).
     #[serde(default)]
     pub dir: Option<String>,
     #[serde(default)]
     pub dir_env: Option<String>,
-    pub asset: String,
+    /// Asset path; default `megascans/<alias or fab_id>`.
+    #[serde(default)]
+    pub asset: Option<String>,
+    /// Local name used for the default asset path.
+    #[serde(default)]
+    pub alias: Option<String>,
     pub fab_id: String,
     #[serde(default = "megascans_id")]
     pub registry: String,
     #[serde(default)]
     pub normal_y: Option<String>,
+    /// surface | 3d | 3d-plant | decal | imperfection (default: detected).
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// Texture resolution to use when several were downloaded, e.g. "2K" (default: largest).
+    #[serde(default)]
+    pub resolution: Option<String>,
+    /// Position scale for glTF sources not in metres (FBX unit scale is applied by Blender).
+    #[serde(default)]
+    pub scale: Option<f32>,
 }
 fn megascans_id() -> String {
     MEGASCANS.into()
@@ -143,6 +169,10 @@ fn megascans_id() -> String {
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct SourceFile {
+    /// Megascans library root (folder of per-asset folders named by Fab id), relative to this
+    /// file or `~/`; `EW_MEGASCANS_DIR` overrides it.
+    #[serde(default)]
+    pub megascans_dir: Option<String>,
     pub pack: PackSection,
     #[serde(default)]
     pub proving: Option<ProvingSrc>,
@@ -180,6 +210,8 @@ pub struct BakeReport {
     pub textures: usize,
     /// Every file the build read (watch mode polls these).
     pub inputs: Vec<PathBuf>,
+    /// Non-fatal findings (heavy plants, generated LODs, resolution picks, ...).
+    pub warnings: Vec<String>,
     pub seconds: f64,
 }
 
@@ -201,6 +233,7 @@ struct Ctx {
     inputs: Vec<PathBuf>,
     meshes: Vec<(String, Vec<LodReport>)>,
     textures: usize,
+    warnings: Vec<String>,
 }
 
 impl Ctx {
@@ -278,6 +311,129 @@ fn resolve(dir: &Path, path: &Option<String>, env: &Option<String>, what: &str) 
     }
 }
 
+/// One `[[megascans]]` entry: any kind, from the library (by Fab id) or an explicit folder.
+fn megascans_entry(cx: &mut Ctx, dir: &Path, src: &SourceFile, m: &MegaSrc) -> Result<()> {
+    let asset = m.asset.clone().unwrap_or_else(|| format!("megascans/{}", m.alias.as_deref().unwrap_or(&m.fab_id)));
+    if m.registry != MEGASCANS {
+        bail!("megascans {asset}: registry must be `{MEGASCANS}`, not `{}`", m.registry);
+    }
+    if !src.pack.game_packaged {
+        bail!("megascans {asset}: Megascans content may only go into a pack with game_packaged = true");
+    }
+    if m.fab_id.trim().is_empty() {
+        bail!("megascans {asset}: fab_id (the Fab asset id) is required");
+    }
+    let (mdir, name) = if m.dir.is_none() && m.dir_env.is_none() {
+        let root = megascans_lib::library_root(src.megascans_dir.as_deref(), dir).ok_or_else(|| {
+            anyhow!("megascans {asset}: no source folder: set {} (or `megascans_dir` in the source, or `dir`/`dir_env` on the entry)", megascans_lib::ENV_DIR)
+        })?;
+        (megascans_lib::find_asset(&root, m.fab_id.trim()).with_context(|| format!("megascans {asset}"))?, format!("megascans:{}", m.fab_id.trim()))
+    } else {
+        resolve(dir, &m.dir, &m.dir_env, &format!("megascans {asset}"))?
+    };
+    let canon = mdir.canonicalize().with_context(|| format!("megascans {asset}: source folder"))?;
+    if let Some(root) = repo_root(dir)
+        && canon.starts_with(&root)
+    {
+        bail!("megascans {asset}: the source folder is inside the repository ({}); keep Megascans sources outside it", root.display());
+    }
+    let dx = match m.normal_y.as_deref().unwrap_or("gl") {
+        "gl" => false,
+        "dx" => true,
+        v => bail!("megascans {asset}: normal_y must be gl or dx, not {v}"),
+    };
+    let want_res = match m.resolution.as_deref() {
+        None => None,
+        Some(r) => Some(megascans_lib::res_of(r).ok_or_else(|| anyhow!("megascans {asset}: resolution {r:?} is not like \"2K\""))?),
+    };
+    let listing = megascans_lib::Listing::read(&canon)?;
+    let kind = match &m.kind {
+        Some(k) => megascans_lib::Kind::parse(k)?,
+        None => megascans_lib::detect(&listing).0,
+    };
+    let (maps, notes) = megascans_lib::select_maps(&listing, want_res);
+    cx.warnings.extend(notes.into_iter().map(|n| format!("megascans {asset}: {n}")));
+    let model = if kind.has_mesh() {
+        let o = megascans_lib::ModelOptions { scale: m.scale.unwrap_or(1.0) };
+        Some(megascans_lib::import_model(&listing, &o).with_context(|| format!("megascans {asset}"))?)
+    } else {
+        None
+    };
+    let mat_asset = if kind.has_mesh() { Some(format!("{asset}/material")) } else { None };
+    let s = megascans_lib::import_textures(kind, &maps, &asset, dx, mat_asset).with_context(|| format!("megascans {asset} ({})", canon.display()))?;
+    let mut h = blake3::Hasher::new();
+    let mut files: Vec<PathBuf> = s.files.clone();
+    if let Some(md) = &model {
+        files.extend(md.sources.iter().cloned());
+    }
+    for f in &files {
+        h.update(&std::fs::read(f).with_context(|| format!("megascans {asset}: {}", f.display()))?);
+        cx.inputs.push(f.clone());
+    }
+    let p = Prov {
+        src: hash_hex(name.as_bytes()),
+        content: h.finalize().to_hex().to_string(),
+        registry: m.registry.clone(),
+        extra: vec![format!("fab-id={}", m.fab_id.trim()), format!("megascans-kind={}", kind.as_str())],
+    };
+    for (a, t) in &s.textures {
+        cx.put_texture(a, t, &p)?;
+    }
+    cx.put_material(&s.material.0, &s.material.1, &p)?;
+    let Some(md) = model else { return Ok(()) };
+    let mut extra = Vec::new();
+    for n in &md.notes {
+        extra.push(format!("megascans {asset}: {n}"));
+    }
+    let mut prefabs: Vec<(String, Prefab)> = Vec::new();
+    let mut first: Option<Prefab> = None;
+    for v in &md.variants {
+        let mesh_asset = if md.variants.len() == 1 { format!("{asset}/mesh") } else { format!("{asset}/{}/mesh", v.label) };
+        let lod_s: Vec<String> = v.report.iter().map(|r| format!("{}t", r.triangles)).collect();
+        if kind == megascans_lib::Kind::Plant {
+            extra.push(format!("megascans {asset}: {} triangles per LOD: {}", v.label, lod_s.join(" ")));
+            if v.report[0].triangles > megascans_lib::PLANT_WARN_TRIS {
+                extra.push(format!(
+                    "megascans {asset}: WARNING {} LOD0 has {} triangles (over {}); consider a lighter download",
+                    v.label,
+                    v.report[0].triangles,
+                    megascans_lib::PLANT_WARN_TRIS
+                ));
+            }
+        }
+        cx.put_mesh(&mesh_asset, &v.build, &v.lods, v.report.clone(), &p)?;
+        let mut prefab = Prefab::default();
+        prefab.nodes.push(ed_pack::kinds::PrefabNode {
+            parent: None,
+            name: v.label.clone(),
+            transform: Transform::default(),
+            mesh: Some(AssetId::from_path(&mesh_asset)),
+            material: Some(AssetId::from_path(&s.material.0)),
+        });
+        if kind == megascans_lib::Kind::Model3d
+            && let Some((lo, hi)) = collision::bounds(v.build.positions.iter().map(|q| Vec3::from(*q)))
+        {
+            let key = if md.variants.len() == 1 { asset.clone() } else { format!("{asset}/{}", v.label) };
+            cx.put(ChunkKey::asset(AssetId::from_path(&key), ChunkKind::CollisionAsset), &Collision { for_asset: true, shapes: vec![collision::aabb_box(lo, hi, collision::surface::PROP)] }, &p)?;
+            if first.is_none() && md.variants.len() > 1 {
+                cx.put(ChunkKey::asset(AssetId::from_path(&asset), ChunkKind::CollisionAsset), &Collision { for_asset: true, shapes: vec![collision::aabb_box(lo, hi, collision::surface::PROP)] }, &p)?;
+            }
+        }
+        if md.variants.len() > 1 {
+            prefabs.push((format!("{asset}/{}", v.label), prefab.clone()));
+        }
+        if first.is_none() {
+            first = Some(prefab);
+        }
+    }
+    prefabs.push((asset.clone(), first.expect("one variant")));
+    for (a, pf) in &prefabs {
+        cx.put(ChunkKey::asset(AssetId::from_path(a), ChunkKind::Prefab), pf, &p)?;
+    }
+    cx.warnings.extend(extra);
+    Ok(())
+}
+
 /// Parses a source file.
 pub fn read_source(source: &Path) -> Result<SourceFile> {
     let text = std::fs::read_to_string(source).with_context(|| format!("reading {}", source.display()))?;
@@ -301,6 +457,7 @@ pub fn build_writer(source: &Path) -> Result<(PackWriter, BakeReport)> {
         inputs: vec![source.to_path_buf()],
         meshes: Vec::new(),
         textures: 0,
+        warnings: Vec::new(),
     };
 
     // Pack info (our own metadata).
@@ -387,38 +544,7 @@ pub fn build_writer(source: &Path) -> Result<(PackWriter, BakeReport)> {
     }
     // Megascans.
     for m in &src.megascans {
-        if m.registry != MEGASCANS {
-            bail!("megascans {}: registry must be `{MEGASCANS}`, not `{}`", m.asset, m.registry);
-        }
-        if !src.pack.game_packaged {
-            bail!("megascans {}: Megascans content may only go into a pack with game_packaged = true", m.asset);
-        }
-        if m.fab_id.trim().is_empty() {
-            bail!("megascans {}: fab_id (the Fab asset id) is required", m.asset);
-        }
-        let (mdir, name) = resolve(&dir, &m.dir, &m.dir_env, &format!("megascans {}", m.asset))?;
-        let canon = mdir.canonicalize().with_context(|| format!("megascans {}: source folder", m.asset))?;
-        if let Some(root) = repo_root(&dir)
-            && canon.starts_with(&root)
-        {
-            bail!("megascans {}: the source folder is inside the repository ({}); keep Megascans sources outside it", m.asset, root.display());
-        }
-        let dx = match m.normal_y.as_deref().unwrap_or("gl") {
-            "gl" => false,
-            "dx" => true,
-            v => bail!("megascans {}: normal_y must be gl or dx, not {v}", m.asset),
-        };
-        let s = megascans::import_dir(&canon, &m.asset, dx)?;
-        let mut h = blake3::Hasher::new();
-        for f in &s.files {
-            h.update(&std::fs::read(f)?);
-            cx.inputs.push(f.clone());
-        }
-        let p = Prov { src: hash_hex(name.as_bytes()), content: h.finalize().to_hex().to_string(), registry: m.registry.clone(), extra: vec![format!("fab-id={}", m.fab_id)] };
-        for (a, t) in &s.textures {
-            cx.put_texture(a, t, &p)?;
-        }
-        cx.put_material(&s.material.0, &s.material.1, &p)?;
+        megascans_entry(&mut cx, &dir, &src, m)?;
     }
     // Proving ground.
     if let Some(pg) = &src.proving {
@@ -490,6 +616,7 @@ pub fn build_writer(source: &Path) -> Result<(PackWriter, BakeReport)> {
         meshes: cx.meshes,
         textures: cx.textures,
         inputs: cx.inputs,
+        warnings: cx.warnings,
         seconds: t0.elapsed().as_secs_f64(),
     };
     Ok((cx.w, report))

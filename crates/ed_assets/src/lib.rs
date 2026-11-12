@@ -9,6 +9,8 @@
 //!   WebP, KHR_texture_transform, required-extension allow-list).
 //! - [`material`]: material files (TOML) -> material chunks.
 //! - [`megascans`]: albedo/normal/roughness/AO/displacement sets -> material + textures.
+//! - [`megascans_lib`]: the Megascans library (folders by Fab id): kind detection, `scan`,
+//!   3D assets and plants (supplied LODs, FBX through headless Blender), decals, imperfections.
 //! - [`proving`]: the proving-ground generator (27 parts, 100k instances), bake-time only.
 //! - [`bake`]: the source TOML and the pack it produces (provenance on every chunk).
 //! - [`licence`]: the registry reader and `verify` (licence gate + hash check).
@@ -23,6 +25,7 @@ pub mod licence;
 pub mod lod;
 pub mod material;
 pub mod megascans;
+pub mod megascans_lib;
 pub mod proving;
 pub mod texture;
 
