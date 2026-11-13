@@ -316,6 +316,40 @@ float2 tree_uv(uint w) {
     return float2(float(w & 0xFFFFu), float(w >> 16)) * (1.0 / 65535.0);
 }
 
+// ---- Ground cover (trees G7, ed_world::ground_cover; keep/grow mirror the Rust) -------------
+// Instance flag (scene.rs `GROUND_COVER_FLAG`, flags bit 0 -> node_flags bit 17); word pad[2]
+// (`ground_word`): rank bits 0-11 (/4095), reach m bits 12-19, solid bit 20, no shadow bit 21,
+// first shadow cascade only bit 22 (cull.slang `shadow_cull`).
+static const uint INSTANCE_GROUND = 1u << 17;
+static const float GC_NEAR_FRAC = 0.195;
+static const float GC_FADE_FRAC = 0.7;
+static const float GC_GROW_MAX = 2.0;
+static const float GC_GROW_Y_MAX = 1.25;
+
+float gc_keep(float d, float reach) {
+    float r0 = GC_NEAR_FRAC * reach;
+    float k = r0 / max(d, r0);
+    return k * k * (1.0 - smoothstep(GC_FADE_FRAC * reach, reach, d));
+}
+
+// Model-space scale of a ground-cover instance at camera distance `d`: 0 when thinned out;
+// survivors shrink smoothly as the threshold passes their rank and grow as density thins.
+float3 gc_scale(GpuInstance inst, float d) {
+    uint g = inst.pad[2];
+    if (((g >> 20) & 1u) != 0u) {
+        return float3(1.0);
+    }
+    float rank = float(g & 4095u) * (1.0 / 4095.0);
+    float k = gc_keep(d, float((g >> 12) & 255u));
+    float s = saturate((k - rank) / (0.3 * k + 1e-3));
+    if (s <= 0.0) {
+        return float3(0.0);
+    }
+    float gx = clamp(sqrt(1.0 / max(k, 1e-4)), 1.0, GC_GROW_MAX);
+    float gy = min(gx, GC_GROW_Y_MAX);
+    return float3(gx, gy, gx) * s;
+}
+
 // Tree vertex, node-local (instance transform applied): wind sway along the wind, gust band,
 // leaf flutter along the normal, dropped branch groups collapsed (bank.rs `instance_params`
 // user word: drop mask bits 16-23, phase bits 24-31). The same function moves the view, the
@@ -325,6 +359,13 @@ float3 tree_vertex(FrameData* f, GpuInstance inst, float3 node, float3 pm, uint 
     float3 origin = float3(inst.m[0].w, inst.m[1].w, inst.m[2].w);
     if ((aux & AUX_CARD) != 0u && ((user >> 16) & (1u << (aux >> 29))) != 0u) {
         return origin;
+    }
+    if ((inst.node_flags & INSTANCE_GROUND) != 0u) {
+        float3 g = gc_scale(inst, length(node + origin));
+        if (g.x <= 0.0) {
+            return origin;
+        }
+        pm *= g;
     }
     float3 l = xform_point(inst, pm);
     WindData w = f.wind;

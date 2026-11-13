@@ -767,6 +767,8 @@ struct App {
     log_upd_ms: f64,
     /// Near-tree update: ms and nodes applied per frame, and when every request was resident.
     trees_ms: Vec<f64>,
+    /// Ground-cover share of the near-tree update (ms per frame).
+    ground_ms: Vec<f64>,
     trees_applied: Vec<usize>,
     trees_t0: Option<Instant>,
     trees_resident_s: Option<f64>,
@@ -825,6 +827,7 @@ pub fn run(args: Args) -> Result<(), String> {
         log_cpu_ms: 0.0,
         log_upd_ms: 0.0,
         trees_ms: Vec::new(),
+        ground_ms: Vec::new(),
         trees_applied: Vec::new(),
         trees_t0: None,
         trees_resident_s: None,
@@ -1039,6 +1042,9 @@ impl App {
                 Ok(()) => {
                     let ms = tt.elapsed().as_secs_f64() * 1e3;
                     self.trees_ms.push(ms);
+                    if let Some(g) = &nt.ground {
+                        self.ground_ms.push(g.stats.last_ms);
+                    }
                     self.trees_sec_ms += ms;
                     self.trees_applied.push(nt.stats.applied_last);
                     if self.trees_resident_s.is_none() && nt.stats.pending == 0 && nt.stats.nodes > 0 {
@@ -1266,6 +1272,11 @@ impl App {
                 pct(&mut self.trees_ms, 0.5),
                 self.trees_resident_s.map_or("never".into(), |s| format!("{s:.1} s"))
             );
+        }
+        if !self.ground_ms.is_empty() {
+            let (p50, p99) = (pct(&mut self.ground_ms, 0.5), pct(&mut self.ground_ms, 0.99));
+            let mx = self.ground_ms.iter().copied().fold(0.0, f64::max);
+            println!("ew: ground cover update ms/frame (main thread): p50 {p50:.2} / p99 {p99:.2} / max {mx:.2}");
         }
         if self.errors > 0 && self.result.is_ok() {
             self.result = Err(format!("{} GPU/surface errors", self.errors));

@@ -275,6 +275,13 @@ pub fn run(args: &Args) -> Result<Report, String> {
                         s.nodes, s.instances, t[0], t[1], t[2], t[3], nt.handoff_m, s.bank_meshes, s.bank_bytes as f64 / 1048576.0, s.bank_ms, s.pages_ms, s.stand_ms, s.stand_nodes,
                         s.stand_ms / s.stand_nodes.max(1) as f64, s.apply_ms, trees_ms
                     );
+                    if let Some(g) = &nt.ground {
+                        let g = g.stats;
+                        println!(
+                            "ground cover: {} nodes, {} instances (logs/boulders {} / ferns, moss, stones {} / grass, flowers {}), {} meshes; generate {:.0} ms for {} nodes ({:.1} ms/node, workers); place {:.0} ms",
+                            g.nodes, g.instances, g.by_pass[0], g.by_pass[1], g.by_pass[2], g.protos, g.gen_ms, g.gen_nodes, g.gen_ms / g.gen_nodes.max(1) as f64, g.place_ms
+                        );
+                    }
                     if s.imp_kinds > 0 {
                         println!(
                             "impostors: {} trees, {} kinds ({} px frames), {:.1} MB textures, bake {:.0} ms ({} baked, {} from cache)",

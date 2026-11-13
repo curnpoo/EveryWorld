@@ -21,6 +21,7 @@ pub mod farshadow;
 pub mod foliage;
 pub mod garage;
 pub mod globe;
+pub mod ground_cover;
 pub mod ground_scatter;
 pub mod ground_tex;
 pub mod horizon;

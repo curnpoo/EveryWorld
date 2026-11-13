@@ -65,6 +65,9 @@ pub(crate) const MESH_FOLIAGE: u32 = 1;
 pub(crate) const INST_USER: usize = 28;
 /// `GpuInstance.pad[1]`: the tree's season word (`ed_world::season::season_word`).
 pub(crate) const INST_SEASON: usize = 29;
+/// `GpuInstance.pad[2]`: ground-cover word (`ed_world::ground_cover::ground_word`), read when
+/// the instance carries `scene::GROUND_COVER_FLAG`.
+pub(crate) const INST_GROUND: usize = 30;
 
 /// Visible-list entry: instance index bits.
 pub(crate) const ENTRY_INSTANCE_BITS: u32 = 20;

@@ -4671,92 +4671,130 @@ packed_uint2 device* ed_buf_10(uint i_31, KernelContext_0 thread* kernelContext_
     return (packed_uint2 device*)kernelContext_64->ed_buffers_0[i_31];
 }
 
+float gc_keep_0(float d_47, float reach_0)
+{
+    float r0_0 = 0.19499999284744263f * reach_0;
+    float k_13 = r0_0 / max(d_47, r0_0);
+    return k_13 * k_13 * (1.0f - smoothstep(0.69999998807907104f * reach_0, reach_0, d_47));
+}
+
+float3 gc_scale_0(const GpuInstance_natural_0 thread* inst_0, float d_48)
+{
+    uint _S787 = inst_0->pad_2[int(2)];
+    if((((inst_0->pad_2[int(2)]) >> 20U) & 1U) != 0U)
+    {
+        return float3(1.0f) ;
+    }
+    float k_14 = gc_keep_0(d_48, float((_S787 >> 12U) & 255U));
+    float s_19 = saturate((k_14 - float(_S787 & 4095U) * 0.00024420025874860585f) / (0.30000001192092896f * k_14 + 0.0010000000474974513f));
+    if(s_19 <= 0.0f)
+    {
+        return float3(0.0f) ;
+    }
+    float gx_2 = clamp(sqrt(1.0f / max(k_14, 9.9999997473787516e-05f)), 1.0f, 2.0f);
+    return float3(gx_2, min(gx_2, 1.25f), gx_2) * float3(s_19) ;
+}
+
 float3 xform_point_0(const GpuInstance_natural_0 thread* i_32, float3 p_22)
 {
-    float4 _S787 = float4((&i_32->m_8)->data_8[int(0)]) ;
-    float4 _S788 = float4((&i_32->m_8)->data_8[int(1)]) ;
-    float4 _S789 = float4((&i_32->m_8)->data_8[int(2)]) ;
-    return float3(dot(_S787.xyz, p_22) + _S787.w, dot(_S788.xyz, p_22) + _S788.w, dot(_S789.xyz, p_22) + _S789.w);
+    float4 _S788 = float4((&i_32->m_8)->data_8[int(0)]) ;
+    float4 _S789 = float4((&i_32->m_8)->data_8[int(1)]) ;
+    float4 _S790 = float4((&i_32->m_8)->data_8[int(2)]) ;
+    return float3(dot(_S788.xyz, p_22) + _S788.w, dot(_S789.xyz, p_22) + _S789.w, dot(_S790.xyz, p_22) + _S790.w);
 }
 
 float max_scale_0(const GpuInstance_natural_0 thread* i_33)
 {
-    float4 _S790 = float4((&i_33->m_8)->data_8[int(0)]) ;
-    float4 _S791 = float4((&i_33->m_8)->data_8[int(1)]) ;
-    float4 _S792 = float4((&i_33->m_8)->data_8[int(2)]) ;
-    return sqrt(max(max(length_squared_0(float3(_S790.x, _S791.x, _S792.x)), length_squared_0(float3(_S790.y, _S791.y, _S792.y))), length_squared_0(float3(_S790.z, _S791.z, _S792.z))));
+    float4 _S791 = float4((&i_33->m_8)->data_8[int(0)]) ;
+    float4 _S792 = float4((&i_33->m_8)->data_8[int(1)]) ;
+    float4 _S793 = float4((&i_33->m_8)->data_8[int(2)]) ;
+    return sqrt(max(max(length_squared_0(float3(_S791.x, _S792.x, _S793.x)), length_squared_0(float3(_S791.y, _S792.y, _S793.y))), length_squared_0(float3(_S791.z, _S792.z, _S793.z))));
 }
 
 float3 xform_normal_0(const GpuInstance_natural_0 thread* i_34, float3 n_20)
 {
-    float4 _S793 = float4((&i_34->m_8)->data_8[int(0)]) ;
-    float4 _S794 = float4((&i_34->m_8)->data_8[int(1)]) ;
-    float4 _S795 = float4((&i_34->m_8)->data_8[int(2)]) ;
-    float3 a0_1 = float3(_S793.x, _S794.x, _S795.x);
-    float3 a1_1 = float3(_S793.y, _S794.y, _S795.y);
-    float3 a2_3 = float3(_S793.z, _S794.z, _S795.z);
+    float4 _S794 = float4((&i_34->m_8)->data_8[int(0)]) ;
+    float4 _S795 = float4((&i_34->m_8)->data_8[int(1)]) ;
+    float4 _S796 = float4((&i_34->m_8)->data_8[int(2)]) ;
+    float3 a0_1 = float3(_S794.x, _S795.x, _S796.x);
+    float3 a1_1 = float3(_S794.y, _S795.y, _S796.y);
+    float3 a2_3 = float3(_S794.z, _S795.z, _S796.z);
     return cross(a1_1, a2_3) * float3(n_20.x)  + cross(a2_3, a0_1) * float3(n_20.y)  + cross(a0_1, a1_1) * float3(n_20.z) ;
 }
 
-float3 tree_vertex_0(FrameData_natural_0 device* f_50, const GpuInstance_natural_0 thread* inst_0, float3 node_2, float3 pm_0, uint n_21, uint aux_0)
+float3 tree_vertex_0(FrameData_natural_0 device* f_50, const GpuInstance_natural_0 thread* inst_1, float3 node_2, float3 pm_0, uint n_21, uint aux_0)
 {
-    uint _S796 = inst_0->pad_2[int(0)];
-    float3 origin_1 = float3((float4((&inst_0->m_8)->data_8[int(0)]) ).w, (float4((&inst_0->m_8)->data_8[int(1)]) ).w, (float4((&inst_0->m_8)->data_8[int(2)]) ).w);
-    bool _S797;
+    uint _S797 = inst_1->pad_2[int(0)];
+    float3 origin_1 = float3((float4((&inst_1->m_8)->data_8[int(0)]) ).w, (float4((&inst_1->m_8)->data_8[int(1)]) ).w, (float4((&inst_1->m_8)->data_8[int(2)]) ).w);
+    bool _S798;
     if((aux_0 & 134217728U) != 0U)
     {
-        _S797 = ((_S796 >> 16U) & (1U << (aux_0 >> 29U))) != 0U;
+        _S798 = ((_S797 >> 16U) & (1U << (aux_0 >> 29U))) != 0U;
     }
     else
     {
-        _S797 = false;
+        _S798 = false;
     }
-    if(_S797)
+    if(_S798)
     {
         return origin_1;
     }
-    float3 _S798 = xform_point_0(inst_0, pm_0);
-    WindData_natural_0 w_17 = f_50->wind_1;
-    float4 _S799 = float4(f_50->wind_1.cfg_2) ;
-    if((_S799.x) < 0.5f)
+    float3 _S799;
+    if(((inst_1->node_flags_0) & 131072U) != 0U)
     {
-        return _S798;
+        float3 _S800 = gc_scale_0(inst_1, length(node_2 + origin_1));
+        if((_S800.x) <= 0.0f)
+        {
+            return origin_1;
+        }
+        _S799 = pm_0 * _S800;
     }
-    float3 _S800 = node_2 + origin_1;
-    float _S801 = _S799.y;
-    float fade_0 = saturate((_S801 - length(_S800)) / max(0.25f * _S801, 1.0f));
+    else
+    {
+        _S799 = pm_0;
+    }
+    float3 _S801 = xform_point_0(inst_1, _S799);
+    WindData_natural_0 w_17 = f_50->wind_1;
+    float4 _S802 = float4(f_50->wind_1.cfg_2) ;
+    if((_S802.x) < 0.5f)
+    {
+        return _S801;
+    }
+    float3 _S803 = node_2 + origin_1;
+    float _S804 = _S802.y;
+    float fade_0 = saturate((_S804 - length(_S803)) / max(0.25f * _S804, 1.0f));
     if(fade_0 <= 0.0f)
     {
-        return _S798;
+        return _S801;
     }
     float q_17 = float((aux_0 >> 11U) & 127U) / 127.0f;
     float sway_0 = q_17 * q_17 * 4.0f;
     float flutter_0 = float((aux_0 >> 18U) & 7U) / 7.0f;
-    float phase_0 = float((aux_0 >> 21U) & 63U) / 64.0f + float(_S796 >> 24U) / 255.0f;
-    float4 _S802 = float4(w_17.wind_0) ;
-    float2 _S803 = _S802.xz;
-    float speed_0 = length(_S803);
+    float phase_0 = float((aux_0 >> 21U) & 63U) / 64.0f + float(_S797 >> 24U) / 255.0f;
+    float4 _S805 = float4(w_17.wind_0) ;
+    float2 _S806 = _S805.xz;
+    float speed_0 = length(_S806);
     float2 wd_1;
     if(speed_0 > 0.0010000000474974513f)
     {
-        wd_1 = _S803 / float2(speed_0) ;
+        wd_1 = _S806 / float2(speed_0) ;
     }
     else
     {
         wd_1 = float2(0.0f, 0.0f);
     }
-    float4 _S804 = float4(w_17.gust_0) ;
-    float s_19 = 0.5f + 0.5f * sin((_S804.x + dot(_S800.xz, wd_1) / max(_S804.y, 1.0f)) * 6.2831854820251465f);
-    float gust_1 = s_19 * s_19 * s_19 * _S804.z;
-    float t_16 = _S802.w;
-    float _S805 = speed_0 * 0.10000000149011612f * fade_0;
-    float _S806 = max_scale_0(inst_0);
-    float k_13 = _S805 * _S806;
+    float4 _S807 = float4(w_17.gust_0) ;
+    float s_20 = 0.5f + 0.5f * sin((_S807.x + dot(_S803.xz, wd_1) / max(_S807.y, 1.0f)) * 6.2831854820251465f);
+    float gust_1 = s_20 * s_20 * s_20 * _S807.z;
+    float t_16 = _S805.w;
+    float _S808 = speed_0 * 0.10000000149011612f * fade_0;
+    float _S809 = max_scale_0(inst_1);
+    float k_15 = _S808 * _S809;
     float rock_1 = 0.55000001192092896f + gust_1 + 0.30000001192092896f * sin(t_16 * 1.7000000476837158f + phase_0 * 6.2831854820251465f) + 0.15000000596046448f * sin(t_16 * 0.62999999523162842f + phase_0 * 19.0f);
-    thread float3 d_47 = float3(wd_1.x, 0.0f, wd_1.y) * float3((sway_0 * k_13 * rock_1)) ;
-    d_47.y = d_47.y - 0.25f * sway_0 * k_13 * rock_1 * rock_1 * 0.30000001192092896f;
-    float3 _S807 = xform_normal_0(inst_0, oct_decode_0(n_21));
-    return _S798 + d_47 + normalize(_S807) * float3((flutter_0 * _S804.w * (0.60000002384185791f + gust_1) * 0.05000000074505806f * fade_0 * sin(t_16 * 11.0f + phase_0 * 40.0f + dot(_S798, float3(3.0999999046325684f, 1.7000000476837158f, 2.2999999523162842f)))))  * float3(_S806) ;
+    thread float3 d_49 = float3(wd_1.x, 0.0f, wd_1.y) * float3((sway_0 * k_15 * rock_1)) ;
+    d_49.y = d_49.y - 0.25f * sway_0 * k_15 * rock_1 * rock_1 * 0.30000001192092896f;
+    float3 _S810 = xform_normal_0(inst_1, oct_decode_0(n_21));
+    return _S801 + d_49 + normalize(_S810) * float3((flutter_0 * _S807.w * (0.60000002384185791f + gust_1) * 0.05000000074505806f * fade_0 * sin(t_16 * 11.0f + phase_0 * 40.0f + dot(_S801, float3(3.0999999046325684f, 1.7000000476837158f, 2.2999999523162842f)))))  * float3(_S809) ;
 }
 
 struct GpuMaterial_natural_0
@@ -4785,15 +4823,15 @@ float2 tree_uv_0(uint w_18)
     return float2(float(w_18 & 65535U), float(w_18 >> 16U)) * float2(1.5259021893143654e-05f) ;
 }
 
-TreeSurf_0 tree_surface_0(FrameData_natural_0 device* f_51, const GpuInstance_natural_0 thread* inst_1, const GpuMaterial_natural_0 thread* m_9, uint2 w0_0, uint2 w1_0, uint2 w2_0, float b0_0, float b1_4, float b2_6, float2 pix_0, float3 p0_1, float3 e1_3, float3 e2_3, KernelContext_0 thread* kernelContext_66)
+TreeSurf_0 tree_surface_0(FrameData_natural_0 device* f_51, const GpuInstance_natural_0 thread* inst_2, const GpuMaterial_natural_0 thread* m_9, uint2 w0_0, uint2 w1_0, uint2 w2_0, float b0_0, float b1_4, float b2_6, float2 pix_0, float3 p0_1, float3 e1_3, float3 e2_3, KernelContext_0 thread* kernelContext_66)
 {
     uint a_22 = w0_0.y;
-    uint _S808 = w1_0.y;
-    uint _S809 = w2_0.y;
-    float val_0 = (float(a_22 & 127U) * b0_0 + float(_S808 & 127U) * b1_4 + float(_S809 & 127U) * b2_6) * 0.015748031437397003f;
-    float hue_0 = (float((a_22 >> 7U) & 15U) * b0_0 + float((_S808 >> 7U) & 15U) * b1_4 + float((_S809 >> 7U) & 15U) * b2_6) * 0.13333334028720856f - 1.0f;
-    float iv_1 = float((inst_1->pad_2[int(0)]) & 255U) / 128.0f;
-    float ih_0 = float(((inst_1->pad_2[int(0)]) >> 8U) & 255U) / 127.5f - 1.0f;
+    uint _S811 = w1_0.y;
+    uint _S812 = w2_0.y;
+    float val_0 = (float(a_22 & 127U) * b0_0 + float(_S811 & 127U) * b1_4 + float(_S812 & 127U) * b2_6) * 0.015748031437397003f;
+    float hue_0 = (float((a_22 >> 7U) & 15U) * b0_0 + float((_S811 >> 7U) & 15U) * b1_4 + float((_S812 >> 7U) & 15U) * b2_6) * 0.13333334028720856f - 1.0f;
+    float iv_1 = float((inst_2->pad_2[int(0)]) & 255U) / 128.0f;
+    float ih_0 = float(((inst_2->pad_2[int(0)]) >> 8U) & 255U) / 127.5f - 1.0f;
     thread TreeSurf_0 o_2;
     (&o_2)->leaf_3 = (a_22 & 134217728U) != 0U;
     (&o_2)->shell_0 = false;
@@ -4803,31 +4841,31 @@ TreeSurf_0 tree_surface_0(FrameData_natural_0 device* f_51, const GpuInstance_na
         return o_2;
     }
     float3 alb_1 = (float4(m_9->base_0) ).xyz * float3(val_0)  * float3(iv_1)  * tree_hue_0(clamp(hue_0 + 0.5f * ih_0, -1.0f, 1.0f));
-    bool _S810;
+    bool _S813;
     if((&o_2)->leaf_3)
     {
-        _S810 = ((uint4(m_9->tex_2) ).x) != 4294967295U;
+        _S813 = ((uint4(m_9->tex_2) ).x) != 4294967295U;
     }
     else
     {
-        _S810 = false;
+        _S813 = false;
     }
     float3 alb_2;
-    if(_S810)
+    if(_S813)
     {
         float2 t0_1 = tree_uv_0(w0_0.x);
         float2 d1_1 = tree_uv_0(w1_0.x) - t0_1;
         float2 d2_1 = tree_uv_0(w2_0.x) - t0_1;
         float2 uv_8 = t0_1 + d1_1 * float2(b1_4)  + d2_1 * float2(b2_6) ;
-        float3 _S811 = view_dir_0(f_51, pix_0 + float2(1.0f, 0.0f));
-        float2 bx_2 = ray_bary_0(_S811, p0_1, e1_3, e2_3);
-        float3 _S812 = view_dir_0(f_51, pix_0 + float2(0.0f, 1.0f));
-        float2 by_2 = ray_bary_0(_S812, p0_1, e1_3, e2_3);
+        float3 _S814 = view_dir_0(f_51, pix_0 + float2(1.0f, 0.0f));
+        float2 bx_2 = ray_bary_0(_S814, p0_1, e1_3, e2_3);
+        float3 _S815 = view_dir_0(f_51, pix_0 + float2(0.0f, 1.0f));
+        float2 by_2 = ray_bary_0(_S815, p0_1, e1_3, e2_3);
         float2 ux_0 = t0_1 + d1_1 * float2(bx_2.x)  + d2_1 * float2(bx_2.y)  - uv_8;
         float2 uy_0 = t0_1 + d1_1 * float2(by_2.x)  + d2_1 * float2(by_2.y)  - uv_8;
-        texture2d<float, access::sample> _S813 = ((reinterpret_cast<device texture2d<float, access::sample>*>((kernelContext_66->ed_textures_0))[((uint4(m_9->tex_2) ).x)]));
-        sampler _S814 = ((reinterpret_cast<device sampler*>((kernelContext_66->ed_samplers_0))[(kernelContext_66->ed_c_0->smp_0)]));
-        alb_2 = alb_1 * clamp(((_S813).sample((_S814), (uv_8), gradient2d((ux_0), (uy_0)))).xyz / float3(0.14699999988079071f, 0.27399998903274536f, 0.050999999046325684f), float3(0.20000000298023224f, 0.20000000298023224f, 0.20000000298023224f), float3(2.5f, 2.5f, 2.5f));
+        texture2d<float, access::sample> _S816 = ((reinterpret_cast<device texture2d<float, access::sample>*>((kernelContext_66->ed_textures_0))[((uint4(m_9->tex_2) ).x)]));
+        sampler _S817 = ((reinterpret_cast<device sampler*>((kernelContext_66->ed_samplers_0))[(kernelContext_66->ed_c_0->smp_0)]));
+        alb_2 = alb_1 * clamp(((_S816).sample((_S817), (uv_8), gradient2d((ux_0), (uy_0)))).xyz / float3(0.14699999988079071f, 0.27399998903274536f, 0.050999999046325684f), float3(0.20000000298023224f, 0.20000000298023224f, 0.20000000298023224f), float3(2.5f, 2.5f, 2.5f));
     }
     else
     {
@@ -4835,10 +4873,10 @@ TreeSurf_0 tree_surface_0(FrameData_natural_0 device* f_51, const GpuInstance_na
     }
     if(((float4((&f_51->season_0)->cfg_4) ).x) > 0.0f)
     {
-        LeafSeason_0 _S815 = season_of_word_0(f_51, inst_1->pad_2[int(1)]);
-        thread LeafSeason_0 _S816 = _S815;
-        float3 _S817 = season_tint_0(&_S816, alb_2);
-        alb_2 = _S817;
+        LeafSeason_0 _S818 = season_of_word_0(f_51, inst_2->pad_2[int(1)]);
+        thread LeafSeason_0 _S819 = _S818;
+        float3 _S820 = season_tint_0(&_S819, alb_2);
+        alb_2 = _S820;
     }
     (&o_2)->shell_0 = !(&o_2)->leaf_3;
     (&o_2)->albedo_8 = min(alb_2, float3(0.89999997615814209f, 0.89999997615814209f, 0.89999997615814209f));
@@ -4847,12 +4885,12 @@ TreeSurf_0 tree_surface_0(FrameData_natural_0 device* f_51, const GpuInstance_na
 
 float bark_height_0(float2 q_18)
 {
-    float _S818 = q_18.x;
-    float _S819 = q_18.y;
-    float plates_0 = t_noise_0(float2(_S818, _S819 * 0.30000001192092896f), 0.070000000298023224f);
-    float _S820 = t_noise_0(q_18 * float2(1.0f, 0.25f) + float2(31.0f) , 0.18000000715255737f);
-    float _S821 = t_noise_0(float2(_S818 + (_S820 - 0.5f) * 0.079999998211860657f, _S819 * 0.11999999731779099f), 0.035000000149011612f);
-    return saturate(smoothstep(0.2199999988079071f, 0.51999998092651367f, _S821) * (0.55000001192092896f + 0.44999998807907104f * plates_0));
+    float _S821 = q_18.x;
+    float _S822 = q_18.y;
+    float plates_0 = t_noise_0(float2(_S821, _S822 * 0.30000001192092896f), 0.070000000298023224f);
+    float _S823 = t_noise_0(q_18 * float2(1.0f, 0.25f) + float2(31.0f) , 0.18000000715255737f);
+    float _S824 = t_noise_0(float2(_S821 + (_S823 - 0.5f) * 0.079999998211860657f, _S822 * 0.11999999731779099f), 0.035000000149011612f);
+    return saturate(smoothstep(0.2199999988079071f, 0.51999998092651367f, _S824) * (0.55000001192092896f + 0.44999998807907104f * plates_0));
 }
 
 packed_float2 device* ed_buf_12(uint i_36, KernelContext_0 thread* kernelContext_67)
@@ -4863,59 +4901,59 @@ packed_float2 device* ed_buf_12(uint i_36, KernelContext_0 thread* kernelContext
 float2 uv_xform_0(const GpuMaterial_natural_0 thread* m_10, float2 uv_9)
 {
     float r_13 = (as_type<float>(((uint4(m_10->tex_2) ).w)));
-    float s_20 = sin(r_13);
+    float s_21 = sin(r_13);
     float c_22 = cos(r_13);
-    float4 _S822 = float4(m_10->uv_7) ;
-    float2 q_19 = uv_9 * _S822.zw;
-    float _S823 = q_19.x;
-    float _S824 = q_19.y;
-    return float2(c_22 * _S823 + s_20 * _S824, - s_20 * _S823 + c_22 * _S824) + _S822.xy;
+    float4 _S825 = float4(m_10->uv_7) ;
+    float2 q_19 = uv_9 * _S825.zw;
+    float _S826 = q_19.x;
+    float _S827 = q_19.y;
+    return float2(c_22 * _S826 + s_21 * _S827, - s_21 * _S826 + c_22 * _S827) + _S825.xy;
 }
 
 float3 shade_toon_0(FrameData_natural_0 device* f_52, float3 sun_7, const GpuMaterial_natural_0 thread* m_11, float3 albedo_9, float3 n_22, float3 v_13, float ao_9, float sv_6, float sun_vis_3, KernelContext_0 thread* kernelContext_68)
 {
     float ndl_0 = dot(n_22, (float4(f_52->sun_dir_0) ).xyz);
-    float _S825 = max((float4(m_11->params_1) ).z, 1.0f);
-    float lit_2 = floor(saturate(ndl_0 * 0.5f + 0.5f) * _S825 + 0.5f) / _S825 * sun_vis_3;
-    float4 _S826 = float4(m_11->shade_0) ;
-    float3 c_23 = mix(albedo_9 * _S826.xyz, albedo_9, float3(lit_2) );
-    float3 _S827 = sun_7 * float3((lit_2 / 3.1415927410125732f)) ;
-    float3 _S828 = ambient_light_0(f_52, n_22, kernelContext_68);
-    float3 _S829 = occluded_ambient_0(f_52, _S828, sv_6, kernelContext_68);
-    float3 _S830 = ao_multibounce_0(f_52, ao_9, albedo_9);
-    return c_23 * (_S827 + _S829 * _S830) + float3((pow(1.0f - saturate(dot(n_22, v_13)), 4.0f) * _S826.w * saturate(ndl_0 + 0.30000001192092896f) * sun_vis_3))  * sun_7 * float3(0.15000000596046448f) ;
+    float _S828 = max((float4(m_11->params_1) ).z, 1.0f);
+    float lit_2 = floor(saturate(ndl_0 * 0.5f + 0.5f) * _S828 + 0.5f) / _S828 * sun_vis_3;
+    float4 _S829 = float4(m_11->shade_0) ;
+    float3 c_23 = mix(albedo_9 * _S829.xyz, albedo_9, float3(lit_2) );
+    float3 _S830 = sun_7 * float3((lit_2 / 3.1415927410125732f)) ;
+    float3 _S831 = ambient_light_0(f_52, n_22, kernelContext_68);
+    float3 _S832 = occluded_ambient_0(f_52, _S831, sv_6, kernelContext_68);
+    float3 _S833 = ao_multibounce_0(f_52, ao_9, albedo_9);
+    return c_23 * (_S830 + _S832 * _S833) + float3((pow(1.0f - saturate(dot(n_22, v_13)), 4.0f) * _S829.w * saturate(ndl_0 + 0.30000001192092896f) * sun_vis_3))  * sun_7 * float3(0.15000000596046448f) ;
 }
 
 float cascade_depth_delta_0(FrameData_natural_0 device* f_53, uint atlas_2, uint c_24, float3 p_23, KernelContext_0 thread* kernelContext_69)
 {
-    float4 _S831 = float4((&(&f_53->light_0)->cascade_0)->data_3[c_24]) ;
+    float4 _S834 = float4((&(&f_53->light_0)->cascade_0)->data_3[c_24]) ;
     float tile_2 = (float4((&f_53->light_0)->cfg_0) ).y;
-    float4 s_21 = (((float4(p_23, 1.0f)) * (matrix<float,int(4),int(4)> ((&(&f_53->light_0)->shadow_1)->data_2[c_24].data_0[int(0)][int(0)], (&(&f_53->light_0)->shadow_1)->data_2[c_24].data_0[int(1)][int(0)], (&(&f_53->light_0)->shadow_1)->data_2[c_24].data_0[int(2)][int(0)], (&(&f_53->light_0)->shadow_1)->data_2[c_24].data_0[int(3)][int(0)], (&(&f_53->light_0)->shadow_1)->data_2[c_24].data_0[int(0)][int(1)], (&(&f_53->light_0)->shadow_1)->data_2[c_24].data_0[int(1)][int(1)], (&(&f_53->light_0)->shadow_1)->data_2[c_24].data_0[int(2)][int(1)], (&(&f_53->light_0)->shadow_1)->data_2[c_24].data_0[int(3)][int(1)], (&(&f_53->light_0)->shadow_1)->data_2[c_24].data_0[int(0)][int(2)], (&(&f_53->light_0)->shadow_1)->data_2[c_24].data_0[int(1)][int(2)], (&(&f_53->light_0)->shadow_1)->data_2[c_24].data_0[int(2)][int(2)], (&(&f_53->light_0)->shadow_1)->data_2[c_24].data_0[int(3)][int(2)], (&(&f_53->light_0)->shadow_1)->data_2[c_24].data_0[int(0)][int(3)], (&(&f_53->light_0)->shadow_1)->data_2[c_24].data_0[int(1)][int(3)], (&(&f_53->light_0)->shadow_1)->data_2[c_24].data_0[int(2)][int(3)], (&(&f_53->light_0)->shadow_1)->data_2[c_24].data_0[int(3)][int(3)]))));
-    int2 _S832 = int2(_S831.zw);
-    float _S833 = s_21.z;
-    float _S834 = ed_depth_read_0(atlas_2, uint2(clamp(_S832 + int2(floor(float2(s_21.x * 0.5f + 0.5f, 0.5f - s_21.y * 0.5f) * float2(tile_2) )), _S832, _S832 + int2((int(tile_2) - int(1))) )), kernelContext_69);
-    return (_S833 - _S834) * _S831.y;
+    float4 s_22 = (((float4(p_23, 1.0f)) * (matrix<float,int(4),int(4)> ((&(&f_53->light_0)->shadow_1)->data_2[c_24].data_0[int(0)][int(0)], (&(&f_53->light_0)->shadow_1)->data_2[c_24].data_0[int(1)][int(0)], (&(&f_53->light_0)->shadow_1)->data_2[c_24].data_0[int(2)][int(0)], (&(&f_53->light_0)->shadow_1)->data_2[c_24].data_0[int(3)][int(0)], (&(&f_53->light_0)->shadow_1)->data_2[c_24].data_0[int(0)][int(1)], (&(&f_53->light_0)->shadow_1)->data_2[c_24].data_0[int(1)][int(1)], (&(&f_53->light_0)->shadow_1)->data_2[c_24].data_0[int(2)][int(1)], (&(&f_53->light_0)->shadow_1)->data_2[c_24].data_0[int(3)][int(1)], (&(&f_53->light_0)->shadow_1)->data_2[c_24].data_0[int(0)][int(2)], (&(&f_53->light_0)->shadow_1)->data_2[c_24].data_0[int(1)][int(2)], (&(&f_53->light_0)->shadow_1)->data_2[c_24].data_0[int(2)][int(2)], (&(&f_53->light_0)->shadow_1)->data_2[c_24].data_0[int(3)][int(2)], (&(&f_53->light_0)->shadow_1)->data_2[c_24].data_0[int(0)][int(3)], (&(&f_53->light_0)->shadow_1)->data_2[c_24].data_0[int(1)][int(3)], (&(&f_53->light_0)->shadow_1)->data_2[c_24].data_0[int(2)][int(3)], (&(&f_53->light_0)->shadow_1)->data_2[c_24].data_0[int(3)][int(3)]))));
+    int2 _S835 = int2(_S834.zw);
+    float _S836 = s_22.z;
+    float _S837 = ed_depth_read_0(atlas_2, uint2(clamp(_S835 + int2(floor(float2(s_22.x * 0.5f + 0.5f, 0.5f - s_22.y * 0.5f) * float2(tile_2) )), _S835, _S835 + int2((int(tile_2) - int(1))) )), kernelContext_69);
+    return (_S836 - _S837) * _S834.y;
 }
 
 float4 resolve_px_0(const FsOut_0 thread* i_37, bool terrain_0, KernelContext_0 thread* kernelContext_70)
 {
-    FrameData_natural_0 device* _S835 = ed_buf_1(kernelContext_70->ed_c_0->frame_0, kernelContext_70);
-    float2 _S836 = i_37->pos_0.xy;
-    uint2 _S837 = uint2(_S836);
-    texture2d<uint, access::sample> _S838 = ((reinterpret_cast<device texture2d<uint, access::sample>*>((kernelContext_70->ed_textures_0))[(kernelContext_70->ed_c_0->vis_0)]));
-    int3 _S839 = int3(int2(_S837), int(0));
-    uint2 vis_3 = ((_S838).read(vec<uint,2>(((_S839)).xy), uint(((_S839)).z))).xy;
-    float3 _S840 = view_dir_0(_S835, _S836);
-    uint _S841 = vis_3.x;
-    if(_S841 == 0U)
+    FrameData_natural_0 device* _S838 = ed_buf_1(kernelContext_70->ed_c_0->frame_0, kernelContext_70);
+    float2 _S839 = i_37->pos_0.xy;
+    uint2 _S840 = uint2(_S839);
+    texture2d<uint, access::sample> _S841 = ((reinterpret_cast<device texture2d<uint, access::sample>*>((kernelContext_70->ed_textures_0))[(kernelContext_70->ed_c_0->vis_0)]));
+    int3 _S842 = int3(int2(_S840), int(0));
+    uint2 vis_3 = ((_S841).read(vec<uint,2>(((_S842)).xy), uint(((_S842)).z))).xy;
+    float3 _S843 = view_dir_0(_S838, _S839);
+    uint _S844 = vis_3.x;
+    if(_S844 == 0U)
     {
-        float3 _S842 = sky_pixel_0(_S835, _S840, kernelContext_70);
-        return float4(_S842, 1.0f);
+        float3 _S845 = sky_pixel_0(_S838, _S843, kernelContext_70);
+        return float4(_S845, 1.0f);
     }
     bool textured_0;
     if(terrain_0)
     {
-        textured_0 = (_S841 & 2147483648U) != 0U;
+        textured_0 = (_S844 & 2147483648U) != 0U;
     }
     else
     {
@@ -4923,34 +4961,35 @@ float4 resolve_px_0(const FsOut_0 thread* i_37, bool terrain_0, KernelContext_0 
     }
     if(textured_0)
     {
-        float4 _S843 = terrain_pixel_0(_S835, i_37, vis_3, _S840, kernelContext_70);
-        return _S843;
+        float4 _S846 = terrain_pixel_0(_S838, i_37, vis_3, _S843, kernelContext_70);
+        return _S846;
     }
-    if((_S841 & 3221225472U) == 1073741824U)
+    if((_S844 & 3221225472U) == 1073741824U)
     {
-        float4 _S844 = impostor_pixel_0(_S835, i_37, _S841 & 3221225471U, _S840, kernelContext_70);
-        return _S844;
+        float4 _S847 = impostor_pixel_0(_S838, i_37, _S844 & 3221225471U, _S843, kernelContext_70);
+        return _S847;
     }
-    GpuInstance_natural_0 device* _S845 = ed_buf_7(kernelContext_70->ed_c_0->instances_0, kernelContext_70);
-    thread GpuInstance_natural_0 _S846 = *(_S845 + (_S841 - 1U));
-    GpuMesh_natural_0 device* _S847 = ed_buf_8(kernelContext_70->ed_c_0->meshes_0, kernelContext_70);
-    GpuMesh_natural_0 device* _S848 = _S847 + (&_S846)->mesh_0;
-    uint _S849 = vis_3.y;
-    uint lod_2 = _S849 >> 28U;
-    uint prim_1 = (_S849 & 268435455U) % max(_S848->index_count_0[lod_2] / 3U, 1U);
-    uint device* _S850 = ed_buf_0(kernelContext_70->ed_c_0->indices_0, kernelContext_70);
-    uint device* idx_1 = _S850 + _S848->first_index_0[lod_2] + prim_1 * 3U;
-    Vtx_0 device* _S851 = ed_buf_9(kernelContext_70->ed_c_0->verts_0, kernelContext_70);
-    int i0_0 = int(*(idx_1 + int(0))) + _S848->base_vertex_0[lod_2];
-    int i1_0 = int(*(idx_1 + int(1))) + _S848->base_vertex_0[lod_2];
-    int i2_0 = int(*(idx_1 + int(2))) + _S848->base_vertex_0[lod_2];
-    Vtx_0 v0_0 = *(_S851 + i0_0);
-    Vtx_0 v1_0 = *(_S851 + i1_0);
-    Vtx_0 v2_0 = *(_S851 + i2_0);
-    packed_float4 device* _S852 = ed_buf_4(kernelContext_70->ed_c_0->nodes_0, kernelContext_70);
-    float3 node_3 = (float4(*(_S852 + (((&_S846)->node_flags_0) & 65535U))) ).xyz;
-    bool foliage_0 = ((_S848->flags_1) & 1U) != 0U;
-    uint2 _S853 = uint2(0U, 0U);
+    GpuInstance_natural_0 device* _S848 = ed_buf_7(kernelContext_70->ed_c_0->instances_0, kernelContext_70);
+    thread GpuInstance_natural_0 _S849 = *(_S848 + (_S844 - 1U));
+    GpuMesh_natural_0 device* _S850 = ed_buf_8(kernelContext_70->ed_c_0->meshes_0, kernelContext_70);
+    GpuMesh_natural_0 device* _S851 = _S850 + (&_S849)->mesh_0;
+    uint _S852 = vis_3.y;
+    uint lod_2 = _S852 >> 28U;
+    uint prim_1 = (_S852 & 268435455U) % max(_S851->index_count_0[lod_2] / 3U, 1U);
+    uint device* _S853 = ed_buf_0(kernelContext_70->ed_c_0->indices_0, kernelContext_70);
+    uint device* idx_1 = _S853 + _S851->first_index_0[lod_2] + prim_1 * 3U;
+    Vtx_0 device* _S854 = ed_buf_9(kernelContext_70->ed_c_0->verts_0, kernelContext_70);
+    int i0_0 = int(*(idx_1 + int(0))) + _S851->base_vertex_0[lod_2];
+    int i1_0 = int(*(idx_1 + int(1))) + _S851->base_vertex_0[lod_2];
+    int i2_0 = int(*(idx_1 + int(2))) + _S851->base_vertex_0[lod_2];
+    Vtx_0 v0_0 = *(_S854 + i0_0);
+    Vtx_0 v1_0 = *(_S854 + i1_0);
+    Vtx_0 v2_0 = *(_S854 + i2_0);
+    packed_float4 device* _S855 = ed_buf_4(kernelContext_70->ed_c_0->nodes_0, kernelContext_70);
+    uint _S856 = (&_S849)->node_flags_0;
+    float3 node_3 = (float4(*(_S855 + (((&_S849)->node_flags_0) & 65535U))) ).xyz;
+    bool foliage_0 = ((_S851->flags_1) & 1U) != 0U;
+    uint2 _S857 = uint2(0U, 0U);
     float3 l0_0;
     float3 l1_0;
     float3 l2_0;
@@ -4959,36 +4998,36 @@ float4 resolve_px_0(const FsOut_0 thread* i_37, bool terrain_0, KernelContext_0 
     uint2 tw2_0;
     if(foliage_0)
     {
-        packed_uint2 device* _S854 = ed_buf_10(kernelContext_70->ed_c_0->uvs_0, kernelContext_70);
-        uint2 _S855 = uint2(*(_S854 + i0_0)) ;
-        uint2 _S856 = uint2(*(_S854 + i1_0)) ;
-        uint2 _S857 = uint2(*(_S854 + i2_0)) ;
-        float3 _S858 = tree_vertex_0(_S835, &_S846, node_3, float3(v0_0.px_6, v0_0.py_1, v0_0.pz_1), v0_0.n_19, _S855.y);
-        float3 _S859 = tree_vertex_0(_S835, &_S846, node_3, float3(v1_0.px_6, v1_0.py_1, v1_0.pz_1), v1_0.n_19, _S856.y);
-        float3 _S860 = tree_vertex_0(_S835, &_S846, node_3, float3(v2_0.px_6, v2_0.py_1, v2_0.pz_1), v2_0.n_19, _S857.y);
-        l0_0 = _S858;
-        l1_0 = _S859;
-        l2_0 = _S860;
-        tw0_0 = _S855;
-        tw1_0 = _S856;
-        tw2_0 = _S857;
+        packed_uint2 device* _S858 = ed_buf_10(kernelContext_70->ed_c_0->uvs_0, kernelContext_70);
+        uint2 _S859 = uint2(*(_S858 + i0_0)) ;
+        uint2 _S860 = uint2(*(_S858 + i1_0)) ;
+        uint2 _S861 = uint2(*(_S858 + i2_0)) ;
+        float3 _S862 = tree_vertex_0(_S838, &_S849, node_3, float3(v0_0.px_6, v0_0.py_1, v0_0.pz_1), v0_0.n_19, _S859.y);
+        float3 _S863 = tree_vertex_0(_S838, &_S849, node_3, float3(v1_0.px_6, v1_0.py_1, v1_0.pz_1), v1_0.n_19, _S860.y);
+        float3 _S864 = tree_vertex_0(_S838, &_S849, node_3, float3(v2_0.px_6, v2_0.py_1, v2_0.pz_1), v2_0.n_19, _S861.y);
+        l0_0 = _S862;
+        l1_0 = _S863;
+        l2_0 = _S864;
+        tw0_0 = _S859;
+        tw1_0 = _S860;
+        tw2_0 = _S861;
     }
     else
     {
-        float3 _S861 = xform_point_0(&_S846, float3(v0_0.px_6, v0_0.py_1, v0_0.pz_1));
-        float3 _S862 = xform_point_0(&_S846, float3(v1_0.px_6, v1_0.py_1, v1_0.pz_1));
-        float3 _S863 = xform_point_0(&_S846, float3(v2_0.px_6, v2_0.py_1, v2_0.pz_1));
-        l0_0 = _S861;
-        l1_0 = _S862;
-        l2_0 = _S863;
-        tw0_0 = _S853;
-        tw1_0 = _S853;
-        tw2_0 = _S853;
+        float3 _S865 = xform_point_0(&_S849, float3(v0_0.px_6, v0_0.py_1, v0_0.pz_1));
+        float3 _S866 = xform_point_0(&_S849, float3(v1_0.px_6, v1_0.py_1, v1_0.pz_1));
+        float3 _S867 = xform_point_0(&_S849, float3(v2_0.px_6, v2_0.py_1, v2_0.pz_1));
+        l0_0 = _S865;
+        l1_0 = _S866;
+        l2_0 = _S867;
+        tw0_0 = _S857;
+        tw1_0 = _S857;
+        tw2_0 = _S857;
     }
     float3 p0_2 = node_3 + l0_0;
     float3 e1_4 = l1_0 - l0_0;
     float3 e2_4 = l2_0 - l0_0;
-    float2 bb_2 = ray_bary_0(_S840, p0_2, e1_4, e2_4);
+    float2 bb_2 = ray_bary_0(_S843, p0_2, e1_4, e2_4);
     float b1_5 = saturate(bb_2.x);
     float b2_7 = saturate(bb_2.y);
     float bs_2 = b1_5 + b2_7;
@@ -5006,28 +5045,28 @@ float4 resolve_px_0(const FsOut_0 thread* i_37, bool terrain_0, KernelContext_0 
         b2_8 = b2_7;
     }
     float b0_1 = 1.0f - b1_6 - b2_8;
-    float3 _S864 = float3(b0_1) ;
-    float3 local_0 = l0_0 * _S864 + l1_0 * float3(b1_6)  + l2_0 * float3(b2_8) ;
-    float3 _S865 = xform_normal_0(&_S846, oct_decode_0(v0_0.n_19) * _S864 + oct_decode_0(v1_0.n_19) * float3(b1_6)  + oct_decode_0(v2_0.n_19) * float3(b2_8) );
-    float3 n_23 = normalize(_S865);
-    float3 v_14 = - _S840;
-    GpuMaterial_natural_0 device* _S866 = ed_buf_11(kernelContext_70->ed_c_0->materials_0, kernelContext_70);
-    thread GpuMaterial_natural_0 _S867 = *(_S866 + (&_S846)->material_0);
-    float4 _S868 = float4((&_S867)->base_0) ;
-    float3 albedo_10 = _S868.xyz;
-    float4 _S869 = float4((&_S867)->params_1) ;
-    float metal_1 = _S869.x;
-    float rough_6 = _S869.y;
-    uint4 _S870 = uint4((&_S867)->tex_2) ;
-    uint _S871 = _S870.x;
-    bool _S872 = _S871 != 4294967295U;
-    if(_S872)
+    float3 _S868 = float3(b0_1) ;
+    float3 local_0 = l0_0 * _S868 + l1_0 * float3(b1_6)  + l2_0 * float3(b2_8) ;
+    float3 _S869 = xform_normal_0(&_S849, oct_decode_0(v0_0.n_19) * _S868 + oct_decode_0(v1_0.n_19) * float3(b1_6)  + oct_decode_0(v2_0.n_19) * float3(b2_8) );
+    float3 n_23 = normalize(_S869);
+    float3 v_14 = - _S843;
+    GpuMaterial_natural_0 device* _S870 = ed_buf_11(kernelContext_70->ed_c_0->materials_0, kernelContext_70);
+    thread GpuMaterial_natural_0 _S871 = *(_S870 + (&_S849)->material_0);
+    float4 _S872 = float4((&_S871)->base_0) ;
+    float3 albedo_10 = _S872.xyz;
+    float4 _S873 = float4((&_S871)->params_1) ;
+    float metal_1 = _S873.x;
+    float rough_6 = _S873.y;
+    uint4 _S874 = uint4((&_S871)->tex_2) ;
+    uint _S875 = _S874.x;
+    bool _S876 = _S875 != 4294967295U;
+    if(_S876)
     {
         textured_0 = true;
     }
     else
     {
-        textured_0 = (_S870.y) != 4294967295U;
+        textured_0 = (_S874.y) != 4294967295U;
     }
     if(textured_0)
     {
@@ -5035,7 +5074,7 @@ float4 resolve_px_0(const FsOut_0 thread* i_37, bool terrain_0, KernelContext_0 
     }
     else
     {
-        textured_0 = (_S870.z) != 4294967295U;
+        textured_0 = (_S874.z) != 4294967295U;
     }
     bool leaf_4;
     float3 albedo_11;
@@ -5043,58 +5082,49 @@ float4 resolve_px_0(const FsOut_0 thread* i_37, bool terrain_0, KernelContext_0 
     float ao_10;
     float rough_7;
     float metal_2;
-    float d_48;
+    float d_50;
     if(foliage_0)
     {
-        TreeSurf_0 _S873 = tree_surface_0(_S835, &_S846, &_S867, tw0_0, tw1_0, tw2_0, b0_1, b1_6, b2_8, _S836, p0_2, e1_4, e2_4, kernelContext_70);
-        if(_S873.shell_0)
+        TreeSurf_0 _S877 = tree_surface_0(_S838, &_S849, &_S871, tw0_0, tw1_0, tw2_0, b0_1, b1_6, b2_8, _S839, p0_2, e1_4, e2_4, kernelContext_70);
+        if(_S877.shell_0)
         {
-            float3 _S874 = xform_normal_0(&_S846, float3(0.0f, 1.0f, 0.0f));
-            float3 up_10 = normalize(_S874);
+            float3 _S878 = xform_normal_0(&_S849, float3(0.0f, 1.0f, 0.0f));
+            float3 up_10 = normalize(_S878);
             float clump_0 = t_noise_0(local_0.xz * float2(0.89999997615814209f)  + float2((local_0.y * 0.60000002384185791f)) , 1.0f);
-            float3 albedo_12 = _S873.albedo_8 * float3((mix(0.60000002384185791f, 1.1499999761581421f, clump_0) * 0.85000002384185791f)) ;
-            float _S875 = mix(0.64999997615814209f, 1.0f, clump_0);
+            float3 albedo_12 = _S877.albedo_8 * float3((mix(0.60000002384185791f, 1.1499999761581421f, clump_0) * 0.85000002384185791f)) ;
+            float _S879 = mix(0.64999997615814209f, 1.0f, clump_0);
             n_24 = normalize(mix(n_23, up_10, float3(0.40000000596046448f) ));
             albedo_11 = albedo_12;
-            ao_10 = _S875;
+            ao_10 = _S879;
             rough_7 = 1.0f;
         }
         else
         {
             n_24 = n_23;
-            albedo_11 = _S873.albedo_8;
+            albedo_11 = _S877.albedo_8;
             ao_10 = 1.0f;
             rough_7 = 0.81999999284744263f;
         }
-        if(!_S873.leaf_3)
+        if((_S856 & 131072U) != 0U)
         {
-            textured_0 = !_S873.shell_0;
-        }
-        else
-        {
-            textured_0 = false;
-        }
-        if(textured_0)
-        {
-            textured_0 = (length_squared_0(p0_2)) < 3600.0f;
-        }
-        else
-        {
-            textured_0 = false;
-        }
-        if(textured_0)
-        {
-            float3 pm_1 = float3(v0_0.px_6, v0_0.py_1, v0_0.pz_1) * _S864 + float3(v1_0.px_6, v1_0.py_1, v1_0.pz_1) * float3(b1_6)  + float3(v2_0.px_6, v2_0.py_1, v2_0.pz_1) * float3(b2_8) ;
-            float _S876 = pm_1.y;
-            float2 q_20 = float2(atan2(pm_1.z, pm_1.x) * max(length(pm_1.xz), 0.019999999552965164f), _S876);
-            float hb_0 = bark_height_0(q_20);
-            float _S877 = t_noise_0(q_20 * float2(1.0f, 0.5f) + float2(7.0f) , 0.44999998807907104f);
-            float3 _S878 = mix(albedo_11, float3(dot(albedo_11, float3(0.30000001192092896f, 0.5f, 0.20000000298023224f)))  * float3(1.0499999523162842f, 1.0499999523162842f, 1.0f) * float3(1.3500000238418579f) , float3((smoothstep(0.55000001192092896f, 0.85000002384185791f, _S877) * 0.44999998807907104f)) ) * float3(mix(0.5f, 1.1200000047683716f, hb_0))  * float3(mix(0.72000002861022949f, 1.0f, smoothstep(0.0f, 1.2000000476837158f, _S876))) ;
-            float3 _S879 = xform_normal_0(&_S846, float3(0.0f, 1.0f, 0.0f));
-            float3 tu_8 = cross(normalize(_S879), n_24);
-            if((length_squared_0(p0_2)) < 400.0f)
+            float mot_0 = t_noise_0(local_0.xz * float2(1.7000000476837158f)  + float2((local_0.y * 3.0f)) , 1.0f);
+            float3 albedo_13 = albedo_11 * float3(mix(0.81999999284744263f, 1.1200000047683716f, mot_0)) ;
+            if(_S877.leaf_3)
             {
-                textured_0 = (length_squared_0(tu_8)) > 9.99999997475242708e-07f;
+                b1_6 = 0.75f;
+            }
+            else
+            {
+                b1_6 = 0.89999997615814209f;
+            }
+            albedo_11 = albedo_13;
+            rough_7 = b1_6;
+        }
+        else
+        {
+            if(!_S877.leaf_3)
+            {
+                textured_0 = !_S877.shell_0;
             }
             else
             {
@@ -5102,16 +5132,43 @@ float4 resolve_px_0(const FsOut_0 thread* i_37, bool terrain_0, KernelContext_0 
             }
             if(textured_0)
             {
-                float hu_0 = bark_height_0(q_20 + float2(0.012000000104308128f, 0.0f));
-                float hv_0 = bark_height_0(q_20 + float2(0.0f, 0.012000000104308128f));
-                float3 tu_9 = normalize(tu_8);
-                n_24 = normalize(n_24 - float3(0.89999997615814209f)  * (float3(((hu_0 - hb_0) / 0.012000000104308128f * 0.029999999329447746f))  * tu_9 + float3(((hv_0 - hb_0) / 0.012000000104308128f * 0.029999999329447746f))  * normalize(cross(n_24, tu_9))));
+                textured_0 = (length_squared_0(p0_2)) < 3600.0f;
             }
-            float ao_11 = ao_10 * mix(0.64999997615814209f, 1.0f, hb_0);
-            albedo_11 = _S878;
-            ao_10 = ao_11;
+            else
+            {
+                textured_0 = false;
+            }
+            if(textured_0)
+            {
+                float3 pm_1 = float3(v0_0.px_6, v0_0.py_1, v0_0.pz_1) * _S868 + float3(v1_0.px_6, v1_0.py_1, v1_0.pz_1) * float3(b1_6)  + float3(v2_0.px_6, v2_0.py_1, v2_0.pz_1) * float3(b2_8) ;
+                float _S880 = pm_1.y;
+                float2 q_20 = float2(atan2(pm_1.z, pm_1.x) * max(length(pm_1.xz), 0.019999999552965164f), _S880);
+                float hb_0 = bark_height_0(q_20);
+                float _S881 = t_noise_0(q_20 * float2(1.0f, 0.5f) + float2(7.0f) , 0.44999998807907104f);
+                float3 _S882 = mix(albedo_11, float3(dot(albedo_11, float3(0.30000001192092896f, 0.5f, 0.20000000298023224f)))  * float3(1.0499999523162842f, 1.0499999523162842f, 1.0f) * float3(1.3500000238418579f) , float3((smoothstep(0.55000001192092896f, 0.85000002384185791f, _S881) * 0.44999998807907104f)) ) * float3(mix(0.5f, 1.1200000047683716f, hb_0))  * float3(mix(0.72000002861022949f, 1.0f, smoothstep(0.0f, 1.2000000476837158f, _S880))) ;
+                float3 _S883 = xform_normal_0(&_S849, float3(0.0f, 1.0f, 0.0f));
+                float3 tu_8 = cross(normalize(_S883), n_24);
+                if((length_squared_0(p0_2)) < 400.0f)
+                {
+                    textured_0 = (length_squared_0(tu_8)) > 9.99999997475242708e-07f;
+                }
+                else
+                {
+                    textured_0 = false;
+                }
+                if(textured_0)
+                {
+                    float hu_0 = bark_height_0(q_20 + float2(0.012000000104308128f, 0.0f));
+                    float hv_0 = bark_height_0(q_20 + float2(0.0f, 0.012000000104308128f));
+                    float3 tu_9 = normalize(tu_8);
+                    n_24 = normalize(n_24 - float3(0.89999997615814209f)  * (float3(((hu_0 - hb_0) / 0.012000000104308128f * 0.029999999329447746f))  * tu_9 + float3(((hv_0 - hb_0) / 0.012000000104308128f * 0.029999999329447746f))  * normalize(cross(n_24, tu_9))));
+                }
+                float ao_11 = ao_10 * mix(0.64999997615814209f, 1.0f, hb_0);
+                albedo_11 = _S882;
+                ao_10 = ao_11;
+            }
         }
-        if(_S873.leaf_3)
+        if(_S877.leaf_3)
         {
             float3 ngc_0 = cross(e1_4, e2_4);
             if((dot(ngc_0, v_14) * dot(ngc_0, n_24)) < 0.0f)
@@ -5119,41 +5176,41 @@ float4 resolve_px_0(const FsOut_0 thread* i_37, bool terrain_0, KernelContext_0 
                 n_24 = - n_24;
             }
         }
-        leaf_4 = _S873.leaf_3;
+        leaf_4 = _S877.leaf_3;
         metal_2 = 0.0f;
     }
     else
     {
         if(textured_0)
         {
-            packed_float2 device* _S880 = ed_buf_12(kernelContext_70->ed_c_0->uvs_0, kernelContext_70);
-            float2 _S881 = float2(*(_S880 + i0_0)) ;
-            float2 d1_2 = float2(*(_S880 + i1_0))  - _S881;
-            float2 d2_2 = float2(*(_S880 + i2_0))  - _S881;
-            float2 _S882 = uv_xform_0(&_S867, _S881 + d1_2 * float2(b1_6)  + d2_2 * float2(b2_8) );
-            float3 _S883 = view_dir_0(_S835, _S836 + float2(1.0f, 0.0f));
-            float2 bx_3 = ray_bary_0(_S883, p0_2, e1_4, e2_4);
-            float3 _S884 = view_dir_0(_S835, _S836 + float2(0.0f, 1.0f));
-            float2 by_3 = ray_bary_0(_S884, p0_2, e1_4, e2_4);
-            float2 _S885 = uv_xform_0(&_S867, _S881 + d1_2 * float2(bx_3.x)  + d2_2 * float2(bx_3.y) );
-            float2 ux_1 = _S885 - _S882;
-            float2 _S886 = uv_xform_0(&_S867, _S881 + d1_2 * float2(by_3.x)  + d2_2 * float2(by_3.y) );
-            float2 uy_1 = _S886 - _S882;
-            sampler _S887 = ((reinterpret_cast<device sampler*>((kernelContext_70->ed_samplers_0))[(kernelContext_70->ed_c_0->smp_0)]));
-            if(_S872)
+            packed_float2 device* _S884 = ed_buf_12(kernelContext_70->ed_c_0->uvs_0, kernelContext_70);
+            float2 _S885 = float2(*(_S884 + i0_0)) ;
+            float2 d1_2 = float2(*(_S884 + i1_0))  - _S885;
+            float2 d2_2 = float2(*(_S884 + i2_0))  - _S885;
+            float2 _S886 = uv_xform_0(&_S871, _S885 + d1_2 * float2(b1_6)  + d2_2 * float2(b2_8) );
+            float3 _S887 = view_dir_0(_S838, _S839 + float2(1.0f, 0.0f));
+            float2 bx_3 = ray_bary_0(_S887, p0_2, e1_4, e2_4);
+            float3 _S888 = view_dir_0(_S838, _S839 + float2(0.0f, 1.0f));
+            float2 by_3 = ray_bary_0(_S888, p0_2, e1_4, e2_4);
+            float2 _S889 = uv_xform_0(&_S871, _S885 + d1_2 * float2(bx_3.x)  + d2_2 * float2(bx_3.y) );
+            float2 ux_1 = _S889 - _S886;
+            float2 _S890 = uv_xform_0(&_S871, _S885 + d1_2 * float2(by_3.x)  + d2_2 * float2(by_3.y) );
+            float2 uy_1 = _S890 - _S886;
+            sampler _S891 = ((reinterpret_cast<device sampler*>((kernelContext_70->ed_samplers_0))[(kernelContext_70->ed_c_0->smp_0)]));
+            if(_S876)
             {
-                texture2d<float, access::sample> _S888 = ((reinterpret_cast<device texture2d<float, access::sample>*>((kernelContext_70->ed_textures_0))[(_S871)]));
-                albedo_11 = albedo_10 * ((_S888).sample((_S887), (_S882), gradient2d((ux_1), (uy_1)))).xyz;
+                texture2d<float, access::sample> _S892 = ((reinterpret_cast<device texture2d<float, access::sample>*>((kernelContext_70->ed_textures_0))[(_S875)]));
+                albedo_11 = albedo_10 * ((_S892).sample((_S891), (_S886), gradient2d((ux_1), (uy_1)))).xyz;
             }
             else
             {
                 albedo_11 = albedo_10;
             }
-            uint _S889 = _S870.z;
-            if(_S889 != 4294967295U)
+            uint _S893 = _S874.z;
+            if(_S893 != 4294967295U)
             {
-                texture2d<float, access::sample> _S890 = ((reinterpret_cast<device texture2d<float, access::sample>*>((kernelContext_70->ed_textures_0))[(_S889)]));
-                float3 orm_0 = ((_S890).sample((_S887), (_S882), gradient2d((ux_1), (uy_1)))).xyz;
+                texture2d<float, access::sample> _S894 = ((reinterpret_cast<device texture2d<float, access::sample>*>((kernelContext_70->ed_textures_0))[(_S893)]));
+                float3 orm_0 = ((_S894).sample((_S891), (_S886), gradient2d((ux_1), (uy_1)))).xyz;
                 float rough_8 = rough_6 * orm_0.y;
                 float metal_3 = metal_1 * orm_0.z;
                 ao_10 = orm_0.x;
@@ -5166,35 +5223,35 @@ float4 resolve_px_0(const FsOut_0 thread* i_37, bool terrain_0, KernelContext_0 
                 rough_7 = rough_6;
                 metal_2 = metal_1;
             }
-            uint _S891 = _S870.y;
-            if(_S891 != 4294967295U)
+            uint _S895 = _S874.y;
+            if(_S895 != 4294967295U)
             {
-                float _S892 = d1_2.x;
-                float _S893 = d2_2.y;
-                float _S894 = d1_2.y;
-                float _S895 = d2_2.x;
-                float det_2 = _S892 * _S893 - _S894 * _S895;
+                float _S896 = d1_2.x;
+                float _S897 = d2_2.y;
+                float _S898 = d1_2.y;
+                float _S899 = d2_2.x;
+                float det_2 = _S896 * _S897 - _S898 * _S899;
                 if((abs(det_2)) > 9.999999960041972e-13f)
                 {
-                    float3 _S896 = float3((1.0f / det_2)) ;
-                    float3 tg_0 = (e1_4 * float3(_S893)  - e2_4 * float3(_S894) ) * _S896;
-                    float3 bt_0 = (e2_4 * float3(_S892)  - e1_4 * float3(_S895) ) * _S896;
+                    float3 _S900 = float3((1.0f / det_2)) ;
+                    float3 tg_0 = (e1_4 * float3(_S897)  - e2_4 * float3(_S898) ) * _S900;
+                    float3 bt_0 = (e2_4 * float3(_S896)  - e1_4 * float3(_S899) ) * _S900;
                     float3 tg_1 = tg_0 - n_23 * float3(dot(n_23, tg_0)) ;
                     if((length_squared_0(tg_1)) > 9.99999968265522539e-21f)
                     {
                         float3 tg_2 = normalize(tg_1);
-                        float3 _S897 = cross(n_23, tg_2);
-                        if((dot(_S897, bt_0)) < 0.0f)
+                        float3 _S901 = cross(n_23, tg_2);
+                        if((dot(_S901, bt_0)) < 0.0f)
                         {
-                            d_48 = -1.0f;
+                            d_50 = -1.0f;
                         }
                         else
                         {
-                            d_48 = 1.0f;
+                            d_50 = 1.0f;
                         }
-                        float3 bn_0 = _S897 * float3(- d_48) ;
-                        texture2d<float, access::sample> _S898 = ((reinterpret_cast<device texture2d<float, access::sample>*>((kernelContext_70->ed_textures_0))[(_S891)]));
-                        float2 xy_0 = ((_S898).sample((_S887), (_S882), gradient2d((ux_1), (uy_1)))).xy * float2(2.0f)  - float2(1.0f) ;
+                        float3 bn_0 = _S901 * float3(- d_50) ;
+                        texture2d<float, access::sample> _S902 = ((reinterpret_cast<device texture2d<float, access::sample>*>((kernelContext_70->ed_textures_0))[(_S895)]));
+                        float2 xy_0 = ((_S902).sample((_S891), (_S886), gradient2d((ux_1), (uy_1)))).xy * float2(2.0f)  - float2(1.0f) ;
                         n_24 = normalize(tg_2 * float3(xy_0.x)  + bn_0 * float3(xy_0.y)  + n_23 * float3(sqrt(saturate(1.0f - dot(xy_0, xy_0)))) );
                     }
                     else
@@ -5222,18 +5279,18 @@ float4 resolve_px_0(const FsOut_0 thread* i_37, bool terrain_0, KernelContext_0 
         }
         leaf_4 = false;
     }
-    float _S899 = dot(n_24, v_14);
-    if(_S899 < 0.0f)
+    float _S903 = dot(n_24, v_14);
+    if(_S903 < 0.0f)
     {
-        n_24 = normalize(n_24 - float3((1.0099999904632568f * _S899))  * v_14);
+        n_24 = normalize(n_24 - float3((1.0099999904632568f * _S903))  * v_14);
     }
-    if((_S869.w) > 0.5f)
+    if((_S873.w) > 0.5f)
     {
         float2 c_25 = floor(local_0.xz * float2(0.5f) );
         albedo_11 = albedo_11 * float3(mix(0.80000001192092896f, 1.1499999761581421f, fmod(abs(c_25.x + c_25.y), 2.0f))) ;
     }
     float3 p_24 = node_3 + local_0;
-    float zlin_4 = - (((float4(p_24, 1.0f)) * (matrix<float,int(4),int(4)> (_S835->view_0.data_0[int(0)][int(0)], _S835->view_0.data_0[int(1)][int(0)], _S835->view_0.data_0[int(2)][int(0)], _S835->view_0.data_0[int(3)][int(0)], _S835->view_0.data_0[int(0)][int(1)], _S835->view_0.data_0[int(1)][int(1)], _S835->view_0.data_0[int(2)][int(1)], _S835->view_0.data_0[int(3)][int(1)], _S835->view_0.data_0[int(0)][int(2)], _S835->view_0.data_0[int(1)][int(2)], _S835->view_0.data_0[int(2)][int(2)], _S835->view_0.data_0[int(3)][int(2)], _S835->view_0.data_0[int(0)][int(3)], _S835->view_0.data_0[int(1)][int(3)], _S835->view_0.data_0[int(2)][int(3)], _S835->view_0.data_0[int(3)][int(3)])))).z;
+    float zlin_4 = - (((float4(p_24, 1.0f)) * (matrix<float,int(4),int(4)> (_S838->view_0.data_0[int(0)][int(0)], _S838->view_0.data_0[int(1)][int(0)], _S838->view_0.data_0[int(2)][int(0)], _S838->view_0.data_0[int(3)][int(0)], _S838->view_0.data_0[int(0)][int(1)], _S838->view_0.data_0[int(1)][int(1)], _S838->view_0.data_0[int(2)][int(1)], _S838->view_0.data_0[int(3)][int(1)], _S838->view_0.data_0[int(0)][int(2)], _S838->view_0.data_0[int(1)][int(2)], _S838->view_0.data_0[int(2)][int(2)], _S838->view_0.data_0[int(3)][int(2)], _S838->view_0.data_0[int(0)][int(3)], _S838->view_0.data_0[int(1)][int(3)], _S838->view_0.data_0[int(2)][int(3)], _S838->view_0.data_0[int(3)][int(3)])))).z;
     float3 ng_7 = cross(e1_4, e2_4);
     float3 ng_8;
     if((length_squared_0(ng_7)) > 9.99999968265522539e-21f)
@@ -5248,68 +5305,68 @@ float4 resolve_px_0(const FsOut_0 thread* i_37, bool terrain_0, KernelContext_0 
     {
         ng_8 = - ng_8;
     }
-    float _S900 = sun_shadow_0(_S835, kernelContext_70->ed_c_0->shadow_0, p_24, ng_8, zlin_4, _S836, kernelContext_70);
-    float2 _S901 = ao_upsample_0(_S835, kernelContext_70->ed_c_0->ao_0, _S836, zlin_4, kernelContext_70);
-    float ao_12 = ao_10 * _S901.x;
-    float sv_7 = _S901.y;
-    float3 _S902 = sun_light_at_0(_S835, p_24, kernelContext_70);
+    float _S904 = sun_shadow_0(_S838, kernelContext_70->ed_c_0->shadow_0, p_24, ng_8, zlin_4, _S839, kernelContext_70);
+    float2 _S905 = ao_upsample_0(_S838, kernelContext_70->ed_c_0->ao_0, _S839, zlin_4, kernelContext_70);
+    float ao_12 = ao_10 * _S905.x;
+    float sv_7 = _S905.y;
+    float3 _S906 = sun_light_at_0(_S838, p_24, kernelContext_70);
     float3 col_6;
     if(foliage_0)
     {
-        float3 _S903 = shade_foliage_0(_S835, _S902, albedo_11, rough_7, ao_12, sv_7, _S900, n_24, ng_8, v_14, leaf_4, kernelContext_70);
-        col_6 = _S903;
+        float3 _S907 = shade_foliage_0(_S838, _S906, albedo_11, rough_7, ao_12, sv_7, _S904, n_24, ng_8, v_14, leaf_4, kernelContext_70);
+        col_6 = _S907;
     }
     else
     {
-        if((_S868.w) > 0.5f)
+        if((_S872.w) > 0.5f)
         {
-            float3 _S904 = shade_toon_0(_S835, _S902, &_S867, albedo_11, n_24, v_14, ao_12, sv_7, _S900, kernelContext_70);
-            l0_0 = _S904;
+            float3 _S908 = shade_toon_0(_S838, _S906, &_S871, albedo_11, n_24, v_14, ao_12, sv_7, _S904, kernelContext_70);
+            l0_0 = _S908;
         }
         else
         {
-            float3 _S905 = shade_pbr_0(_S835, _S902, albedo_11, metal_2, rough_7, ao_12, sv_7, _S900, n_24, v_14, kernelContext_70);
-            l0_0 = _S905;
+            float3 _S909 = shade_pbr_0(_S838, _S906, albedo_11, metal_2, rough_7, ao_12, sv_7, _S904, n_24, v_14, kernelContext_70);
+            l0_0 = _S909;
         }
         col_6 = l0_0;
     }
-    float3 _S906 = apply_aerial_0(_S835, col_6, p_24, _S836, kernelContext_70);
-    if(((uint4((&_S835->light_0)->flags_0) ).w) == 1U)
+    float3 _S910 = apply_aerial_0(_S838, col_6, p_24, _S839, kernelContext_70);
+    if(((uint4((&_S838->light_0)->flags_0) ).w) == 1U)
     {
-        uint _S907 = shadow_cascade_0(_S835, p_24, zlin_4);
-        col_6 = TINT_2[_S907] * float3((0.039999999105930328f + 0.5f * _S900)) ;
+        uint _S911 = shadow_cascade_0(_S838, p_24, zlin_4);
+        col_6 = TINT_2[_S911] * float3((0.039999999105930328f + 0.5f * _S904)) ;
     }
     else
     {
-        if(((uint4((&_S835->light_0)->flags_0) ).w) == 3U)
+        if(((uint4((&_S838->light_0)->flags_0) ).w) == 3U)
         {
-            uint _S908 = shadow_cascade_0(_S835, p_24, zlin_4);
-            if(_S908 < 4U)
+            uint _S912 = shadow_cascade_0(_S838, p_24, zlin_4);
+            if(_S912 < 4U)
             {
-                float _S909 = cascade_depth_delta_0(_S835, kernelContext_70->ed_c_0->shadow_0, _S908, p_24, kernelContext_70);
-                d_48 = _S909;
+                float _S913 = cascade_depth_delta_0(_S838, kernelContext_70->ed_c_0->shadow_0, _S912, p_24, kernelContext_70);
+                d_50 = _S913;
             }
             else
             {
-                d_48 = 0.0f;
+                d_50 = 0.0f;
             }
-            col_6 = float3(max(d_48, 0.0f), max(- d_48, 0.0f), 0.0f) * float3(0.10000000149011612f) ;
+            col_6 = float3(max(d_50, 0.0f), max(- d_50, 0.0f), 0.0f) * float3(0.10000000149011612f) ;
         }
         else
         {
-            if(((uint4((&_S835->light_0)->flags_0) ).w) == 2U)
+            if(((uint4((&_S838->light_0)->flags_0) ).w) == 2U)
             {
                 col_6 = float3((0.5f * ao_12)) ;
             }
             else
             {
-                if(((uint4((&_S835->light_0)->flags_0) ).w) == 4U)
+                if(((uint4((&_S838->light_0)->flags_0) ).w) == 4U)
                 {
                     col_6 = float3((0.5f * sv_7)) ;
                 }
                 else
                 {
-                    col_6 = _S906;
+                    col_6 = _S910;
                 }
             }
         }
@@ -5320,23 +5377,23 @@ float4 resolve_px_0(const FsOut_0 thread* i_37, bool terrain_0, KernelContext_0 
 constant array<float3, int(5)> TINT_3 = { { float3(1.0f, 0.25f, 0.25f), float3(0.25f, 1.0f, 0.25f), float3(0.30000001192092896f, 0.44999998807907104f, 1.0f), float3(1.0f, 1.0f, 0.25f), float3(0.60000002384185791f, 0.60000002384185791f, 0.60000002384185791f) } };
 float4 resolve_px_1(const FsOut_0 thread* i_38, bool terrain_1, KernelContext_0 thread* kernelContext_71)
 {
-    FrameData_natural_0 device* _S910 = ed_buf_1(kernelContext_71->ed_c_0->frame_0, kernelContext_71);
-    float2 _S911 = i_38->pos_0.xy;
-    uint2 _S912 = uint2(_S911);
-    texture2d<uint, access::sample> _S913 = ((reinterpret_cast<device texture2d<uint, access::sample>*>((kernelContext_71->ed_textures_0))[(kernelContext_71->ed_c_0->vis_0)]));
-    int3 _S914 = int3(int2(_S912), int(0));
-    uint2 vis_4 = ((_S913).read(vec<uint,2>(((_S914)).xy), uint(((_S914)).z))).xy;
-    float3 _S915 = view_dir_0(_S910, _S911);
-    uint _S916 = vis_4.x;
-    if(_S916 == 0U)
+    FrameData_natural_0 device* _S914 = ed_buf_1(kernelContext_71->ed_c_0->frame_0, kernelContext_71);
+    float2 _S915 = i_38->pos_0.xy;
+    uint2 _S916 = uint2(_S915);
+    texture2d<uint, access::sample> _S917 = ((reinterpret_cast<device texture2d<uint, access::sample>*>((kernelContext_71->ed_textures_0))[(kernelContext_71->ed_c_0->vis_0)]));
+    int3 _S918 = int3(int2(_S916), int(0));
+    uint2 vis_4 = ((_S917).read(vec<uint,2>(((_S918)).xy), uint(((_S918)).z))).xy;
+    float3 _S919 = view_dir_0(_S914, _S915);
+    uint _S920 = vis_4.x;
+    if(_S920 == 0U)
     {
-        float3 _S917 = sky_pixel_0(_S910, _S915, kernelContext_71);
-        return float4(_S917, 1.0f);
+        float3 _S921 = sky_pixel_0(_S914, _S919, kernelContext_71);
+        return float4(_S921, 1.0f);
     }
     bool textured_1;
     if(terrain_1)
     {
-        textured_1 = (_S916 & 2147483648U) != 0U;
+        textured_1 = (_S920 & 2147483648U) != 0U;
     }
     else
     {
@@ -5344,34 +5401,35 @@ float4 resolve_px_1(const FsOut_0 thread* i_38, bool terrain_1, KernelContext_0 
     }
     if(textured_1)
     {
-        float4 _S918 = terrain_pixel_1(_S910, i_38, vis_4, _S915, kernelContext_71);
-        return _S918;
+        float4 _S922 = terrain_pixel_1(_S914, i_38, vis_4, _S919, kernelContext_71);
+        return _S922;
     }
-    if((_S916 & 3221225472U) == 1073741824U)
+    if((_S920 & 3221225472U) == 1073741824U)
     {
-        float4 _S919 = impostor_pixel_0(_S910, i_38, _S916 & 3221225471U, _S915, kernelContext_71);
-        return _S919;
+        float4 _S923 = impostor_pixel_0(_S914, i_38, _S920 & 3221225471U, _S919, kernelContext_71);
+        return _S923;
     }
-    GpuInstance_natural_0 device* _S920 = ed_buf_7(kernelContext_71->ed_c_0->instances_0, kernelContext_71);
-    thread GpuInstance_natural_0 _S921 = *(_S920 + (_S916 - 1U));
-    GpuMesh_natural_0 device* _S922 = ed_buf_8(kernelContext_71->ed_c_0->meshes_0, kernelContext_71);
-    GpuMesh_natural_0 device* _S923 = _S922 + (&_S921)->mesh_0;
-    uint _S924 = vis_4.y;
-    uint lod_3 = _S924 >> 28U;
-    uint prim_2 = (_S924 & 268435455U) % max(_S923->index_count_0[lod_3] / 3U, 1U);
-    uint device* _S925 = ed_buf_0(kernelContext_71->ed_c_0->indices_0, kernelContext_71);
-    uint device* idx_2 = _S925 + _S923->first_index_0[lod_3] + prim_2 * 3U;
-    Vtx_0 device* _S926 = ed_buf_9(kernelContext_71->ed_c_0->verts_0, kernelContext_71);
-    int i0_1 = int(*(idx_2 + int(0))) + _S923->base_vertex_0[lod_3];
-    int i1_1 = int(*(idx_2 + int(1))) + _S923->base_vertex_0[lod_3];
-    int i2_1 = int(*(idx_2 + int(2))) + _S923->base_vertex_0[lod_3];
-    Vtx_0 v0_1 = *(_S926 + i0_1);
-    Vtx_0 v1_1 = *(_S926 + i1_1);
-    Vtx_0 v2_1 = *(_S926 + i2_1);
-    packed_float4 device* _S927 = ed_buf_4(kernelContext_71->ed_c_0->nodes_0, kernelContext_71);
-    float3 node_4 = (float4(*(_S927 + (((&_S921)->node_flags_0) & 65535U))) ).xyz;
-    bool foliage_1 = ((_S923->flags_1) & 1U) != 0U;
-    uint2 _S928 = uint2(0U, 0U);
+    GpuInstance_natural_0 device* _S924 = ed_buf_7(kernelContext_71->ed_c_0->instances_0, kernelContext_71);
+    thread GpuInstance_natural_0 _S925 = *(_S924 + (_S920 - 1U));
+    GpuMesh_natural_0 device* _S926 = ed_buf_8(kernelContext_71->ed_c_0->meshes_0, kernelContext_71);
+    GpuMesh_natural_0 device* _S927 = _S926 + (&_S925)->mesh_0;
+    uint _S928 = vis_4.y;
+    uint lod_3 = _S928 >> 28U;
+    uint prim_2 = (_S928 & 268435455U) % max(_S927->index_count_0[lod_3] / 3U, 1U);
+    uint device* _S929 = ed_buf_0(kernelContext_71->ed_c_0->indices_0, kernelContext_71);
+    uint device* idx_2 = _S929 + _S927->first_index_0[lod_3] + prim_2 * 3U;
+    Vtx_0 device* _S930 = ed_buf_9(kernelContext_71->ed_c_0->verts_0, kernelContext_71);
+    int i0_1 = int(*(idx_2 + int(0))) + _S927->base_vertex_0[lod_3];
+    int i1_1 = int(*(idx_2 + int(1))) + _S927->base_vertex_0[lod_3];
+    int i2_1 = int(*(idx_2 + int(2))) + _S927->base_vertex_0[lod_3];
+    Vtx_0 v0_1 = *(_S930 + i0_1);
+    Vtx_0 v1_1 = *(_S930 + i1_1);
+    Vtx_0 v2_1 = *(_S930 + i2_1);
+    packed_float4 device* _S931 = ed_buf_4(kernelContext_71->ed_c_0->nodes_0, kernelContext_71);
+    uint _S932 = (&_S925)->node_flags_0;
+    float3 node_4 = (float4(*(_S931 + (((&_S925)->node_flags_0) & 65535U))) ).xyz;
+    bool foliage_1 = ((_S927->flags_1) & 1U) != 0U;
+    uint2 _S933 = uint2(0U, 0U);
     float3 l0_1;
     float3 l1_1;
     float3 l2_1;
@@ -5380,36 +5438,36 @@ float4 resolve_px_1(const FsOut_0 thread* i_38, bool terrain_1, KernelContext_0 
     uint2 tw2_1;
     if(foliage_1)
     {
-        packed_uint2 device* _S929 = ed_buf_10(kernelContext_71->ed_c_0->uvs_0, kernelContext_71);
-        uint2 _S930 = uint2(*(_S929 + i0_1)) ;
-        uint2 _S931 = uint2(*(_S929 + i1_1)) ;
-        uint2 _S932 = uint2(*(_S929 + i2_1)) ;
-        float3 _S933 = tree_vertex_0(_S910, &_S921, node_4, float3(v0_1.px_6, v0_1.py_1, v0_1.pz_1), v0_1.n_19, _S930.y);
-        float3 _S934 = tree_vertex_0(_S910, &_S921, node_4, float3(v1_1.px_6, v1_1.py_1, v1_1.pz_1), v1_1.n_19, _S931.y);
-        float3 _S935 = tree_vertex_0(_S910, &_S921, node_4, float3(v2_1.px_6, v2_1.py_1, v2_1.pz_1), v2_1.n_19, _S932.y);
-        l0_1 = _S933;
-        l1_1 = _S934;
-        l2_1 = _S935;
-        tw0_1 = _S930;
-        tw1_1 = _S931;
-        tw2_1 = _S932;
+        packed_uint2 device* _S934 = ed_buf_10(kernelContext_71->ed_c_0->uvs_0, kernelContext_71);
+        uint2 _S935 = uint2(*(_S934 + i0_1)) ;
+        uint2 _S936 = uint2(*(_S934 + i1_1)) ;
+        uint2 _S937 = uint2(*(_S934 + i2_1)) ;
+        float3 _S938 = tree_vertex_0(_S914, &_S925, node_4, float3(v0_1.px_6, v0_1.py_1, v0_1.pz_1), v0_1.n_19, _S935.y);
+        float3 _S939 = tree_vertex_0(_S914, &_S925, node_4, float3(v1_1.px_6, v1_1.py_1, v1_1.pz_1), v1_1.n_19, _S936.y);
+        float3 _S940 = tree_vertex_0(_S914, &_S925, node_4, float3(v2_1.px_6, v2_1.py_1, v2_1.pz_1), v2_1.n_19, _S937.y);
+        l0_1 = _S938;
+        l1_1 = _S939;
+        l2_1 = _S940;
+        tw0_1 = _S935;
+        tw1_1 = _S936;
+        tw2_1 = _S937;
     }
     else
     {
-        float3 _S936 = xform_point_0(&_S921, float3(v0_1.px_6, v0_1.py_1, v0_1.pz_1));
-        float3 _S937 = xform_point_0(&_S921, float3(v1_1.px_6, v1_1.py_1, v1_1.pz_1));
-        float3 _S938 = xform_point_0(&_S921, float3(v2_1.px_6, v2_1.py_1, v2_1.pz_1));
-        l0_1 = _S936;
-        l1_1 = _S937;
-        l2_1 = _S938;
-        tw0_1 = _S928;
-        tw1_1 = _S928;
-        tw2_1 = _S928;
+        float3 _S941 = xform_point_0(&_S925, float3(v0_1.px_6, v0_1.py_1, v0_1.pz_1));
+        float3 _S942 = xform_point_0(&_S925, float3(v1_1.px_6, v1_1.py_1, v1_1.pz_1));
+        float3 _S943 = xform_point_0(&_S925, float3(v2_1.px_6, v2_1.py_1, v2_1.pz_1));
+        l0_1 = _S941;
+        l1_1 = _S942;
+        l2_1 = _S943;
+        tw0_1 = _S933;
+        tw1_1 = _S933;
+        tw2_1 = _S933;
     }
     float3 p0_3 = node_4 + l0_1;
     float3 e1_5 = l1_1 - l0_1;
     float3 e2_5 = l2_1 - l0_1;
-    float2 bb_3 = ray_bary_0(_S915, p0_3, e1_5, e2_5);
+    float2 bb_3 = ray_bary_0(_S919, p0_3, e1_5, e2_5);
     float b1_7 = saturate(bb_3.x);
     float b2_10 = saturate(bb_3.y);
     float bs_3 = b1_7 + b2_10;
@@ -5427,28 +5485,28 @@ float4 resolve_px_1(const FsOut_0 thread* i_38, bool terrain_1, KernelContext_0 
         b2_11 = b2_10;
     }
     float b0_2 = 1.0f - b1_8 - b2_11;
-    float3 _S939 = float3(b0_2) ;
-    float3 local_1 = l0_1 * _S939 + l1_1 * float3(b1_8)  + l2_1 * float3(b2_11) ;
-    float3 _S940 = xform_normal_0(&_S921, oct_decode_0(v0_1.n_19) * _S939 + oct_decode_0(v1_1.n_19) * float3(b1_8)  + oct_decode_0(v2_1.n_19) * float3(b2_11) );
-    float3 n_25 = normalize(_S940);
-    float3 v_15 = - _S915;
-    GpuMaterial_natural_0 device* _S941 = ed_buf_11(kernelContext_71->ed_c_0->materials_0, kernelContext_71);
-    thread GpuMaterial_natural_0 _S942 = *(_S941 + (&_S921)->material_0);
-    float4 _S943 = float4((&_S942)->base_0) ;
-    float3 albedo_13 = _S943.xyz;
-    float4 _S944 = float4((&_S942)->params_1) ;
-    float metal_4 = _S944.x;
-    float rough_9 = _S944.y;
-    uint4 _S945 = uint4((&_S942)->tex_2) ;
-    uint _S946 = _S945.x;
-    bool _S947 = _S946 != 4294967295U;
-    if(_S947)
+    float3 _S944 = float3(b0_2) ;
+    float3 local_1 = l0_1 * _S944 + l1_1 * float3(b1_8)  + l2_1 * float3(b2_11) ;
+    float3 _S945 = xform_normal_0(&_S925, oct_decode_0(v0_1.n_19) * _S944 + oct_decode_0(v1_1.n_19) * float3(b1_8)  + oct_decode_0(v2_1.n_19) * float3(b2_11) );
+    float3 n_25 = normalize(_S945);
+    float3 v_15 = - _S919;
+    GpuMaterial_natural_0 device* _S946 = ed_buf_11(kernelContext_71->ed_c_0->materials_0, kernelContext_71);
+    thread GpuMaterial_natural_0 _S947 = *(_S946 + (&_S925)->material_0);
+    float4 _S948 = float4((&_S947)->base_0) ;
+    float3 albedo_14 = _S948.xyz;
+    float4 _S949 = float4((&_S947)->params_1) ;
+    float metal_4 = _S949.x;
+    float rough_9 = _S949.y;
+    uint4 _S950 = uint4((&_S947)->tex_2) ;
+    uint _S951 = _S950.x;
+    bool _S952 = _S951 != 4294967295U;
+    if(_S952)
     {
         textured_1 = true;
     }
     else
     {
-        textured_1 = (_S945.y) != 4294967295U;
+        textured_1 = (_S950.y) != 4294967295U;
     }
     if(textured_1)
     {
@@ -5456,66 +5514,57 @@ float4 resolve_px_1(const FsOut_0 thread* i_38, bool terrain_1, KernelContext_0 
     }
     else
     {
-        textured_1 = (_S945.z) != 4294967295U;
+        textured_1 = (_S950.z) != 4294967295U;
     }
     bool leaf_5;
-    float3 albedo_14;
+    float3 albedo_15;
     float3 n_26;
     float ao_13;
     float rough_10;
     float metal_5;
-    float d_49;
+    float d_51;
     if(foliage_1)
     {
-        TreeSurf_0 _S948 = tree_surface_0(_S910, &_S921, &_S942, tw0_1, tw1_1, tw2_1, b0_2, b1_8, b2_11, _S911, p0_3, e1_5, e2_5, kernelContext_71);
-        if(_S948.shell_0)
+        TreeSurf_0 _S953 = tree_surface_0(_S914, &_S925, &_S947, tw0_1, tw1_1, tw2_1, b0_2, b1_8, b2_11, _S915, p0_3, e1_5, e2_5, kernelContext_71);
+        if(_S953.shell_0)
         {
-            float3 _S949 = xform_normal_0(&_S921, float3(0.0f, 1.0f, 0.0f));
-            float3 up_11 = normalize(_S949);
+            float3 _S954 = xform_normal_0(&_S925, float3(0.0f, 1.0f, 0.0f));
+            float3 up_11 = normalize(_S954);
             float clump_1 = t_noise_0(local_1.xz * float2(0.89999997615814209f)  + float2((local_1.y * 0.60000002384185791f)) , 1.0f);
-            float3 albedo_15 = _S948.albedo_8 * float3((mix(0.60000002384185791f, 1.1499999761581421f, clump_1) * 0.85000002384185791f)) ;
-            float _S950 = mix(0.64999997615814209f, 1.0f, clump_1);
+            float3 albedo_16 = _S953.albedo_8 * float3((mix(0.60000002384185791f, 1.1499999761581421f, clump_1) * 0.85000002384185791f)) ;
+            float _S955 = mix(0.64999997615814209f, 1.0f, clump_1);
             n_26 = normalize(mix(n_25, up_11, float3(0.40000000596046448f) ));
-            albedo_14 = albedo_15;
-            ao_13 = _S950;
+            albedo_15 = albedo_16;
+            ao_13 = _S955;
             rough_10 = 1.0f;
         }
         else
         {
             n_26 = n_25;
-            albedo_14 = _S948.albedo_8;
+            albedo_15 = _S953.albedo_8;
             ao_13 = 1.0f;
             rough_10 = 0.81999999284744263f;
         }
-        if(!_S948.leaf_3)
+        if((_S932 & 131072U) != 0U)
         {
-            textured_1 = !_S948.shell_0;
-        }
-        else
-        {
-            textured_1 = false;
-        }
-        if(textured_1)
-        {
-            textured_1 = (length_squared_0(p0_3)) < 3600.0f;
-        }
-        else
-        {
-            textured_1 = false;
-        }
-        if(textured_1)
-        {
-            float3 pm_2 = float3(v0_1.px_6, v0_1.py_1, v0_1.pz_1) * _S939 + float3(v1_1.px_6, v1_1.py_1, v1_1.pz_1) * float3(b1_8)  + float3(v2_1.px_6, v2_1.py_1, v2_1.pz_1) * float3(b2_11) ;
-            float _S951 = pm_2.y;
-            float2 q_21 = float2(atan2(pm_2.z, pm_2.x) * max(length(pm_2.xz), 0.019999999552965164f), _S951);
-            float hb_1 = bark_height_0(q_21);
-            float _S952 = t_noise_0(q_21 * float2(1.0f, 0.5f) + float2(7.0f) , 0.44999998807907104f);
-            float3 _S953 = mix(albedo_14, float3(dot(albedo_14, float3(0.30000001192092896f, 0.5f, 0.20000000298023224f)))  * float3(1.0499999523162842f, 1.0499999523162842f, 1.0f) * float3(1.3500000238418579f) , float3((smoothstep(0.55000001192092896f, 0.85000002384185791f, _S952) * 0.44999998807907104f)) ) * float3(mix(0.5f, 1.1200000047683716f, hb_1))  * float3(mix(0.72000002861022949f, 1.0f, smoothstep(0.0f, 1.2000000476837158f, _S951))) ;
-            float3 _S954 = xform_normal_0(&_S921, float3(0.0f, 1.0f, 0.0f));
-            float3 tu_10 = cross(normalize(_S954), n_26);
-            if((length_squared_0(p0_3)) < 400.0f)
+            float mot_1 = t_noise_0(local_1.xz * float2(1.7000000476837158f)  + float2((local_1.y * 3.0f)) , 1.0f);
+            float3 albedo_17 = albedo_15 * float3(mix(0.81999999284744263f, 1.1200000047683716f, mot_1)) ;
+            if(_S953.leaf_3)
             {
-                textured_1 = (length_squared_0(tu_10)) > 9.99999997475242708e-07f;
+                b1_8 = 0.75f;
+            }
+            else
+            {
+                b1_8 = 0.89999997615814209f;
+            }
+            albedo_15 = albedo_17;
+            rough_10 = b1_8;
+        }
+        else
+        {
+            if(!_S953.leaf_3)
+            {
+                textured_1 = !_S953.shell_0;
             }
             else
             {
@@ -5523,16 +5572,43 @@ float4 resolve_px_1(const FsOut_0 thread* i_38, bool terrain_1, KernelContext_0 
             }
             if(textured_1)
             {
-                float hu_1 = bark_height_0(q_21 + float2(0.012000000104308128f, 0.0f));
-                float hv_1 = bark_height_0(q_21 + float2(0.0f, 0.012000000104308128f));
-                float3 tu_11 = normalize(tu_10);
-                n_26 = normalize(n_26 - float3(0.89999997615814209f)  * (float3(((hu_1 - hb_1) / 0.012000000104308128f * 0.029999999329447746f))  * tu_11 + float3(((hv_1 - hb_1) / 0.012000000104308128f * 0.029999999329447746f))  * normalize(cross(n_26, tu_11))));
+                textured_1 = (length_squared_0(p0_3)) < 3600.0f;
             }
-            float ao_14 = ao_13 * mix(0.64999997615814209f, 1.0f, hb_1);
-            albedo_14 = _S953;
-            ao_13 = ao_14;
+            else
+            {
+                textured_1 = false;
+            }
+            if(textured_1)
+            {
+                float3 pm_2 = float3(v0_1.px_6, v0_1.py_1, v0_1.pz_1) * _S944 + float3(v1_1.px_6, v1_1.py_1, v1_1.pz_1) * float3(b1_8)  + float3(v2_1.px_6, v2_1.py_1, v2_1.pz_1) * float3(b2_11) ;
+                float _S956 = pm_2.y;
+                float2 q_21 = float2(atan2(pm_2.z, pm_2.x) * max(length(pm_2.xz), 0.019999999552965164f), _S956);
+                float hb_1 = bark_height_0(q_21);
+                float _S957 = t_noise_0(q_21 * float2(1.0f, 0.5f) + float2(7.0f) , 0.44999998807907104f);
+                float3 _S958 = mix(albedo_15, float3(dot(albedo_15, float3(0.30000001192092896f, 0.5f, 0.20000000298023224f)))  * float3(1.0499999523162842f, 1.0499999523162842f, 1.0f) * float3(1.3500000238418579f) , float3((smoothstep(0.55000001192092896f, 0.85000002384185791f, _S957) * 0.44999998807907104f)) ) * float3(mix(0.5f, 1.1200000047683716f, hb_1))  * float3(mix(0.72000002861022949f, 1.0f, smoothstep(0.0f, 1.2000000476837158f, _S956))) ;
+                float3 _S959 = xform_normal_0(&_S925, float3(0.0f, 1.0f, 0.0f));
+                float3 tu_10 = cross(normalize(_S959), n_26);
+                if((length_squared_0(p0_3)) < 400.0f)
+                {
+                    textured_1 = (length_squared_0(tu_10)) > 9.99999997475242708e-07f;
+                }
+                else
+                {
+                    textured_1 = false;
+                }
+                if(textured_1)
+                {
+                    float hu_1 = bark_height_0(q_21 + float2(0.012000000104308128f, 0.0f));
+                    float hv_1 = bark_height_0(q_21 + float2(0.0f, 0.012000000104308128f));
+                    float3 tu_11 = normalize(tu_10);
+                    n_26 = normalize(n_26 - float3(0.89999997615814209f)  * (float3(((hu_1 - hb_1) / 0.012000000104308128f * 0.029999999329447746f))  * tu_11 + float3(((hv_1 - hb_1) / 0.012000000104308128f * 0.029999999329447746f))  * normalize(cross(n_26, tu_11))));
+                }
+                float ao_14 = ao_13 * mix(0.64999997615814209f, 1.0f, hb_1);
+                albedo_15 = _S958;
+                ao_13 = ao_14;
+            }
         }
-        if(_S948.leaf_3)
+        if(_S953.leaf_3)
         {
             float3 ngc_1 = cross(e1_5, e2_5);
             if((dot(ngc_1, v_15) * dot(ngc_1, n_26)) < 0.0f)
@@ -5540,41 +5616,41 @@ float4 resolve_px_1(const FsOut_0 thread* i_38, bool terrain_1, KernelContext_0 
                 n_26 = - n_26;
             }
         }
-        leaf_5 = _S948.leaf_3;
+        leaf_5 = _S953.leaf_3;
         metal_5 = 0.0f;
     }
     else
     {
         if(textured_1)
         {
-            packed_float2 device* _S955 = ed_buf_12(kernelContext_71->ed_c_0->uvs_0, kernelContext_71);
-            float2 _S956 = float2(*(_S955 + i0_1)) ;
-            float2 d1_3 = float2(*(_S955 + i1_1))  - _S956;
-            float2 d2_3 = float2(*(_S955 + i2_1))  - _S956;
-            float2 _S957 = uv_xform_0(&_S942, _S956 + d1_3 * float2(b1_8)  + d2_3 * float2(b2_11) );
-            float3 _S958 = view_dir_0(_S910, _S911 + float2(1.0f, 0.0f));
-            float2 bx_4 = ray_bary_0(_S958, p0_3, e1_5, e2_5);
-            float3 _S959 = view_dir_0(_S910, _S911 + float2(0.0f, 1.0f));
-            float2 by_4 = ray_bary_0(_S959, p0_3, e1_5, e2_5);
-            float2 _S960 = uv_xform_0(&_S942, _S956 + d1_3 * float2(bx_4.x)  + d2_3 * float2(bx_4.y) );
-            float2 ux_2 = _S960 - _S957;
-            float2 _S961 = uv_xform_0(&_S942, _S956 + d1_3 * float2(by_4.x)  + d2_3 * float2(by_4.y) );
-            float2 uy_2 = _S961 - _S957;
-            sampler _S962 = ((reinterpret_cast<device sampler*>((kernelContext_71->ed_samplers_0))[(kernelContext_71->ed_c_0->smp_0)]));
-            if(_S947)
+            packed_float2 device* _S960 = ed_buf_12(kernelContext_71->ed_c_0->uvs_0, kernelContext_71);
+            float2 _S961 = float2(*(_S960 + i0_1)) ;
+            float2 d1_3 = float2(*(_S960 + i1_1))  - _S961;
+            float2 d2_3 = float2(*(_S960 + i2_1))  - _S961;
+            float2 _S962 = uv_xform_0(&_S947, _S961 + d1_3 * float2(b1_8)  + d2_3 * float2(b2_11) );
+            float3 _S963 = view_dir_0(_S914, _S915 + float2(1.0f, 0.0f));
+            float2 bx_4 = ray_bary_0(_S963, p0_3, e1_5, e2_5);
+            float3 _S964 = view_dir_0(_S914, _S915 + float2(0.0f, 1.0f));
+            float2 by_4 = ray_bary_0(_S964, p0_3, e1_5, e2_5);
+            float2 _S965 = uv_xform_0(&_S947, _S961 + d1_3 * float2(bx_4.x)  + d2_3 * float2(bx_4.y) );
+            float2 ux_2 = _S965 - _S962;
+            float2 _S966 = uv_xform_0(&_S947, _S961 + d1_3 * float2(by_4.x)  + d2_3 * float2(by_4.y) );
+            float2 uy_2 = _S966 - _S962;
+            sampler _S967 = ((reinterpret_cast<device sampler*>((kernelContext_71->ed_samplers_0))[(kernelContext_71->ed_c_0->smp_0)]));
+            if(_S952)
             {
-                texture2d<float, access::sample> _S963 = ((reinterpret_cast<device texture2d<float, access::sample>*>((kernelContext_71->ed_textures_0))[(_S946)]));
-                albedo_14 = albedo_13 * ((_S963).sample((_S962), (_S957), gradient2d((ux_2), (uy_2)))).xyz;
+                texture2d<float, access::sample> _S968 = ((reinterpret_cast<device texture2d<float, access::sample>*>((kernelContext_71->ed_textures_0))[(_S951)]));
+                albedo_15 = albedo_14 * ((_S968).sample((_S967), (_S962), gradient2d((ux_2), (uy_2)))).xyz;
             }
             else
             {
-                albedo_14 = albedo_13;
+                albedo_15 = albedo_14;
             }
-            uint _S964 = _S945.z;
-            if(_S964 != 4294967295U)
+            uint _S969 = _S950.z;
+            if(_S969 != 4294967295U)
             {
-                texture2d<float, access::sample> _S965 = ((reinterpret_cast<device texture2d<float, access::sample>*>((kernelContext_71->ed_textures_0))[(_S964)]));
-                float3 orm_1 = ((_S965).sample((_S962), (_S957), gradient2d((ux_2), (uy_2)))).xyz;
+                texture2d<float, access::sample> _S970 = ((reinterpret_cast<device texture2d<float, access::sample>*>((kernelContext_71->ed_textures_0))[(_S969)]));
+                float3 orm_1 = ((_S970).sample((_S967), (_S962), gradient2d((ux_2), (uy_2)))).xyz;
                 float rough_11 = rough_9 * orm_1.y;
                 float metal_6 = metal_4 * orm_1.z;
                 ao_13 = orm_1.x;
@@ -5587,35 +5663,35 @@ float4 resolve_px_1(const FsOut_0 thread* i_38, bool terrain_1, KernelContext_0 
                 rough_10 = rough_9;
                 metal_5 = metal_4;
             }
-            uint _S966 = _S945.y;
-            if(_S966 != 4294967295U)
+            uint _S971 = _S950.y;
+            if(_S971 != 4294967295U)
             {
-                float _S967 = d1_3.x;
-                float _S968 = d2_3.y;
-                float _S969 = d1_3.y;
-                float _S970 = d2_3.x;
-                float det_3 = _S967 * _S968 - _S969 * _S970;
+                float _S972 = d1_3.x;
+                float _S973 = d2_3.y;
+                float _S974 = d1_3.y;
+                float _S975 = d2_3.x;
+                float det_3 = _S972 * _S973 - _S974 * _S975;
                 if((abs(det_3)) > 9.999999960041972e-13f)
                 {
-                    float3 _S971 = float3((1.0f / det_3)) ;
-                    float3 tg_3 = (e1_5 * float3(_S968)  - e2_5 * float3(_S969) ) * _S971;
-                    float3 bt_1 = (e2_5 * float3(_S967)  - e1_5 * float3(_S970) ) * _S971;
+                    float3 _S976 = float3((1.0f / det_3)) ;
+                    float3 tg_3 = (e1_5 * float3(_S973)  - e2_5 * float3(_S974) ) * _S976;
+                    float3 bt_1 = (e2_5 * float3(_S972)  - e1_5 * float3(_S975) ) * _S976;
                     float3 tg_4 = tg_3 - n_25 * float3(dot(n_25, tg_3)) ;
                     if((length_squared_0(tg_4)) > 9.99999968265522539e-21f)
                     {
                         float3 tg_5 = normalize(tg_4);
-                        float3 _S972 = cross(n_25, tg_5);
-                        if((dot(_S972, bt_1)) < 0.0f)
+                        float3 _S977 = cross(n_25, tg_5);
+                        if((dot(_S977, bt_1)) < 0.0f)
                         {
-                            d_49 = -1.0f;
+                            d_51 = -1.0f;
                         }
                         else
                         {
-                            d_49 = 1.0f;
+                            d_51 = 1.0f;
                         }
-                        float3 bn_1 = _S972 * float3(- d_49) ;
-                        texture2d<float, access::sample> _S973 = ((reinterpret_cast<device texture2d<float, access::sample>*>((kernelContext_71->ed_textures_0))[(_S966)]));
-                        float2 xy_1 = ((_S973).sample((_S962), (_S957), gradient2d((ux_2), (uy_2)))).xy * float2(2.0f)  - float2(1.0f) ;
+                        float3 bn_1 = _S977 * float3(- d_51) ;
+                        texture2d<float, access::sample> _S978 = ((reinterpret_cast<device texture2d<float, access::sample>*>((kernelContext_71->ed_textures_0))[(_S971)]));
+                        float2 xy_1 = ((_S978).sample((_S967), (_S962), gradient2d((ux_2), (uy_2)))).xy * float2(2.0f)  - float2(1.0f) ;
                         n_26 = normalize(tg_5 * float3(xy_1.x)  + bn_1 * float3(xy_1.y)  + n_25 * float3(sqrt(saturate(1.0f - dot(xy_1, xy_1)))) );
                     }
                     else
@@ -5636,25 +5712,25 @@ float4 resolve_px_1(const FsOut_0 thread* i_38, bool terrain_1, KernelContext_0 
         else
         {
             n_26 = n_25;
-            albedo_14 = albedo_13;
+            albedo_15 = albedo_14;
             ao_13 = 1.0f;
             rough_10 = rough_9;
             metal_5 = metal_4;
         }
         leaf_5 = false;
     }
-    float _S974 = dot(n_26, v_15);
-    if(_S974 < 0.0f)
+    float _S979 = dot(n_26, v_15);
+    if(_S979 < 0.0f)
     {
-        n_26 = normalize(n_26 - float3((1.0099999904632568f * _S974))  * v_15);
+        n_26 = normalize(n_26 - float3((1.0099999904632568f * _S979))  * v_15);
     }
-    if((_S944.w) > 0.5f)
+    if((_S949.w) > 0.5f)
     {
         float2 c_26 = floor(local_1.xz * float2(0.5f) );
-        albedo_14 = albedo_14 * float3(mix(0.80000001192092896f, 1.1499999761581421f, fmod(abs(c_26.x + c_26.y), 2.0f))) ;
+        albedo_15 = albedo_15 * float3(mix(0.80000001192092896f, 1.1499999761581421f, fmod(abs(c_26.x + c_26.y), 2.0f))) ;
     }
     float3 p_25 = node_4 + local_1;
-    float zlin_5 = - (((float4(p_25, 1.0f)) * (matrix<float,int(4),int(4)> (_S910->view_0.data_0[int(0)][int(0)], _S910->view_0.data_0[int(1)][int(0)], _S910->view_0.data_0[int(2)][int(0)], _S910->view_0.data_0[int(3)][int(0)], _S910->view_0.data_0[int(0)][int(1)], _S910->view_0.data_0[int(1)][int(1)], _S910->view_0.data_0[int(2)][int(1)], _S910->view_0.data_0[int(3)][int(1)], _S910->view_0.data_0[int(0)][int(2)], _S910->view_0.data_0[int(1)][int(2)], _S910->view_0.data_0[int(2)][int(2)], _S910->view_0.data_0[int(3)][int(2)], _S910->view_0.data_0[int(0)][int(3)], _S910->view_0.data_0[int(1)][int(3)], _S910->view_0.data_0[int(2)][int(3)], _S910->view_0.data_0[int(3)][int(3)])))).z;
+    float zlin_5 = - (((float4(p_25, 1.0f)) * (matrix<float,int(4),int(4)> (_S914->view_0.data_0[int(0)][int(0)], _S914->view_0.data_0[int(1)][int(0)], _S914->view_0.data_0[int(2)][int(0)], _S914->view_0.data_0[int(3)][int(0)], _S914->view_0.data_0[int(0)][int(1)], _S914->view_0.data_0[int(1)][int(1)], _S914->view_0.data_0[int(2)][int(1)], _S914->view_0.data_0[int(3)][int(1)], _S914->view_0.data_0[int(0)][int(2)], _S914->view_0.data_0[int(1)][int(2)], _S914->view_0.data_0[int(2)][int(2)], _S914->view_0.data_0[int(3)][int(2)], _S914->view_0.data_0[int(0)][int(3)], _S914->view_0.data_0[int(1)][int(3)], _S914->view_0.data_0[int(2)][int(3)], _S914->view_0.data_0[int(3)][int(3)])))).z;
     float3 ng_9 = cross(e1_5, e2_5);
     float3 ng_10;
     if((length_squared_0(ng_9)) > 9.99999968265522539e-21f)
@@ -5669,68 +5745,68 @@ float4 resolve_px_1(const FsOut_0 thread* i_38, bool terrain_1, KernelContext_0 
     {
         ng_10 = - ng_10;
     }
-    float _S975 = sun_shadow_0(_S910, kernelContext_71->ed_c_0->shadow_0, p_25, ng_10, zlin_5, _S911, kernelContext_71);
-    float2 _S976 = ao_upsample_0(_S910, kernelContext_71->ed_c_0->ao_0, _S911, zlin_5, kernelContext_71);
-    float ao_15 = ao_13 * _S976.x;
-    float sv_8 = _S976.y;
-    float3 _S977 = sun_light_at_0(_S910, p_25, kernelContext_71);
+    float _S980 = sun_shadow_0(_S914, kernelContext_71->ed_c_0->shadow_0, p_25, ng_10, zlin_5, _S915, kernelContext_71);
+    float2 _S981 = ao_upsample_0(_S914, kernelContext_71->ed_c_0->ao_0, _S915, zlin_5, kernelContext_71);
+    float ao_15 = ao_13 * _S981.x;
+    float sv_8 = _S981.y;
+    float3 _S982 = sun_light_at_0(_S914, p_25, kernelContext_71);
     float3 col_7;
     if(foliage_1)
     {
-        float3 _S978 = shade_foliage_0(_S910, _S977, albedo_14, rough_10, ao_15, sv_8, _S975, n_26, ng_10, v_15, leaf_5, kernelContext_71);
-        col_7 = _S978;
+        float3 _S983 = shade_foliage_0(_S914, _S982, albedo_15, rough_10, ao_15, sv_8, _S980, n_26, ng_10, v_15, leaf_5, kernelContext_71);
+        col_7 = _S983;
     }
     else
     {
-        if((_S943.w) > 0.5f)
+        if((_S948.w) > 0.5f)
         {
-            float3 _S979 = shade_toon_0(_S910, _S977, &_S942, albedo_14, n_26, v_15, ao_15, sv_8, _S975, kernelContext_71);
-            l0_1 = _S979;
+            float3 _S984 = shade_toon_0(_S914, _S982, &_S947, albedo_15, n_26, v_15, ao_15, sv_8, _S980, kernelContext_71);
+            l0_1 = _S984;
         }
         else
         {
-            float3 _S980 = shade_pbr_0(_S910, _S977, albedo_14, metal_5, rough_10, ao_15, sv_8, _S975, n_26, v_15, kernelContext_71);
-            l0_1 = _S980;
+            float3 _S985 = shade_pbr_0(_S914, _S982, albedo_15, metal_5, rough_10, ao_15, sv_8, _S980, n_26, v_15, kernelContext_71);
+            l0_1 = _S985;
         }
         col_7 = l0_1;
     }
-    float3 _S981 = apply_aerial_0(_S910, col_7, p_25, _S911, kernelContext_71);
-    if(((uint4((&_S910->light_0)->flags_0) ).w) == 1U)
+    float3 _S986 = apply_aerial_0(_S914, col_7, p_25, _S915, kernelContext_71);
+    if(((uint4((&_S914->light_0)->flags_0) ).w) == 1U)
     {
-        uint _S982 = shadow_cascade_0(_S910, p_25, zlin_5);
-        col_7 = TINT_3[_S982] * float3((0.039999999105930328f + 0.5f * _S975)) ;
+        uint _S987 = shadow_cascade_0(_S914, p_25, zlin_5);
+        col_7 = TINT_3[_S987] * float3((0.039999999105930328f + 0.5f * _S980)) ;
     }
     else
     {
-        if(((uint4((&_S910->light_0)->flags_0) ).w) == 3U)
+        if(((uint4((&_S914->light_0)->flags_0) ).w) == 3U)
         {
-            uint _S983 = shadow_cascade_0(_S910, p_25, zlin_5);
-            if(_S983 < 4U)
+            uint _S988 = shadow_cascade_0(_S914, p_25, zlin_5);
+            if(_S988 < 4U)
             {
-                float _S984 = cascade_depth_delta_0(_S910, kernelContext_71->ed_c_0->shadow_0, _S983, p_25, kernelContext_71);
-                d_49 = _S984;
+                float _S989 = cascade_depth_delta_0(_S914, kernelContext_71->ed_c_0->shadow_0, _S988, p_25, kernelContext_71);
+                d_51 = _S989;
             }
             else
             {
-                d_49 = 0.0f;
+                d_51 = 0.0f;
             }
-            col_7 = float3(max(d_49, 0.0f), max(- d_49, 0.0f), 0.0f) * float3(0.10000000149011612f) ;
+            col_7 = float3(max(d_51, 0.0f), max(- d_51, 0.0f), 0.0f) * float3(0.10000000149011612f) ;
         }
         else
         {
-            if(((uint4((&_S910->light_0)->flags_0) ).w) == 2U)
+            if(((uint4((&_S914->light_0)->flags_0) ).w) == 2U)
             {
                 col_7 = float3((0.5f * ao_15)) ;
             }
             else
             {
-                if(((uint4((&_S910->light_0)->flags_0) ).w) == 4U)
+                if(((uint4((&_S914->light_0)->flags_0) ).w) == 4U)
                 {
                     col_7 = float3((0.5f * sv_8)) ;
                 }
                 else
                 {
-                    col_7 = _S981;
+                    col_7 = _S986;
                 }
             }
         }
@@ -5757,11 +5833,11 @@ struct pixelOutput_0
     (&kernelContext_72)->ed_c_0 = ed_c_1;
     (&kernelContext_72)->ed_samplers_0 = ed_samplers_1;
     (&kernelContext_72)->ed_textures_0 = ed_textures_1;
-    thread FsOut_0 _S985;
-    (&_S985)->pos_0 = pos_1;
-    float4 _S986 = resolve_px_1(&_S985, false, &kernelContext_72);
-    pixelOutput_0 _S987 = { _S986 };
-    return _S987;
+    thread FsOut_0 _S990;
+    (&_S990)->pos_0 = pos_1;
+    float4 _S991 = resolve_px_1(&_S990, false, &kernelContext_72);
+    pixelOutput_0 _S992 = { _S991 };
+    return _S992;
 }
 
 struct pixelOutput_1
@@ -5776,11 +5852,11 @@ struct pixelOutput_1
     (&kernelContext_73)->ed_c_0 = ed_c_2;
     (&kernelContext_73)->ed_samplers_0 = ed_samplers_2;
     (&kernelContext_73)->ed_textures_0 = ed_textures_2;
-    thread FsOut_0 _S988;
-    (&_S988)->pos_0 = pos_2;
-    float4 _S989 = resolve_px_1(&_S988, true, &kernelContext_73);
-    pixelOutput_1 _S990 = { _S989 };
-    return _S990;
+    thread FsOut_0 _S993;
+    (&_S993)->pos_0 = pos_2;
+    float4 _S994 = resolve_px_1(&_S993, true, &kernelContext_73);
+    pixelOutput_1 _S995 = { _S994 };
+    return _S995;
 }
 
 struct pixelOutput_2
@@ -5795,11 +5871,11 @@ struct pixelOutput_2
     (&kernelContext_74)->ed_c_0 = ed_c_3;
     (&kernelContext_74)->ed_samplers_0 = ed_samplers_3;
     (&kernelContext_74)->ed_textures_0 = ed_textures_3;
-    thread FsOut_0 _S991;
-    (&_S991)->pos_0 = pos_3;
-    float4 _S992 = resolve_px_0(&_S991, true, &kernelContext_74);
-    pixelOutput_2 _S993 = { _S992 };
-    return _S993;
+    thread FsOut_0 _S996;
+    (&_S996)->pos_0 = pos_3;
+    float4 _S997 = resolve_px_0(&_S996, true, &kernelContext_74);
+    pixelOutput_2 _S998 = { _S997 };
+    return _S998;
 }
 
 struct vs_resolve_Result_0
@@ -5814,8 +5890,8 @@ struct vs_resolve_Result_0
     (&kernelContext_75)->ed_c_0 = ed_c_4;
     (&kernelContext_75)->ed_samplers_0 = ed_samplers_4;
     (&kernelContext_75)->ed_textures_0 = ed_textures_4;
-    thread vs_resolve_Result_0 _S994;
-    (&_S994)->pos_4 = fullscreen_vertex_0(vid_1).pos_0;
-    return _S994;
+    thread vs_resolve_Result_0 _S999;
+    (&_S999)->pos_4 = fullscreen_vertex_0(vid_1).pos_0;
+    return _S999;
 }
 

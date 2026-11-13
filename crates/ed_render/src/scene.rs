@@ -194,6 +194,10 @@ pub struct InstanceId {
 }
 
 /// What [`InstancePools::add`] takes.
+/// `InstanceDesc::flags` bit for ground cover (trees G7): the foliage vertex shader thins,
+/// shrinks and grows the instance by distance (common.slang `INSTANCE_GROUND`, node_flags bit 17).
+pub const GROUND_COVER_FLAG: u16 = 1;
+
 #[derive(Clone, Copy, Debug)]
 pub struct InstanceDesc {
     pub node: NodeSlot,
@@ -313,6 +317,7 @@ impl InstancePools {
         w[gpu::INST_NODE_FLAGS] = d.node.0 as u32 | INSTANCE_ALIVE | (((d.flags & 0x7FFF) as u32) << 17);
         w[gpu::INST_USER] = 0;
         w[gpu::INST_SEASON] = 0;
+        w[gpu::INST_GROUND] = 0;
         self.objects[i as usize] = d.object;
         self.generations[i as usize] = self.generations[i as usize].wrapping_add(1);
         self.alive += 1;
@@ -351,6 +356,14 @@ impl InstancePools {
     pub fn set_season(&mut self, id: InstanceId, word: u32) -> bool {
         let Some(i) = self.slot(id) else { return false };
         self.words[i * INSTANCE_WORDS + gpu::INST_SEASON] = word;
+        self.mark(i as u32);
+        true
+    }
+    /// Sets the instance's ground-cover word (`GpuInstance.pad[2]`: rank, reach, solid; read
+    /// when the instance was added with [`GROUND_COVER_FLAG`]).
+    pub fn set_ground(&mut self, id: InstanceId, word: u32) -> bool {
+        let Some(i) = self.slot(id) else { return false };
+        self.words[i * INSTANCE_WORDS + gpu::INST_GROUND] = word;
         self.mark(i as u32);
         true
     }

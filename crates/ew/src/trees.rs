@@ -417,6 +417,8 @@ pub struct NearTrees {
     /// Seasons (trees G5; `EW_SEASON=0` off): the calendar day (default midsummer, `--date`) and
     /// the rate scalar (`EW_SEASON_RATE`, 1 = real time, 0 holds midsummer).
     season: Option<SeasonCfg>,
+    /// Ground cover to 150 m (trees G7; `EW_GROUND_COVER=0` off): it reads the pages and stands.
+    pub ground: Option<crate::ground_cover::GroundCover>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -468,6 +470,7 @@ impl NearTrees {
             stats: NearStats::default(),
             handoff_m: 0.0,
             season: std::env::var("EW_SEASON").map_or(true, |v| v != "0").then(|| SeasonCfg { day: ed_world::season::REF_DAY, rate: env_num("EW_SEASON_RATE", 1.0f64) }),
+            ground: (near_from_env() && crate::ground_cover::from_env()).then(crate::ground_cover::GroundCover::new),
         }
     }
 
@@ -843,6 +846,24 @@ impl NearTrees {
         self.stats.instances = self.nodes.values().map(|e| e.instances.len()).sum();
         self.stats.imp_trees = self.nodes.values().filter(|e| e.imp.is_some()).map(|e| e.trees.len()).sum();
         self.stats.nodes = self.nodes.len();
+        if let Some(mut g) = self.ground.take() {
+            let res = {
+                let ground = |d: DVec3| self.ground_at(wd, d);
+                // Applied: its stand; on its way: wait; not wanted by the trees: no trunks.
+                let empty = Arc::new(Vec::new());
+                let stand = |id: NodeId| match self.nodes.get(&id) {
+                    Some(e) if !e.building => Some(e.stand.clone()),
+                    Some(_) => None,
+                    None if self.requested.contains(&id) || self.ready.contains_key(&id) => None,
+                    None => Some(empty.clone()),
+                };
+                let page = |id: NodeId| self.pages.lock().unwrap().get(&id).cloned().flatten();
+                let tv = crate::ground_cover::TreeView { ground: &ground, stand: &stand, page: &page, tree_level: NODE_LEVEL };
+                g.update(wd, r, dev, camera, viewport, settle, &tv)
+            };
+            self.ground = Some(g);
+            res?;
+        }
         Ok(())
     }
 

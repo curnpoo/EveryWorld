@@ -384,6 +384,12 @@ void shadow_cull(uint3 tid: SV_DispatchThreadID) {
                 // simplified level casts until the tree leaves to its impostor.
                 lod_min = min(1u, lod_max);
             }
+            // Ground cover (trees G7, `ground_word`): bit 21 casts no shadow, bit 22 casts in
+            // the first cascade only (small plants and stones; logs and boulders cast in all).
+            if ((inst.node_flags & INSTANCE_GROUND) != 0u) {
+                uint g = inst.pad[2];
+                nc = ((g >> 21) & 1u) != 0u ? 0u : (((g >> 22) & 1u) != 0u ? min(nc, 1u) : nc);
+            }
             for (uint c = 0; c < nc; c++) {
                 float4 cs = f.light.cascade[c];
                 float4 s = mul(f.light.shadow[c], float4(b.c, 1.0));

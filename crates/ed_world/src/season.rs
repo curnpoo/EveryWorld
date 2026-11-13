@@ -134,10 +134,19 @@ pub fn gpu_row(p: &Pheno) -> [f32; 8] {
 /// Rows the GPU season table holds.
 pub const GPU_ROWS: usize = 32;
 
-/// The whole table, one row per [`STAND_SPECIES`] entry.
+/// Ground-cover grass (trees G7): green from spring, cured toward straw from late autumn to
+/// leaf-out (the evergreen rule, so blades never drop). The row after the species rows.
+pub const GRASS_PHENO: Pheno = Pheno { leaf_out: 105.0, colour: 285.0, drop: 0.0, colour_hex: 0x9a8a58, evergreen: true, winter: 0.55 };
+
+/// The ground-cover grass row of the GPU table ([`GRASS_PHENO`]).
+pub fn grass_row() -> usize {
+    STAND_SPECIES.len()
+}
+
+/// The whole table: one row per [`STAND_SPECIES`] entry, then the grass row.
 pub fn gpu_rows() -> Vec<[f32; 8]> {
-    assert!(STAND_SPECIES.len() <= GPU_ROWS, "season table: {} species", STAND_SPECIES.len());
-    STAND_SPECIES.iter().map(|s| gpu_row(&s.pheno)).collect()
+    assert!(STAND_SPECIES.len() < GPU_ROWS, "season table: {} species", STAND_SPECIES.len());
+    STAND_SPECIES.iter().map(|s| gpu_row(&s.pheno)).chain(std::iter::once(gpu_row(&GRASS_PHENO))).collect()
 }
 
 /// Rows the far rung (no per-tree data) uses for its broadleaf and conifer canopy.
@@ -248,6 +257,6 @@ mod tests {
         let s = season_word(1, -30.0, 0.0);
         assert_eq!((s >> 8) & 1, 1);
         assert!(((s >> 16) as u16 as i16) < 0);
-        assert_eq!(gpu_rows().len(), STAND_SPECIES.len());
+        assert_eq!(gpu_rows().len(), STAND_SPECIES.len() + 1);
     }
 }

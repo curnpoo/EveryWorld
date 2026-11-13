@@ -212,24 +212,24 @@ impl Kind {
 // along the plant (0 root .. 1 tip). Colors are pre-tint shading (around 1).
 // ---------------------------------------------------------------------------
 
-struct Rng(u64);
+pub(crate) struct Rng(pub(crate) u64);
 impl Rng {
-    fn f(&mut self) -> f32 {
+    pub(crate) fn f(&mut self) -> f32 {
         self.0 = self.0.wrapping_add(0x9E37_79B9);
         crate::hash01(self.0, 77)
     }
-    fn range(&mut self, a: f32, b: f32) -> f32 {
+    pub(crate) fn range(&mut self, a: f32, b: f32) -> f32 {
         a + (b - a) * self.f()
     }
 }
 
-fn gray(k: f32) -> [f32; 4] {
+pub(crate) fn gray(k: f32) -> [f32; 4] {
     [k, k, k, 1.0]
 }
 
 /// One curved, tapered blade (5 verts, 3 tris) appended to `m`.
 #[allow(clippy::too_many_arguments)]
-fn blade(m: &mut MeshData, root: Vec3, dir: f32, lean: f32, h: f32, w: f32, flex: f32, base: f32, tip: f32) {
+pub(crate) fn blade(m: &mut MeshData, root: Vec3, dir: f32, lean: f32, h: f32, w: f32, flex: f32, base: f32, tip: f32) {
     let fwd = Vec3::new(dir.cos(), 0.0, dir.sin());
     let side = Vec3::new(-dir.sin(), 0.0, dir.cos());
     let pt = |t: f32| root + Vec3::Y * (h * t * (1.0 - 0.35 * lean * t)) + fwd * (h * lean * t * t);
@@ -255,7 +255,7 @@ fn blade(m: &mut MeshData, root: Vec3, dir: f32, lean: f32, h: f32, w: f32, flex
     m.tri(i2, i4, i3);
 }
 
-fn tuft(seed: u64, blades: usize, h: (f32, f32), w: f32, spread: f32, lean: f32) -> MeshData {
+pub(crate) fn tuft(seed: u64, blades: usize, h: (f32, f32), w: f32, spread: f32, lean: f32) -> MeshData {
     let mut r = Rng(seed);
     let mut m = MeshData::default();
     for _ in 0..blades {
@@ -270,7 +270,7 @@ fn tuft(seed: u64, blades: usize, h: (f32, f32), w: f32, spread: f32, lean: f32)
 }
 
 /// Dry tuft with a few taller seed stalks.
-fn dry_tuft(seed: u64) -> MeshData {
+pub(crate) fn dry_tuft(seed: u64) -> MeshData {
     let mut m = tuft(seed, 9, (0.22, 0.48), 0.006, 0.05, 0.55);
     let mut r = Rng(seed ^ 0xABCD);
     for _ in 0..3 {
@@ -289,7 +289,7 @@ fn dry_tuft(seed: u64) -> MeshData {
 }
 
 /// Flower: a bent stem, a few leaves and a head of cupped petals.
-fn flower(seed: u64, petal: [f32; 4], center: [f32; 4], h: f32, petals: usize, petal_len: f32) -> MeshData {
+pub(crate) fn flower(seed: u64, petal: [f32; 4], center: [f32; 4], h: f32, petals: usize, petal_len: f32) -> MeshData {
     let mut r = Rng(seed);
     let mut m = MeshData::default();
     let dir = r.f() * TAU;
@@ -342,7 +342,7 @@ fn flower(seed: u64, petal: [f32; 4], center: [f32; 4], h: f32, petals: usize, p
 }
 
 /// Flat rosette of lance-shaped leaves (dandelion, plantain).
-fn rosette(seed: u64) -> MeshData {
+pub(crate) fn rosette(seed: u64) -> MeshData {
     let mut r = Rng(seed);
     let mut m = MeshData::default();
     let leaves = 6 + (r.f() * 4.0) as usize;
@@ -403,7 +403,7 @@ fn icosphere(sub: u32) -> (Vec<Vec3>, Vec<[u32; 3]>) {
 /// Sculpted stone: an icosphere chipped by random planes (flat facets with
 /// soft, bevel-like edges from smooth normals), noise-displaced, squashed
 /// and flattened underneath. `lichen` > 0 paints green-grey on top faces.
-fn stone(seed: u64, sub: u32, chips: usize, rough: f32, squash: f32, lichen: f32) -> MeshData {
+pub(crate) fn stone(seed: u64, sub: u32, chips: usize, rough: f32, squash: f32, lichen: f32) -> MeshData {
     let mut r = Rng(seed);
     let (mut v, f) = icosphere(sub);
     let planes: Vec<(Vec3, f32)> = (0..chips)
@@ -458,7 +458,7 @@ fn stone(seed: u64, sub: u32, chips: usize, rough: f32, squash: f32, lichen: f32
 }
 
 /// Lumpy cushion (moss, snow): squashed displaced dome.
-fn cushion(seed: u64, height: f32, lump: f32, top: [f32; 3], bottom: [f32; 3]) -> MeshData {
+pub(crate) fn cushion(seed: u64, height: f32, lump: f32, top: [f32; 3], bottom: [f32; 3]) -> MeshData {
     let (mut v, f) = icosphere(2);
     for p in &mut v {
         let k = fbm3(p.x * 3.0, p.y * 3.0, p.z * 3.0, seed, 4) - 0.5;
@@ -493,7 +493,7 @@ fn cushion(seed: u64, height: f32, lump: f32, top: [f32; 3], bottom: [f32; 3]) -
 
 /// A bent stick lying on the ground, with a side branch or two. Built as a
 /// thin triangular prism along a noisy path.
-fn twig(seed: u64, len: f32, radius: f32, lying: bool) -> MeshData {
+pub(crate) fn twig(seed: u64, len: f32, radius: f32, lying: bool) -> MeshData {
     let mut r = Rng(seed);
     let mut m = MeshData::default();
     let branch = |m: &mut MeshData, start: Vec3, dir: Vec3, len: f32, rad: f32, r: &mut Rng| {
@@ -546,7 +546,7 @@ fn twig(seed: u64, len: f32, radius: f32, lying: bool) -> MeshData {
 }
 
 /// Dry scrub: woody sticks fanning out with clusters of small narrow leaves.
-fn scrub(seed: u64, leafy: bool) -> MeshData {
+pub(crate) fn scrub(seed: u64, leafy: bool) -> MeshData {
     let mut r = Rng(seed);
     let mut m = MeshData::default();
     let stems = if leafy { 9 } else { 12 };
@@ -575,7 +575,7 @@ fn scrub(seed: u64, leafy: bool) -> MeshData {
 }
 
 /// Fern: arching fronds with alternating leaflets.
-fn fern(seed: u64) -> MeshData {
+pub(crate) fn fern(seed: u64) -> MeshData {
     let mut r = Rng(seed);
     let mut m = MeshData::default();
     let fronds = 5 + (r.f() * 4.0) as usize;

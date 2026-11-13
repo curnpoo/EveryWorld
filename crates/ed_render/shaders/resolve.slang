@@ -1018,7 +1018,14 @@ float4 resolve_px<let TR : int>(FsOut i, bool terrain) {
             n = normalize(lerp(n, up, 0.4));
             rough = 1.0;
         }
-        if (!leaf && !ts.shell && length_squared(p0) < 60.0 * 60.0) {
+        bool ground = (inst.node_flags & INSTANCE_GROUND) != 0u;
+        if (ground) {
+            // Ground cover (G7): small things, no bark relief; a soft mottle (sun-bleached and
+            // damp patches) on node-local position so neighbouring tufts differ.
+            float mot = t_noise(local.xz * 1.7 + local.y * 3.0, 1.0);
+            albedo *= lerp(0.82, 1.12, mot);
+            rough = leaf ? 0.75 : 0.9;
+        } else if (!leaf && !ts.shell && length_squared(p0) < 60.0 * 60.0) {
             // Bark (near only: the relief is sub-pixel past ~60 m; the normal tilt past ~20 m).
             float3 pm = float3(v0.px, v0.py, v0.pz) * b0 + float3(v1.px, v1.py, v1.pz) * b1 + float3(v2.px, v2.py, v2.pz) * b2;
             float rr = max(length(pm.xz), 0.02);

@@ -886,48 +886,49 @@ bool occluded_0(FrameData_natural_0 device* f_1, float device* hzb_2, float3 c_r
     {
         GpuInstance_natural_0 device* _S97 = ed_buf_5((&kernelContext_14)->ed_c_0->instances_0, &kernelContext_14);
         thread GpuInstance_natural_0 _S98 = *(_S97 + i_14);
+        uint _S99 = (&_S98)->node_flags_0;
         if((((&_S98)->node_flags_0) & 65536U) != 0U)
         {
-            uint device* _S99 = ed_buf_7((&kernelContext_14)->ed_c_0->args_0, &kernelContext_14);
-            atomic<uint> device* _S100 = (atomic<uint> device*)((ulong)(_S99));
-            uint device* _S101 = ed_buf_7((&kernelContext_14)->ed_c_0->visible_0, &kernelContext_14);
-            GpuMesh_natural_0 device* _S102 = ed_buf_4((&kernelContext_14)->ed_c_0->meshes_0, &kernelContext_14);
-            GpuMesh_natural_0 device* _S103 = _S102 + (&_S98)->mesh_0;
-            Bounds_0 _S104 = bounds_0(&_S98, _S103, &kernelContext_14);
-            uint _S105 = min(uint((float4((&_S94->light_0)->cfg_0) ).x), 4U);
-            float _S106 = (float4((&_S94->light_0)->cfg_0) ).y;
-            bool _S107;
+            uint device* _S100 = ed_buf_7((&kernelContext_14)->ed_c_0->args_0, &kernelContext_14);
+            atomic<uint> device* _S101 = (atomic<uint> device*)((ulong)(_S100));
+            uint device* _S102 = ed_buf_7((&kernelContext_14)->ed_c_0->visible_0, &kernelContext_14);
+            GpuMesh_natural_0 device* _S103 = ed_buf_4((&kernelContext_14)->ed_c_0->meshes_0, &kernelContext_14);
+            GpuMesh_natural_0 device* _S104 = _S103 + (&_S98)->mesh_0;
+            Bounds_0 _S105 = bounds_0(&_S98, _S104, &kernelContext_14);
+            uint _S106 = min(uint((float4((&_S94->light_0)->cfg_0) ).x), 4U);
+            float _S107 = (float4((&_S94->light_0)->cfg_0) ).y;
+            bool _S108;
             uint nc_0;
             uint lod_min_0;
             uint lod_max_0;
-            if(((_S103->flags_0) & 1U) != 0U)
+            if(((_S104->flags_0) & 1U) != 0U)
             {
-                float4 _S108 = float4(_S94->proj_0) ;
-                uint _S109 = select_lod_0(_S103, _S104.scale_1 * _S108.w * 0.5f * _S108.y / max(length(_S104.c_0) - _S104.r_0, (float4(_S94->params_0) ).z), 0U, false, (float4(_S94->params_0) ).y, 1.0f);
-                if((_S103->index_count_0[_S109]) == 0U)
+                float4 _S109 = float4(_S94->proj_0) ;
+                uint _S110 = select_lod_0(_S104, _S105.scale_1 * _S109.w * 0.5f * _S109.y / max(length(_S105.c_0) - _S105.r_0, (float4(_S94->params_0) ).z), 0U, false, (float4(_S94->params_0) ).y, 1.0f);
+                if((_S104->index_count_0[_S110]) == 0U)
                 {
-                    _S107 = true;
+                    _S108 = true;
                 }
                 else
                 {
-                    if((_S103->lod_count_0) >= 4U)
+                    if((_S104->lod_count_0) >= 4U)
                     {
-                        _S107 = (_S109 + 2U) >= (_S103->lod_count_0);
+                        _S108 = (_S110 + 2U) >= (_S104->lod_count_0);
                     }
                     else
                     {
-                        _S107 = false;
+                        _S108 = false;
                     }
                 }
-                if(_S107)
+                if(_S108)
                 {
                     nc_0 = 0U;
                 }
                 else
                 {
-                    nc_0 = _S105;
+                    nc_0 = _S106;
                 }
-                uint lod_max_1 = max(_S103->lod_count_0, 2U) - 2U;
+                uint lod_max_1 = max(_S104->lod_count_0, 2U) - 2U;
                 if((((uint4((&_S94->imp_0)->bufs_1) ).w) & 2U) != 0U)
                 {
                     nc_0 = min(nc_0, uint((float4((&_S94->imp_0)->cfg_3) ).w));
@@ -937,9 +938,24 @@ bool occluded_0(FrameData_natural_0 device* f_1, float device* hzb_2, float3 c_r
             }
             else
             {
-                nc_0 = _S105;
+                nc_0 = _S106;
                 lod_min_0 = 0U;
                 lod_max_0 = 3U;
+            }
+            if((_S99 & 131072U) != 0U)
+            {
+                array<uint, int(4)> _S111 = (&_S98)->pad_1;
+                if(((((&_S98)->pad_1[int(2)]) >> 21U) & 1U) != 0U)
+                {
+                    nc_0 = 0U;
+                }
+                else
+                {
+                    if((((_S111[int(2)]) >> 22U) & 1U) != 0U)
+                    {
+                        nc_0 = min(nc_0, 1U);
+                    }
+                }
             }
             uint c_3 = 0U;
             cnt0_0 = 0U;
@@ -955,67 +971,47 @@ bool occluded_0(FrameData_natural_0 device* f_1, float device* hzb_2, float3 c_r
                 {
                     break;
                 }
-                float4 _S110 = float4((&(&_S94->light_0)->cascade_0)->data_4[c_3]) ;
-                float4 s_1 = (((float4(_S104.c_0, 1.0f)) * (matrix<float,int(4),int(4)> ((&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(0)][int(0)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(1)][int(0)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(2)][int(0)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(3)][int(0)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(0)][int(1)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(1)][int(1)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(2)][int(1)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(3)][int(1)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(0)][int(2)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(1)][int(2)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(2)][int(2)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(3)][int(2)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(0)][int(3)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(1)][int(3)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(2)][int(3)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(3)][int(3)]))));
-                float _S111 = _S110.x;
-                float rz_0 = _S104.r_0 / _S110.y;
-                float _S112 = 1.0f + _S104.r_0 / (_S111 * _S106 * 0.5f);
-                if((abs(s_1.x)) > _S112)
+                float4 _S112 = float4((&(&_S94->light_0)->cascade_0)->data_4[c_3]) ;
+                float4 s_1 = (((float4(_S105.c_0, 1.0f)) * (matrix<float,int(4),int(4)> ((&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(0)][int(0)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(1)][int(0)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(2)][int(0)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(3)][int(0)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(0)][int(1)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(1)][int(1)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(2)][int(1)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(3)][int(1)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(0)][int(2)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(1)][int(2)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(2)][int(2)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(3)][int(2)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(0)][int(3)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(1)][int(3)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(2)][int(3)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(3)][int(3)]))));
+                float _S113 = _S112.x;
+                float rz_0 = _S105.r_0 / _S112.y;
+                float _S114 = 1.0f + _S105.r_0 / (_S113 * _S107 * 0.5f);
+                if((abs(s_1.x)) > _S114)
                 {
-                    _S107 = true;
+                    _S108 = true;
                 }
                 else
                 {
-                    _S107 = (abs(s_1.y)) > _S112;
+                    _S108 = (abs(s_1.y)) > _S114;
                 }
-                bool _S113;
-                if(_S107)
+                bool _S115;
+                if(_S108)
                 {
-                    _S113 = true;
+                    _S115 = true;
                 }
                 else
                 {
-                    _S113 = (s_1.z) < (- rz_0);
+                    _S115 = (s_1.z) < (- rz_0);
                 }
-                bool _S114;
-                if(_S113)
+                bool _S116;
+                if(_S115)
                 {
-                    _S114 = true;
+                    _S116 = true;
                 }
                 else
                 {
-                    _S114 = (2.0f * _S104.r_0) < (12.0f * _S111);
+                    _S116 = (2.0f * _S105.r_0) < (12.0f * _S113);
                 }
-                if(_S114)
+                if(_S116)
                 {
                     c_3 = c_3 + 1U;
                     continue;
                 }
-                uint _S115 = select_lod_0(_S103, _S104.scale_1 / _S111, 0U, false, (float4(_S94->params_0) ).y * SHADOW_LOD_BIAS_0[c_3], 1.0f);
-                uint lod_0 = clamp(_S115, lod_min_0, lod_max_0);
-                push_0(_S100, _S99, _S101, c_3 * (&kernelContext_14)->ed_c_0->bins_kind_0 + _S103->bin_base_0 + lod_0, i_14 | (lod_0 << 20U), _S103->capacity_0, _S103->index_count_0[lod_0] / 3U, &e_4);
-                uint _S116;
-                if(c_3 == 0U)
-                {
-                    _S116 = 1U;
-                }
-                else
-                {
-                    _S116 = 0U;
-                }
-                uint cnt0_1 = cnt0_0 + _S116;
-                uint _S117;
-                if(c_3 == 1U)
-                {
-                    _S117 = 1U;
-                }
-                else
-                {
-                    _S117 = 0U;
-                }
-                uint cnt1_1 = cnt1_0 + _S117;
+                uint _S117 = select_lod_0(_S104, _S105.scale_1 / _S113, 0U, false, (float4(_S94->params_0) ).y * SHADOW_LOD_BIAS_0[c_3], 1.0f);
+                uint lod_0 = clamp(_S117, lod_min_0, lod_max_0);
+                push_0(_S101, _S100, _S102, c_3 * (&kernelContext_14)->ed_c_0->bins_kind_0 + _S104->bin_base_0 + lod_0, i_14 | (lod_0 << 20U), _S104->capacity_0, _S104->index_count_0[lod_0] / 3U, &e_4);
                 uint _S118;
-                if(c_3 == 2U)
+                if(c_3 == 0U)
                 {
                     _S118 = 1U;
                 }
@@ -1023,9 +1019,9 @@ bool occluded_0(FrameData_natural_0 device* f_1, float device* hzb_2, float3 c_r
                 {
                     _S118 = 0U;
                 }
-                uint cnt2_1 = cnt2_0 + _S118;
+                uint cnt0_1 = cnt0_0 + _S118;
                 uint _S119;
-                if(c_3 == 3U)
+                if(c_3 == 1U)
                 {
                     _S119 = 1U;
                 }
@@ -1033,7 +1029,27 @@ bool occluded_0(FrameData_natural_0 device* f_1, float device* hzb_2, float3 c_r
                 {
                     _S119 = 0U;
                 }
-                uint cnt3_1 = cnt3_0 + _S119;
+                uint cnt1_1 = cnt1_0 + _S119;
+                uint _S120;
+                if(c_3 == 2U)
+                {
+                    _S120 = 1U;
+                }
+                else
+                {
+                    _S120 = 0U;
+                }
+                uint cnt2_1 = cnt2_0 + _S120;
+                uint _S121;
+                if(c_3 == 3U)
+                {
+                    _S121 = 1U;
+                }
+                else
+                {
+                    _S121 = 0U;
+                }
+                uint cnt3_1 = cnt3_0 + _S121;
                 cnt0_0 = cnt0_1;
                 cnt1_0 = cnt1_1;
                 cnt2_0 = cnt2_1;
@@ -1074,25 +1090,25 @@ bool occluded_0(FrameData_natural_0 device* f_1, float device* hzb_2, float3 c_r
     {
         uint w_2 = i_15 % 5U;
         uint list_0 = i_15 / 5U;
-        uint device* _S120 = ed_buf_7((&kernelContext_15)->ed_c_0->args_0, &kernelContext_15);
-        uint device* _S121 = _S120 + i_15;
-        uint _S122;
+        uint device* _S122 = ed_buf_7((&kernelContext_15)->ed_c_0->args_0, &kernelContext_15);
+        uint device* _S123 = _S122 + i_15;
+        uint _S124;
         if(w_2 == 0U)
         {
-            _S122 = 6U;
+            _S124 = 6U;
         }
         else
         {
             if(w_2 == 4U)
             {
-                _S122 = list_0 * (&kernelContext_15)->ed_c_0->bins_kind_0;
+                _S124 = list_0 * (&kernelContext_15)->ed_c_0->bins_kind_0;
             }
             else
             {
-                _S122 = 0U;
+                _S124 = 0U;
             }
         }
-        *_S121 = _S122;
+        *_S123 = _S124;
     }
     return;
 }
@@ -1105,30 +1121,30 @@ float2 unpack_snorm2x16_0(uint p_2)
 float3 oct_decode_0(uint packed_0)
 {
     float2 e_5 = unpack_snorm2x16_0(packed_0);
-    float _S123 = e_5.x;
-    float _S124 = e_5.y;
-    float _S125 = 1.0f - abs(_S123) - abs(_S124);
-    thread float3 n_1 = float3(_S123, _S124, _S125);
-    float t_0 = saturate(- _S125);
-    float _S126;
-    if(_S123 >= 0.0f)
+    float _S125 = e_5.x;
+    float _S126 = e_5.y;
+    float _S127 = 1.0f - abs(_S125) - abs(_S126);
+    thread float3 n_1 = float3(_S125, _S126, _S127);
+    float t_0 = saturate(- _S127);
+    float _S128;
+    if(_S125 >= 0.0f)
     {
-        _S126 = - t_0;
+        _S128 = - t_0;
     }
     else
     {
-        _S126 = t_0;
+        _S128 = t_0;
     }
-    n_1.x = n_1.x + _S126;
+    n_1.x = n_1.x + _S128;
     if((n_1.y) >= 0.0f)
     {
-        _S126 = - t_0;
+        _S128 = - t_0;
     }
     else
     {
-        _S126 = t_0;
+        _S128 = t_0;
     }
-    n_1.y = n_1.y + _S126;
+    n_1.y = n_1.y + _S128;
     return normalize(n_1);
 }
 
@@ -1143,69 +1159,69 @@ float imp_hash01_0(uint h_1)
     (&kernelContext_16)->ed_c_0 = ed_c_7;
     (&kernelContext_16)->ed_buffers_0 = ed_buffers_7;
     uint i_16 = tid_6.x;
-    FrameData_natural_0 device* _S127 = ed_buf_6(ed_c_7->frame_0, &kernelContext_16);
-    uint device* _S128 = ed_buf_7((&kernelContext_16)->ed_c_0->stats_0, &kernelContext_16);
-    atomic<uint> device* _S129 = (atomic<uint> device*)((ulong)(_S128));
+    FrameData_natural_0 device* _S129 = ed_buf_6(ed_c_7->frame_0, &kernelContext_16);
+    uint device* _S130 = ed_buf_7((&kernelContext_16)->ed_c_0->stats_0, &kernelContext_16);
+    atomic<uint> device* _S131 = (atomic<uint> device*)((ulong)(_S130));
     uint drawn_2;
     uint casters_0;
     if(i_16 < ((&kernelContext_16)->ed_c_0->count_0))
     {
-        GpuTree_0 device* _S130 = ed_buf_1((&kernelContext_16)->ed_c_0->instances_0, &kernelContext_16);
-        GpuTree_0 device* _S131 = _S130 + i_16;
-        GpuTree_0 g_0 = *_S131;
-        if(((*_S131).scale_0) > 0.0f)
+        GpuTree_0 device* _S132 = ed_buf_1((&kernelContext_16)->ed_c_0->instances_0, &kernelContext_16);
+        GpuTree_0 device* _S133 = _S132 + i_16;
+        GpuTree_0 g_0 = *_S133;
+        if(((*_S133).scale_0) > 0.0f)
         {
-            GpuImpKind_natural_0 device* _S132 = ed_buf_0((&kernelContext_16)->ed_c_0->meshes_0, &kernelContext_16);
-            GpuImpKind_natural_0 k_1 = *(_S132 + (((g_0.node_kind_0) >> 12U) & 4095U));
-            packed_float4 device* _S133 = ed_buf_3((&kernelContext_16)->ed_c_0->nodes_0, &kernelContext_16);
-            float4 _S134 = float4(k_1.geo_0) ;
-            float3 c_4 = (float4(*(_S133 + ((g_0.node_kind_0) & 4095U))) ).xyz + float3(g_0.px_0, g_0.py_0, g_0.pz_0) + oct_decode_0(g_0.up_0) * float3((_S134.x * g_0.scale_0)) ;
-            float r_4 = _S134.y * g_0.scale_0 * max(0.5f + float((g_0.yaw_widen_0) >> 16U) / 65535.0f, 1.0f);
-            float _S135 = max(length(c_4), (float4(_S127->params_0) ).z);
-            float ppr_0 = (float4(_S127->proj_0) ).w * 0.5f * (float4(_S127->proj_0) ).y;
-            float4 _S136 = float4((&_S127->imp_0)->band_0) ;
-            float _S137 = _S136.y;
-            float _S138 = _S136.z;
-            float _S139 = _S136.w - _S138;
-            float a_out_0 = saturate(((float4((&_S127->imp_0)->cfg_3) ).x * ppr_0 / _S135 - (_S138 + _S139 * imp_hash01_0((g_0.node_kind_0) >> 24U))) / max(_S139 * 0.15000000596046448f, 0.0010000000474974513f));
-            uint cov_0 = uint(saturate((_S137 - _S134.z * g_0.scale_0 * ppr_0 / _S135) / max(_S137 - _S136.x, 0.0010000000474974513f)) * a_out_0 * 255.0f + 0.5f);
+            GpuImpKind_natural_0 device* _S134 = ed_buf_0((&kernelContext_16)->ed_c_0->meshes_0, &kernelContext_16);
+            GpuImpKind_natural_0 k_1 = *(_S134 + (((g_0.node_kind_0) >> 12U) & 4095U));
+            packed_float4 device* _S135 = ed_buf_3((&kernelContext_16)->ed_c_0->nodes_0, &kernelContext_16);
+            float4 _S136 = float4(k_1.geo_0) ;
+            float3 c_4 = (float4(*(_S135 + ((g_0.node_kind_0) & 4095U))) ).xyz + float3(g_0.px_0, g_0.py_0, g_0.pz_0) + oct_decode_0(g_0.up_0) * float3((_S136.x * g_0.scale_0)) ;
+            float r_4 = _S136.y * g_0.scale_0 * max(0.5f + float((g_0.yaw_widen_0) >> 16U) / 65535.0f, 1.0f);
+            float _S137 = max(length(c_4), (float4(_S129->params_0) ).z);
+            float ppr_0 = (float4(_S129->proj_0) ).w * 0.5f * (float4(_S129->proj_0) ).y;
+            float4 _S138 = float4((&_S129->imp_0)->band_0) ;
+            float _S139 = _S138.y;
+            float _S140 = _S138.z;
+            float _S141 = _S138.w - _S140;
+            float a_out_0 = saturate(((float4((&_S129->imp_0)->cfg_3) ).x * ppr_0 / _S137 - (_S140 + _S141 * imp_hash01_0((g_0.node_kind_0) >> 24U))) / max(_S141 * 0.15000000596046448f, 0.0010000000474974513f));
+            uint cov_0 = uint(saturate((_S139 - _S136.z * g_0.scale_0 * ppr_0 / _S137) / max(_S139 - _S138.x, 0.0010000000474974513f)) * a_out_0 * 255.0f + 0.5f);
             uint cov_far_0 = uint(a_out_0 * 255.0f + 0.5f);
-            uint _S140 = uint((float4((&_S127->imp_0)->cfg_3) ).w);
+            uint _S142 = uint((float4((&_S129->imp_0)->cfg_3) ).w);
             if(cov_far_0 > 0U)
             {
                 bool vis_1;
                 if(cov_0 > 0U)
                 {
-                    bool _S141 = in_frustum_0(_S127, c_4, r_4);
-                    vis_1 = _S141;
+                    bool _S143 = in_frustum_0(_S129, c_4, r_4);
+                    vis_1 = _S143;
                 }
                 else
                 {
                     vis_1 = false;
                 }
-                bool _S142;
+                bool _S144;
                 if(vis_1)
                 {
-                    _S142 = ((uint4(_S127->cull_0) ).x) > 0U;
+                    _S144 = ((uint4(_S129->cull_0) ).x) > 0U;
                 }
                 else
                 {
-                    _S142 = false;
+                    _S144 = false;
                 }
-                if(_S142)
+                if(_S144)
                 {
-                    float device* _S143 = ed_buf_2((&kernelContext_16)->ed_c_0->hzb_0, &kernelContext_16);
-                    bool _S144 = occluded_0(_S127, _S143, c_4, r_4);
-                    vis_1 = !_S144;
+                    float device* _S145 = ed_buf_2((&kernelContext_16)->ed_c_0->hzb_0, &kernelContext_16);
+                    bool _S146 = occluded_0(_S129, _S145, c_4, r_4);
+                    vis_1 = !_S146;
                 }
                 if(vis_1)
                 {
-                    uint device* _S145 = ed_buf_7((&kernelContext_16)->ed_c_0->args_0, &kernelContext_16);
-                    uint slot_1 = atomic_fetch_add_explicit((atomic<uint> device*)((ulong)(_S145)) + int(1), 1U, memory_order_relaxed);
+                    uint device* _S147 = ed_buf_7((&kernelContext_16)->ed_c_0->args_0, &kernelContext_16);
+                    uint slot_1 = atomic_fetch_add_explicit((atomic<uint> device*)((ulong)(_S147)) + int(1), 1U, memory_order_relaxed);
                     if(slot_1 < ((&kernelContext_16)->ed_c_0->bins_kind_0))
                     {
-                        uint device* _S146 = ed_buf_7((&kernelContext_16)->ed_c_0->visible_0, &kernelContext_16);
-                        *(_S146 + slot_1) = i_16 | (cov_0 << 24U);
+                        uint device* _S148 = ed_buf_7((&kernelContext_16)->ed_c_0->visible_0, &kernelContext_16);
+                        *(_S148 + slot_1) = i_16 | (cov_0 << 24U);
                         drawn_2 = 1U;
                     }
                     else
@@ -1217,9 +1233,9 @@ float imp_hash01_0(uint h_1)
                 {
                     drawn_2 = 0U;
                 }
-                if((((uint4((&_S127->imp_0)->bufs_1) ).w) & 2U) != 0U)
+                if((((uint4((&_S129->imp_0)->bufs_1) ).w) & 2U) != 0U)
                 {
-                    vis_1 = ((float4((&_S127->light_0)->cfg_0) ).x) > 0.0f;
+                    vis_1 = ((float4((&_S129->light_0)->cfg_0) ).x) > 0.0f;
                 }
                 else
                 {
@@ -1227,15 +1243,15 @@ float imp_hash01_0(uint h_1)
                 }
                 if(vis_1)
                 {
-                    uint _S147 = min(uint((float4((&_S127->light_0)->cfg_0) ).x), 4U);
-                    float _S148 = (float4((&_S127->light_0)->cfg_0) ).y;
-                    uint device* _S149 = ed_buf_7((&kernelContext_16)->ed_c_0->args_0, &kernelContext_16);
-                    atomic<uint> device* _S150 = (atomic<uint> device*)((ulong)(_S149));
+                    uint _S149 = min(uint((float4((&_S129->light_0)->cfg_0) ).x), 4U);
+                    float _S150 = (float4((&_S129->light_0)->cfg_0) ).y;
+                    uint device* _S151 = ed_buf_7((&kernelContext_16)->ed_c_0->args_0, &kernelContext_16);
+                    atomic<uint> device* _S152 = (atomic<uint> device*)((ulong)(_S151));
                     uint cc_0 = 0U;
                     casters_0 = 0U;
                     for(;;)
                     {
-                        if(cc_0 < _S147)
+                        if(cc_0 < _S149)
                         {
                         }
                         else
@@ -1243,7 +1259,7 @@ float imp_hash01_0(uint h_1)
                             break;
                         }
                         uint cv_0;
-                        if(cc_0 >= _S140)
+                        if(cc_0 >= _S142)
                         {
                             cv_0 = cov_far_0;
                         }
@@ -1256,48 +1272,48 @@ float imp_hash01_0(uint h_1)
                             cc_0 = cc_0 + 1U;
                             continue;
                         }
-                        float4 _S151 = float4((&(&_S127->light_0)->cascade_0)->data_4[cc_0]) ;
-                        float4 sp_0 = (((float4(c_4, 1.0f)) * (matrix<float,int(4),int(4)> ((&(&_S127->light_0)->shadow_0)->data_3[cc_0].data_1[int(0)][int(0)], (&(&_S127->light_0)->shadow_0)->data_3[cc_0].data_1[int(1)][int(0)], (&(&_S127->light_0)->shadow_0)->data_3[cc_0].data_1[int(2)][int(0)], (&(&_S127->light_0)->shadow_0)->data_3[cc_0].data_1[int(3)][int(0)], (&(&_S127->light_0)->shadow_0)->data_3[cc_0].data_1[int(0)][int(1)], (&(&_S127->light_0)->shadow_0)->data_3[cc_0].data_1[int(1)][int(1)], (&(&_S127->light_0)->shadow_0)->data_3[cc_0].data_1[int(2)][int(1)], (&(&_S127->light_0)->shadow_0)->data_3[cc_0].data_1[int(3)][int(1)], (&(&_S127->light_0)->shadow_0)->data_3[cc_0].data_1[int(0)][int(2)], (&(&_S127->light_0)->shadow_0)->data_3[cc_0].data_1[int(1)][int(2)], (&(&_S127->light_0)->shadow_0)->data_3[cc_0].data_1[int(2)][int(2)], (&(&_S127->light_0)->shadow_0)->data_3[cc_0].data_1[int(3)][int(2)], (&(&_S127->light_0)->shadow_0)->data_3[cc_0].data_1[int(0)][int(3)], (&(&_S127->light_0)->shadow_0)->data_3[cc_0].data_1[int(1)][int(3)], (&(&_S127->light_0)->shadow_0)->data_3[cc_0].data_1[int(2)][int(3)], (&(&_S127->light_0)->shadow_0)->data_3[cc_0].data_1[int(3)][int(3)]))));
-                        float _S152 = _S151.x;
-                        float rz_1 = r_4 / _S151.y;
-                        float _S153 = 1.0f + r_4 / (_S152 * _S148 * 0.5f);
-                        if((abs(sp_0.x)) > _S153)
+                        float4 _S153 = float4((&(&_S129->light_0)->cascade_0)->data_4[cc_0]) ;
+                        float4 sp_0 = (((float4(c_4, 1.0f)) * (matrix<float,int(4),int(4)> ((&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(0)][int(0)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(1)][int(0)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(2)][int(0)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(3)][int(0)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(0)][int(1)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(1)][int(1)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(2)][int(1)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(3)][int(1)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(0)][int(2)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(1)][int(2)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(2)][int(2)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(3)][int(2)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(0)][int(3)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(1)][int(3)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(2)][int(3)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(3)][int(3)]))));
+                        float _S154 = _S153.x;
+                        float rz_1 = r_4 / _S153.y;
+                        float _S155 = 1.0f + r_4 / (_S154 * _S150 * 0.5f);
+                        if((abs(sp_0.x)) > _S155)
                         {
                             vis_1 = true;
                         }
                         else
                         {
-                            vis_1 = (abs(sp_0.y)) > _S153;
+                            vis_1 = (abs(sp_0.y)) > _S155;
                         }
                         if(vis_1)
                         {
-                            _S142 = true;
+                            _S144 = true;
                         }
                         else
                         {
-                            _S142 = (sp_0.z) < (- rz_1);
+                            _S144 = (sp_0.z) < (- rz_1);
                         }
-                        bool _S154;
-                        if(_S142)
+                        bool _S156;
+                        if(_S144)
                         {
-                            _S154 = true;
+                            _S156 = true;
                         }
                         else
                         {
-                            _S154 = (2.0f * r_4) < (2.0f * _S152);
+                            _S156 = (2.0f * r_4) < (2.0f * _S154);
                         }
-                        if(_S154)
+                        if(_S156)
                         {
                             cc_0 = cc_0 + 1U;
                             continue;
                         }
-                        uint _S155 = cc_0 + 1U;
-                        uint slot_2 = atomic_fetch_add_explicit(_S150 + (_S155 * 5U + 1U), 1U, memory_order_relaxed);
+                        uint _S157 = cc_0 + 1U;
+                        uint slot_2 = atomic_fetch_add_explicit(_S152 + (_S157 * 5U + 1U), 1U, memory_order_relaxed);
                         uint casters_1;
                         if(slot_2 < ((&kernelContext_16)->ed_c_0->bins_kind_0))
                         {
-                            uint device* _S156 = ed_buf_7((&kernelContext_16)->ed_c_0->visible_0, &kernelContext_16);
-                            *(_S156 + (_S155 * (&kernelContext_16)->ed_c_0->bins_kind_0 + slot_2)) = i_16 | (cv_0 << 24U);
+                            uint device* _S158 = ed_buf_7((&kernelContext_16)->ed_c_0->visible_0, &kernelContext_16);
+                            *(_S158 + (_S157 * (&kernelContext_16)->ed_c_0->bins_kind_0 + slot_2)) = i_16 | (cv_0 << 24U);
                             casters_1 = casters_0 + 1U;
                         }
                         else
@@ -1330,8 +1346,8 @@ float imp_hash01_0(uint h_1)
         drawn_2 = 0U;
         casters_0 = 0U;
     }
-    stat_add_0(_S129, 16U, drawn_2);
-    stat_add_0(_S129, 17U, casters_0);
+    stat_add_0(_S131, 16U, drawn_2);
+    stat_add_0(_S131, 17U, casters_0);
     return;
 }
 

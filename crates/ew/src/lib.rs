@@ -17,6 +17,7 @@ pub mod collide;
 pub mod content;
 pub mod fixed_step;
 pub mod game;
+pub mod ground_cover;
 pub mod harness;
 pub mod headless;
 pub mod hot;
