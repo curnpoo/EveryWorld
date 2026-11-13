@@ -338,7 +338,8 @@ At most three workers run at once, on disjoint files. W1, W2 and W5 start togeth
 **Progress (2026-11-12):**
 - **Done:** W1 planet core, W2 node heights, W5 atmosphere, and W3 terrain provider. For W3 the hole and crack gate passed in its own harness.
 - **Height placement fix:** `ed_data` and `ed_planet` placed height samples about 10 km apart; they now agree, with one `HeightPage` in `ed_geo`.
-- **Next:** P-slice S1–S6 (§7.0).
+- **P-slice:** S1–S6 done (`CHANGES.md`): terrain in the frame, curved-planet atmosphere, collision from the render heights, `ew --play zermatt|blueridge` with a procedural walk, a placeholder car, terrain + shadow ~2 ms at 1 m AGL. False height steps removed (1/8 m step, bicubic). Waiting on the owner to walk and drive it; then S7.
+- **Open from P-slice:** near-ground terrain shadow streaks; `terrain_shadow` stall spikes; uniform gravity beyond ~2 km from the anchor (re-basing); the car meshes are a guard exception until a vehicle pack exists.
 - **Waiting on the owner:** the clear-day aerosol choice (W5 CHANGES entry).
 
 ## 8. Exit gate
