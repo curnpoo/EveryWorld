@@ -8,7 +8,7 @@
 - **Tool:** `ew --headless --ground LAT,LON,HEADING,PITCH,AGL --sun AZ,EL` for near-ground shots.
 - **Checked:** stair bands gone at 1.7 m, contour rings gone at 50 m. Harness 0 holes; 1 m AGL terrain + shadow 1.80 ms. Proving frame identical. Page build ~+0.3 s per 12-frame run.
 - **Open:** beading along the Vispa riverbed (2–3 px diagonal channel in the source); level 16 roughness spikes from z15 upsampled from z14; polar nodes skip the smoothing; LOD is still cell-size based, not error based.
-- **Mac check:** the owner walks the meadows.
+- **Mac check (owner, 2026-11-12):** looks smooth.
 
 ## 2026-11-12: P-slice S6 — terrain at about 2 ms at ground level
 
