@@ -290,6 +290,45 @@ and hand over the wiring as a diff.
 
 ## 7. Order
 
+### 7.1 Phase 2 is the natural world (owner, 2026-11-12 late; overrides §1, §3 and §8 where they differ)
+
+Decision O2 (owner): Phase 2 covers **all of the natural world** and must look as real as
+possible before buildings and roads (Phase 3). Changes:
+
+- **In, from Phase 3:** trees and ground cover (the foliage ladder: full trees near, cards,
+  impostors, forest canopy colour far), placed from land cover and climate. The owner chose
+  trees right after erosion v2.
+- **In, from Phase 4:** the ground material library (Megascans surfaces, started in S7b);
+  volumetric clouds in several layers (low cumulus, mid, high cirrus), procedural and
+  weather-driven, lit from above and below. They replace the cloud shell. Owner interest:
+  VDB-style clouds. Design first.
+- **In:** far-field colour from real satellite imagery (Sentinel-2 composite, §2 of
+  `../data/README.md`; registry entry and owner OK before any download).
+- **In:** atmosphere iterated against reference photos at several times of day (dawn,
+  midday, golden hour, dusk, night) and altitudes (ground, 300 m, 3 km, 10 km, orbit); not
+  closed by one setting.
+- **Out:** the Moon as a terrain body you can stand on, moved to the phase with the Moon
+  landing (6). The Moon, planets and Sun stay visible in the sky (D16).
+- **Performance rule:** every frame-time claim is measured at the High internal resolution
+  (1440p) with the upscale to the owner's window (~2880×1800), per O1. Never at a small
+  window.
+- **Water:** the ocean v0 stays; rivers and lakes follow `../plans/water.md`. Asked the
+  owner whether they are in Phase 2.
+
+**Order after P-slice S7:**
+1. Erosion v2: multi-scale, varies by landform, follows drainage.
+2. Trees and ground cover: a design pass first, then building it.
+3. Sun VSM and the far height term (W13a/b), which fixes the near-ground streaks.
+4. Atmosphere reference iteration.
+5. Volumetric clouds: a design pass first.
+6. Satellite imagery.
+7. AgX and MetalFX (W14).
+8. Globe pack, loader and tile server, editor E2 (W7, W8, W11, W12).
+
+**Exit gate additions:** the owner judges Zermatt and Blue Ridge against photos at three
+times of day and three altitudes, with forests, ground cover and layered clouds. The Moon
+items in §8 move out with the Moon.
+
 ### 7.0 Playable slice first (owner, 2026-11-12 evening; overrides the diagram below)
 
 The owner wants something to play sooner, and lower usage per window. The next milestone is
