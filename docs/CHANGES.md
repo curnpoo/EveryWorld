@@ -1,3 +1,61 @@
+## 2026-11-13: Trees G0–G11 — real-data forests from orbit to the trunk (`../plans/trees.md`)
+
+- **Commits:** `9cae30d` G0–G1, `15cc308` G2, `5666046` G3, `c88e524` G3b, `5b16415` G4/G4b, `7dcceef` G5, `50e6d00` play wiring, `9c530fd` conifer look, `0dd8233` G5 data, `1288c9a` G6, `1294f21` G7, `322b08b` G8, `5fe2442` G10/G11.
+- **Data (G0–G1):**
+  - `CanopyPage` (cover, height, conifer mix, understorey, data share) on the 257×257 height lattice.
+  - Built from ESA WorldCover and ETH Global Canopy Height 10 m (CC BY 4.0, windowed COG reads).
+  - A coarse 1/128° layer serves L6 and coarser.
+- **Stand (G2, G5 data):**
+  - `ed_world::stand` is a simulated stand on a global per-face candidate lattice (~2.4 m cells). Three dominance rounds with a 45 m halo make it seamless and independent of load order.
+  - 30 species rows. ObjectIds come from global cells.
+  - Gaps on (`GAP_STRENGTH` 0.30); stand cover is within 3 % of the data.
+  - Crown bias 1.05 for spruce, fir, larch and hemlock, applied at bake.
+- **Far rung (G3/G3b):** the terrain is lifted by canopy height, with crown shading, floor, sky dimming and a one-tap page shadow. The forest reads from orbit. Orbit runs dropped from 150 s to 12 s after the per-thread tile memo.
+- **Near trees (G4/G5):**
+  - Tree bank with a LOD chain: full, 150 cards, shell, and octahedral impostors (albedo, normal, depth; 3-frame blend).
+  - Dithered T2→T3 cross-fade; one threshold table in `bank.rs`.
+  - Seeded wind field (`ed_world::wind`).
+  - View-ray ground pull fixes trees buried under coarser far terrain.
+  - Fly-out pop metric: no pop beyond camera motion (Zermatt max one-frame spike 0.0033 on vs 0.0043 off).
+- **Play (`50e6d00`):**
+  - Near trees in `ew --play`, built on a worker thread and applied in budgeted slices.
+  - Headless settles fully and stays pixel-identical.
+  - Main thread p50 0.54 ms, p99 12.2 ms; all nodes resident 1.8 s after spawn.
+- **Look:**
+  - Conifer pass: foliage on outer branches, curtains, procedural bark, real-world colour.
+  - G6: Blender-authored spruce and larch parts, built from scratch (`tools/blender/trees/`, bake to `.earthdrop-cache/tree_parts/`), with assembly driven by genome ranges (`ed_world::trees::assembly`). Falls back to the procedural generator without the bake.
+- **Seasons (G5 data):** `ed_world::season` gives leaf-out, colour and drop from date, latitude and altitude (Hopkins' law), with a rate scalar. `--date`, `EW_SEASON_RATE`, `EW_SEASON=0`. Cost ~0.1 ms.
+- **Ground cover (G7):**
+  - `ed_world::ground_cover` places cover in three passes: logs/boulders, then moss/ferns in their halo, then grass with exclusion. Driven by climate, canopy, land cover and slope.
+  - Reach was measured: 0–25 m gives ~90 % of the pixel change and nothing shows past 100 m, so the reach is 100 m.
+- **Casters (G8, sun part):** all passes share `tree_vertex` and the wind words. Sway fades out over the last 25 % of shadow range; beyond it, trees hold a rest pose. Local-light casters wait for Phase 4 VSM.
+- **Collision and felling (G10), G11 stub:**
+  - Static trunk capsules within 90 m.
+  - `TreeOverrides` (Felled, Removed) records.
+  - A fast enough impact fells a tree into a dynamic log.
+  - Deterministic count budgets: main thread p99 0.17 ms.
+  - Per-vertex branch index on T0 meshes (G11 stub).
+- **Switches:** `EW_TREES_FAR`, `EW_TREES_NEAR`, `EW_TREES_IMPOSTOR`, `EW_IMP_*`, `EW_WIND`, `EW_WIND_STRENGTH`, `EW_SEASON`, `EW_AUTHORED_TREES`, `EW_GROUND_COVER`, `EW_TREE_COLLIDE`, `EW_TREES_APPLY*`.
+- **Cost (gpu_frame, 1440p, M3 Pro, before the performance pass):**
+
+  | View | Trees cost |
+  |---|---|
+  | Zermatt | +14.3 ms |
+  | meadow | +9.5 ms |
+  | Blue Ridge 300 m | +6.8 ms |
+
+  - Ground cover: +0.25 ms on the reference view, +5.7 ms on a grass slope at 2 m.
+  - Budget is 2 + 0.5 ms (O3-10): over, and handed to the performance pass.
+- **Open:**
+  - Over budget (above).
+  - Interiors too dark: there is no auto-exposure (renderer-wide).
+  - Up close, conifers still read partly as fronds, and sprays are oversized on tall trees.
+  - Grass is sparse and patchy (owner, 2026-11-13). A dense GPU grass pass for every grass type comes after the performance pass.
+  - At 1440p the terrain page pool saturates (1024 slots) and drops near pages.
+  - Felled trees still stand in their impostors; override records are in memory only.
+  - G8 street-light board deferred to Phase 4.
+  - G9 slab decision is with the performance pass.
+
 ## 2026-11-12: P-slice S7d — erosion v2 (multi-scale, landform-driven, fall-line aligned)
 
 - **Owner feedback addressed:**
