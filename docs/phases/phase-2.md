@@ -339,6 +339,9 @@ At most three workers run at once, on disjoint files. W1, W2 and W5 start togeth
 - **Done:** W1 planet core, W2 node heights, W5 atmosphere, and W3 terrain provider. For W3 the hole and crack gate passed in its own harness.
 - **Height placement fix:** `ed_data` and `ed_planet` placed height samples about 10 km apart; they now agree, with one `HeightPage` in `ed_geo`.
 - **P-slice:** S1–S6 done (`CHANGES.md`): terrain in the frame, curved-planet atmosphere, collision from the render heights, `ew --play zermatt|blueridge` with a procedural walk, a placeholder car, terrain + shadow ~2 ms at 1 m AGL. False height steps removed (1/8 m step, bicubic). Waiting on the owner to walk and drive it; then S7.
+- **S7 (2026-11-12):** robot, controller and flight from the alpha (S7a, S7c); worldwide erosion detail and Megascans ground blend (S7b). 2 m data deferred: Zermatt may become a hub later, then swissALTI3D (owner).
+- **Owner feedback on S7b erosion (2026-11-12, flying Blue Ridge):** "looks a little mathematical"; every gully is the same size, so mountainsides read as a repeating texture. Wanted: big and small erosion together, fractal across scales. Next pass: a wider band of sizes with natural falloff, amplitude and character varying by region and rock type, and gullies that follow real drainage, not one fixed set of octaves.
+- **Owner on flight (2026-11-12):** alpha feel is fine for testing; tune it later.
 - **Open from P-slice:** near-ground terrain shadow streaks; `terrain_shadow` stall spikes; uniform gravity beyond ~2 km from the anchor (re-basing); the car meshes are a guard exception until a vehicle pack exists.
 - **Waiting on the owner:** the clear-day aerosol choice (W5 CHANGES entry).
 
