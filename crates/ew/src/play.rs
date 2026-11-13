@@ -223,6 +223,8 @@ pub struct Play {
     pub far_warned: bool,
     /// Worst planted-foot miss (m) since the last log, and steps taken.
     pub slip_max: f32,
+    /// Near trees (`EW_TREES_NEAR`, default on): built off the main thread, applied under a budget.
+    pub near: Option<crate::trees::NearTrees>,
     pub steps: u64,
     /// The car (sim and drawing), whether the character is in it, its camera, a pending E.
     pub car: Option<CarSim>,
@@ -391,6 +393,7 @@ impl Play {
             anim,
             sync_loads: 0,
             far_warned: false,
+            near: None,
             slip_max: 0.0,
             steps: 0,
             car,
@@ -762,6 +765,12 @@ struct App {
     log_frames: u64,
     log_cpu_ms: f64,
     log_upd_ms: f64,
+    /// Near-tree update: ms and nodes applied per frame, and when every request was resident.
+    trees_ms: Vec<f64>,
+    trees_applied: Vec<usize>,
+    trees_t0: Option<Instant>,
+    trees_resident_s: Option<f64>,
+    trees_sec_ms: f64,
     log_worst_ms: f64,
     worst_ms: f64,
     /// Frame intervals (ms) after spawn: the whole run and the current second.
@@ -815,6 +824,11 @@ pub fn run(args: Args) -> Result<(), String> {
         log_frames: 0,
         log_cpu_ms: 0.0,
         log_upd_ms: 0.0,
+        trees_ms: Vec::new(),
+        trees_applied: Vec::new(),
+        trees_t0: None,
+        trees_resident_s: None,
+        trees_sec_ms: 0.0,
         log_worst_ms: 0.0,
         worst_ms: 0.0,
         ft: Vec::new(),
@@ -848,9 +862,13 @@ impl App {
         let config = SurfaceConfig { width: size.width.max(1), height: size.height.max(1), format: crate::windowed::SURFACE_FORMAT, vsync: self.args.vsync, hdr: false };
         let surface = self.dev.create_surface(WindowHandle { window: ns_view, display: std::ptr::null_mut() }, &config).map_err(|e| format!("create_surface: {e}"))?;
         println!("ew: surface {}x{} vsync={} (scale factor {})", config.width, config.height, config.vsync, window.scale_factor());
-        let mut renderer = Renderer::new(&*self.dev).map_err(|e| format!("renderer: {e}"))?;
+        let near = crate::trees::near_from_env();
+        let mut renderer = if near { Renderer::with_desc(&*self.dev, &crate::trees::NearTrees::renderer_desc()) } else { Renderer::new(&*self.dev) }.map_err(|e| format!("renderer: {e}"))?;
         self.args.apply_lod(renderer.lod_config());
-        let play = Play::new(&mut renderer, &*self.dev, self.place, &self.args.packs, [config.width, config.height], self.args.character)?;
+        let mut play = Play::new(&mut renderer, &*self.dev, self.place, &self.args.packs, [config.width, config.height], self.args.character)?;
+        if near {
+            play.near = Some(crate::trees::NearTrees::new(&crate::terrain::cache_root()));
+        }
         self.play = Some(play);
         if !self.scripted() {
             if window.set_cursor_grab(CursorGrabMode::Locked).is_err() {
@@ -1012,6 +1030,25 @@ impl App {
         let input = game_input(&keys, 0.0);
         let zoom = std::mem::take(&mut self.zoom);
         let camera = play.update(renderer, input, drive, look, zoom, frame_dt, [w, h]);
+        if let Some(nt) = &mut play.near {
+            let tt = Instant::now();
+            let t0 = *self.trees_t0.get_or_insert(tt);
+            match nt.update(&play.world, renderer, dev, &camera, [w, h], play.fixed.steps() as f64 / 60.0, false) {
+                Ok(()) => {
+                    let ms = tt.elapsed().as_secs_f64() * 1e3;
+                    self.trees_ms.push(ms);
+                    self.trees_sec_ms += ms;
+                    self.trees_applied.push(nt.stats.applied_last);
+                    if self.trees_resident_s.is_none() && nt.stats.pending == 0 && nt.stats.nodes > 0 {
+                        self.trees_resident_s = Some(t0.elapsed().as_secs_f64());
+                    }
+                }
+                Err(e) => {
+                    eprintln!("ew: near trees disabled: {e}");
+                    play.near = None;
+                }
+            }
+        }
         let upd_ms = t_upd.elapsed().as_secs_f64() * 1e3;
         let tf = Instant::now();
         if let Err(e) = renderer.flush_uploads(dev) {
@@ -1134,6 +1171,13 @@ impl App {
                     up
                 );
             }
+            if let Some(nt) = &play.near {
+                println!(
+                    "ew: near trees: {} nodes resident, {} pending, {} instances, {} bank, update {:.2} ms/frame, last apply {} nodes / {:.2} ms",
+                    nt.stats.nodes, nt.stats.pending, nt.stats.instances, nt.stats.bank_meshes, self.trees_sec_ms / n, nt.stats.applied_last, nt.stats.apply_last_ms
+                );
+            }
+            self.trees_sec_ms = 0.0;
             play.slip_max = 0.0;
             self.log_t = Instant::now();
             self.log_frames = 0;
@@ -1211,6 +1255,16 @@ impl App {
         }
         let (p50, p99) = (pct(&mut self.ft, 0.5), pct(&mut self.ft, 0.99));
         println!("ew: play: {} frames presented, frame interval p50 {p50:.2} / p99 {p99:.2} / worst {:.1} ms, {} errors", self.presented, self.worst_ms, self.errors);
+        if !self.trees_ms.is_empty() {
+            let (p99, mx) = (pct(&mut self.trees_ms, 0.99), self.trees_ms.iter().copied().fold(0.0, f64::max));
+            let amax = self.trees_applied.iter().copied().max().unwrap_or(0);
+            let atot: usize = self.trees_applied.iter().sum();
+            println!(
+                "ew: near trees update ms/frame: p50 {:.2} / p99 {p99:.2} / max {mx:.2}; nodes applied per frame: max {amax}, total {atot}; all requested resident after {}",
+                pct(&mut self.trees_ms, 0.5),
+                self.trees_resident_s.map_or("never".into(), |s| format!("{s:.1} s"))
+            );
+        }
         if self.errors > 0 && self.result.is_ok() {
             self.result = Err(format!("{} GPU/surface errors", self.errors));
         }

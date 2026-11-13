@@ -262,7 +262,7 @@ pub fn run(args: &Args) -> Result<Report, String> {
             terrain_ms += tw.elapsed().as_secs_f64() * 1e3;
             if let Some(nt) = &mut near {
                 let tt = Instant::now();
-                nt.update(wd, &mut renderer, &*dev, &camera, [w, h], i as f64 / 60.0)?;
+                nt.update(wd, &mut renderer, &*dev, &camera, [w, h], i as f64 / 60.0, true)?;
                 trees_ms += tt.elapsed().as_secs_f64() * 1e3;
                 if i + 1 == frames {
                     let s = nt.stats;

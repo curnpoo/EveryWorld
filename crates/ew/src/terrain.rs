@@ -443,6 +443,11 @@ impl TerrainWorld {
         &self.src
     }
 
+    /// The shared source (background workers).
+    pub fn source_arc(&self) -> Arc<CacheSource> {
+        self.src.clone()
+    }
+
     /// The residency (resident pages); `ed_planet::Residency` for other modules.
     pub fn residency(&self) -> &PageStore {
         &self.store
