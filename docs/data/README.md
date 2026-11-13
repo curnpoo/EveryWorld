@@ -37,6 +37,7 @@ file and the catalogue disagree, this file wins. Decisions: F8, F13 in `../DECIS
 | Place names | GeoNames, Natural Earth | GREEN / CC BY | Packaged gazetteer for go-to and labels |
 | Moon, Mars | LOLA and MOLA elevation, NASA mosaics | GREEN (NASA content, not subject to U.S. copyright) | Acknowledge NASA; no implied endorsement |
 | Ephemeris | JPL elements (Standish and Williams 1992), computed locally | YELLOW | JPL is run by Caltech; confirm attribution-only use in legal review |
+| Ground surfaces (development) | Fab / Megascans scans: rock_cliff, granite_rock, gravel_on_soil, soil_dirt, grass_lawn, mossy_forest_floor, forest_floor, fresh_snow | YELLOW (Fab licence: ship only inside the packaged game, D8) | Loaded from the owner's local library (`EW_MEGASCANS`), never committed (public repo); packed caches in `.earthdrop-cache/`. Shipping goes through `ew-bake` and the licence gate (P4-D9) |
 | Weather, geocoding (development only) | Open-Meteo | not shipped | Replaced by the simulated climate and the packaged gazetteer |
 
 **Building-height inference rule.** Most footprints have no height. Order of preference:

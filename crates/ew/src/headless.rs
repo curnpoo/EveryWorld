@@ -201,6 +201,10 @@ pub fn run(args: &Args) -> Result<Report, String> {
             _ => path.interpolated(alpha),
         };
         let mut camera = path_cam;
+        // `EW_FOV=<horizontal degrees>`: match a reference photo's field of view (look work).
+        if let Some(hfov) = std::env::var("EW_FOV").ok().and_then(|v| v.parse::<f32>().ok()) {
+            camera.fov_y = 2.0 * ((0.5 * hfov.to_radians()).tan() * h as f32 / w as f32).atan();
+        }
         if let (Some(s), Some(c)) = (&mut session, &mut content) {
             let (game, look) = scripted_game(i);
             let o = s.update(

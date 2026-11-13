@@ -494,7 +494,12 @@ impl TerrainWorld {
 
     /// The provider to register on the renderer (`Renderer::set_terrain`).
     pub fn provider(&self, dev: &dyn ed_gpu::Device) -> Result<TerrainProvider, ed_gpu::Error> {
-        TerrainProvider::new(dev, TerrainConfig { select: self.config, ..Default::default() })
+        let mut t = TerrainProvider::new(dev, TerrainConfig { select: self.config, ..Default::default() })?;
+        // Scanned surface layers (P-slice S7): only when a local library is present.
+        if let Some(m) = crate::terrain_mat::load() {
+            t.set_materials(dev, &m)?;
+        }
+        Ok(t)
     }
 
     /// Starts `threads` background page builders (windowed play). Pages still arrive only

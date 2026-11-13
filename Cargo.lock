@@ -775,6 +775,7 @@ dependencies = [
  "ed_store",
  "ed_world",
  "glam",
+ "image",
  "png",
  "raw-window-handle",
  "winit",

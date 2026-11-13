@@ -46,6 +46,19 @@ pub fn cubic_weights(t: f64) -> [f64; 4] {
     ]
 }
 
+/// Derivatives of [`cubic_weights`] with respect to `t`.
+#[inline]
+pub fn cubic_dweights(t: f64) -> [f64; 4] {
+    let t2 = t * t;
+    [0.5 * (-3.0 * t2 + 4.0 * t - 1.0), 0.5 * (9.0 * t2 - 10.0 * t), 0.5 * (-9.0 * t2 + 8.0 * t + 1.0), 0.5 * (3.0 * t2 - 2.0 * t)]
+}
+
+/// Erosion detail on fine pages ([`super::detail`]); `EW_TERRAIN_NODETAIL=1` turns it off (A/B).
+pub fn detail_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("EW_TERRAIN_NODETAIL").is_none_or(|v| v == "0"))
+}
+
 /// Slippy zoom used for a node level: pixel spacing of a 256 px tile at the equator is at most
 /// the node's cell spacing (`2^z >= 4 * 2^level`, i.e. `z = level + 2`), capped at the finest
 /// source zoom. A pure function of the level, so neighbours always agree.
@@ -181,10 +194,18 @@ pub fn node_heights(src: &dyn SourceView, id: NodeId) -> HeightPage {
     // the first point so a node across the antimeridian has one compact window.
     let world = ((1i64 << z) * size as i64) as f64;
     let mut pts: Vec<(f64, f64)> = Vec::with_capacity(PAGE_SAMPLES);
+    let detail_on = id.level() >= super::detail::first_detail_level() && detail_enabled();
+    // Per lattice point, for the erosion detail: ellipsoid point (ECEF m), lat, lon (rad).
+    let mut geo: Vec<([f64; 3], f64, f64)> = Vec::with_capacity(if detail_on { PAGE_SAMPLES } else { 0 });
     let mut clamped = false;
     for j in 0..PAGE_N {
         for i in 0..PAGE_N {
-            let g = lattice_geodetic(id, i, j);
+            let d = id.grid_point(i as u32, j as u32, PAGE_CELLS as u32);
+            let r = ellipsoid_radius(d.x, d.y, d.z);
+            let g = ecef_to_latlon(d.x * r, d.y * r, d.z * r);
+            if detail_on {
+                geo.push(([d.x * r, d.y * r, d.z * r], g.lat_deg.to_radians(), g.lon_deg.to_radians()));
+            }
             clamped |= g.lat_deg.abs() > ed_geo::tile::MAX_LAT;
             let (gx, gy) = lonlat_to_pixel(g.lon_deg, g.lat_deg, z, size);
             let mut fx = gx - 0.5;
@@ -212,22 +233,33 @@ pub fn node_heights(src: &dyn SourceView, id: NodeId) -> HeightPage {
         dequantise(&raw, ww, wh, source_step(z))
     });
     let mut q = Vec::with_capacity(PAGE_SAMPLES);
-    for &(fx, fy) in &pts {
+    for (s, &(fx, fy)) in pts.iter().enumerate() {
         let (x0, y0) = (fx.floor(), fy.floor());
         let (wx, wy) = (cubic_weights(fx - x0), cubic_weights(fy - y0));
+        let (dwx, dwy) = (cubic_dweights(fx - x0), cubic_dweights(fy - y0));
         let (x0, y0) = (x0 as i64, y0 as i64);
-        let mut h = 0.0;
-        for (m, wm) in wy.iter().enumerate() {
-            let mut row = 0.0;
-            for (k, wk) in wx.iter().enumerate() {
+        let (mut h, mut hx, mut hy) = (0.0, 0.0, 0.0);
+        for m in 0..4 {
+            let (mut row, mut drow) = (0.0, 0.0);
+            for k in 0..4 {
                 let (px, py) = (x0 - 1 + k as i64, y0 - 1 + m as i64);
                 let v = match &win {
                     Some(win) => win[(py - wy0) as usize * ww + (px - wx0) as usize],
                     None => tiles.pixel(px, py, size),
                 };
-                row += wk * v;
+                row += wx[k] * v;
+                drow += dwx[k] * v;
             }
-            h += wm * row;
+            h += wy[m] * row;
+            hx += wy[m] * drow;
+            hy += dwy[m] * row;
+        }
+        if detail_on && !clamped {
+            // Source gradient in metres per metre (Mercator pixels are square; y runs south).
+            let (p, lat, lon) = geo[s];
+            let pix_m = 2.0 * PI * WGS84_A * libm::cos(lat) / world;
+            let grad = [hx / pix_m, -hy / pix_m];
+            h += super::detail::erosion_detail(p, lat, lon, h, grad, id.level());
         }
         q.push(quantise(h, step));
     }

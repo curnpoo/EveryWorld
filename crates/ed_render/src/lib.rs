@@ -1388,6 +1388,8 @@ impl Renderer {
                 to.as_ref().map_or(0, |t| t.meshes.1), // terrain draw table (0: no terrain)
                 to.as_ref().map_or(0, |t| t.state.1),  // terrain height page pool
                 to.is_some() as u32,
+                // Terrain material record in the draw table (0: the flat tint).
+                self.terrain.as_ref().filter(|_| to.is_some()).map_or(0, |t| t.material_record()),
             ]);
             let resolve = if to.is_some() { self.pipes.resolve_terrain } else { self.pipes.resolve };
             let atlas = shadow.map(|s| s.atlas);

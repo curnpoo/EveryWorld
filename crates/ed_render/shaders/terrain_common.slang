@@ -34,7 +34,7 @@ static const uint T_EDGE_SHIFT = 10;            // bits 10-21: per edge, 3 bits 
 static const uint T_NOMORPH = 1u << 22;         // no vertex of the node morphs
 static const uint T_PRIM_LOD_SHIFT = 24;        // the visibility primitive carries the LOD here
 
-// One drawn node (160 bytes, `DRAW_WORDS` = 40). World axes, camera-relative.
+// One drawn node (176 bytes, `DRAW_WORDS` = 44). World axes, camera-relative.
 struct TerrainDraw {
     float4 origin;  // xyz: node origin (ellipsoid point of the centre direction) - camera, w: skirt depth (m)
     float4 dir_c;   // xyz: centre direction, w: ellipsoid radius along it (m)
@@ -46,6 +46,20 @@ struct TerrainDraw {
     float4 polar;   // xyz: body polar axis (+Z body-fixed)
     uint4 slots;    // x: page slot, y: parent page slot (T_NO_SLOT: none), z: flags, w: level
     float4 hq;      // x, y: page scale, offset; z, w: parent page scale, offset
+    float4 tex;     // x, y: node centre face angles times the equatorial radius, mod 4096 m
+};
+
+// The terrain material record (P-slice S7, `MAT_WORDS` = 44 words, at index
+// `ResolveC.t_mat` of the draw table): two RGBA8 texture arrays, a layer per material slot
+// (terrain.rs `MAT_LAYERS`: rock, scree, grass, forest, snow, soil).
+struct TerrainMat {
+    uint albedo;    // bindless Texture2DArray: rgb base colour (sRGB), a displacement
+    uint normal;    // bindless Texture2DArray: rg normal xy (OpenGL), b roughness, a AO
+    uint layers;
+    uint size;
+    float tile[8];  // metres per texture repeat, per layer
+    float4 gain[6]; // rgb: per-layer albedo calibration (target / texture mean, linear)
+    float4 pad[2];
 };
 
 // Raw height of page sample (i, j) in pool slot `slot`.

@@ -1,3 +1,30 @@
+## 2026-11-12: P-slice S7b — worldwide erosion detail and Megascans ground blend
+
+- **Erosion detail** (`ed_data/src/node/detail.rs`, applied in `node_heights`): a pure function of the ECEF point, source height and source gradient (analytic Catmull-Rom derivative).
+  - Slope-aligned, branching gullies: 4 octaves, 16 to 2 m.
+  - Ledges on steep ground; micro-relief on flats.
+  - Band-limited by level (starts at level 13); libm plus an integer hash; no place-specific cases.
+  - Collision and render share it. Off: `EW_TERRAIN_NODETAIL=1`.
+  - Test `node_detail`: borders bit-identical at levels 13–18 on 60° slopes.
+- **Ground materials** (`ed_render` terrain resolve, `ew/src/terrain_mat.rs`):
+  - Six Megascans layers (rock, scree, grass, forest, snow, soil) in two texture arrays.
+  - Weighted by slope, altitude, aspect (snow ~230 m lower on north faces), shader curvature (ridges bare, scree in hollows) and noise.
+  - Height-blended with the displacement maps; biplanar rock and snow; anti-tiling; macro variation.
+  - Loaded from the local library (`EW_MEGASCANS`); never in the repo. Falls back if missing. Off: `ED_TERRAIN_NOMAT=1`. `EW_FOV` added to headless.
+- **Cost:**
+  - Terrain + shadow at 1 m AGL, 1440p: 1.80 → 1.89 ms.
+  - Resolve at 1600×1066: 2.46 → 3.6 ms (+1.1 ms).
+- **Checked:**
+  - `cargo test -p ed_data -p ed_geo -p ed_render -p ew` pass; slang fresh.
+  - Proving output byte-identical.
+  - Reference camera matching the owner's Zermatt photo (`--ground 46.0200,7.7560,236.2,-1.5,20`, `EW_FOV=45`, `--sun 200,55`): baseline vs five iterations; meadow, scree, rock and snow read in the right places.
+- **Open:**
+  - Forest slopes read grey-green (no trees).
+  - Meadows patchy (needs WorldCover input).
+  - Blocky ledges on the right-hand faces come from the source.
+  - Coarse snow edges; rock_cliff cracks repeat at 4 m up close.
+  - Zermatt output with both off switches not compared with HEAD.
+
 ## 2026-11-12: P-slice S7a — the alpha robot in `ew --play`
 
 - **What:** the alpha-early robot is the default character (`crates/ew/src/robot/`).

@@ -29,6 +29,7 @@ pub mod route;
 pub mod session;
 pub mod terrain;
 pub mod terrain_collide;
+pub mod terrain_mat;
 pub mod walker;
 pub mod windowed;
 

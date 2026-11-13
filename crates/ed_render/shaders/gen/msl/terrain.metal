@@ -35,6 +35,7 @@ struct TerrainDraw_natural_0
     packed_float4 polar_0;
     packed_uint4 slots_0;
     packed_float4 hq_0;
+    packed_float4 tex_0;
 };
 
 TerrainDraw_natural_0 device* ed_buf_1(uint i_1, KernelContext_0 thread* kernelContext_1)

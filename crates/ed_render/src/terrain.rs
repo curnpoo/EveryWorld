@@ -77,7 +77,10 @@ pub const INDEX_COUNT: u32 = lod_index_offset(LODS as u32);
 /// The visibility word's primitive carries the node's LOD at this bit (`t_triangle`).
 pub const PRIM_LOD_SHIFT: u32 = 24;
 /// Words per drawn node (`TerrainDraw` in terrain_common.slang).
-pub const DRAW_WORDS: usize = 40;
+pub const DRAW_WORDS: usize = 44;
+/// Period (m) of the per-node texture phase (`TerrainDraw::tex`): every material and macro
+/// noise scale divides it, so the wrap is invisible.
+pub const TEX_PERIOD_M: f64 = 4096.0;
 /// u32 words per page pool slot (257 x 257 u16, padded to whole words).
 pub const PAGE_WORDS: usize = PAGE_SAMPLES.div_ceil(2);
 /// Visibility word x of a terrain pixel: this bit | draw index.
@@ -139,6 +142,9 @@ pub struct TerrainDraw {
     pub polar: [f32; 4],
     pub slots: [u32; 4],
     pub hq: [f32; 4],
+    /// x, y: the node centre's face angle coordinates times the equatorial radius, mod
+    /// [`TEX_PERIOD_M`] (world-stable texture coordinates without large f32 values).
+    pub tex: [f32; 4],
 }
 
 impl TerrainDraw {
@@ -153,6 +159,7 @@ impl TerrainDraw {
         w[32..36].copy_from_slice(&self.slots);
         for (c, x) in self.hq.iter().enumerate() {
             w[36 + c] = x.to_bits();
+            w[40 + c] = self.tex[c].to_bits();
         }
         w
     }
@@ -226,6 +233,7 @@ pub fn node_draw(id: NodeId, body: &Body, pose: &BodyPose, eye: DVec3, bands: [[
         polar: v4(rot * DVec3::Z, 0.0),
         slots: [page.0, parent.map_or(NO_SLOT, |p| p.0), flags, id.level() as u32],
         hq: [page.1.scale, page.1.offset, parent.map_or(0.0, |p| p.1.scale), parent.map_or(0.0, |p| p.1.offset)],
+        tex: [(tu.atan() * a).rem_euclid(TEX_PERIOD_M) as f32, (tv.atan() * a).rem_euclid(TEX_PERIOD_M) as f32, 0.0, 0.0],
     }
 }
 
@@ -706,6 +714,42 @@ pub struct CameraGround {
 
 type Consts = [u8; ed_gpu::DRAW_CONSTANTS_BYTES];
 
+/// Material layer slots of the terrain material set (P-slice S7 c), in texture-array order.
+/// The resolve blends them by slope, altitude, aspect, curvature and the height maps.
+pub const MAT_LAYERS: [&str; 6] = ["rock", "scree", "grass", "forest", "snow", "soil"];
+
+/// One surface layer: square RGBA8 mip chains (mip 0 first, each `size >> m` texels square).
+#[derive(Clone, Debug, Default)]
+pub struct TerrainLayer {
+    /// Physical size of one texture repeat (m).
+    pub tile_m: f32,
+    /// Linear albedo calibration multiplied into the texture (target / texture mean).
+    pub gain: [f32; 3],
+    /// rgb: base colour (sRGB), a: displacement (0..1).
+    pub albedo: Vec<Vec<u8>>,
+    /// r, g: tangent-space normal x, y (OpenGL, +y up), b: roughness, a: ambient occlusion.
+    pub normal: Vec<Vec<u8>>,
+}
+
+/// The terrain's surface materials, one [`TerrainLayer`] per [`MAT_LAYERS`] slot.
+#[derive(Clone, Debug, Default)]
+pub struct TerrainMaterials {
+    pub size: u32,
+    pub layers: Vec<TerrainLayer>,
+}
+
+/// Words of the material record the resolve reads (`TerrainMat` in terrain_common.slang).
+pub const MAT_WORDS: usize = DRAW_WORDS;
+
+struct MatTex {
+    albedo: (ed_gpu::TextureId, ed_gpu::BindlessTexture),
+    normal: (ed_gpu::TextureId, ed_gpu::BindlessTexture),
+    size: u32,
+    state: ResourceState,
+    tile_m: [f32; 8],
+    gain: [[f32; 3]; 6],
+}
+
 struct TerrainView {
     /// Main draws, then each cascade's culled copies (`ranges`).
     draws: Tracked,
@@ -739,6 +783,8 @@ pub struct TerrainProvider {
     eye: DVec3,
     /// Texels per cascade side (from the latest `record`; sizes the cascades' LODs).
     shadow_tile: u32,
+    /// Surface material arrays ([`TerrainProvider::set_materials`]); `None`: the flat tint.
+    mats: Option<MatTex>,
 }
 
 const GEN_MSL: &str = include_str!("../shaders/gen/msl/terrain.metal");
@@ -768,13 +814,14 @@ impl TerrainProvider {
         dev.write_buffer(index.id, 0, &gpu::bytes(&indices()))?;
         let pool_buf = Tracked::new(dev, "terrain page pool", config.pool_slots as u64 * PAGE_WORDS as u64 * 4, upload)?;
         let view0 = Self::new_view(dev, config.max_draws)?;
-        Ok(Self { config, built, raster, shadow, index, pool_buf, pool: Pool::new(config.pool_slots), views: vec![view0], cur: 0, stamp: 0, stats: TerrainStats::default(), eye: DVec3::ZERO, shadow_tile: 2048 })
+        Ok(Self { config, built, raster, shadow, index, pool_buf, pool: Pool::new(config.pool_slots), views: vec![view0], cur: 0, stamp: 0, stats: TerrainStats::default(), eye: DVec3::ZERO, shadow_tile: 2048, mats: None })
     }
 
     fn new_view(dev: &dyn Device, max_draws: u32) -> Result<TerrainView, ed_gpu::Error> {
         let per_frame = Usage { shader_read: true, cpu_write: true, ..Default::default() };
         // Room for the view's draws and up to four cascade lists.
-        let size = max_draws as u64 * 5 * DRAW_WORDS as u64 * 4;
+        // One more record at the end: the material record (`material_record`).
+        let size = (max_draws as u64 * 5 + 1) * DRAW_WORDS as u64 * 4;
         Ok(TerrainView { draws: Tracked::new(dev, "terrain draws", size, per_frame)?, entries: Vec::new(), vis: Vec::new(), bounds: Vec::new(), ranges: [(0, 0); 4], groups: [[(0, 0); LODS]; 5], imports: Vec::new() })
     }
 
@@ -823,6 +870,106 @@ impl TerrainProvider {
 
     pub fn stats(&self) -> TerrainStats {
         self.stats
+    }
+
+    /// Uploads the surface material arrays (replacing any earlier set). `ED_TERRAIN_NOMAT=1`
+    /// at run time keeps the flat slope/altitude tint instead (the off switch).
+    pub fn set_materials(&mut self, dev: &dyn Device, m: &TerrainMaterials) -> Result<(), ed_gpu::Error> {
+        self.clear_materials(dev);
+        let n = m.layers.len().min(8) as u32;
+        let mips = m.layers.first().map_or(0, |l| l.albedo.len().min(l.normal.len())) as u32;
+        if n == 0 || mips == 0 || m.size == 0 {
+            return Ok(());
+        }
+        let make = |label: &str, format: ed_gpu::Format, pick: &dyn Fn(&TerrainLayer) -> &Vec<Vec<u8>>| -> Result<(ed_gpu::TextureId, ed_gpu::BindlessTexture), ed_gpu::Error> {
+            let id = dev.create_texture(&ed_gpu::TextureDesc {
+                label,
+                kind: ed_gpu::TextureKind::D2Array,
+                format,
+                width: m.size,
+                height: m.size,
+                depth_or_layers: n,
+                mips,
+                samples: 1,
+                usage: Usage { shader_read: true, copy_dst: true, ..Default::default() },
+            })?;
+            for (l, layer) in m.layers.iter().take(n as usize).enumerate() {
+                for (mip, data) in pick(layer).iter().take(mips as usize).enumerate() {
+                    if let Err(e) = dev.write_texture(id, ed_gpu::Subresource { mip: mip as u32, layer: l as u32 }, data) {
+                        dev.destroy_texture(id);
+                        return Err(e);
+                    }
+                }
+            }
+            match dev.bind_texture(id) {
+                Ok(b) => Ok((id, b)),
+                Err(e) => {
+                    dev.destroy_texture(id);
+                    Err(e)
+                }
+            }
+        };
+        let albedo = make("terrain albedo", ed_gpu::Format::Rgba8Srgb, &|l| &l.albedo)?;
+        let normal = match make("terrain normal", ed_gpu::Format::Rgba8Unorm, &|l| &l.normal) {
+            Ok(t) => t,
+            Err(e) => {
+                dev.unbind_texture(albedo.1);
+                dev.destroy_texture(albedo.0);
+                return Err(e);
+            }
+        };
+        let mut tile_m = [1.0f32; 8];
+        let mut gain = [[1.0f32; 3]; 6];
+        for (k, l) in m.layers.iter().enumerate() {
+            if k < 8 {
+                tile_m[k] = l.tile_m.max(0.05);
+            }
+            if k < 6 {
+                gain[k] = l.gain;
+            }
+        }
+        self.mats = Some(MatTex { albedo, normal, size: m.size, state: ResourceState::CopyDst, tile_m, gain });
+        Ok(())
+    }
+
+    fn clear_materials(&mut self, dev: &dyn Device) {
+        if let Some(t) = self.mats.take() {
+            for (id, b) in [t.albedo, t.normal] {
+                dev.unbind_texture(b);
+                dev.destroy_texture(id);
+            }
+        }
+    }
+
+    /// Whether the material arrays are in use (set and not switched off).
+    pub fn materials_on(&self) -> bool {
+        self.mats.is_some() && std::env::var_os("ED_TERRAIN_NOMAT").is_none_or(|v| v == "0")
+    }
+
+    /// Record index (in the draw table) of the material record the resolve reads; 0: none
+    /// (the flat tint). Record 0 is always a draw, so 0 never names the material record.
+    pub fn material_record(&self) -> u32 {
+        if self.materials_on() { self.config.max_draws * 5 } else { 0 }
+    }
+
+    /// The material record's words: texture indices, layer tile sizes, layer count.
+    fn material_words(&self) -> [u32; MAT_WORDS] {
+        let mut w = [0u32; MAT_WORDS];
+        if let Some(t) = &self.mats {
+            w[0] = t.albedo.1.0;
+            w[1] = t.normal.1.0;
+            w[2] = MAT_LAYERS.len() as u32;
+            w[3] = t.size;
+            for (k, x) in t.tile_m.iter().enumerate() {
+                w[4 + k] = x.to_bits();
+            }
+            for (k, g) in t.gain.iter().enumerate() {
+                for c in 0..3 {
+                    w[12 + 4 * k + c] = g[c].to_bits();
+                }
+            }
+        }
+        w
     }
 
     /// Draws per sun cascade after culling (the latest `prepare` of this view).
@@ -998,6 +1145,7 @@ impl GeometryProvider for TerrainProvider {
     /// whose bounds touch its box, at the LOD its texel size allows.
     fn prepare(&mut self, dev: &dyn Device, _pools: &InstancePools, width: u32, height: u32, fd: &mut [u32]) -> Result<(), ed_gpu::Error> {
         let cur = self.cur;
+        let mat_rec = gpu::bytes(&self.material_words());
         if self.views[cur].entries.is_empty() {
             self.views[cur].ranges = [(0, 0); 4];
             self.views[cur].vis.clear();
@@ -1057,7 +1205,11 @@ impl GeometryProvider for TerrainProvider {
         v.ranges = ranges;
         v.groups = groups;
         let bytes = gpu::bytes(&words);
-        dev.fill_frame_buffer(v.draws.id, &mut |dst| dst[..bytes.len()].copy_from_slice(&bytes))
+        let at = self.config.max_draws as usize * 5 * DRAW_WORDS * 4;
+        dev.fill_frame_buffer(v.draws.id, &mut |dst| {
+            dst[..bytes.len()].copy_from_slice(&bytes);
+            dst[at..at + mat_rec.len()].copy_from_slice(&mat_rec);
+        })
     }
 
     fn record<'a>(&mut self, g: &mut FrameGraph<'a>, _frame_index: u64, inp: &SharedInputs, out: VisTargets) -> ProviderOutputs {
@@ -1070,6 +1222,19 @@ impl GeometryProvider for TerrainProvider {
         let pool = g.import_buffer("terrain page pool", self.pool_buf.id, self.pool_buf.state, Some(ResourceState::CopyDst));
         let index = g.import_buffer("terrain indices", self.index.id, self.index.state, None);
         v.imports = vec![(draws, 0), (pool, 1), (index, 2)];
+        // The material arrays: read (by the resolve) from the terrain pass on, so the graph moves
+        // them out of their upload state on the first frame.
+        let mat_res: Vec<Res> = match &self.mats {
+            Some(t) => {
+                let info = crate::graph::TextureInfo { format: ed_gpu::Format::Rgba8Unorm, width: t.size, height: t.size };
+                let a = g.import_texture("terrain albedo", t.albedo.0, crate::graph::TextureInfo { format: ed_gpu::Format::Rgba8Srgb, ..info }, t.state, None);
+                let b = g.import_texture("terrain normal", t.normal.0, info, t.state, None);
+                v.imports.push((a, 3));
+                v.imports.push((b, 3));
+                vec![a, b]
+            }
+            None => Vec::new(),
+        };
         let consts = |cascade: u32, base: u32| gpu::constants(&[inp.frame.1, v.draws.bindless.0, self.pool_buf.bindless.0, cascade, base]);
         let (idx_id, pipe, spipe) = (self.index.id, self.raster, self.shadow);
         // One instanced draw per (list, index LOD) group: (constants, first index, index count, instances).
@@ -1080,8 +1245,11 @@ impl GeometryProvider for TerrainProvider {
         let clear = self.config.clear_targets;
         let load = if clear { LoadOp::Clear([0.0; 4]) } else { LoadOp::Load };
         let read = ResourceState::ShaderRead;
-        g.add_pass("terrain", PassKind::Raster)
-            .read(inp.frame.0, read)
+        let mut tp = g.add_pass("terrain", PassKind::Raster);
+        for r in &mat_res {
+            tp = tp.read(*r, read);
+        }
+        tp.read(inp.frame.0, read)
             .read(draws, read)
             .read(pool, read)
             .read(index, read)
@@ -1141,6 +1309,11 @@ impl GeometryProvider for TerrainProvider {
             match which {
                 0 => v.draws.state = s,
                 1 => self.pool_buf.state = s,
+                3 => {
+                    if let Some(t) = &mut self.mats {
+                        t.state = s;
+                    }
+                }
                 _ => self.index.state = s,
             }
         }
@@ -1159,7 +1332,8 @@ impl GeometryProvider for TerrainProvider {
         &["terrain", "terrain_shadow"]
     }
 
-    fn destroy(self: Box<Self>, dev: &dyn Device) {
+    fn destroy(mut self: Box<Self>, dev: &dyn Device) {
+        self.clear_materials(dev);
         dev.destroy_render_pipeline(self.raster);
         dev.destroy_render_pipeline(self.shadow);
         for s in self.built {

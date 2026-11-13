@@ -37,7 +37,7 @@ struct ResolveC {
     uint t_draws;   // bindless buffer: the terrain provider's TerrainDraw table (terrain on)
     uint t_pool;    // bindless buffer: the terrain height page pool (terrain on)
     uint t_on;      // 1: a terrain provider drew this frame
-    uint pad[1];
+    uint t_mat;     // terrain material record index in the draw table (0: the flat tint)
 };
 ED_CONSTANTS(ResolveC)
 
@@ -155,6 +155,256 @@ float3 terrain_albedo(float h, float slope_cos) {
     return lerp(a, T_ALB_SNOW, snow);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Terrain materials (P-slice S7 c): scanned surface layers blended by the landform.
+// ---------------------------------------------------------------------------------------------
+// Layers (terrain.rs MAT_LAYERS). Weights come from the landform slope (~24 m), the fine slope,
+// altitude, aspect (snow lies lower on north faces), curvature (scree and soil collect in
+// hollows, ridges stay bare) and low-frequency noise; then a height blend with each layer's
+// displacement map, so grass sits between stones and snow fills cracks first. Texture
+// coordinates are world-stable face metres (`TerrainDraw.tex`, periodic in 4096 m); steep rock
+// is projected triplanar on the (face u, height) and (face v, height) planes.
+static const uint L_ROCK = 0;
+static const uint L_SCREE = 1;
+static const uint L_GRASS = 2;
+static const uint L_FOREST = 3;
+static const uint L_SNOW = 4;
+static const uint L_SOIL = 5;
+static const uint T_LAYERS = 6;
+
+// Periodic value noise (period 4096 m, `cell` must divide it), in [0, 1].
+float t_hash2(int2 c) {
+    uint h = uint(c.x) * 0x8da6b343u ^ uint(c.y) * 0xd8163841u;
+    h ^= h >> 13;
+    h *= 0x85ebca6bu;
+    h ^= h >> 16;
+    return float(h & 0xFFFFu) / 65535.0;
+}
+float t_noise(float2 w, float cell) {
+    float2 q = w / cell;
+    float2 i = floor(q);
+    float2 f = q - i;
+    f = f * f * (3.0 - 2.0 * f);
+    int per = int(4096.0 / cell + 0.5);
+    int2 c = int2(i);
+    int2 c0 = int2(((c.x % per) + per) % per, ((c.y % per) + per) % per);
+    int2 c1 = int2((c0.x + 1) % per, (c0.y + 1) % per);
+    float a = t_hash2(c0);
+    float b = t_hash2(int2(c1.x, c0.y));
+    float cc = t_hash2(int2(c0.x, c1.y));
+    float d = t_hash2(c1);
+    return lerp(lerp(a, b, f.x), lerp(cc, d, f.x), f.y);
+}
+
+struct TSurf {
+    float3 albedo;
+    float3 n;
+    float rough;
+    float ao;
+};
+
+// One layer at one projection: albedo+height and normal+rough+AO, sampled with gradients.
+// `t`, `b`: world directions of +u and +v of the projection (b: image up).
+// One projection of a layer: `w` and its per-pixel steps in metres on the projection plane.
+struct TProj {
+    float2 w;
+    float2 dx;
+    float2 dy;
+};
+
+// Albedo (rgb) and displacement (a). Anti-tiling: a second, 4x larger copy with swapped axes
+// (periodic-safe) carries most of the colour from mid distance out.
+float4 t_layer_albedo(TerrainMat m, SamplerState smp, uint layer, TProj p, float near) {
+    float k = 1.0 / m.tile[layer];
+    Texture2DArray ta = ed_tex2d_array(m.albedo);
+    float4 a = ta.SampleGrad(smp, float3(float2(p.w.x, -p.w.y) * k, float(layer)), float2(p.dx.x, -p.dx.y) * k, float2(p.dy.x, -p.dy.y) * k);
+    float k2 = 0.25 * k;
+    float4 b = ta.SampleGrad(smp, float3(float2(-p.w.y, -p.w.x) * k2, float(layer)), float2(-p.dx.y, -p.dx.x) * k2, float2(-p.dy.y, -p.dy.x) * k2);
+    float mixk = lerp(0.35, 0.75, 1.0 - near);
+    return float4(lerp(a.rgb, b.rgb, mixk), lerp(a.a, b.a, 0.5 * mixk));
+}
+
+// Normal xy (OpenGL, -1..1), roughness, AO.
+float4 t_layer_normal(TerrainMat m, SamplerState smp, uint layer, TProj p) {
+    float k = 1.0 / m.tile[layer];
+    float4 b = ed_tex2d_array(m.normal).SampleGrad(smp, float3(float2(p.w.x, -p.w.y) * k, float(layer)), float2(p.dx.x, -p.dx.y) * k, float2(p.dy.x, -p.dy.y) * k);
+    return float4(b.rg * 2.0 - 1.0, b.b, b.a);
+}
+
+// Bilinear height of the own page at page-sample coordinates `s` (clamped to the page).
+float t_page_bilin(uint pool, TerrainDraw d, float2 s) {
+    s = clamp(s, 0.0, float(T_PAGE_N - 1));
+    int2 s0 = int2(min(floor(s), float2(float(T_PAGE_N - 2))));
+    float2 t = s - float2(s0);
+    float a = lerp(t_page_at(pool, d, s0.x, s0.y), t_page_at(pool, d, s0.x + 1, s0.y), t.x);
+    float b = lerp(t_page_at(pool, d, s0.x, s0.y + 1), t_page_at(pool, d, s0.x + 1, s0.y + 1), t.x);
+    return lerp(a, b, t.y);
+}
+
+// The blended surface. `n`: smooth shading normal; `nm`: landform normal (~24 m); `up`: radial
+// up; `h`: height (m); `curv`: landform Laplacian (1/m, + hollow); `curv_f`: fine Laplacian;
+// `w`, `dwx`, `dwy`: face metres and their per-pixel steps; `tu`, `tv`: world directions of
+// +u, +v; `dist`: distance from the camera (m).
+TSurf terrain_material(FrameData* f, TerrainMat m, TerrainDraw d, float3 n, float3 nm, float3 up, float h, float curv, float curv_f, float2 w, float2 dwx, float2 dwy, float dhx, float dhy, float3 tu, float3 tv, float dist) {
+    SamplerState smp = ed_smp(ed_c.smp);
+    float cs = dot(nm, up);          // landform slope cosine
+    float cf = dot(n, up);           // fine slope cosine
+    float3 north = normalize(d.polar.xyz - up * dot(d.polar.xyz, up));
+    float3 nh = nm - up * cs;
+    float northness = length_squared(nh) > 1e-6 ? dot(normalize(nh), north) : 0.0;
+    float n1 = t_noise(w, 16.0);
+    float n2 = t_noise(w + 37.0, 64.0);
+    float n3 = t_noise(w + 911.0, 256.0);
+    float nn = n1 * 0.35 + n2 * 0.4 + n3 * 0.25;  // 0..1
+    float hollow = saturate(curv * 60.0);          // landform hollow (gully, cliff foot)
+    float ridge = saturate(-curv * 60.0);
+    float hollow_f = saturate(curv_f * 4.0);
+
+    // Altitude bands, shifted by aspect and noise.
+    float treeline = 2150.0 + 120.0 * (n3 - 0.5) - 100.0 * northness;
+    float snowline = 3050.0 - 230.0 * northness + 200.0 * (n2 - 0.5);
+    float alpine = smoothstep(treeline - 150.0, treeline + 250.0, h);  // forest -> open
+    // Rock: steep landform (from ~40 deg above the treeline, ~48 below where forest holds the
+    // slope), steep fine slope, ridges, and thin soil up high.
+    float rock_cs = lerp(0.68, 0.77, alpine);
+    float steep = smoothstep(rock_cs, rock_cs - 0.14, cs);
+    float steep_f = smoothstep(rock_cs - 0.06, rock_cs - 0.2, cf);
+    float rock = saturate(max(steep, steep_f * 0.8) + ridge * 0.5 * alpine + smoothstep(2700.0, 3300.0, h) * 0.45 - 0.25 * hollow);
+    rock = saturate(rock + (n1 - 0.5) * 0.5 * smoothstep(0.92, 0.8, cs));
+    // Scree: moderate slopes below rock, in hollows and at cliff feet, open ground.
+    float moderate = smoothstep(0.97, 0.88, cs) * smoothstep(0.66, 0.80, cs);
+    float scree = saturate(moderate * (0.1 + hollow * 1.2 + (n2 - 0.5) * 0.8) * lerp(0.1, 1.0, alpine) + steep * 0.3 * alpine);
+    // Vegetation below: forest on slopes below the treeline, meadow on gentle or open ground.
+    float veg = 1.0;
+    // Forest: most of the slope below the treeline, with clearings; the flat valley floor is meadow.
+    float forest = (1.0 - alpine) * smoothstep(0.99, 0.95, cs) * saturate(0.9 + (n3 - 0.5) * 1.4 + (n2 - 0.5) * 0.8);
+    float grass = veg * (1.0 - forest) * smoothstep(3000.0, 2600.0, h + (n1 - 0.5) * 200.0);
+    float soil = saturate(hollow_f * 0.8 + (n1 - 0.65) * 1.5) * (1.0 - alpine * 0.5);
+    // Snow: above the snowline on what is not too steep to hold it; drifts in hollows.
+    // Snow slides off past ~45-50 degrees: steep faces stay rock with snow on ledges.
+    float snow = smoothstep(snowline - 120.0, snowline + 120.0, h + hollow * 150.0 + (n1 - 0.5) * 120.0) * smoothstep(0.62, 0.78, cf + (n1 - 0.5) * 0.1);
+
+    float wt[T_LAYERS];
+    wt[L_ROCK] = rock;
+    wt[L_SCREE] = scree * (1.0 - rock * 0.7);
+    wt[L_GRASS] = grass * (1.0 - rock) * (1.0 - scree * 0.8);
+    wt[L_FOREST] = forest * (1.0 - rock) * (1.0 - scree * 0.8);
+    wt[L_SOIL] = soil * 0.5 * (1.0 - rock) * (1.0 - snow);
+    wt[L_SNOW] = snow * 1.6;
+    [ForceUnroll]
+    for (uint k = 0; k < T_LAYERS; k++) {
+        if (k != L_SNOW) {
+            wt[k] *= (1.0 - snow);
+        }
+    }
+
+    // Projections: top (face u, v) for everything; rock and scree also on the two vertical
+    // planes where the fine slope is steep.
+    float near = saturate(1.0 - dist / 400.0);
+    float3 ax = abs(float3(dot(n, tu), dot(n, tv), dot(n, up)));
+    // Biplanar: the top plane and the dominant vertical one (two fetches instead of three).
+    // The vertical weight is the major axis minus the minor one, so it fades to zero where
+    // the two swap (no seam); the top plane fills that band.
+    float3 tw = pow(ax, float3(4.0));
+    float major = max(tw.x, tw.y) - min(tw.x, tw.y);
+    tw.xy = tw.x > tw.y ? float2(major, 0.0) : float2(0.0, major);
+    tw = max(tw - 0.03, 0.0);
+    tw.z = max(tw.z, 0.01);
+    tw /= max(tw.x + tw.y + tw.z, 1e-4);
+
+    // Projections: top (face u, v); rock and snow add the dominant vertical plane ((u, height)
+    // faces along v, (v, height) faces along u) where the fine slope is steep.
+    TProj top = { w, dwx, dwy };
+    bool side_u = tw.y >= tw.x;  // plane (u, height)
+    float ws = side_u ? tw.y : tw.x;
+    TProj side;
+    side.w = side_u ? float2(w.x, h) : float2(w.y, h);
+    side.dx = side_u ? float2(dwx.x, dhx) : float2(dwx.y, dhx);
+    side.dy = side_u ? float2(dwy.x, dhy) : float2(dwy.y, dhy);
+    float3 side_t = side_u ? tu : tv;
+
+    // Pass 1: albedo and displacement of every active layer; height blend.
+    float4 ah[T_LAYERS];
+    float best = 0.0;
+    [ForceUnroll]
+    for (uint k = 0; k < T_LAYERS; k++) {
+        ah[k] = float4(0.0);
+        if (wt[k] < 0.04) {
+            wt[k] = 0.0;
+            continue;
+        }
+        bool tri = (k == L_ROCK || k == L_SNOW) && ws > 0.0;
+        float4 a = tw.z > 0.0 || !tri ? t_layer_albedo(m, smp, k, top, near) : float4(0.0);
+        if (tri) {
+            a = a * tw.z + t_layer_albedo(m, smp, k, side, near) * ws;
+        }
+        ah[k] = a;
+        // Height blend: displacement lifts a layer's own high points through its neighbours.
+        wt[k] += a.a * lerp(0.15, 0.6, near);
+        best = max(best, wt[k]);
+    }
+    float total = 0.0;
+    [ForceUnroll]
+    for (uint k = 0; k < T_LAYERS; k++) {
+        wt[k] = wt[k] > 0.0 ? max(wt[k] - (best - 0.35), 0.0) : 0.0;
+        total += wt[k];
+    }
+    // Pass 2: blend; normals only for the layers that survived, and only near.
+    TSurf o;
+    o.albedo = float3(0.0);
+    o.n = float3(0.0);
+    o.rough = 0.0;
+    o.ao = 0.0;
+    float3 pert = float3(0.0);
+    [ForceUnroll]
+    for (uint k = 0; k < T_LAYERS; k++) {
+        if (wt[k] <= 0.0) {
+            continue;
+        }
+        float a = wt[k] / max(total, 1e-5);
+        o.albedo += a * ah[k].rgb * m.gain[k].rgb;
+        float4 nr = float4(0.0, 0.0, T_ROUGH, 1.0);
+        float3 nw = float3(0.0);
+        if (near > 0.0) {
+            bool tri = (k == L_ROCK || k == L_SNOW) && ws > 0.0;
+            nr = float4(0.0);
+            if (tw.z > 0.0 || !tri) {
+                float4 b = t_layer_normal(m, smp, k, top);
+                float s = tri ? tw.z : 1.0;
+                nr = b * s;
+                nw = (tu * b.x + tv * b.y) * s;
+            }
+            if (tri) {
+                float4 b = t_layer_normal(m, smp, k, side);
+                nr += b * ws;
+                nw += (side_t * b.x + up * b.y) * ws;
+            }
+        }
+        pert += a * nw;
+        o.rough += a * nr.z;
+        o.ao += a * nr.w;
+    }
+    if (total <= 0.0) {
+        o.albedo = T_ALB_MEADOW;
+        o.rough = T_ROUGH;
+        o.ao = 1.0;
+    }
+    // Macro variation: brightness and warmth over tens to hundreds of metres (what the eye
+    // reads on far slopes), damp darkening in hollows.
+    float macro = lerp(0.82, 1.15, n2) * lerp(0.9, 1.08, n3);
+    o.albedo *= macro * lerp(1.0, 0.8, hollow_f * (1.0 - snow));
+    o.albedo *= lerp(float3(1.0), float3(1.04, 1.0, 0.94), n1 * (1.0 - snow));
+    // The forest floor from afar reads as canopy (no trees drawn yet).
+    float canopy = wt[L_FOREST] / max(total, 1e-5) * smoothstep(60.0, 600.0, dist);
+    // Conifer canopy seen from afar, crown shadows included (darker than a sunlit leaf).
+    o.albedo = lerp(o.albedo, float3(0.030, 0.044, 0.021) * lerp(0.85, 1.15, n1), canopy);
+    // Normal map: fades with distance (the mips average it out anyway), whiteout-style add.
+    float ns = lerp(0.35, 1.0, near);
+    o.n = normalize(n + pert * ns);
+    o.ao = lerp(1.0, o.ao, ns);
+    return o;
+}
+
 // A terrain pixel: the rasterised triangle refetched from the draw record and page pool (exact
 // position on the drawn facet), a smooth normal from the height page, the slope/altitude tint,
 // then the same light as every opaque pixel.
@@ -187,6 +437,39 @@ float4 terrain_pixel(FrameData* f, FsOut i, uint2 vis, float3 dir) {
     int r = clamp(int(T_SLOPE_M / spacing + 0.5), 1, 6);
     float3 nm = r == rn ? n : t_smooth_normal(pool, d, g, r, up, h);
     float3 albedo = terrain_albedo(h, dot(nm, up));
+    float rough = T_ROUGH;
+    float mat_ao = 1.0;
+    if (ed_c.t_mat != 0u) {
+        TerrainMat m = ed_buf<TerrainMat>(ed_c.t_draws)[ed_c.t_mat];
+        // World-stable face metres and their per-pixel steps (ray differentials on the facet).
+        float cell_m = d.shape.x * d.shape.y;
+        float2 w = d.tex.xy + (g - 32.0) * cell_m;
+        float3 tu = normalize(d.fu.xyz - up * dot(d.fu.xyz, up));
+        float3 tv = normalize(d.fv.xyz - up * dot(d.fv.xyz, up));
+        float2 bx = ray_bary(view_dir(f, i.pos.xy + float2(1.0, 0.0)), p0, e1, e2);
+        float2 by = ray_bary(view_dir(f, i.pos.xy + float2(0.0, 1.0)), p0, e1, e2);
+        float3 dpx = p0 + e1 * bx.x + e2 * bx.y - p;
+        float3 dpy = p0 + e1 * by.x + e2 * by.y - p;
+        float2 dwx = float2(dot(dpx, tu), dot(dpx, tv));
+        float2 dwy = float2(dot(dpy, tu), dot(dpy, tv));
+        // Curvature: Laplacian of the bilinear page over ~8 m (landform) and ~2 m (fine, near
+        // only). Bilinear taps keep it smooth (a nearest-sample stencil steps per sample).
+        float2 sp = g * float(T_PAGE_STRIDE);
+        int rl = clamp(int(8.0 / spacing + 0.5), 1, 16);
+        int rf = clamp(int(2.0 / spacing + 0.5), 1, 4);
+        float lap = t_page_bilin(pool, d, sp + float2(rl, 0)) + t_page_bilin(pool, d, sp - float2(rl, 0)) + t_page_bilin(pool, d, sp + float2(0, rl)) + t_page_bilin(pool, d, sp - float2(0, rl)) - 4.0 * h;
+        float lapf = 0.0;
+        if (length_squared(p) < 400.0 * 400.0) {
+            lapf = t_page_bilin(pool, d, sp + float2(rf, 0)) + t_page_bilin(pool, d, sp - float2(rf, 0)) + t_page_bilin(pool, d, sp + float2(0, rf)) + t_page_bilin(pool, d, sp - float2(0, rf)) - 4.0 * h;
+        }
+        float dl = float(rl) * spacing;
+        float df = float(rf) * spacing;
+        TSurf s = terrain_material(f, m, d, n, nm, up, h, lap / (dl * dl), lapf / (df * df), w, dwx, dwy, dot(dpx, up), dot(dpy, up), tu, tv, length(p));
+        albedo = s.albedo;
+        n = s.n;
+        rough = s.rough;
+        mat_ao = s.ao;
+    }
     float3 v = -dir;
     if (dot(n, v) < 0.0) {
         n = normalize(n - 1.01 * dot(n, v) * v);
@@ -199,10 +482,10 @@ float4 terrain_pixel(FrameData* f, FsOut i, uint2 vis, float3 dir) {
     }
     float sun_vis = sun_shadow(f, ed_c.shadow, p, ng, zlin, i.pos.xy);
     float2 occ = ao_upsample(f, ed_c.ao, i.pos.xy, zlin);
-    float ao = occ.x;
+    float ao = occ.x * mat_ao;
     float sv = occ.y;
     float3 sun = sun_light_at(f, p);
-    float3 col = shade_pbr(f, sun, albedo, 0.0, T_ROUGH, ao, sv, sun_vis, n, v);
+    float3 col = shade_pbr(f, sun, albedo, 0.0, rough, ao, sv, sun_vis, n, v);
     col = apply_aerial(f, col, p, i.pos.xy);
     if (f.light.flags.w == 1u) {
         static const float3 TINT[5] = { float3(1.0, 0.25, 0.25), float3(0.25, 1.0, 0.25), float3(0.3, 0.45, 1.0), float3(1.0, 1.0, 0.25), float3(0.6, 0.6, 0.6) };
