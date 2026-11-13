@@ -48,7 +48,34 @@ pub const RING: u32 = 4 * CELLS;
 pub const VERTS: u32 = GRID_VERTS + RING;
 pub const GRID_TRIS: u32 = CELLS * CELLS * 2;
 pub const TRIS: u32 = GRID_TRIS + 2 * RING;
-pub const INDEX_COUNT: u32 = TRIS * 3;
+/// Index buffer LODs: the same 65 x 65 vertices drawn at stride 1, 2, 4 and 8 (64^2 ... 8^2
+/// cells; the skirt ring follows the stride). All three live in one index buffer, `lod_index_offset`.
+pub const LODS: usize = 4;
+pub const fn lod_cells(l: u32) -> u32 {
+    CELLS >> l
+}
+pub const fn lod_grid_tris(l: u32) -> u32 {
+    2 * lod_cells(l) * lod_cells(l)
+}
+pub const fn lod_tris(l: u32) -> u32 {
+    lod_grid_tris(l) + 8 * lod_cells(l)
+}
+/// First index of LOD `l` in the shared index buffer.
+pub const fn lod_index_offset(l: u32) -> u32 {
+    let mut o = 0;
+    let mut m = 0;
+    while m < l {
+        o += lod_tris(m) * 3;
+        m += 1;
+    }
+    o
+}
+/// Triangles of LOD 0 (the full-resolution mesh).
+pub const INDEX_COUNT0: u32 = TRIS * 3;
+/// Indices of all LODs.
+pub const INDEX_COUNT: u32 = lod_index_offset(LODS as u32);
+/// The visibility word's primitive carries the node's LOD at this bit (`t_triangle`).
+pub const PRIM_LOD_SHIFT: u32 = 24;
 /// Words per drawn node (`TerrainDraw` in terrain_common.slang).
 pub const DRAW_WORDS: usize = 40;
 /// u32 words per page pool slot (257 x 257 u16, padded to whole words).
@@ -61,6 +88,14 @@ pub const F_COARSE_MASK: u32 = 0xF;
 pub const F_QX: u32 = 1 << 4;
 pub const F_QY: u32 = 1 << 5;
 pub const F_SKIRT: u32 = 1 << 6;
+/// Bits 8-9: the node's index LOD (stride 1 << lod).
+pub const F_LOD_SHIFT: u32 = 8;
+/// Bits 10-21: per edge (same order as the coarse mask), 3 bits of log2 of the neighbour edge's
+/// vertex spacing in this node's grid units (>= own stride): vertices between its lattice
+/// points slide onto the segment (`t_grid_vertex`).
+pub const F_EDGE_SHIFT: u32 = 10;
+/// No vertex of the node morphs (the node lies wholly inside its own morph band start).
+pub const F_NOMORPH: u32 = 1 << 22;
 /// Page samples per grid cell.
 const STRIDE: usize = 4;
 /// The morph band uses the node's nominal cell size (equator, face centre) times this, the
@@ -340,20 +375,37 @@ fn cpu_coarse(d: &TerrainDraw, pg: &DrawPages, edge: u32, e: u32) -> Vec3 {
 
 /// `t_grid_vertex`: final node-relative position of grid vertex (i, j).
 pub fn cpu_grid_vertex(d: &TerrainDraw, pg: &DrawPages, i: u32, j: u32) -> Vec3 {
-    let coarse = d.slots[2] & F_COARSE_MASK;
-    if coarse & 1 != 0 && i == 0 {
-        return cpu_coarse(d, pg, 0, j);
-    }
-    if coarse & 2 != 0 && i == CELLS {
-        return cpu_coarse(d, pg, 1, j);
-    }
-    if coarse & 4 != 0 && j == 0 {
-        return cpu_coarse(d, pg, 2, i);
-    }
-    if coarse & 8 != 0 && j == CELLS {
-        return cpu_coarse(d, pg, 3, i);
+    let fl = d.slots[2];
+    let edge = if i == 0 {
+        Some((0, j))
+    } else if i == CELLS {
+        Some((1, j))
+    } else if j == 0 {
+        Some((2, i))
+    } else if j == CELLS {
+        Some((3, i))
+    } else {
+        None
+    };
+    if let Some((edge, e)) = edge {
+        let cb = fl & (1 << edge) != 0;
+        let ee = 1u32 << ((fl >> (F_EDGE_SHIFT + 3 * edge)) & 7);
+        if cb && ee <= 2 {
+            return cpu_coarse(d, pg, edge, e);
+        }
+        if ee > 1 {
+            let lo = e & !(ee - 1);
+            if lo == e {
+                return cpu_base(d, pg, i, j);
+            }
+            let (a, b) = (edge_at(edge, lo), edge_at(edge, lo + ee));
+            return cpu_base(d, pg, a.0, a.1).lerp(cpu_base(d, pg, b.0, b.1), (e - lo) as f32 / ee as f32);
+        }
     }
     let p = cpu_base(d, pg, i, j);
+    if fl & F_NOMORPH != 0 {
+        return p;
+    }
     let m = morph_factor(v3(d.origin) + p, [d.morph[0], d.morph[1]]);
     if m <= 0.0 {
         return p;
@@ -386,28 +438,51 @@ pub fn cpu_vertex(d: &TerrainDraw, pg: &DrawPages, v: u32) -> Vec3 {
     o + p - up * depth
 }
 
-/// `t_triangle`: vertex numbers of primitive `prim` (the index buffer's order).
+/// `t_triangle`: vertex numbers of primitive `prim` (the index buffer's order; the LOD rides at
+/// [`PRIM_LOD_SHIFT`]).
 pub fn triangle(prim: u32) -> [u32; 3] {
-    if prim < GRID_TRIS {
+    let lod = (prim >> PRIM_LOD_SHIFT) & 3;
+    let prim = prim & ((1 << PRIM_LOD_SHIFT) - 1);
+    let (st, c) = (1u32 << lod, lod_cells(lod));
+    if prim < lod_grid_tris(lod) {
         let q = prim >> 1;
-        let (i, j) = (q % CELLS, q / CELLS);
+        let (i, j) = ((q % c) * st, (q / c) * st);
         let v00 = j * SIDE + i;
-        let (v10, v01) = (v00 + 1, v00 + SIDE);
-        let v11 = v01 + 1;
+        let (v10, v01) = (v00 + st, v00 + st * SIDE);
+        let v11 = v01 + st;
         return if prim & 1 == 0 { [v00, v10, v11] } else { [v00, v11, v01] };
     }
-    let k = prim - GRID_TRIS;
+    let k = prim - lod_grid_tris(lod);
     let s = k >> 1;
-    let s1 = (s + 1) % RING;
-    let (p, q) = (ring(s), ring(s1));
+    let s1 = (s + 1) % (4 * c);
+    let (rp, rq) = (s * st, s1 * st);
+    let (p, q) = (ring(rp), ring(rq));
     let (tp, tq) = (p.1 * SIDE + p.0, q.1 * SIDE + q.0);
-    let (a, b) = (GRID_VERTS + s, GRID_VERTS + s1);
+    let (a, b) = (GRID_VERTS + rp, GRID_VERTS + rq);
     if k & 1 == 0 { [a, b, tq] } else { [a, tq, tp] }
 }
 
-/// The shared index buffer.
+/// Is `prim` (with its LOD bits) a skirt triangle?
+pub fn prim_is_skirt(prim: u32) -> bool {
+    prim & ((1 << PRIM_LOD_SHIFT) - 1) >= lod_grid_tris((prim >> PRIM_LOD_SHIFT) & 3)
+}
+
+/// Triangles one frame of the latest `prepare` drew: (view, the four cascades).
+impl TerrainProvider {
+    pub fn tri_counts(&self) -> (u64, [u64; 4]) {
+        let v = &self.views[self.cur];
+        let sum = |g: &[(u32, u32); LODS]| g.iter().enumerate().map(|(l, x)| x.1 as u64 * lod_tris(l as u32) as u64).sum::<u64>();
+        (sum(&v.groups[0]), std::array::from_fn(|c| sum(&v.groups[c + 1])))
+    }
+    /// Nodes per index LOD in the view (the latest `prepare`).
+    pub fn lod_counts(&self) -> [u32; LODS] {
+        self.views[self.cur].groups[0].map(|g| g.1)
+    }
+}
+
+/// The shared index buffer: LOD 0, then 1, then 2.
 pub fn indices() -> Vec<u32> {
-    (0..TRIS).flat_map(triangle).collect()
+    (0..LODS as u32).flat_map(|l| (0..lod_tris(l)).flat_map(move |p| triangle(p | l << PRIM_LOD_SHIFT))).collect()
 }
 
 /// Edge mask of `id` among `drawn`: bit set where the edge neighbour is one level coarser.
@@ -420,6 +495,123 @@ pub fn coarse_mask(id: NodeId, drawn: &BTreeSet<NodeId>) -> u32 {
         }
     }
     m
+}
+
+// ---------------------------------------------------------------------------------------------
+// Index LOD selection
+// ---------------------------------------------------------------------------------------------
+
+/// A view's index LOD for a node is the coarsest stride whose projected cells stay under both
+/// limits: effective cell area (`s * sqrt(px^2 per fine cell)`) and the longest cell edge.
+fn lod_limits() -> (f32, f32) {
+    static L: std::sync::OnceLock<(f32, f32)> = std::sync::OnceLock::new();
+    *L.get_or_init(|| {
+        let f = |k: &str, d: f32| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+        (f("ED_TERRAIN_LOD_AREA", 12.0), f("ED_TERRAIN_LOD_EDGE", 48.0))
+    })
+}
+
+/// Cell size (m) of a draw's grid.
+fn cell_m(d: &TerrainDraw) -> f32 {
+    d.shape[0] * d.dir_c[3]
+}
+
+/// Cascade LOD: the coarsest stride whose cells are at most `CASCADE_TEXELS` texels.
+fn cascade_lod(d: &TerrainDraw, texel_m: f32, c: usize) -> u8 {
+    let mut k = 0u8;
+    while (k as usize) + 1 < LODS && cell_m(d) * (2 << k) as f32 <= cascade_texels(c) * texel_m {
+        k += 1;
+    }
+    k
+}
+/// Texels a caster cell may span in cascade `c`: the first cascade (next to the character) stays
+/// near the main view's detail so shadow and surface agree, outer cascades are far coarser.
+fn cascade_texels(c: usize) -> f32 {
+    static T: std::sync::OnceLock<[f32; 4]> = std::sync::OnceLock::new();
+    T.get_or_init(|| {
+        let v: Vec<f32> = std::env::var("ED_TERRAIN_CASCADE_TEXELS").ok().map(|s| s.split(',').filter_map(|x| x.parse().ok()).collect()).unwrap_or_default();
+        if v.len() == 4 { [v[0], v[1], v[2], v[3]] } else { [2.0, 4.0, 8.0, 8.0] }
+    })[c.min(3)]
+}
+
+/// Meters per texel of an orthographic cascade matrix (camera-relative clip, 2 units wide).
+fn cascade_texel_m(m: &glam::Mat4, tile: u32) -> f32 {
+    let per_m = m.row(0).truncate().length().max(1e-9);
+    2.0 / (per_m * tile as f32)
+}
+
+/// Clamps `want` (log2 strides) so a finer-level node never has a coarser edge spacing than its
+/// coarser neighbour (the coarser node does not stitch to it), then writes the LOD and per-edge
+/// stitching spacing flags into `entries`. Returns the final LODs.
+fn assign_lods(entries: &mut [TerrainDraw], want: &[u8]) -> Vec<u8> {
+    let idx: BTreeMap<NodeId, usize> = entries.iter().enumerate().filter_map(|(i, d)| d.id.map(|id| (id, i))).collect();
+    // Per node and edge: (neighbour index, same level?).
+    let links: Vec<[Option<(usize, bool)>; 4]> = entries
+        .iter()
+        .map(|d| {
+            let mut out = [None; 4];
+            if let Some(id) = d.id {
+                for (k, (dx, dy)) in [(-1, 0), (1, 0), (0, -1), (0, 1)].into_iter().enumerate() {
+                    let nb = id.neighbour(dx, dy);
+                    if nb == id {
+                        continue;
+                    }
+                    if let Some(&j) = idx.get(&nb) {
+                        out[k] = Some((j, true));
+                    } else if let Some(&j) = nb.parent().and_then(|p| idx.get(&p)) {
+                        out[k] = Some((j, false));
+                    }
+                }
+            }
+            out
+        })
+        .collect();
+    let mut l = want.to_vec();
+    loop {
+        let mut changed = false;
+        for i in 0..l.len() {
+            for (j, same) in links[i].iter().flatten() {
+                if !same && l[i] > l[*j] + 1 {
+                    l[i] = l[*j] + 1;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    for (i, d) in entries.iter_mut().enumerate() {
+        let mut fl = d.slots[2] & !(3 << F_LOD_SHIFT) & !(0xFFF << F_EDGE_SHIFT);
+        fl |= (l[i] as u32) << F_LOD_SHIFT;
+        for k in 0..4 {
+            let e = match links[i][k] {
+                Some((j, true)) => l[i].max(l[j]),
+                Some((j, false)) => l[j] + 1,
+                None => l[i],
+            };
+            // Coarse edges always carry their spacing (>= 2) so the stitch path is taken.
+            fl |= (e as u32 & 7) << (F_EDGE_SHIFT + 3 * k as u32);
+        }
+        d.slots[2] = fl;
+    }
+    l
+}
+
+/// Stable sort of parallel arrays by LOD; returns the (first, count) of each LOD.
+fn sort_by_lod<T>(lods: &[u8], items: &mut Vec<T>) -> [(u32, u32); LODS] {
+    let mut order: Vec<usize> = (0..lods.len()).collect();
+    order.sort_by_key(|&i| lods[i]);
+    let mut slots: Vec<Option<T>> = items.drain(..).map(Some).collect();
+    items.extend(order.iter().map(|&i| slots[i].take().unwrap()));
+    let mut g = [(0u32, 0u32); LODS];
+    let mut first = 0;
+    for (k, gk) in g.iter_mut().enumerate() {
+        let n = lods.iter().filter(|&&x| x as usize == k).count() as u32;
+        *gk = (first, n);
+        first += n;
+    }
+    g
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -512,14 +704,21 @@ pub struct CameraGround {
     pub ground_alt_m: Option<f64>,
 }
 
+type Consts = [u8; ed_gpu::DRAW_CONSTANTS_BYTES];
+
 struct TerrainView {
     /// Main draws, then each cascade's culled copies (`ranges`).
     draws: Tracked,
     entries: Vec<TerrainDraw>,
+    /// The main pass's draws (the entries inside the frustum, grouped by index LOD): the
+    /// buffer's first `vis.len()` draws (set by `prepare`).
+    vis: Vec<TerrainDraw>,
     /// Camera-relative box per entry (min xyz, max xyz).
     bounds: Vec<[f32; 6]>,
     /// Per cascade: first draw in the buffer and count (set by `prepare`).
     ranges: [(u32, u32); 4],
+    /// Per list (0: the view, 1-4: cascades), per index LOD: first draw and count.
+    groups: [[(u32, u32); LODS]; 5],
     imports: Vec<(Res, u8)>,
 }
 
@@ -538,6 +737,8 @@ pub struct TerrainProvider {
     stats: TerrainStats,
     /// The eye of the latest update (draw origins are relative to it).
     eye: DVec3,
+    /// Texels per cascade side (from the latest `record`; sizes the cascades' LODs).
+    shadow_tile: u32,
 }
 
 const GEN_MSL: &str = include_str!("../shaders/gen/msl/terrain.metal");
@@ -567,14 +768,14 @@ impl TerrainProvider {
         dev.write_buffer(index.id, 0, &gpu::bytes(&indices()))?;
         let pool_buf = Tracked::new(dev, "terrain page pool", config.pool_slots as u64 * PAGE_WORDS as u64 * 4, upload)?;
         let view0 = Self::new_view(dev, config.max_draws)?;
-        Ok(Self { config, built, raster, shadow, index, pool_buf, pool: Pool::new(config.pool_slots), views: vec![view0], cur: 0, stamp: 0, stats: TerrainStats::default(), eye: DVec3::ZERO })
+        Ok(Self { config, built, raster, shadow, index, pool_buf, pool: Pool::new(config.pool_slots), views: vec![view0], cur: 0, stamp: 0, stats: TerrainStats::default(), eye: DVec3::ZERO, shadow_tile: 2048 })
     }
 
     fn new_view(dev: &dyn Device, max_draws: u32) -> Result<TerrainView, ed_gpu::Error> {
         let per_frame = Usage { shader_read: true, cpu_write: true, ..Default::default() };
         // Room for the view's draws and up to four cascade lists.
         let size = max_draws as u64 * 5 * DRAW_WORDS as u64 * 4;
-        Ok(TerrainView { draws: Tracked::new(dev, "terrain draws", size, per_frame)?, entries: Vec::new(), bounds: Vec::new(), ranges: [(0, 0); 4], imports: Vec::new() })
+        Ok(TerrainView { draws: Tracked::new(dev, "terrain draws", size, per_frame)?, entries: Vec::new(), vis: Vec::new(), bounds: Vec::new(), ranges: [(0, 0); 4], groups: [[(0, 0); LODS]; 5], imports: Vec::new() })
     }
 
     fn pipelines(dev: &dyn Device, built: &mut Vec<ShaderId>) -> Result<(RenderPipelineId, RenderPipelineId), ed_gpu::Error> {
@@ -631,7 +832,7 @@ impl TerrainProvider {
 
     /// This view's draws of the latest update, in draw (instance) order.
     pub fn draws(&self) -> &[TerrainDraw] {
-        &self.views[self.cur].entries
+        &self.views[self.cur].vis
     }
 
     /// The pages a draw reads (CPU copies of what the pool holds).
@@ -698,6 +899,76 @@ impl TerrainProvider {
         st
     }
 
+    /// Index LOD of a node in the main view: 5 x 5 lattice points are projected with `vp` (the
+    /// camera-relative view-projection); the densest 16 x 16-cell patch sets the stride. A node
+    /// crossing the camera plane or without a page stays at LOD 0.
+    fn main_lod(&self, d: &TerrainDraw, vp: &glam::Mat4, w: f32, h: f32) -> u8 {
+        let Some(pg) = self.draw_pages(d) else { return 0 };
+        let mut px = [[glam::Vec2::ZERO; 5]; 5];
+        let mut front = [[false; 5]; 5];
+        for (j, row) in px.iter_mut().enumerate() {
+            for (i, p) in row.iter_mut().enumerate() {
+                let (gi, gj) = (i as u32 * 16, j as u32 * 16);
+                let q = v3(d.origin) + cpu_lattice(d, gi, gj, own_h(d, &pg, gi, gj));
+                let c = *vp * q.extend(1.0);
+                front[j][i] = c.w > 1e-2;
+                if front[j][i] {
+                    *p = glam::Vec2::new(c.x / c.w, c.y / c.w);
+                }
+            }
+        }
+        let cross = |u: glam::Vec2, v: glam::Vec2| u.x * v.y - u.y * v.x;
+        let scale = glam::Vec2::new(0.5 * w, 0.5 * h);
+        let (mut dens, mut edge) = (0.0f32, 0.0f32);
+        for j in 0..4 {
+            for i in 0..4 {
+                let ij = [(i, j), (i + 1, j), (i + 1, j + 1), (i, j + 1)];
+                let on = ij.iter().filter(|&&(a, b)| front[b][a]).count();
+                if on == 0 {
+                    continue;
+                }
+                let pts = ij.map(|(a, b)| px[b][a]);
+                let (lo, hi) = pts.iter().fold((glam::Vec2::splat(f32::MAX), glam::Vec2::splat(f32::MIN)), |(l, h), p| (l.min(*p), h.max(*p)));
+                let seen = ij.iter().zip(&pts).any(|(&(a, b), p)| front[b][a] && p.abs().max_element() <= 1.5) || (hi.x >= -1.0 && lo.x <= 1.0 && hi.y >= -1.0 && lo.y <= 1.0);
+                if on < 4 {
+                    // Straddles the camera plane: finest, unless nothing of it is on screen.
+                    if seen {
+                        return 0;
+                    }
+                    continue;
+                }
+                if !seen {
+                    continue;
+                }
+                let q = pts.map(|p| p * scale);
+                let area = 0.5 * (cross(q[1] - q[0], q[2] - q[0]).abs() + cross(q[2] - q[0], q[3] - q[0]).abs());
+                dens = dens.max(area / 256.0);
+                edge = edge.max((0..4).map(|k| (q[(k + 1) % 4] - q[k]).length()).fold(0.0, f32::max) / 16.0);
+            }
+        }
+        let (area_px, edge_px) = lod_limits();
+        let mut k = 0u8;
+        while (k as usize) + 1 < LODS {
+            let s = (2 << k) as f32;
+            if s * dens.sqrt() <= area_px && s * edge <= edge_px {
+                k += 1;
+            } else {
+                break;
+            }
+        }
+        k
+    }
+
+    /// Is any part of the box inside the view frustum (the four side planes and in front)?
+    fn box_visible(vp: &glam::Mat4, b: &[f32; 6]) -> bool {
+        let corners: [glam::Vec4; 8] = std::array::from_fn(|k| {
+            let c = Vec3::new(b[if k & 1 == 0 { 0 } else { 3 }], b[if k & 2 == 0 { 1 } else { 4 }], b[if k & 4 == 0 { 2 } else { 5 }]);
+            *vp * c.extend(1.0)
+        });
+        let outside = |f: fn(&glam::Vec4) -> f32| corners.iter().all(|c| f(c) < 0.0);
+        !(outside(|c| c.w + c.x) || outside(|c| c.w - c.x) || outside(|c| c.w + c.y) || outside(|c| c.w - c.y) || outside(|c| c.w))
+    }
+
     /// The camera's place on the body, for the atmosphere and anything else that assumed a
     /// flat world (see [`CameraGround`]).
     pub fn camera_ground(body: &Body, pose: &BodyPose, eye: DVec3, ground: Option<f64>) -> CameraGround {
@@ -722,41 +993,90 @@ impl GeometryProvider for TerrainProvider {
 
     fn poll(&mut self, _dev: &dyn Device) {}
 
-    /// Needs `FrameData.light` already in `fd` (the cascade matrices): each cascade draws only
-    /// the nodes whose bounds touch its box.
-    fn prepare(&mut self, dev: &dyn Device, _pools: &InstancePools, _width: u32, _height: u32, fd: &mut [u32]) -> Result<(), ed_gpu::Error> {
-        let v = &mut self.views[self.cur];
-        if v.entries.is_empty() {
-            v.ranges = [(0, 0); 4];
+    /// Needs `FrameData.view_proj` and `.light` already in `fd`: the view's nodes get an index LOD
+    /// from their projected cell size and are grouped by it; each cascade draws only the nodes
+    /// whose bounds touch its box, at the LOD its texel size allows.
+    fn prepare(&mut self, dev: &dyn Device, _pools: &InstancePools, width: u32, height: u32, fd: &mut [u32]) -> Result<(), ed_gpu::Error> {
+        let cur = self.cur;
+        if self.views[cur].entries.is_empty() {
+            self.views[cur].ranges = [(0, 0); 4];
+            self.views[cur].vis.clear();
+            self.views[cur].groups = [[(0, 0); LODS]; 5];
             return Ok(());
         }
-        let mut words: Vec<u32> = v.entries.iter().flat_map(|e| e.words()).collect();
-        let mut next = v.entries.len() as u32;
-        for c in 0..4 {
-            let at = gpu::FD_LIGHT + c * 16;
-            let m = glam::Mat4::from_cols_array(&std::array::from_fn(|k| f32::from_bits(fd.get(at + k).copied().unwrap_or(0))));
-            let first = next;
-            for (e, b) in v.entries.iter().zip(&v.bounds) {
-                if cascade_touches(&m, b) {
-                    words.extend_from_slice(&e.words());
-                    next += 1;
+        let mat = |at: usize| glam::Mat4::from_cols_array(&std::array::from_fn(|k| f32::from_bits(fd.get(at + k).copied().unwrap_or(0))));
+        let vp = mat(0);
+        let all = std::mem::take(&mut self.views[cur].entries);
+        let bounds = std::mem::take(&mut self.views[cur].bounds);
+        // Morph-free nodes: the farthest corner of the box is inside the morph band's start.
+        let all: Vec<TerrainDraw> = all
+            .into_iter()
+            .zip(&bounds)
+            .map(|(mut e, b)| {
+                let far = (0..8).map(|k| Vec3::new(b[if k & 1 == 0 { 0 } else { 3 }], b[if k & 2 == 0 { 1 } else { 4 }], b[if k & 4 == 0 { 2 } else { 5 }]).length()).fold(0.0f32, f32::max);
+                if far <= e.morph[0] {
+                    e.slots[2] |= F_NOMORPH;
+                } else {
+                    e.slots[2] &= !F_NOMORPH;
                 }
+                e
+            })
+            .collect();
+        let flat = std::env::var_os("ED_TERRAIN_NOLOD").is_some();
+        let nocull = std::env::var_os("ED_TERRAIN_NOCULL").is_some();
+        let mut main: Vec<TerrainDraw> = all.iter().zip(&bounds).filter(|(_, b)| nocull || Self::box_visible(&vp, b)).map(|(e, _)| *e).collect();
+        let want: Vec<u8> = main.iter().map(|d| if flat { 0 } else { self.main_lod(d, &vp, width as f32, height as f32) }).collect();
+        let lods = assign_lods(&mut main, &want);
+        let mut groups = [[(0u32, 0u32); LODS]; 5];
+        groups[0] = sort_by_lod(&lods, &mut main);
+        let mut words: Vec<u32> = main.iter().flat_map(|e| e.words()).collect();
+        let mut next = main.len() as u32;
+        let mut ranges = [(0, 0); 4];
+        for c in 0..4 {
+            let m = mat(gpu::FD_LIGHT + c * 16);
+            let texel = cascade_texel_m(&m, self.shadow_tile);
+            let ortho = m.row(3) == glam::Vec4::W;
+            let mut list: Vec<TerrainDraw> = all.iter().zip(&bounds).filter(|(_, b)| cascade_touches(&m, b)).map(|(e, _)| *e).collect();
+            let want: Vec<u8> = list.iter().map(|d| if flat || !ortho { 0 } else { cascade_lod(d, texel, c) }).collect();
+            let lods = assign_lods(&mut list, &want);
+            groups[c + 1] = sort_by_lod(&lods, &mut list);
+            let first = next;
+            for e in &list {
+                words.extend_from_slice(&e.words());
+                next += 1;
             }
-            v.ranges[c] = (first, next - first);
+            for g in groups[c + 1].iter_mut() {
+                g.0 += first;
+            }
+            ranges[c] = (first, next - first);
         }
+        let v = &mut self.views[cur];
+        v.entries = all;
+        v.bounds = bounds;
+        v.vis = main;
+        v.ranges = ranges;
+        v.groups = groups;
         let bytes = gpu::bytes(&words);
         dev.fill_frame_buffer(v.draws.id, &mut |dst| dst[..bytes.len()].copy_from_slice(&bytes))
     }
 
     fn record<'a>(&mut self, g: &mut FrameGraph<'a>, _frame_index: u64, inp: &SharedInputs, out: VisTargets) -> ProviderOutputs {
+        if let Some(sh) = &out.shadow {
+            self.shadow_tile = sh.tile;
+        }
         let v = &mut self.views[self.cur];
-        let n = v.entries.len() as u32;
+        let n = v.vis.len() as u32;
         let draws = g.import_buffer("terrain draws", v.draws.id, v.draws.state, None);
         let pool = g.import_buffer("terrain page pool", self.pool_buf.id, self.pool_buf.state, Some(ResourceState::CopyDst));
         let index = g.import_buffer("terrain indices", self.index.id, self.index.state, None);
         v.imports = vec![(draws, 0), (pool, 1), (index, 2)];
         let consts = |cascade: u32, base: u32| gpu::constants(&[inp.frame.1, v.draws.bindless.0, self.pool_buf.bindless.0, cascade, base]);
-        let (cv, idx_id, pipe, spipe) = (consts(0, 0), self.index.id, self.raster, self.shadow);
+        let (idx_id, pipe, spipe) = (self.index.id, self.raster, self.shadow);
+        // One instanced draw per (list, index LOD) group: (constants, first index, index count, instances).
+        let groups_of = |list: usize, cascade: u32| -> Vec<(Consts, u32, u32, u32)> {
+            v.groups[list].iter().enumerate().filter(|(_, g)| g.1 > 0).map(|(l, g)| (consts(cascade, g.0), lod_index_offset(l as u32), lod_tris(l as u32) * 3, g.1)).collect()
+        };
+        let main_groups = groups_of(0, 0);
         let clear = self.config.clear_targets;
         let load = if clear { LoadOp::Clear([0.0; 4]) } else { LoadOp::Load };
         let read = ResourceState::ShaderRead;
@@ -773,15 +1093,17 @@ impl GeometryProvider for TerrainProvider {
                 }
                 ctx.enc.set_index_buffer(idx_id, 0);
                 ctx.enc.set_render_pipeline(pipe);
-                ctx.enc.set_draw_constants(&cv);
-                ctx.enc.draw_indexed(0..INDEX_COUNT, 0, 0..n);
+                for (cv, first, count, inst) in &main_groups {
+                    ctx.enc.set_draw_constants(cv);
+                    ctx.enc.draw_indexed(*first..*first + *count, 0, 0..*inst);
+                }
             });
         // No caster in any cascade: no pass (unless it has to clear the atlas).
         let casters = v.ranges.iter().any(|r| r.1 > 0);
         if let Some(sh) = out.shadow.filter(|_| casters || clear) {
             let (cascades, tile) = (sh.cascades.min(4), sh.tile);
-            let ranges = v.ranges;
-            let cs: Vec<_> = (0..cascades).map(|c| consts(c, ranges[c as usize].0)).collect();
+
+            let cs: Vec<Vec<(Consts, u32, u32, u32)>> = (0..cascades).map(|c| groups_of(c as usize + 1, c)).collect();
             g.add_pass("terrain_shadow", PassKind::Raster)
                 .read(inp.frame.0, read)
                 .read(draws, read)
@@ -789,21 +1111,23 @@ impl GeometryProvider for TerrainProvider {
                 .read(index, read)
                 .depth(sh.atlas, load, StoreOp::Store, true)
                 .exec(move |ctx| {
-                    if n == 0 {
+                    if cs.iter().all(|g| g.is_empty()) {
                         return;
                     }
                     ctx.enc.set_index_buffer(idx_id, 0);
                     ctx.enc.set_render_pipeline(spipe);
-                    for (c, (cc, (_, count))) in cs.iter().zip(ranges).enumerate() {
-                        if count == 0 {
+                    for (c, gs) in cs.iter().enumerate() {
+                        if gs.is_empty() {
                             continue;
                         }
                         let c = c as u32;
                         let (x, y) = ((c % 2) * tile, (c / 2) * tile);
                         ctx.enc.set_viewport(x as f32, y as f32, tile as f32, tile as f32);
                         ctx.enc.set_scissor(x, y, tile, tile);
-                        ctx.enc.set_draw_constants(cc);
-                        ctx.enc.draw_indexed(0..INDEX_COUNT, 0, 0..count);
+                        for (cc, first, count, inst) in gs {
+                            ctx.enc.set_draw_constants(cc);
+                            ctx.enc.draw_indexed(*first..*first + *count, 0, 0..*inst);
+                        }
                     }
                 });
         }

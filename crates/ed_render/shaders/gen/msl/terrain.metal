@@ -391,6 +391,7 @@ struct pixelOutput_0
 struct pixelInput_0
 {
     [[flat]] uint draw_0 [[user(DRAW)]];
+    [[flat]] uint lod_0 [[user(LOD)]];
 };
 
 [[fragment]] pixelOutput_0 fs_terrain(pixelInput_0 _S36 [[stage_in]], uint prim_0 [[primitive_id]], float4 pos_0 [[position]], TerrainC_0 constant* ed_c_1 [[buffer(0)]], ulong device* ed_buffers_1 [[buffer(2)]])
@@ -398,7 +399,7 @@ struct pixelInput_0
     thread KernelContext_0 kernelContext_9;
     (&kernelContext_9)->ed_c_0 = ed_c_1;
     (&kernelContext_9)->ed_buffers_0 = ed_buffers_1;
-    pixelOutput_0 _S37 = { uint4(2147483648U | (_S36.draw_0), prim_0 & 268435455U, 0U, 0U) };
+    pixelOutput_0 _S37 = { uint4(2147483648U | (_S36.draw_0), (prim_0 | ((_S36.lod_0) << 24U)) & 268435455U, 0U, 0U) };
     return _S37;
 }
 
@@ -453,13 +454,50 @@ float3 t_coarse_0(uint _S62, TerrainDraw_natural_0 device* _S63, uint _S64, uint
 float3 t_grid_vertex_0(uint _S74, TerrainDraw_natural_0 device* _S75, uint _S76, uint _S77, KernelContext_0 thread* kernelContext_14)
 {
     thread TerrainDraw_natural_0 _S78 = *_S75;
-    uint coarse_0 = ((uint4((&_S78)->slots_0) ).z) & 15U;
-    if(coarse_0 != 0U)
+    uint fl_0 = (uint4((&_S78)->slots_0) ).z;
+    uint edge_1;
+    uint e_4;
+    if(_S76 == 0U)
     {
-        bool _S79;
-        if((coarse_0 & 1U) != 0U)
+        edge_1 = 0U;
+        e_4 = _S77;
+    }
+    else
+    {
+        if(_S76 == 64U)
         {
-            _S79 = _S76 == 0U;
+            edge_1 = 1U;
+            e_4 = _S77;
+        }
+        else
+        {
+            if(_S77 == 0U)
+            {
+                edge_1 = 2U;
+                e_4 = _S76;
+            }
+            else
+            {
+                if(_S77 == 64U)
+                {
+                    edge_1 = 3U;
+                    e_4 = _S76;
+                }
+                else
+                {
+                    edge_1 = 4U;
+                    e_4 = 0U;
+                }
+            }
+        }
+    }
+    if(edge_1 < 4U)
+    {
+        uint E_0 = 1U << ((fl_0 >> (10U + 3U * edge_1)) & 7U);
+        bool _S79;
+        if((fl_0 & (1U << edge_1)) != 0U)
+        {
+            _S79 = E_0 <= 2U;
         }
         else
         {
@@ -467,50 +505,29 @@ float3 t_grid_vertex_0(uint _S74, TerrainDraw_natural_0 device* _S75, uint _S76,
         }
         if(_S79)
         {
-            float3 _S80 = t_coarse_0(_S74, _S75, 0U, _S77, kernelContext_14);
+            float3 _S80 = t_coarse_0(_S74, _S75, edge_1, e_4, kernelContext_14);
             return _S80;
         }
-        if((coarse_0 & 2U) != 0U)
+        if(E_0 > 1U)
         {
-            _S79 = _S76 == 64U;
-        }
-        else
-        {
-            _S79 = false;
-        }
-        if(_S79)
-        {
-            float3 _S81 = t_coarse_0(_S74, _S75, 1U, _S77, kernelContext_14);
-            return _S81;
-        }
-        if((coarse_0 & 4U) != 0U)
-        {
-            _S79 = _S77 == 0U;
-        }
-        else
-        {
-            _S79 = false;
-        }
-        if(_S79)
-        {
-            float3 _S82 = t_coarse_0(_S74, _S75, 2U, _S76, kernelContext_14);
-            return _S82;
-        }
-        if((coarse_0 & 8U) != 0U)
-        {
-            _S79 = _S77 == 64U;
-        }
-        else
-        {
-            _S79 = false;
-        }
-        if(_S79)
-        {
-            float3 _S83 = t_coarse_0(_S74, _S75, 3U, _S76, kernelContext_14);
-            return _S83;
+            uint lo_0 = e_4 & (~(E_0 - 1U));
+            if(lo_0 == e_4)
+            {
+                float3 _S81 = t_base_1(_S74, _S75, _S76, _S77, kernelContext_14);
+                return _S81;
+            }
+            uint2 a_1 = t_edge_at_0(edge_1, lo_0);
+            uint2 b_1 = t_edge_at_0(edge_1, lo_0 + E_0);
+            float3 _S82 = t_base_1(_S74, _S75, a_1.x, a_1.y, kernelContext_14);
+            float3 _S83 = t_base_0(_S74, &_S78, b_1.x, b_1.y, kernelContext_14);
+            return mix(_S82, _S83, float3((float(e_4 - lo_0) / float(E_0))) );
         }
     }
     float3 _S84 = t_base_1(_S74, _S75, _S76, _S77, kernelContext_14);
+    if((fl_0 & 4194304U) != 0U)
+    {
+        return _S84;
+    }
     float m_2 = t_morph_0((float4((&_S78)->origin_0) ).xyz + _S84, (float4((&_S78)->morph_0) ).xy);
     if(m_2 <= 0.0f)
     {
@@ -550,12 +567,14 @@ struct vs_terrain_Result_0
 {
     float4 pos_1 [[position]];
     uint draw_1 [[user(DRAW)]];
+    uint lod_1 [[user(LOD)]];
 };
 
 struct TerrainOut_0
 {
     float4 pos_2;
     [[flat]] uint draw_2;
+    [[flat]] uint lod_2;
 };
 
 [[vertex]] vs_terrain_Result_0 vs_terrain(uint vid_0 [[vertex_id]], uint iid_0 [[instance_id]], TerrainC_0 constant* ed_c_2 [[buffer(0)]], ulong device* ed_buffers_2 [[buffer(2)]])
@@ -565,14 +584,18 @@ struct TerrainOut_0
     (&kernelContext_16)->ed_buffers_0 = ed_buffers_2;
     FrameData_natural_0 device* _S96 = ed_buf_2(ed_c_2->frame_0, &kernelContext_16);
     TerrainDraw_natural_0 device* _S97 = ed_buf_1((&kernelContext_16)->ed_c_0->draws_0, &kernelContext_16);
-    float3 _S98 = t_vertex_0((&kernelContext_16)->ed_c_0->pool_0, _S97 + iid_0, vid_0, &kernelContext_16);
+    TerrainDraw_natural_0 device* _S98 = _S97 + ((&kernelContext_16)->ed_c_0->base_0 + iid_0);
+    TerrainDraw_natural_0 d_6 = *_S98;
+    float3 _S99 = t_vertex_0((&kernelContext_16)->ed_c_0->pool_0, _S98, vid_0, &kernelContext_16);
     thread TerrainOut_0 o_0;
-    (&o_0)->pos_2 = (((float4(_S98, 1.0f)) * (matrix<float,int(4),int(4)> (_S96->view_proj_0.data_0[int(0)][int(0)], _S96->view_proj_0.data_0[int(1)][int(0)], _S96->view_proj_0.data_0[int(2)][int(0)], _S96->view_proj_0.data_0[int(3)][int(0)], _S96->view_proj_0.data_0[int(0)][int(1)], _S96->view_proj_0.data_0[int(1)][int(1)], _S96->view_proj_0.data_0[int(2)][int(1)], _S96->view_proj_0.data_0[int(3)][int(1)], _S96->view_proj_0.data_0[int(0)][int(2)], _S96->view_proj_0.data_0[int(1)][int(2)], _S96->view_proj_0.data_0[int(2)][int(2)], _S96->view_proj_0.data_0[int(3)][int(2)], _S96->view_proj_0.data_0[int(0)][int(3)], _S96->view_proj_0.data_0[int(1)][int(3)], _S96->view_proj_0.data_0[int(2)][int(3)], _S96->view_proj_0.data_0[int(3)][int(3)]))));
-    (&o_0)->draw_2 = iid_0;
-    thread vs_terrain_Result_0 _S99;
-    (&_S99)->pos_1 = o_0.pos_2;
-    (&_S99)->draw_1 = o_0.draw_2;
-    return _S99;
+    (&o_0)->pos_2 = (((float4(_S99, 1.0f)) * (matrix<float,int(4),int(4)> (_S96->view_proj_0.data_0[int(0)][int(0)], _S96->view_proj_0.data_0[int(1)][int(0)], _S96->view_proj_0.data_0[int(2)][int(0)], _S96->view_proj_0.data_0[int(3)][int(0)], _S96->view_proj_0.data_0[int(0)][int(1)], _S96->view_proj_0.data_0[int(1)][int(1)], _S96->view_proj_0.data_0[int(2)][int(1)], _S96->view_proj_0.data_0[int(3)][int(1)], _S96->view_proj_0.data_0[int(0)][int(2)], _S96->view_proj_0.data_0[int(1)][int(2)], _S96->view_proj_0.data_0[int(2)][int(2)], _S96->view_proj_0.data_0[int(3)][int(2)], _S96->view_proj_0.data_0[int(0)][int(3)], _S96->view_proj_0.data_0[int(1)][int(3)], _S96->view_proj_0.data_0[int(2)][int(3)], _S96->view_proj_0.data_0[int(3)][int(3)]))));
+    (&o_0)->draw_2 = (&kernelContext_16)->ed_c_0->base_0 + iid_0;
+    (&o_0)->lod_2 = (((uint4(d_6.slots_0) ).z) >> 8U) & 3U;
+    thread vs_terrain_Result_0 _S100;
+    (&_S100)->pos_1 = o_0.pos_2;
+    (&_S100)->draw_1 = o_0.draw_2;
+    (&_S100)->lod_1 = o_0.lod_2;
+    return _S100;
 }
 
 struct vs_terrain_shadow_Result_0
@@ -590,13 +613,13 @@ struct TerrainShadowOut_0
     thread KernelContext_0 kernelContext_17;
     (&kernelContext_17)->ed_c_0 = ed_c_3;
     (&kernelContext_17)->ed_buffers_0 = ed_buffers_3;
-    FrameData_natural_0 device* _S100 = ed_buf_2(ed_c_3->frame_0, &kernelContext_17);
-    TerrainDraw_natural_0 device* _S101 = ed_buf_1((&kernelContext_17)->ed_c_0->draws_0, &kernelContext_17);
-    float3 _S102 = t_vertex_0((&kernelContext_17)->ed_c_0->pool_0, _S101 + ((&kernelContext_17)->ed_c_0->base_0 + iid_1), vid_1, &kernelContext_17);
+    FrameData_natural_0 device* _S101 = ed_buf_2(ed_c_3->frame_0, &kernelContext_17);
+    TerrainDraw_natural_0 device* _S102 = ed_buf_1((&kernelContext_17)->ed_c_0->draws_0, &kernelContext_17);
+    float3 _S103 = t_vertex_0((&kernelContext_17)->ed_c_0->pool_0, _S102 + ((&kernelContext_17)->ed_c_0->base_0 + iid_1), vid_1, &kernelContext_17);
     thread TerrainShadowOut_0 o_1;
-    (&o_1)->pos_4 = (((float4(_S102, 1.0f)) * (matrix<float,int(4),int(4)> ((&(&_S100->light_0)->shadow_0)->data_2[(&kernelContext_17)->ed_c_0->cascade_0].data_0[int(0)][int(0)], (&(&_S100->light_0)->shadow_0)->data_2[(&kernelContext_17)->ed_c_0->cascade_0].data_0[int(1)][int(0)], (&(&_S100->light_0)->shadow_0)->data_2[(&kernelContext_17)->ed_c_0->cascade_0].data_0[int(2)][int(0)], (&(&_S100->light_0)->shadow_0)->data_2[(&kernelContext_17)->ed_c_0->cascade_0].data_0[int(3)][int(0)], (&(&_S100->light_0)->shadow_0)->data_2[(&kernelContext_17)->ed_c_0->cascade_0].data_0[int(0)][int(1)], (&(&_S100->light_0)->shadow_0)->data_2[(&kernelContext_17)->ed_c_0->cascade_0].data_0[int(1)][int(1)], (&(&_S100->light_0)->shadow_0)->data_2[(&kernelContext_17)->ed_c_0->cascade_0].data_0[int(2)][int(1)], (&(&_S100->light_0)->shadow_0)->data_2[(&kernelContext_17)->ed_c_0->cascade_0].data_0[int(3)][int(1)], (&(&_S100->light_0)->shadow_0)->data_2[(&kernelContext_17)->ed_c_0->cascade_0].data_0[int(0)][int(2)], (&(&_S100->light_0)->shadow_0)->data_2[(&kernelContext_17)->ed_c_0->cascade_0].data_0[int(1)][int(2)], (&(&_S100->light_0)->shadow_0)->data_2[(&kernelContext_17)->ed_c_0->cascade_0].data_0[int(2)][int(2)], (&(&_S100->light_0)->shadow_0)->data_2[(&kernelContext_17)->ed_c_0->cascade_0].data_0[int(3)][int(2)], (&(&_S100->light_0)->shadow_0)->data_2[(&kernelContext_17)->ed_c_0->cascade_0].data_0[int(0)][int(3)], (&(&_S100->light_0)->shadow_0)->data_2[(&kernelContext_17)->ed_c_0->cascade_0].data_0[int(1)][int(3)], (&(&_S100->light_0)->shadow_0)->data_2[(&kernelContext_17)->ed_c_0->cascade_0].data_0[int(2)][int(3)], (&(&_S100->light_0)->shadow_0)->data_2[(&kernelContext_17)->ed_c_0->cascade_0].data_0[int(3)][int(3)]))));
-    thread vs_terrain_shadow_Result_0 _S103;
-    (&_S103)->pos_3 = o_1.pos_4;
-    return _S103;
+    (&o_1)->pos_4 = (((float4(_S103, 1.0f)) * (matrix<float,int(4),int(4)> ((&(&_S101->light_0)->shadow_0)->data_2[(&kernelContext_17)->ed_c_0->cascade_0].data_0[int(0)][int(0)], (&(&_S101->light_0)->shadow_0)->data_2[(&kernelContext_17)->ed_c_0->cascade_0].data_0[int(1)][int(0)], (&(&_S101->light_0)->shadow_0)->data_2[(&kernelContext_17)->ed_c_0->cascade_0].data_0[int(2)][int(0)], (&(&_S101->light_0)->shadow_0)->data_2[(&kernelContext_17)->ed_c_0->cascade_0].data_0[int(3)][int(0)], (&(&_S101->light_0)->shadow_0)->data_2[(&kernelContext_17)->ed_c_0->cascade_0].data_0[int(0)][int(1)], (&(&_S101->light_0)->shadow_0)->data_2[(&kernelContext_17)->ed_c_0->cascade_0].data_0[int(1)][int(1)], (&(&_S101->light_0)->shadow_0)->data_2[(&kernelContext_17)->ed_c_0->cascade_0].data_0[int(2)][int(1)], (&(&_S101->light_0)->shadow_0)->data_2[(&kernelContext_17)->ed_c_0->cascade_0].data_0[int(3)][int(1)], (&(&_S101->light_0)->shadow_0)->data_2[(&kernelContext_17)->ed_c_0->cascade_0].data_0[int(0)][int(2)], (&(&_S101->light_0)->shadow_0)->data_2[(&kernelContext_17)->ed_c_0->cascade_0].data_0[int(1)][int(2)], (&(&_S101->light_0)->shadow_0)->data_2[(&kernelContext_17)->ed_c_0->cascade_0].data_0[int(2)][int(2)], (&(&_S101->light_0)->shadow_0)->data_2[(&kernelContext_17)->ed_c_0->cascade_0].data_0[int(3)][int(2)], (&(&_S101->light_0)->shadow_0)->data_2[(&kernelContext_17)->ed_c_0->cascade_0].data_0[int(0)][int(3)], (&(&_S101->light_0)->shadow_0)->data_2[(&kernelContext_17)->ed_c_0->cascade_0].data_0[int(1)][int(3)], (&(&_S101->light_0)->shadow_0)->data_2[(&kernelContext_17)->ed_c_0->cascade_0].data_0[int(2)][int(3)], (&(&_S101->light_0)->shadow_0)->data_2[(&kernelContext_17)->ed_c_0->cascade_0].data_0[int(3)][int(3)]))));
+    thread vs_terrain_shadow_Result_0 _S104;
+    (&_S104)->pos_3 = o_1.pos_4;
+    return _S104;
 }
 

@@ -29,6 +29,10 @@ static const uint T_COARSE_MASK = 0xFu;         // bit 0: i = 0 edge, 1: i = 64,
 static const uint T_QX = 1u << 4;               // child quadrant in the parent (x)
 static const uint T_QY = 1u << 5;               // child quadrant in the parent (y)
 static const uint T_SKIRT = 1u << 6;            // draw the skirt (else it collapses to the edge)
+static const uint T_LOD_SHIFT = 8;              // bits 8-9: index LOD (stride 1 << lod)
+static const uint T_EDGE_SHIFT = 10;            // bits 10-21: per edge, 3 bits log2 of the neighbour edge's spacing
+static const uint T_NOMORPH = 1u << 22;         // no vertex of the node morphs
+static const uint T_PRIM_LOD_SHIFT = 24;        // the visibility primitive carries the LOD here
 
 // One drawn node (160 bytes, `DRAW_WORDS` = 40). World axes, camera-relative.
 struct TerrainDraw {
@@ -157,17 +161,37 @@ float3 t_coarse(uint pool, TerrainDraw d, uint edge, uint e) {
     return 0.5 * (a + b);
 }
 
-// Final position of grid vertex (i, j), node-relative: geomorphed toward the parent, edges
-// along a coarser neighbour pinned to that neighbour's edge.
+// Final position of grid vertex (i, j), node-relative: geomorphed toward the parent. An edge
+// along a coarser neighbour is pinned to that neighbour's (morphing) edge; along a neighbour that
+// draws fewer vertices (index LOD) the vertices between its lattice points slide onto the segment.
 float3 t_grid_vertex(uint pool, TerrainDraw d, uint i, uint j) {
-    uint coarse = d.slots.z & T_COARSE_MASK;
-    if (coarse != 0) {
-        if ((coarse & 1u) != 0 && i == 0) return t_coarse(pool, d, 0, j);
-        if ((coarse & 2u) != 0 && i == T_CELLS) return t_coarse(pool, d, 1, j);
-        if ((coarse & 4u) != 0 && j == 0) return t_coarse(pool, d, 2, i);
-        if ((coarse & 8u) != 0 && j == T_CELLS) return t_coarse(pool, d, 3, i);
+    uint fl = d.slots.z;
+    uint edge = 4;
+    uint e = 0;
+    if (i == 0) { edge = 0; e = j; }
+    else if (i == T_CELLS) { edge = 1; e = j; }
+    else if (j == 0) { edge = 2; e = i; }
+    else if (j == T_CELLS) { edge = 3; e = i; }
+    if (edge < 4) {
+        bool cb = (fl & (1u << edge)) != 0;
+        uint E = 1u << ((fl >> (T_EDGE_SHIFT + 3u * edge)) & 7u);
+        if (cb && E <= 2u) {
+            return t_coarse(pool, d, edge, e);
+        }
+        if (E > 1u) {
+            uint lo = e & ~(E - 1u);
+            if (lo == e) {
+                return t_base(pool, d, i, j);
+            }
+            uint2 a = t_edge_at(edge, lo);
+            uint2 b = t_edge_at(edge, lo + E);
+            return lerp(t_base(pool, d, a.x, a.y), t_base(pool, d, b.x, b.y), float(e - lo) / float(E));
+        }
     }
     float3 p = t_base(pool, d, i, j);
+    if ((fl & T_NOMORPH) != 0) {
+        return p;
+    }
     float m = t_morph(d.origin.xyz + p, d.morph.xy);
     if (m <= 0.0) {
         return p;
@@ -201,27 +225,32 @@ float3 t_vertex(uint pool, TerrainDraw d, uint v) {
 }
 
 // The three vertex numbers of primitive `prim` of the shared mesh (the index buffer's order:
-// quads row-major split on the 00-11 diagonal, then two triangles per skirt segment).
+// quads row-major split on the 00-11 diagonal, then two triangles per skirt segment; the LOD
+// at T_PRIM_LOD_SHIFT picks the stride, 64 >> lod cells per side, the ring following it).
 uint3 t_triangle(uint prim) {
-    if (prim < T_GRID_TRIS) {
+    uint lod = (prim >> T_PRIM_LOD_SHIFT) & 3u;
+    prim &= (1u << T_PRIM_LOD_SHIFT) - 1u;
+    uint st = 1u << lod;
+    uint c = T_CELLS >> lod;
+    if (prim < 2u * c * c) {
         uint q = prim >> 1;
-        uint i = q % T_CELLS;
-        uint j = q / T_CELLS;
+        uint i = (q % c) * st;
+        uint j = (q / c) * st;
         uint v00 = j * T_SIDE + i;
-        uint v10 = v00 + 1u;
-        uint v01 = v00 + T_SIDE;
-        uint v11 = v01 + 1u;
+        uint v10 = v00 + st;
+        uint v01 = v00 + st * T_SIDE;
+        uint v11 = v01 + st;
         return (prim & 1u) == 0 ? uint3(v00, v10, v11) : uint3(v00, v11, v01);
     }
-    uint k = prim - T_GRID_TRIS;
+    uint k = prim - 2u * c * c;
     uint s = k >> 1;
-    uint s1 = (s + 1u) % T_RING;
-    uint2 p = t_ring(s);
-    uint2 q = t_ring(s1);
+    uint s1 = (s + 1u) % (4u * c);
+    uint2 p = t_ring(s * st);
+    uint2 q = t_ring(s1 * st);
     uint tp = p.y * T_SIDE + p.x;
     uint tq = q.y * T_SIDE + q.x;
-    uint a = T_GRID_VERTS + s;
-    uint b = T_GRID_VERTS + s1;
+    uint a = T_GRID_VERTS + s * st;
+    uint b = T_GRID_VERTS + s1 * st;
     return (k & 1u) == 0 ? uint3(a, b, tq) : uint3(a, tq, tp);
 }
 

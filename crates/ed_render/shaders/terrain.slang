@@ -11,7 +11,7 @@ struct TerrainC {
     uint draws;     // TerrainDraw table
     uint pool;      // height page pool (u16 pairs)
     uint cascade;   // vs_terrain_shadow: which cascade matrix
-    uint base;      // vs_terrain_shadow: the cascade's first draw (its culled list)
+    uint base;      // the list's first draw (the view's, or the cascade's culled list)
     uint pad[11];
 };
 ED_CONSTANTS(TerrainC)
@@ -19,22 +19,24 @@ ED_CONSTANTS(TerrainC)
 struct TerrainOut {
     float4 pos: SV_Position;
     nointerpolation uint draw: DRAW;
+    nointerpolation uint lod: LOD;
 };
 
 [shader("vertex")]
 TerrainOut vs_terrain(uint vid: SV_VulkanVertexID, uint iid: SV_VulkanInstanceID) {
     FrameData* f = ed_buf<FrameData>(ed_c.frame);
-    TerrainDraw d = ed_buf<TerrainDraw>(ed_c.draws)[iid];
+    TerrainDraw d = ed_buf<TerrainDraw>(ed_c.draws)[ed_c.base + iid];
     float3 p = t_vertex(ed_c.pool, d, vid);
     TerrainOut o;
     o.pos = mul(f.view_proj, float4(p, 1.0));
-    o.draw = iid;
+    o.draw = ed_c.base + iid;
+    o.lod = (d.slots.z >> T_LOD_SHIFT) & 3u;
     return o;
 }
 
 [shader("fragment")]
 uint4 fs_terrain(TerrainOut i, uint prim: SV_PrimitiveID) : SV_Target0 {
-    return uint4(TERRAIN_VIS_BIT | i.draw, prim & 0x0FFFFFFFu, 0, 0);
+    return uint4(TERRAIN_VIS_BIT | i.draw, (prim | (i.lod << T_PRIM_LOD_SHIFT)) & 0x0FFFFFFFu, 0, 0);
 }
 
 // Sun shadow caster: the same vertices into one cascade of the depth atlas (depth only, depth

@@ -1,3 +1,20 @@
+## 2026-11-12: P-slice S6 — terrain at about 2 ms at ground level
+
+- **What:** four index-buffer LODs over the shared 65×65 grid (stride 1/2/4/8), picked per node from projected cell size in the main view and per cascade from texels per cell (cascade 0 stays at 2, then 4/8/8); main-list frustum culling; a NOMORPH flag skips the geomorph for nodes inside the morph start; one instanced draw per LOD group. Spawn: per-sampler tile cache instead of a global mutex per bicubic tap, contiguous page chunks per worker thread.
+- **Knobs:** `ED_TERRAIN_LOD_AREA` (12), `ED_TERRAIN_LOD_EDGE` (48), `ED_TERRAIN_CASCADE_TEXELS` (2,4,8,8), `ED_TERRAIN_NOLOD`, `ED_TERRAIN_NOCULL` (off switches).
+- **Cost (harness, 1440p, M3 Pro, median of 9; ±0.3 ms, machine shared with another worker):**
+
+  | AGL | before terrain / shadow / total | after |
+  |---|---|---|
+  | 1 m | 2.68 / 4.73 / 7.4 | 0.47–0.76 / 1.3 / 1.8–2.1 |
+  | 100 m | 2.74 / 3.73 / 6.5 | 0.57 / 1.26 / 1.83 |
+  | 10 km | 1.63 / 0.69 / 2.3 | 0.37 / 0.36 / 0.73 |
+
+  Triangles at 1 m: main 4.8 M → 0.92 M, shadow ~4 M → 2.4 M. `ew --headless --path zermatt` at 1440p: terrain 2.37 → 0.41 ms, GPU frame 9.9 → 6.75 ms. Spawn load ~10 s → ~3 s.
+- **Checked:** harness 0 holes, no skirt run over 1 px (skirts off: widest crack 1 px). Pages byte-identical to the previous sampler (ignored test `zermatt_pages_are_byte_identical`). Proving frames byte-identical. `ed_render`/`ew` tests and `slang_fresh` pass.
+- **Open:** at, not clearly under, 2 ms at 1 m. Near-ground shadow streaks not fixed (needs terrain slope/normal-offset bias in lighting). `terrain_shadow` spikes of 15–30 ms on a few frames with tiny triangle counts (a stall, not geometry). Page build cost is now in `ed_data::node_heights` (per-row weight cache would help).
+- **Mac check:** walk and drive in `--play zermatt` at 1440p; look at the shadows near the feet.
+
 ## 2026-11-12: P-slice S5 — placeholder car (enter, drive, exit)
 
 - **Sim:** `ed_sim::vehicle`: raycast-wheel car on one dynamic box (1500 kg, 1.8 × 4.4 m, wheel r 0.33 m, 0.30 m travel at 1.6 Hz, rebound damping, anti-roll, slip-curve tyres in a friction circle, 320 Nm, 6-speed automatic, brake bias 0.62 front, 35 % front drive, steering lock 0.55 rad shrinking with speed). New `World::{apply_force_at, apply_torque, apply_impulse_at, set_velocity, set_transform, set_mass, mass}` through the Box3D shim; layer `VEHICLE`.

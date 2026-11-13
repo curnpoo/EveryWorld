@@ -542,7 +542,7 @@ fn analyse(world: &World, s: &Shot, sel: &Selection, vis: &[[u32; 2]], w: u32, h
             let v = vis[i];
             if v[0] & TERRAIN_VIS_BIT != 0 {
                 c.terrain += 1;
-                if v[1] >= GRID_TRIS {
+                if prim_is_skirt(v[1]) {
                     skirt[i] = true;
                     c.skirt += 1;
                 }
@@ -577,7 +577,7 @@ fn shade(world: &World, tp: &TerrainProvider, vis: &[[u32; 2]], hole: &[bool], s
                             let v = vis[i];
                             let rgb = if v[0] & TERRAIN_VIS_BIT != 0 {
                                 let (di, prim) = (v[0] & !TERRAIN_VIS_BIT, v[1]);
-                                if prim >= GRID_TRIS {
+                                if prim_is_skirt(prim) {
                                     [230, 30, 30]
                                 } else {
                                     *cache.entry((di, prim)).or_insert_with(|| {
@@ -748,9 +748,11 @@ fn ground_to_orbit_over_zermatt() {
             v.get(v.len() / 2).copied().unwrap_or(f32::NAN)
         };
         println!(
-            "terrain harness: 1440p at {agl:>9.0} m AGL: {} nodes ({} tris), terrain pass {:.3} ms, terrain_shadow {:.3} ms (cascade draws {:?}) (median of {})",
+            "terrain harness: 1440p at {agl:>9.0} m AGL: {} nodes ({} tris, lods {:?}; shadow tris {:?}), terrain pass {:.3} ms, terrain_shadow {:.3} ms (cascade draws {:?}) (median of {})",
             st.drawn,
-            st.drawn * TRIS,
+            tp.tri_counts().0,
+            tp.lod_counts(),
+            tp.tri_counts().1,
             med(&mut ms),
             if tp.cascade_draws().iter().any(|&c| c > 0) { med(&mut sms) } else { 0.0 },
             tp.cascade_draws(),

@@ -23,7 +23,7 @@ use ed_render::terrain::{TerrainConfig, TerrainProvider, TerrainStats};
 use glam::{DQuat, DVec3};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// A place a terrain path starts from: anchor (lat, lon degrees) and the path's camera.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -84,12 +84,23 @@ pub fn cache_root() -> PathBuf {
 // ---------------------------------------------------------------------------------------------
 
 type TileKey = (u8, u32, u32);
+/// A map of once-computed tiles: the map lock is held only to find the cell, the (slow) decode
+/// or resample runs in the cell's `OnceLock`, so two threads never build the same tile.
+type TileMap = Mutex<BTreeMap<TileKey, Arc<OnceLock<Option<Arc<Raster>>>>>>;
+/// A sampler's own few recently used tiles (no lock per tap).
+type Local = Vec<(TileKey, Option<Arc<Raster>>)>;
+
+fn cell(map: &TileMap, key: TileKey) -> Arc<OnceLock<Option<Arc<Raster>>>> {
+    map.lock().unwrap().entry(key).or_default().clone()
+}
 
 /// Mapterhorn elevation tiles from the disk cache (see the module docs).
 pub struct CacheSource {
     root: PathBuf,
     cache: DiskCache,
-    tiles: Mutex<BTreeMap<TileKey, Option<Arc<Raster>>>>,
+    tiles: TileMap,
+    /// Tiles as on disk (decoded once even when many page builders ask at the same time).
+    on_disk: TileMap,
     /// Cached zoom levels (ascending) and, for the coarsest, every tile on disk.
     zooms: Vec<u8>,
     coarse: BTreeSet<(u32, u32)>,
@@ -114,7 +125,7 @@ impl CacheSource {
                 }
             }
         }
-        CacheSource { cache: DiskCache::new(root.clone()), root, tiles: Mutex::new(BTreeMap::new()), zooms, coarse }
+        CacheSource { cache: DiskCache::new(root.clone()), root, tiles: Mutex::new(BTreeMap::new()), on_disk: Mutex::new(BTreeMap::new()), zooms, coarse }
     }
 
     /// Cached zooms (ascending); empty when the cache has no Mapterhorn tiles.
@@ -124,19 +135,31 @@ impl CacheSource {
 
     /// A tile exactly as on disk.
     fn disk(&self, z: u8, x: u32, y: u32) -> Option<Arc<Raster>> {
-        if let Some(t) = self.tiles.lock().unwrap().get(&(z, x, y)) {
+        cell(&self.on_disk, (z, x, y))
+            .get_or_init(|| {
+                let path = self.root.join(format!("mapterhorn/{}/{z}/{x}/{y}.webp", ed_data::DATA_VERSION));
+                if path.exists() { ElevationSource { cache: &self.cache }.elevation_tile(z, x, y) } else { None }
+            })
+            .clone()
+    }
+
+    /// `disk` through the sampler's local tiles.
+    fn local_tile(&self, key: TileKey, local: &mut Local) -> Option<Arc<Raster>> {
+        if let Some((_, t)) = local.iter().find(|(k, _)| *k == key) {
             return t.clone();
         }
-        let path = self.root.join(format!("mapterhorn/{}/{z}/{x}/{y}.webp", ed_data::DATA_VERSION));
-        let t = if path.exists() { ElevationSource { cache: &self.cache }.elevation_tile(z, x, y) } else { None };
-        self.tiles.lock().unwrap().insert((z, x, y), t.clone());
+        let t = self.disk(key.0, key.1, key.2);
+        if local.len() >= 8 {
+            local.clear();
+        }
+        local.push((key, t.clone()));
         t
     }
 
     /// Height at global pixel coordinates (pixel centres at +0.5) of zoom `zs`, Catmull-Rom
     /// bicubic (C1: bilinear left a crease on every source cell); `None` when a needed tile is
     /// missing. Outer taps in a missing neighbour tile fall back to the nearest inner tap.
-    fn sample(&self, zs: u8, gx: f64, gy: f64, size: usize, last: &mut Option<(TileKey, Arc<Raster>)>) -> Option<f32> {
+    fn sample(&self, zs: u8, gx: f64, gy: f64, size: usize, last: &mut Local) -> Option<f32> {
         let n = 1i64 << zs;
         let w = n * size as i64;
         let (fx, fy) = (gx - 0.5, gy - 0.5);
@@ -149,11 +172,7 @@ impl CacheSource {
                 let x = (x0 - 1 + k as i64).rem_euclid(w);
                 let y = (y0 - 1 + m as i64).clamp(0, w - 1);
                 let key = (zs, (x / size as i64) as u32, (y / size as i64) as u32);
-                let t = match last {
-                    Some((lk, t)) if *lk == key => Some(t.clone()),
-                    _ => self.disk(key.0, key.1, key.2).inspect(|t| *last = Some((key, t.clone()))),
-                };
-                match t {
+                match self.local_tile(key, last) {
                     Some(t) if t.size == size => {
                         px[m][k] = t.heights[(y % size as i64) as usize * size + (x % size as i64) as usize] as f64;
                         have[m][k] = true;
@@ -184,7 +203,7 @@ impl CacheSource {
     fn resample(&self, z: u8, x: u32, y: u32, zs: u8, size: usize) -> Raster {
         let scale = 2f64.powi(zs as i32 - z as i32);
         let mut heights = Vec::with_capacity(size * size);
-        let mut last = None;
+        let mut last = Local::new();
         for py in 0..size {
             for px in 0..size {
                 // Pixel centre in zoom-z global pixels, then in zoom-zs global pixels.
@@ -204,7 +223,7 @@ impl CacheSource {
             let gx = (lon + 180.0) / 360.0 * n;
             let gy = (1.0 - (latr.tan() + 1.0 / latr.cos()).ln() / std::f64::consts::PI) / 2.0 * n;
             let Some(t) = self.disk(z, gx.floor() as u32, gy.floor() as u32) else { continue };
-            let mut last = None;
+            let mut last = Local::new();
             if let Some(h) = self.sample(z, gx * t.size as f64, gy * t.size as f64, t.size, &mut last) {
                 return Some(h as f64);
             }
@@ -215,11 +234,14 @@ impl CacheSource {
 
 impl SourceView for CacheSource {
     fn elevation_tile(&self, z: u8, x: u32, y: u32) -> Option<Arc<Raster>> {
-        if let Some(t) = self.tiles.lock().unwrap().get(&(z, x, y)) {
-            return t.clone();
-        }
+        cell(&self.tiles, (z, x, y)).get_or_init(|| self.build_tile(z, x, y)).clone()
+    }
+}
+
+impl CacheSource {
+    fn build_tile(&self, z: u8, x: u32, y: u32) -> Option<Arc<Raster>> {
         let on_disk = if self.zooms.contains(&z) { self.disk(z, x, y) } else { None };
-        let t = on_disk.or_else(|| {
+        on_disk.or_else(|| {
             let &zmin = self.zooms.first()?;
             if z < zmin {
                 // From the coarsest cached zoom, when any of its tiles under this one exists.
@@ -235,9 +257,7 @@ impl SourceView for CacheSource {
                     Some(Arc::new(self.resample(z, x, y, zs, a.size)))
                 })
             }
-        });
-        self.tiles.lock().unwrap().insert((z, x, y), t.clone());
-        t
+        })
     }
 }
 
@@ -388,12 +408,23 @@ impl TerrainWorld {
             return 0;
         }
         let threads = std::thread::available_parallelism().map_or(8, |n| n.get()).min(16);
-        let chunk = missing.len().div_ceil(threads);
         let src = &*self.src;
-        let built: Vec<HeightPage> = std::thread::scope(|s| {
-            let hs: Vec<_> = missing.chunks(chunk).map(|c| s.spawn(move || c.iter().map(|&id| ed_data::node::node_heights(src, id)).collect::<Vec<_>>())).collect();
-            hs.into_iter().flat_map(|h| h.join().expect("page worker")).collect()
+        // Contiguous runs of sorted ids per worker: neighbouring nodes share source tiles, so
+        // each worker stays on a few tiles (a shared counter was ~3x more CPU). Results land by
+        // index, so the store fills in sorted order whatever the thread timing.
+        let slots: Vec<OnceLock<HeightPage>> = (0..missing.len()).map(|_| OnceLock::new()).collect();
+        let chunk = missing.len().div_ceil(threads);
+        std::thread::scope(|s| {
+            for (c, ids) in missing.chunks(chunk).enumerate() {
+                let slots = &slots;
+                s.spawn(move || {
+                    for (k, &id) in ids.iter().enumerate() {
+                        let _ = slots[c * chunk + k].set(ed_data::node::node_heights(src, id));
+                    }
+                });
+            }
         });
+        let built: Vec<HeightPage> = slots.into_iter().map(|c| c.into_inner().expect("page worker")).collect();
         for (id, p) in missing.iter().zip(built) {
             self.store.pages.insert(*id, Arc::new(p));
         }
@@ -583,4 +614,41 @@ mod tests {
         }
     }
 
+    /// FNV-1a over a page's bytes.
+    fn page_hash(p: &HeightPage) -> u64 {
+        let mut h = 0xcbf29ce484222325u64;
+        let mut eat = |b: &[u8]| {
+            for &x in b {
+                h = (h ^ x as u64).wrapping_mul(0x100000001b3);
+            }
+        };
+        for s in &p.samples {
+            eat(&s.to_le_bytes());
+        }
+        eat(&p.scale.to_le_bytes());
+        eat(&p.offset.to_le_bytes());
+        eat(&p.min_m.to_le_bytes());
+        eat(&p.max_m.to_le_bytes());
+        h
+    }
+
+    /// Pages around Zermatt are bit-identical to the ones the pre-S6 sampler built (golden
+    /// hashes taken from it), whatever the thread timing. Needs the Zermatt tiles in the cache.
+    #[test]
+    #[ignore = "needs EARTHDROP_CACHE with the Zermatt tiles"]
+    fn zermatt_pages_are_byte_identical() {
+        let src = CacheSource::new(cache_root());
+        let lat = ZERMATT.lat.to_radians();
+        let lon = ZERMATT.lon.to_radians();
+        let dir = DVec3::new(lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin());
+        let body = Body::earth().id;
+        let ids: Vec<NodeId> = [6u8, 10, 13, 15, 16].iter().map(|&l| NodeId::from_unit(body, dir, l)).collect();
+        let got: Vec<u64> = std::thread::scope(|s| {
+            let hs: Vec<_> = ids.iter().map(|&id| { let src = &src; s.spawn(move || page_hash(&ed_data::node::node_heights(src, id))) }).collect();
+            hs.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        eprintln!("PAGE HASHES {got:?}");
+        let golden: [u64; 5] = [18410746731241230945, 10255135414199695523, 9571166664950946143, 10870807238342481626, 1803437067188059674];
+        assert_eq!(got, golden);
+    }
 }
