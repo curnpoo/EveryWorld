@@ -133,6 +133,11 @@ unsafe extern "C" {
     pub fn ed_body_set_velocity(w: u32, key: u64, v: *const B3Vec3, av: *const B3Vec3);
     pub fn ed_body_set_target(w: u32, key: u64, p: *const B3Pos, q: *const B3Quat, dt: f32);
     pub fn ed_body_apply_impulse(w: u32, key: u64, impulse: *const B3Vec3);
+    pub fn ed_body_apply_force_at(w: u32, key: u64, force: *const B3Vec3, point: *const B3Pos);
+    pub fn ed_body_apply_torque(w: u32, key: u64, torque: *const B3Vec3);
+    pub fn ed_body_apply_impulse_at(w: u32, key: u64, impulse: *const B3Vec3, point: *const B3Pos);
+    pub fn ed_body_set_mass(w: u32, key: u64, mass: f32, center: *const B3Vec3, inertia_diag: *const B3Vec3);
+    pub fn ed_body_mass(w: u32, key: u64, center: *mut B3Vec3) -> f32;
 
     pub fn ed_shape_box(w: u32, body: u64, m: *const EdShapeMat, half: *const B3Vec3, p: *const B3Vec3, q: *const B3Quat) -> u64;
     pub fn ed_shape_sphere(w: u32, body: u64, m: *const EdShapeMat, center: *const B3Vec3, radius: f32) -> u64;

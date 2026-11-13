@@ -15,15 +15,21 @@
 //!   re-basing is later work. The log warns past [`FAR_FROM_ANCHOR_M`].
 //!
 //! Controls: W A S D walk (relative to the camera), Shift run, Space jump, mouse looks, wheel
-//! zooms, V vsync, Esc quits.
+//! zooms, V vsync, Esc quits. E gets into the placeholder car parked beside the spawn (within
+//! [`crate::car::ENTER_RANGE_M`]) and out again; driving: W throttle, S brake then reverse, A D
+//! steer, Space handbrake, mouse orbits (the view swings back behind the car), wheel zooms.
 //!
 //! `EW_AUTOWALK=S`: walks forward for S seconds (Shift held after a third of it) turning a little,
 //! writes `play_start.png`, `walk_*.png`, `run_*.png` and `play_end.png` (offscreen render of the same view) to `--out`,
 //! and exits. For checks without anyone at the keyboard.
+//!
+//! `EW_AUTODRIVE=S`: gets into the car, drives for S seconds along the flattest way ahead (the
+//! valley floor), turns, brakes to a stop, gets out, writing `drive_*.png` to `--out`.
 
 use crate::args::Args;
+use crate::car::{AutoPhase, CarSim, CarView, ChaseCam};
 use crate::content::{CHARACTER_BAKE, Content, PackSpec};
-use crate::fixed_step::FixedStep;
+use crate::fixed_step::{FixedStep, Simulation};
 use crate::game::{CHARACTER, CHARACTER_ASSET, Game, GameInput};
 use crate::terrain::{Place, TerrainWorld};
 use crate::terrain_collide::{COLLISION_LEVEL, TerrainCollision};
@@ -33,7 +39,7 @@ use ed_pack::AssetId;
 use ed_planet::Anchor;
 use ed_render::scene::NodeSlot;
 use ed_render::{Camera, FrameParams, Renderer, View, ViewTarget, Viewport};
-use ed_sim::{QueryFilter, SimConfig, layers};
+use ed_sim::{QueryFilter, SimConfig, VehicleInput, layers};
 use glam::{Affine3A, DVec3, Quat, Vec2};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::collections::BTreeSet;
@@ -192,6 +198,39 @@ pub struct Play {
     /// Worst planted-foot miss (m) since the last log, and steps taken.
     pub slip_max: f32,
     pub steps: u64,
+    /// The car (sim and drawing), whether the character is in it, its camera, a pending E.
+    pub car: Option<CarSim>,
+    car_view: Option<CarView>,
+    pub driving: bool,
+    pub chase: ChaseCam,
+    want_use: bool,
+}
+
+/// One fixed step of play: the car's forces, then the world (with or without the character).
+struct PlaySim<'a> {
+    game: &'a mut Game,
+    car: Option<&'a mut CarSim>,
+    driving: bool,
+    drive: VehicleInput,
+    focus: DVec3,
+}
+
+impl Simulation for PlaySim<'_> {
+    type Input = GameInput;
+    fn step(&mut self, input: &GameInput, dt: f64) {
+        if let Some(car) = self.car.as_deref_mut() {
+            let vin = if self.driving { self.drive } else { VehicleInput::default() };
+            car.pre_step(&mut self.game.world, &vin, self.focus, self.driving);
+        }
+        if self.driving {
+            self.game.step_world();
+        } else {
+            self.game.step(input, dt);
+        }
+        if let Some(car) = self.car.as_deref_mut() {
+            car.post_step(&self.game.world);
+        }
+    }
 }
 
 impl Play {
@@ -250,6 +289,33 @@ impl Play {
         if content.is_some() && anim.is_none() {
             eprintln!("ew: play: character skeleton not matched; standing in the rest pose");
         }
+        // The car: parked beside the spawn (to the right, a little ahead), facing the view.
+        let car_at = |off: DVec3| {
+            let (s, c) = ((yaw as f64).sin(), (yaw as f64).cos());
+            let (fwd, right) = (DVec3::new(-s, c, 0.0), DVec3::new(c, s, 0.0));
+            let p = feet + right * off.x + fwd * off.y;
+            world.ground_point(Anchor::sim_to_render(p)).map(Anchor::render_to_sim)
+        };
+        let car = match car_at(DVec3::new(2.8, 1.0, 0.0)) {
+            Some(g) => match CarSim::spawn(&mut game.world, g, yaw as f64) {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    eprintln!("ew: play: {e}");
+                    None
+                }
+            },
+            None => None,
+        };
+        let car_view = match &car {
+            Some(c) => match CarView::new(r, dev, &c.veh.desc) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    eprintln!("ew: play: car drawing: {e}");
+                    None
+                }
+            },
+            None => None,
+        };
         println!(
             "ew: play {}: spawn at {:.4},{:.4}, ground {:.1} m, {} pages resident, {} collision bodies, ready in {:.0} ms",
             place.name,
@@ -260,68 +326,158 @@ impl Play {
             collision.nodes().len(),
             t0.elapsed().as_secs_f64() * 1e3
         );
-        Ok(Play { place, world, collision, game, cam, fixed: FixedStep::default(), content, node, heading: yaw + std::f32::consts::PI, anim, sync_loads: 0, far_warned: false, slip_max: 0.0, steps: 0 })
+        Ok(Play {
+            place,
+            world,
+            collision,
+            game,
+            cam,
+            fixed: FixedStep::default(),
+            content,
+            node,
+            heading: yaw + std::f32::consts::PI,
+            anim,
+            sync_loads: 0,
+            far_warned: false,
+            slip_max: 0.0,
+            steps: 0,
+            car,
+            car_view,
+            driving: false,
+            chase: ChaseCam::new(yaw as f64),
+            want_use: false,
+        })
     }
 
-    /// One frame before the GPU work: collision, fixed steps, character, camera, pages.
-    pub fn update(&mut self, r: &mut Renderer, input: GameInput, look: Vec2, zoom: f32, frame_dt: f64, viewport: [u32; 2]) -> Camera {
-        self.cam.yaw -= look.x * LOOK_RAD_PER_PX;
-        self.cam.pitch = (self.cam.pitch - look.y * LOOK_RAD_PER_PX).clamp(PITCH_MIN, PITCH_MAX);
-        self.cam.dist = (self.cam.dist * (1.0 - zoom as f64 * 0.1)).clamp(CAM_MIN, CAM_MAX);
+    /// E: get in or out of the car (handled at the start of the next update).
+    pub fn interact(&mut self) {
+        self.want_use = true;
+    }
+
+    /// Where the sim is centred: the car while driving, else the character's feet.
+    pub fn focus(&self) -> DVec3 {
+        match (&self.car, self.driving) {
+            (Some(c), true) => c.cur.0.position,
+            _ => self.game.cur,
+        }
+    }
+
+    fn handle_use(&mut self) {
+        if !std::mem::take(&mut self.want_use) {
+            return;
+        }
+        let Some(car) = &self.car else { return };
+        if self.driving {
+            let world = &self.game.world;
+            let filter = crate::car::scenery_filter();
+            let terrain = &self.world;
+            let free = |a: DVec3, b: DVec3| world.cast_ray(a, b - a, filter).is_none();
+            let ground = |p: DVec3| terrain.ground_point(Anchor::sim_to_render(p)).map(|g| Anchor::render_to_sim(g).z);
+            let Some(feet) = car.exit_point(free, ground) else {
+                println!("ew: play: no room to get out here");
+                return;
+            };
+            if let Err(e) = self.game.unpark_mover(feet) {
+                eprintln!("ew: play: {e}");
+                return;
+            }
+            self.driving = false;
+            let (yaw, pitch) = self.chase.view();
+            self.cam.yaw = yaw;
+            self.cam.pitch = pitch.clamp(PITCH_MIN, PITCH_MAX);
+            self.cam.target = None;
+            self.heading = CarSim::yaw(car.cur.0.rotation) as f32 + std::f32::consts::PI;
+            self.game.heading = self.heading;
+            println!("ew: play: out of the car at {:.1},{:.1},{:.1}", feet.x, feet.y, feet.z);
+        } else if car.footprint_distance(self.game.cur) <= crate::car::ENTER_RANGE_M {
+            self.game.park_mover();
+            self.driving = true;
+            self.chase = ChaseCam::new(self.cam.yaw as f64);
+            println!("ew: play: in the car");
+        }
+    }
+
+    /// One frame before the GPU work: collision, fixed steps, character or car, camera, pages.
+    #[allow(clippy::too_many_arguments)]
+    pub fn update(&mut self, r: &mut Renderer, input: GameInput, drive: VehicleInput, look: Vec2, zoom: f32, frame_dt: f64, viewport: [u32; 2]) -> Camera {
+        if !self.driving {
+            self.cam.yaw -= look.x * LOOK_RAD_PER_PX;
+            self.cam.pitch = (self.cam.pitch - look.y * LOOK_RAD_PER_PX).clamp(PITCH_MIN, PITCH_MAX);
+            self.cam.dist = (self.cam.dist * (1.0 - zoom as f64 * 0.1)).clamp(CAM_MIN, CAM_MAX);
+        }
+        self.handle_use();
         // Collision first: the 3 x 3 must be exact before the sim steps.
         self.world.poll();
         let anchor = self.world.anchor.clone();
-        let feet = self.game.cur;
-        let near = collision_block(&anchor, feet, 1);
+        let focus = self.focus();
+        let near = collision_block(&anchor, focus, 1);
         let missing: Vec<NodeId> = near.iter().copied().filter(|id| self.world.page(*id).is_none()).collect();
         if !missing.is_empty() {
             self.sync_loads += missing.len() as u64;
             self.world.load(&missing, usize::MAX);
         }
-        self.collision.update(&mut self.game.world, &anchor, self.world.residency(), feet);
-        let ring = collision_block(&anchor, feet, 2);
+        self.collision.update(&mut self.game.world, &anchor, self.world.residency(), focus);
+        // Prefetch: a wider ring at driving speed, so the car never waits for its ground.
+        let fast = self.driving && self.car.as_ref().is_some_and(|c| c.speed().abs() > 12.0);
+        let ring = collision_block(&anchor, focus, if fast { 3 } else { 2 });
         self.world.request(&ring, MAX_INFLIGHT);
 
         let yaw = self.cam.yaw;
-        let alpha = self.fixed.run(frame_dt, &mut self.game, |_| GameInput { yaw, ..input });
+        let mut sim = PlaySim { game: &mut self.game, car: self.car.as_mut(), driving: self.driving, drive, focus };
+        let alpha = self.fixed.run(frame_dt, &mut sim, |_| GameInput { yaw, ..input });
         let feet = self.game.feet(alpha);
-
-        // Character: render node at the feet, smoothed facing.
-        let want = self.game.heading;
-        let d = (want - self.heading + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
-        let step = TURN_RAD_S * frame_dt as f32;
-        self.heading += d.clamp(-step, step);
-        // The walk: feet planted on the drawn terrain, the body's root where the legs put it.
-        let mut root = feet;
-        if let Some((a, skins)) = &mut self.anim {
-            let v = (self.game.cur - self.game.prev) / ed_sim::DT;
-            let terrain = &self.world;
-            let z0 = feet.z;
-            let ground = |p: glam::DVec2| terrain.ground_point(Anchor::sim_to_render(DVec3::new(p.x, p.y, z0))).map(|g| Anchor::render_to_sim(g).z);
-            a.update(frame_dt as f32, feet, self.heading, v, self.game.grounded(), &ground);
-            root = a.root;
-            self.slip_max = self.slip_max.max(a.slip);
-            self.steps = a.steps;
-            let pal = a.palette();
-            for s in skins.iter() {
-                let _ = r.set_skin_pose(*s, &pal);
-            }
+        let car_pose = self.car.as_ref().map(|c| (c.pose(alpha), c.wheels(alpha), c.speed()));
+        if let (Some(c), Some(v), Some((pose, wheels, _))) = (&self.car, &self.car_view, &car_pose) {
+            v.draw(r, &c.veh.desc, *pose, wheels);
         }
-        if let (Some(c), Some(n)) = (&mut self.content, self.node) {
-            r.instances().set_node(n, Anchor::sim_to_render(root));
-            c.move_object(r, CHARACTER, &Affine3A::from_quat(Quat::from_rotation_y(self.heading)));
+
+        if self.driving {
+            // The character rides along out of sight.
+            if let (Some(n), Some((pose, _, _))) = (self.node, &car_pose) {
+                r.instances().set_node(n, Anchor::sim_to_render(pose.position - DVec3::Z * 50.0));
+            }
+        } else {
+            // Character: render node at the feet, smoothed facing.
+            let want = self.game.heading;
+            let d = (want - self.heading + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+            let step = TURN_RAD_S * frame_dt as f32;
+            self.heading += d.clamp(-step, step);
+            // The walk: feet planted on the drawn terrain, the body's root where the legs put it.
+            let mut root = feet;
+            if let Some((a, skins)) = &mut self.anim {
+                let v = (self.game.cur - self.game.prev) / ed_sim::DT;
+                let terrain = &self.world;
+                let z0 = feet.z;
+                let ground = |p: glam::DVec2| terrain.ground_point(Anchor::sim_to_render(DVec3::new(p.x, p.y, z0))).map(|g| Anchor::render_to_sim(g).z);
+                a.update(frame_dt as f32, feet, self.heading, v, self.game.grounded(), &ground);
+                root = a.root;
+                self.slip_max = self.slip_max.max(a.slip);
+                self.steps = a.steps;
+                let pal = a.palette();
+                for s in skins.iter() {
+                    let _ = r.set_skin_pose(*s, &pal);
+                }
+            }
+            if let (Some(c), Some(n)) = (&mut self.content, self.node) {
+                r.instances().set_node(n, Anchor::sim_to_render(root));
+                c.move_object(r, CHARACTER, &Affine3A::from_quat(Quat::from_rotation_y(self.heading)));
+            }
         }
 
         // Camera: blocked by the sim world (terrain bodies), clamped to the ground.
         let world = &self.game.world;
-        let filter = QueryFilter { category: layers::DEFAULT, mask: layers::ALL & !layers::MOVER };
         let terrain = &self.world;
-        let camera = self.cam.update(
-            feet,
-            frame_dt,
-            |from, d| world.cast_ray(from, d, filter).map(|h| h.fraction as f64),
-            |p| terrain.ground_point(Anchor::sim_to_render(p)).map(|g| Anchor::render_to_sim(g).z),
-        );
+        let ground = |p: DVec3| terrain.ground_point(Anchor::sim_to_render(p)).map(|g| Anchor::render_to_sim(g).z);
+        let camera = match (&car_pose, self.driving) {
+            (Some((pose, _, speed)), true) => {
+                let filter = crate::car::scenery_filter();
+                self.chase.update(*pose, *speed, look, zoom, LOOK_RAD_PER_PX, frame_dt, |from, d| world.cast_ray(from, d, filter).map(|h| h.fraction as f64), ground)
+            }
+            _ => {
+                let filter = QueryFilter { category: layers::DEFAULT, mask: layers::ALL & !layers::MOVER };
+                self.cam.update(feet, frame_dt, |from, d| world.cast_ray(from, d, filter).map(|h| h.fraction as f64), ground)
+            }
+        };
 
         // Pages for the view, then the atmosphere on the curved body.
         self.world.update_async(&camera, viewport, MAX_INFLIGHT);
@@ -331,7 +487,8 @@ impl Play {
         if let (Some(c), None) = (&self.content, &self.anim) {
             let _ = c.animate(r, (self.fixed.steps() as f64 + alpha as f64) / 60.0);
         }
-        let dist = DVec3::new(feet.x, feet.y, 0.0).length();
+        let focus = self.focus();
+        let dist = DVec3::new(focus.x, focus.y, 0.0).length();
         if dist > FAR_FROM_ANCHOR_M && !self.far_warned {
             self.far_warned = true;
             println!("ew: play: {dist:.0} m from the anchor: gravity is uniform in the anchor frame (re-basing is later work)");
@@ -366,6 +523,8 @@ struct Shot {
 }
 
 const SHOT_FORMAT: Format = Format::Rgba8Srgb;
+const WALK_SHOTS: [&str; 9] = ["play_start.png", "walk_0.png", "walk_1.png", "walk_2.png", "walk_3.png", "run_0.png", "run_1.png", "run_2.png", "play_end.png"];
+const DRIVE_SHOTS: [&str; 8] = ["drive_start.png", "drive_in.png", "drive_0.png", "drive_1.png", "drive_turn.png", "drive_brake.png", "drive_stopped.png", "drive_out.png"];
 
 struct App {
     args: Args,
@@ -393,6 +552,11 @@ struct App {
     ft_sec: Vec<f64>,
     /// Auto-walk: seconds to walk, start time, screenshots written.
     autowalk: Option<f64>,
+    /// Auto-drive: seconds of the drive script (`EW_AUTODRIVE`), and E presses it has made.
+    autodrive: Option<f64>,
+    auto_uses: u32,
+    /// Auto-drive heading and the script time it was last re-picked.
+    auto_heading: Option<(f64, f64)>,
     /// Auto-walk time: summed frame intervals (screenshot readbacks excluded).
     t_walk: Option<f64>,
     shot: Option<Shot>,
@@ -407,7 +571,9 @@ pub fn run(args: Args) -> Result<(), String> {
     println!("ew: {}", crate::caps_line(dev.caps()));
     let event_loop = EventLoop::new().map_err(|e| format!("event loop: {e}"))?;
     event_loop.set_control_flow(ControlFlow::Poll);
-    let autowalk = std::env::var("EW_AUTOWALK").ok().and_then(|v| v.parse::<f64>().ok()).filter(|s| *s > 0.0);
+    let env_secs = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<f64>().ok()).filter(|s| *s > 0.0);
+    let autodrive = env_secs("EW_AUTODRIVE");
+    let autowalk = if autodrive.is_some() { None } else { env_secs("EW_AUTOWALK") };
     let mut app = App {
         out: args.out.clone(),
         args,
@@ -433,6 +599,9 @@ pub fn run(args: Args) -> Result<(), String> {
         ft: Vec::new(),
         ft_sec: Vec::new(),
         autowalk,
+        autodrive,
+        auto_uses: 0,
+        auto_heading: None,
         t_walk: None,
         shot: None,
         shots_done: 0,
@@ -445,7 +614,7 @@ pub fn run(args: Args) -> Result<(), String> {
 impl App {
     fn create_gpu(&mut self, el: &ActiveEventLoop) -> Result<(), String> {
         let attrs = Window::default_attributes()
-            .with_title(format!("ew - {} (WASD walk, Shift run, Space jump, mouse look, wheel zoom, Esc quit)", self.place.name))
+            .with_title(format!("ew - {} (WASD walk, Shift run, Space jump, E car in/out, mouse look, wheel zoom, Esc quit)", self.place.name))
             .with_inner_size(PhysicalSize::new(self.args.width, self.args.height));
         let window = el.create_window(attrs).map_err(|e| format!("window: {e}"))?;
         let ns_view = match window.window_handle().map_err(|e| format!("window handle: {e}"))?.as_raw() {
@@ -460,14 +629,15 @@ impl App {
         self.args.apply_lod(renderer.lod_config());
         let play = Play::new(&mut renderer, &*self.dev, self.place, &self.args.packs, [config.width, config.height])?;
         self.play = Some(play);
-        if self.autowalk.is_none() {
+        if !self.scripted() {
             if window.set_cursor_grab(CursorGrabMode::Locked).is_err() {
                 let _ = window.set_cursor_grab(CursorGrabMode::Confined);
             }
             window.set_cursor_visible(false);
         }
-        if let Some(s) = self.autowalk {
-            println!("ew: autowalk {s:.0} s, screenshots to {}", self.out.display());
+        if let Some(s) = self.autowalk.or(self.autodrive) {
+            let what = if self.autodrive.is_some() { "autodrive" } else { "autowalk" };
+            println!("ew: {what} {s:.0} s, screenshots to {}", self.out.display());
             let (w, h) = (config.width, config.height);
             let tex = self
                 .dev
@@ -530,31 +700,77 @@ impl App {
         let (w, h) = (gpu.config.width, gpu.config.height);
         let t_upd = Instant::now();
 
-        // Input (keyboard or the auto-walk script).
+        // Input (keyboard or the auto-walk / auto-drive script).
         let mut shoot = None;
-        let (keys, look) = match self.autowalk {
-            Some(total) => {
-                let tw = self.t_walk.get_or_insert(0.0);
-                *tw += frame_dt;
-                let t = *tw;
-                // Start, a walking burst, a running burst, end (a burst shows the gait's phases).
-                let walk = total * 0.22;
-                let run = total * 0.75;
-                let times = [0.8, walk, walk + 0.08, walk + 0.16, walk + 0.24, run, run + 0.06, run + 0.12, total];
-                const NAMES: [&str; 9] = ["play_start.png", "walk_0.png", "walk_1.png", "walk_2.png", "walk_3.png", "run_0.png", "run_1.png", "run_2.png", "play_end.png"];
-                if let Some(&at) = times.get(self.shots_done as usize)
-                    && t > at
-                {
-                    shoot = Some(NAMES[self.shots_done as usize]);
-                }
-                Self::autowalk_input_static(t, total)
+        let mut drive = VehicleInput::default();
+        let (keys, look) = if let Some(total) = self.autodrive {
+            let tw = self.t_walk.get_or_insert(0.0);
+            *tw += frame_dt;
+            let t = *tw;
+            let (times, names) = Self::drive_shots(total);
+            if let Some(&at) = times.get(self.shots_done as usize)
+                && t > at
+            {
+                shoot = Some(names[self.shots_done as usize]);
             }
-            None => (self.keys.clone(), std::mem::take(&mut self.look)),
+            let phase = crate::car::auto_phase(t, total);
+            let uses = match phase {
+                AutoPhase::WalkToCar => 0,
+                AutoPhase::Enter | AutoPhase::Drive | AutoPhase::Turn | AutoPhase::Brake => 1,
+                AutoPhase::Exit | AutoPhase::Done => 2,
+            };
+            if self.auto_uses < uses {
+                self.auto_uses += 1;
+                play.interact();
+            }
+            if let (true, Some(car)) = (play.driving, &play.car) {
+                let speed = car.speed();
+                let terrain = &play.world;
+                let ground = |p: DVec3| terrain.ground_point(Anchor::sim_to_render(p)).map(|g| Anchor::render_to_sim(g).z);
+                let pose = car.pose(0.0);
+                if phase == AutoPhase::Drive {
+                    // The flattest way from here (any direction at first, then within 35
+                    // degrees of the way we are going), re-picked every second.
+                    let (around, spread) = self.auto_heading.map_or((CarSim::yaw(pose.rotation), std::f64::consts::PI), |h| (h.0, 0.6));
+                    if self.auto_heading.is_none_or(|h| t - h.1 > 1.0) {
+                        self.auto_heading = Some((crate::car::flattest_heading(pose.position, around, spread, ground), t));
+                    }
+                }
+                let heading = self.auto_heading.map_or(0.0, |h| h.0);
+                drive = match phase {
+                    AutoPhase::Drive => VehicleInput { drive: if speed < 16.0 { 1.0 } else { 0.0 }, steer: crate::car::steer_toward(pose, heading), handbrake: false },
+                    AutoPhase::Turn => VehicleInput { drive: if speed < 9.0 { 0.6 } else { 0.0 }, steer: -1.0, handbrake: speed > 13.0 },
+                    _ => VehicleInput { drive: if speed > 0.3 { -1.0 } else { 0.0 }, ..Default::default() },
+                };
+            }
+            let mut k = BTreeSet::new();
+            if phase == AutoPhase::Done {
+                k.insert(KeyCode::KeyW);
+            }
+            (k, Vec2::ZERO)
+        } else if let Some(total) = self.autowalk {
+            let tw = self.t_walk.get_or_insert(0.0);
+            *tw += frame_dt;
+            let t = *tw;
+            // Start, a walking burst, a running burst, end (a burst shows the gait's phases).
+            let walk = total * 0.22;
+            let run = total * 0.75;
+            let times = [0.8, walk, walk + 0.08, walk + 0.16, walk + 0.24, run, run + 0.06, run + 0.12, total];
+            if let Some(&at) = times.get(self.shots_done as usize)
+                && t > at
+            {
+                shoot = Some(WALK_SHOTS[self.shots_done as usize]);
+            }
+            Self::autowalk_input_static(t, total)
+        } else {
+            let keys = self.keys.clone();
+            drive = crate::car::drive_input(&keys);
+            (keys, std::mem::take(&mut self.look))
         };
         let renderer = gpu.renderer.as_mut().expect("renderer lives until shutdown");
         let input = game_input(&keys, 0.0);
         let zoom = std::mem::take(&mut self.zoom);
-        let camera = play.update(renderer, input, look, zoom, frame_dt, [w, h]);
+        let camera = play.update(renderer, input, drive, look, zoom, frame_dt, [w, h]);
         let upd_ms = t_upd.elapsed().as_secs_f64() * 1e3;
         let tf = Instant::now();
         if let Err(e) = renderer.flush_uploads(dev) {
@@ -622,7 +838,8 @@ impl App {
             self.shots_done += 1;
             // The readback wait is not a frame time.
             self.last = Some(Instant::now());
-            if self.shots_done >= 9 {
+            let total = if self.autodrive.is_some() { DRIVE_SHOTS.len() } else { WALK_SHOTS.len() };
+            if self.shots_done as usize >= total {
                 el.exit();
             }
         }
@@ -660,6 +877,22 @@ impl App {
                 play.steps,
                 play.slip_max,
             );
+            if let (true, Some(c)) = (play.driving, &play.car) {
+                let p = c.cur.0.position;
+                let up = (c.cur.0.rotation * DVec3::Z).z;
+                let wheels = c.veh.wheels.iter().filter(|w| w.contact).count();
+                println!(
+                    "ew: car {:.1} km/h, gear {}, {:.0} rpm, steer {:.2}, at {:.1},{:.1},{:.1}, up.z {:.3}, {wheels}/4 wheels down",
+                    c.speed() * 3.6,
+                    c.veh.gear,
+                    c.veh.rpm,
+                    c.veh.steer,
+                    p.x,
+                    p.y,
+                    p.z,
+                    up
+                );
+            }
             play.slip_max = 0.0;
             self.log_t = Instant::now();
             self.log_frames = 0;
@@ -672,6 +905,17 @@ impl App {
         {
             el.exit();
         }
+    }
+
+    /// Either script is running (no cursor grab, no keyboard E).
+    fn scripted(&self) -> bool {
+        self.autowalk.is_some() || self.autodrive.is_some()
+    }
+
+    /// Auto-drive screenshot times for a `total`-second script, with their names.
+    fn drive_shots(total: f64) -> ([f64; 8], &'static [&'static str; 8]) {
+        let f = |x: f64| x * total;
+        ([0.8, 1.7, f(0.3), f(0.45), f(0.62), f(0.8), f(0.88), total], &DRIVE_SHOTS)
     }
 
     /// Auto-walk input at `t` seconds: forward, a slow turn, run after a third, a jump at half.
@@ -739,6 +983,14 @@ impl ApplicationHandler for App {
                 if pressed && !event.repeat {
                     match code {
                         KeyCode::Escape => el.exit(),
+                        KeyCode::KeyE => {
+                            let scripted = self.scripted();
+                            if let Some(p) = &mut self.play
+                                && !scripted
+                            {
+                                p.interact();
+                            }
+                        }
                         KeyCode::KeyV => {
                             if let Some(gpu) = &self.gpu {
                                 let size = PhysicalSize::new(gpu.config.width, gpu.config.height);
@@ -764,7 +1016,7 @@ impl ApplicationHandler for App {
             WindowEvent::Focused(false) => self.keys.clear(),
             WindowEvent::Focused(true) => {
                 if let Some(gpu) = &self.gpu
-                    && self.autowalk.is_none()
+                    && !self.scripted()
                     && gpu.window.set_cursor_grab(CursorGrabMode::Locked).is_err()
                 {
                     let _ = gpu.window.set_cursor_grab(CursorGrabMode::Confined);

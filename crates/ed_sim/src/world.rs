@@ -783,6 +783,104 @@ impl World {
     }
 
     // -----------------------------------------------------------------------------------------
+    // Direct body control (vehicles and other controllers that run before `step`)
+    //
+    // These act now, outside the command stream: a controller that calls them every tick from
+    // its own deterministic state stays deterministic, but a replay of commands alone does not
+    // reproduce them.
+
+    /// The Box3D key of a live dynamic body (not a mover).
+    fn dynamic_key(&self, e: Entity) -> Option<u64> {
+        let l = self.live(e)?;
+        (l.kind == BodyKind::Dynamic && matches!(l.payload, Payload::Body(_))).then_some(l.key)
+    }
+
+    /// Adds `force` (N, region frame) at world `point` for the next [`World::step`] (cleared
+    /// after it). `false` if `e` is not a live dynamic body or the input is not finite.
+    pub fn apply_force_at(&mut self, e: Entity, force: DVec3, point: DVec3) -> bool {
+        let Some(key) = self.dynamic_key(e) else { return false };
+        if !force.is_finite() || !point.is_finite() {
+            return false;
+        }
+        let (f, p) = (dvec_to_b(force), pos_to_b(point));
+        // SAFETY: valid locals; live key of our world.
+        unsafe { ffi::ed_body_apply_force_at(self.id, key, &f, &p) };
+        true
+    }
+
+    /// Adds `torque` (N m, region frame) for the next [`World::step`] (cleared after it).
+    pub fn apply_torque(&mut self, e: Entity, torque: DVec3) -> bool {
+        let Some(key) = self.dynamic_key(e) else { return false };
+        if !torque.is_finite() {
+            return false;
+        }
+        let t = dvec_to_b(torque);
+        // SAFETY: valid local; live key of our world.
+        unsafe { ffi::ed_body_apply_torque(self.id, key, &t) };
+        true
+    }
+
+    /// Applies `impulse` (N s, region frame) at world `point` now.
+    pub fn apply_impulse_at(&mut self, e: Entity, impulse: DVec3, point: DVec3) -> bool {
+        let Some(key) = self.dynamic_key(e) else { return false };
+        if !impulse.is_finite() || !point.is_finite() {
+            return false;
+        }
+        let (j, p) = (dvec_to_b(impulse), pos_to_b(point));
+        // SAFETY: valid locals; live key of our world.
+        unsafe { ffi::ed_body_apply_impulse_at(self.id, key, &j, &p) };
+        true
+    }
+
+    /// Sets linear and angular velocity (region frame) now. Dynamic or kinematic bodies only.
+    pub fn set_velocity(&mut self, e: Entity, linear: DVec3, angular: DVec3) -> bool {
+        let Some(l) = self.live(e) else { return false };
+        if l.kind == BodyKind::Static || matches!(l.payload, Payload::Mover(_)) || !linear.is_finite() || !angular.is_finite() {
+            return false;
+        }
+        let (v, w) = (dvec_to_b(linear), dvec_to_b(angular));
+        // SAFETY: valid locals; live key of our world.
+        unsafe { ffi::ed_body_set_velocity(self.id, l.key, &v, &w) };
+        true
+    }
+
+    /// Moves a body (not a mover) to a pose now.
+    pub fn set_transform(&mut self, e: Entity, position: DVec3, rotation: DQuat) -> bool {
+        let Some(l) = self.live(e) else { return false };
+        if matches!(l.payload, Payload::Mover(_)) || !position.is_finite() || !rotation.is_finite() {
+            return false;
+        }
+        let (p, q) = (pos_to_b(position), dquat_to_b(rotation));
+        // SAFETY: valid locals; live key of our world.
+        unsafe { ffi::ed_body_set_transform(self.id, l.key, &p, &q) };
+        true
+    }
+
+    /// Replaces a dynamic body's mass properties: `mass` (kg), centre of mass in the body frame,
+    /// and the principal moments of inertia about it along the body axes (kg m^2).
+    pub fn set_mass(&mut self, e: Entity, mass: f32, center: Vec3, inertia: Vec3) -> bool {
+        let Some(key) = self.dynamic_key(e) else { return false };
+        if !(mass > 0.0) || !center.is_finite() || !(inertia.min_element() > 0.0) {
+            return false;
+        }
+        let c = vec_to_b(center);
+        // Body axes (east, north, up) are Box3D (x, -z, y): the diagonal permutes, signs drop.
+        let i = B3Vec3 { x: inertia.x, y: inertia.z, z: inertia.y };
+        // SAFETY: valid locals; live key of our world.
+        unsafe { ffi::ed_body_set_mass(self.id, key, mass, &c, &i) };
+        true
+    }
+
+    /// Mass (kg) and centre of mass in the body frame.
+    pub fn mass(&self, e: Entity) -> Option<(f32, Vec3)> {
+        let l = self.live(e)?;
+        let mut c = B3Vec3::default();
+        // SAFETY: valid local out-pointer; live key of our world.
+        let m = unsafe { ffi::ed_body_mass(self.id, l.key, &mut c) };
+        Some((m, vec_from_b(c)))
+    }
+
+    // -----------------------------------------------------------------------------------------
     // Queries
 
     fn hit(&self, h: &EdHit) -> Option<RayHit> {

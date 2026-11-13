@@ -12,6 +12,7 @@
 pub mod args;
 pub mod authored;
 pub mod camera;
+pub mod car;
 pub mod collide;
 pub mod content;
 pub mod fixed_step;

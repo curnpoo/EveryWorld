@@ -19,6 +19,7 @@ mod frame;
 mod mover;
 mod replay;
 mod types;
+mod vehicle;
 mod world;
 
 pub use accum::Accumulator;
@@ -28,6 +29,7 @@ pub use types::{
     BodyDesc, BodyKind, Command, CommandKind, Entity, Filter, GeomId, Geometry, HeightField, Material, MoverDesc,
     MoverInput, MoverState, QueryFilter, Shape, ShapeDesc, TriMesh, layers,
 };
+pub use vehicle::{Vehicle, VehicleDesc, VehicleInput, Wheel, yaw_rotation};
 pub use world::{BodyState, CastShape, RayHit, ShapeHit, SimConfig, SimInput, Snapshot, StepOutput, World};
 
 /// Simulation ticks per second.

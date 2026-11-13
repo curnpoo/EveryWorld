@@ -1,3 +1,12 @@
+## 2026-11-12: P-slice S5 — placeholder car (enter, drive, exit)
+
+- **Sim:** `ed_sim::vehicle`: raycast-wheel car on one dynamic box (1500 kg, 1.8 × 4.4 m, wheel r 0.33 m, 0.30 m travel at 1.6 Hz, rebound damping, anti-roll, slip-curve tyres in a friction circle, 320 Nm, 6-speed automatic, brake bias 0.62 front, 35 % front drive, steering lock 0.55 rad shrinking with speed). New `World::{apply_force_at, apply_torque, apply_impulse_at, set_velocity, set_transform, set_mass, mass}` through the Box3D shim; layer `VEHICLE`.
+- **Play:** `crates/ew/src/car.rs` (box body, cabin, spinning/steering wheels on suspension, interpolated between steps); E enters within 2.2 m and exits beside the car; W/S, A/D (or arrows), Space handbrake; chase camera returns behind after 1.2 s. `EW_AUTODRIVE=20 --out DIR` drives unattended.
+- **Checked:** 8 vehicle tests: 0–100 km/h 6.55 s, 100–0 in 42.4 m, turn radius 6.18 m, no flip on a 15° side slope, settles level, deterministic. `ed_sim` determinism and `ew` replay tests unchanged. Driving: mostly 100–120 fps, 60–75 while terrain streams in; frame p50 8.35 ms, p99 17 ms.
+- **Guard exception:** `ew_has_no_procedural_geometry_path` skips `car.rs` until a vehicle pack (Blender glTF) replaces the placeholder.
+- **Open:** big crests at 60+ km/h can launch the car; binary keyboard steering; vehicle state is outside snapshots/replays; a parked car freezes beyond 120 m; no Ackermann, wheelspin or engine sound.
+- **Mac check:** the owner drives it.
+
 ## 2026-11-12: P-slice S4 — `ew --play zermatt|blueridge` (walk on real terrain)
 
 - **What:** `crates/ew/src/play.rs` runs the play loop: async page loading (worker threads), terrain collision around the player, orbit third-person camera clamped above ground, `apply_camera_ground` every frame. `walker.rs` ports the alpha `body.rs` gait onto the proving character's skin: world-planted feet on the drawn terrain, swing arcs with toe-off and heel strike, two-bone leg IK, pelvis drop as the bob, lean, chest twist, arm swing; walk 1.9 m/s, run 5.5 m/s.

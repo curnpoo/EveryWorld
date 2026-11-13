@@ -41,10 +41,13 @@ impl Entity {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct GeomId(pub(crate) u32);
 
-/// Collision category bits. Bit 0 is everything ordinary; bit 1 is reserved for movers.
+/// Collision category bits. Bit 0 is everything ordinary; bit 1 is reserved for movers, bit 2
+/// for vehicles.
 pub mod layers {
     pub const DEFAULT: u64 = 1;
     pub const MOVER: u64 = 1 << 1;
+    /// Vehicle bodies (their wheel rays skip them).
+    pub const VEHICLE: u64 = 1 << 2;
     pub const ALL: u64 = u64::MAX;
 }
 

@@ -318,6 +318,42 @@ void ed_body_apply_impulse( uint32_t w, uint64_t key, const b3Vec3* impulse )
 	b3Body_ApplyLinearImpulseToCenter( ed_body( w, key ), *impulse, true );
 }
 
+// Vehicle support: forces at a world point (accumulated for the next step, cleared after it),
+// impulses at a point, and explicit mass properties.
+void ed_body_apply_force_at( uint32_t w, uint64_t key, const b3Vec3* force, const b3Pos* point )
+{
+	b3Body_ApplyForce( ed_body( w, key ), *force, *point, true );
+}
+
+void ed_body_apply_torque( uint32_t w, uint64_t key, const b3Vec3* torque )
+{
+	b3Body_ApplyTorque( ed_body( w, key ), *torque, true );
+}
+
+void ed_body_apply_impulse_at( uint32_t w, uint64_t key, const b3Vec3* impulse, const b3Pos* point )
+{
+	b3Body_ApplyLinearImpulse( ed_body( w, key ), *impulse, *point, true );
+}
+
+void ed_body_set_mass( uint32_t w, uint64_t key, float mass, const b3Vec3* center, const b3Vec3* inertiaDiag )
+{
+	b3MassData md;
+	md.mass = mass;
+	md.center = *center;
+	md.inertia = b3Mat3_zero;
+	md.inertia.cx.x = inertiaDiag->x;
+	md.inertia.cy.y = inertiaDiag->y;
+	md.inertia.cz.z = inertiaDiag->z;
+	b3Body_SetMassData( ed_body( w, key ), md );
+}
+
+float ed_body_mass( uint32_t w, uint64_t key, b3Vec3* center )
+{
+	b3BodyId id = ed_body( w, key );
+	*center = b3Body_GetLocalCenter( id );
+	return b3Body_GetMass( id );
+}
+
 // ---------------------------------------------------------------------------------------------
 // Shapes
 

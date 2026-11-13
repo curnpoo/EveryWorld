@@ -208,6 +208,30 @@ impl Game {
         self.prev = self.cur;
     }
 
+    /// Takes the character's mover out of the world (getting into a vehicle). Its last feet
+    /// stay in `cur`; [`Game::step_world`] steps the world without it.
+    pub fn park_mover(&mut self) {
+        self.world.despawn(self.mover);
+        self.held = None;
+        self.ramp = DVec3::ZERO;
+    }
+
+    /// Puts the character's mover back with its feet at `feet` (getting out).
+    pub fn unpark_mover(&mut self, feet: DVec3) -> Result<(), String> {
+        let desc = MoverDesc { position: feet, ..self.desc };
+        self.mover = self.world.create_mover(desc).map_err(|e| format!("mover: {e}"))?;
+        self.prev = feet;
+        self.cur = feet;
+        self.held = None;
+        self.ramp = DVec3::ZERO;
+        Ok(())
+    }
+
+    /// One tick with no character input (the mover parked or idle).
+    pub fn step_world(&mut self) {
+        self.run(&[]);
+    }
+
     fn next_seq(&mut self) -> u32 {
         self.seq += 1;
         self.seq
