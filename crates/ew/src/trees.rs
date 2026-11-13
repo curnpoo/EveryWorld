@@ -23,7 +23,9 @@
 
 use crate::terrain::{CacheSource, TerrainWorld, build_canopy};
 use ed_data::DiskCache;
-use ed_geo::{CanopyPage, HeightPage, NodeId};
+use ed_geo::{CanopyPage, HeightPage, NodeId, ObjectId};
+use ed_planet::Anchor;
+use ed_sim::TrunkDesc;
 use ed_render::scene::{InstanceDesc, InstanceId, Material, MaterialId, MaterialTextures, MeshId, NodeSlot, TextureAsset, TextureHandle};
 use ed_render::impostor::{ImpostorBands, ImpostorKind, ImpostorRange, ImpostorTree};
 use ed_render::{Camera, Renderer};
@@ -335,6 +337,16 @@ struct NodeEntry {
     stand: Arc<Vec<StandTree>>,
 }
 
+/// A candidate scan in progress (see [`NearTrees::trunk_scan_start`]).
+pub struct TrunkScan {
+    dir: DVec3,
+    cut: f64,
+    stands: Vec<Arc<Vec<StandTree>>>,
+    node: usize,
+    tree: usize,
+    pub out: Vec<TrunkDesc>,
+}
+
 /// One node being applied in slices (a node's 30k trees do not fit one frame's budget):
 /// placement, then the impostor block, then the mesh instances.
 struct Build {
@@ -419,6 +431,20 @@ pub struct NearTrees {
     season: Option<SeasonCfg>,
     /// Ground cover to 150 m (trees G7; `EW_GROUND_COVER=0` off): it reads the pages and stands.
     pub ground: Option<crate::ground_cover::GroundCover>,
+    /// Mesh instances of trees thick enough to be felled (G10): what a fallen tree's body moves.
+    inst_index: std::cell::RefCell<BTreeMap<ObjectId, TreeInst>>,
+    /// Trees with a `Removed` override: no instance.
+    removed: BTreeSet<ObjectId>,
+}
+
+/// The renderer instance of one fellable tree.
+#[derive(Clone, Copy)]
+struct TreeInst {
+    inst: InstanceId,
+    /// Node origin (render frame).
+    origin: DVec3,
+    scale: Vec3,
+    yaw: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -478,6 +504,8 @@ impl NearTrees {
             handoff_m: 0.0,
             season: std::env::var("EW_SEASON").map_or(true, |v| v != "0").then(|| SeasonCfg { day: ed_world::season::REF_DAY, rate: env_num("EW_SEASON_RATE", 1.0f64) }),
             ground: (near_from_env() && crate::ground_cover::from_env()).then(crate::ground_cover::GroundCover::new),
+            inst_index: Default::default(),
+            removed: BTreeSet::new(),
         }
     }
 
@@ -649,6 +677,9 @@ impl NearTrees {
     fn add_instances(&self, wd: &TerrainWorld, r: &mut Renderer, slot: NodeSlot, origin: DVec3, gh: f64, trees: &[StandTree]) -> Result<Vec<InstanceId>, String> {
         let mut out = Vec::with_capacity(trees.len());
         for tr in trees {
+            if self.removed.contains(&tr.id) {
+                continue;
+            }
             let p = bank::instance_params(tr);
             let Some(&(mesh, material, _, _)) = self.bank.get(&(tr.species, p.variant, p.age)) else { continue };
             let (base, up, h) = self.place_h(wd, tr, gh);
@@ -662,9 +693,117 @@ impl NearTrees {
             };
             r.instances().set_user(i, p.user);
             r.instances().set_season(i, self.season_word(tr, h));
+            self.index_instance(tr, i, origin, Vec3::new(s * p.widen, s, s * p.widen), p.yaw);
             out.push(i);
         }
         Ok(out)
+    }
+
+    fn index_instance(&self, tr: &StandTree, inst: InstanceId, origin: DVec3, scale: Vec3, yaw: f32) {
+        if tr.trunk_radius_m() >= ed_sim::MIN_BLOCK_RADIUS_M {
+            self.inst_index.borrow_mut().insert(tr.id, TreeInst { inst, origin, scale, yaw });
+        }
+    }
+
+    fn forget_instances(&self, stand: &[StandTree]) {
+        let mut ix = self.inst_index.borrow_mut();
+        if !ix.is_empty() {
+            for t in stand {
+                ix.remove(&t.id);
+            }
+        }
+    }
+
+    /// Trunks (sim frame) of the resident trees within `radius_m` of body direction `dir`,
+    /// sorted by id: the candidates for trunk collision (G10).
+    pub fn trunk_candidates(&self, wd: &TerrainWorld, dir: DVec3, radius_m: f64) -> Vec<TrunkDesc> {
+        let body = &wd.anchor.body;
+        let scale = body.point(dir, 0.0).length();
+        let cut = radius_m / scale;
+        let mut out = Vec::new();
+        for e in self.nodes.values() {
+            for tr in e.stand.iter() {
+                let r = tr.trunk_radius_m();
+                if r < ed_sim::MIN_BLOCK_RADIUS_M || (tr.dir - dir).length() > cut {
+                    continue;
+                }
+                let Some(h) = self.ground_at(wd, tr.dir) else { continue };
+                let base = Anchor::render_to_sim(wd.anchor.body_to_render(body.point(tr.dir, h)));
+                out.push(TrunkDesc { id: tr.id, base, trunk_h: tr.trunk_height_m(), tree_h: tr.height_m, radius: r });
+            }
+        }
+        out.sort_by_key(|d| d.id);
+        out
+    }
+
+    /// Starts a time-sliced candidate scan (G10): the resident nodes that can reach within
+    /// `radius_m` of body direction `dir`, in `NodeId` order. Step it with
+    /// [`NearTrees::trunk_scan_step`].
+    pub fn trunk_scan_start(&self, wd: &TerrainWorld, dir: DVec3, radius_m: f64) -> TrunkScan {
+        let scale = wd.anchor.body.point(dir, 0.0).length();
+        let cut = radius_m / scale;
+        let mut stands = Vec::new();
+        for (id, e) in self.nodes.iter() {
+            let c = id.centre();
+            let reach = (0..4u8).map(|i| (id.corner(i) - c).length()).fold(0.0, f64::max);
+            if (c - dir).length() - reach <= cut {
+                stands.push(e.stand.clone());
+            }
+        }
+        TrunkScan { dir, cut, stands, node: 0, tree: 0, out: Vec::new() }
+    }
+
+    /// Advances `s` by about `units` of work (a rejected tree costs 1, a ground lookup 20; a
+    /// count, never a clock, so the schedule is the same every run). `true` when done; `s.out`
+    /// is then sorted by id.
+    pub fn trunk_scan_step(&self, wd: &TerrainWorld, s: &mut TrunkScan, mut units: i32) -> bool {
+        let body = &wd.anchor.body;
+        while s.node < s.stands.len() {
+            let stand = s.stands[s.node].clone();
+            while s.tree < stand.len() {
+                if units <= 0 {
+                    return false;
+                }
+                units -= 1;
+                let tr = &stand[s.tree];
+                s.tree += 1;
+                let r = tr.trunk_radius_m();
+                if r < ed_sim::MIN_BLOCK_RADIUS_M || (tr.dir - s.dir).length() > s.cut {
+                    continue;
+                }
+                units -= 20;
+                let Some(h) = self.ground_at(wd, tr.dir) else { continue };
+                let base = Anchor::render_to_sim(wd.anchor.body_to_render(body.point(tr.dir, h)));
+                s.out.push(TrunkDesc { id: tr.id, base, trunk_h: tr.trunk_height_m(), tree_h: tr.height_m, radius: r });
+            }
+            s.node += 1;
+            s.tree = 0;
+        }
+        s.out.sort_by_key(|d| d.id);
+        true
+    }
+
+    /// Applies the server's override records to the drawing: removed trees lose their instance
+    /// (and stay out when their node reloads); `fallen` is `(id, body centre (sim), body
+    /// rotation (sim), log length)` per felled tree, whose instance follows the body.
+    pub fn apply_overrides(&mut self, r: &mut Renderer, ov: &ed_sim::TreeOverrides, fallen: &[(ObjectId, DVec3, glam::DQuat, f32)]) {
+        for (id, st) in ov.iter() {
+            if st == ed_sim::TreeState::Removed && self.removed.insert(id) {
+                if let Some(t) = self.inst_index.borrow_mut().remove(&id) {
+                    r.instances().remove(t.inst);
+                }
+            }
+        }
+        let ix = self.inst_index.borrow();
+        for &(id, pos, rot, len) in fallen {
+            let Some(t) = ix.get(&id) else { continue };
+            let rr = crate::play::to_render_rot(rot);
+            let c = Anchor::sim_to_render(pos);
+            // The mesh's origin is the trunk base: the body's lower end.
+            let base = c - (rr * Vec3::Y * (len * 0.5)).as_dvec3();
+            let xf = Affine3A::from_scale_rotation_translation(t.scale, rr * Quat::from_rotation_y(t.yaw), (base - t.origin).as_vec3());
+            r.instances().set_transform(t.inst, &xf);
+        }
     }
 
     /// Trunk base (render frame), up and ground height (m) of stand tree `tr`.
@@ -707,6 +846,7 @@ impl NearTrees {
         let gone: Vec<NodeId> = self.nodes.keys().copied().filter(|id| !wanted.contains(id)).collect();
         for id in gone {
             let e = self.nodes.remove(&id).expect("listed");
+            self.forget_instances(&e.stand);
             for i in e.instances {
                 r.instances().remove(i);
             }
@@ -753,6 +893,9 @@ impl NearTrees {
             } else {
                 let e = self.nodes.get_mut(&id).expect("listed");
                 e.meshed = false;
+                let stand = e.stand.clone();
+                self.forget_instances(&stand);
+                let e = self.nodes.get_mut(&id).expect("listed");
                 for i in std::mem::take(&mut e.instances) {
                     r.instances().remove(i);
                 }
@@ -952,8 +1095,12 @@ impl NearTrees {
             }
             2 => {
                 let mut out = Vec::new();
+                let origin = self.nodes[&b.id].origin;
                 for (tr, pl) in b.stand[b.pos..end].iter().zip(&b.placed[b.pos..end]) {
                     let Some((rel, up, season)) = pl else { continue };
+                    if self.removed.contains(&tr.id) {
+                        continue;
+                    }
                     let p = bank::instance_params(tr);
                     let Some(&(mesh, material, _, _)) = self.bank.get(&(tr.species, p.variant, p.age)) else { continue };
                     let s = p.scale;
@@ -966,6 +1113,7 @@ impl NearTrees {
                     };
                     r.instances().set_user(i, p.user);
                     r.instances().set_season(i, *season);
+                    self.index_instance(tr, i, origin, Vec3::new(s * p.widen, s, s * p.widen), p.yaw);
                     out.push(i);
                 }
                 self.nodes.get_mut(&b.id).expect("building").instances.extend(out);

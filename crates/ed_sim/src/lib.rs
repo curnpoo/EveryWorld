@@ -18,6 +18,7 @@ mod ffi;
 mod frame;
 mod mover;
 mod replay;
+mod trunks;
 mod types;
 mod vehicle;
 mod world;
@@ -29,6 +30,8 @@ pub use types::{
     BodyDesc, BodyKind, Command, CommandKind, Entity, Filter, GeomId, Geometry, HeightField, Material, MoverDesc,
     MoverInput, MoverState, QueryFilter, Shape, ShapeDesc, TriMesh, layers,
 };
+pub use trunks::{TreeOverrides, TreeState, TrunkDesc, Trunks, Watched};
+pub use trunks::{LOG_FRACTION, CONTACT_MARGIN_M, FELL_IMPULSE_PER_R2, MIN_BLOCK_RADIUS_M, WOOD_DENSITY};
 pub use vehicle::{Vehicle, VehicleDesc, VehicleInput, Wheel, yaw_rotation};
 pub use world::{BodyState, CastShape, RayHit, ShapeHit, SimConfig, SimInput, Snapshot, StepOutput, World};
 

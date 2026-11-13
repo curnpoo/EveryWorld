@@ -202,7 +202,7 @@ struct RobotPlay {
 /// Rig-local distance from `origin` beyond which the rig is re-based (the gait restarts).
 const REBASE_M: f64 = 2000.0;
 
-fn to_render_rot(q: glam::DQuat) -> Quat {
+pub(crate) fn to_render_rot(q: glam::DQuat) -> Quat {
     glam::DQuat::from_xyzw(q.x, q.z, -q.y, q.w).as_quat()
 }
 
@@ -211,6 +211,12 @@ pub struct Play {
     pub place: &'static Place,
     pub world: TerrainWorld,
     pub collision: TerrainCollision,
+    /// Trunk collision, override records and felling (G10); `EW_TREE_COLLIDE=0` off.
+    pub tree_col: crate::tree_collide::TreeCollision,
+    pub tree_col_on: bool,
+    pub tree_col_scan: Option<crate::trees::TrunkScan>,
+    /// Main-thread ms of the trunk updates (candidates + bodies), per frame they ran.
+    pub tree_col_ms: Vec<f64>,
     pub game: Game,
     pub cam: OrbitCam,
     pub fixed: FixedStep,
@@ -243,6 +249,7 @@ struct PlaySim<'a> {
     driving: bool,
     drive: VehicleInput,
     focus: DVec3,
+    trunks: &'a mut ed_sim::Trunks,
 }
 
 impl Simulation for PlaySim<'_> {
@@ -252,6 +259,10 @@ impl Simulation for PlaySim<'_> {
             let vin = if self.driving { self.drive } else { VehicleInput::default() };
             car.pre_step(&mut self.game.world, &vin, self.focus, self.driving);
         }
+        // Impacts on trunks: the car's momentum change across the step.
+        let watched: Vec<ed_sim::Watched> = self.car.as_deref().map(|c| ed_sim::Watched { entity: c.veh.body, radius: c.veh.desc.body_half.y as f64 }).into_iter().collect();
+        self.trunks.begin_step(&self.game.world, &watched);
+        let tick = self.game.world.tick();
         if self.driving {
             self.game.step_world();
         } else if let Some(ctl) = self.robot.as_deref_mut() {
@@ -263,6 +274,7 @@ impl Simulation for PlaySim<'_> {
         } else {
             self.game.step(input, dt);
         }
+        self.trunks.end_step(&mut self.game.world, tick);
         if let Some(car) = self.car.as_deref_mut() {
             car.post_step(&self.game.world);
         }
@@ -381,6 +393,10 @@ impl Play {
             t0.elapsed().as_secs_f64() * 1e3
         );
         Ok(Play {
+            tree_col: crate::tree_collide::TreeCollision::new(),
+            tree_col_scan: None,
+            tree_col_on: std::env::var("EW_TREE_COLLIDE").map_or(true, |v| v != "0"),
+            tree_col_ms: Vec::new(),
             place,
             world,
             collision,
@@ -557,6 +573,28 @@ impl Play {
             self.world.load(&missing, usize::MAX);
         }
         self.collision.update(&mut self.game.world, &anchor, self.world.residency(), focus);
+        if self.tree_col_on {
+            let t0 = Instant::now();
+            if let Some(nt) = &self.near {
+                if self.tree_col.due(focus, nt.stats.nodes) {
+                    self.tree_col.request();
+                }
+                if self.tree_col_scan.is_none() && self.tree_col.scanning_wanted() {
+                    self.tree_col.begin_scan(focus);
+                    let dir = anchor.sim_to_body(focus).normalize();
+                    self.tree_col_scan = Some(nt.trunk_scan_start(&self.world, dir, crate::tree_collide::RADIUS_M + 40.0));
+                }
+                if let Some(sc) = self.tree_col_scan.as_mut() {
+                    if nt.trunk_scan_step(&self.world, sc, crate::tree_collide::SCAN_UNITS) {
+                        let cands = std::mem::take(&mut sc.out);
+                        self.tree_col_scan = None;
+                        self.tree_col.finish_scan(&cands);
+                    }
+                }
+            }
+            self.tree_col.drain(&mut self.game.world, focus);
+            self.tree_col_ms.push(t0.elapsed().as_secs_f64() * 1e3);
+        }
         // Prefetch: a wider ring at driving speed, so the car never waits for its ground.
         let fast = self.driving && self.car.as_ref().is_some_and(|c| c.speed().abs() > 12.0);
         let ring = collision_block(&anchor, focus, if fast { 3 } else { 2 });
@@ -569,12 +607,21 @@ impl Play {
             c.env.anchor = Some(anchor.clone());
             c.env.ground_alt = self.world.ground(Anchor::sim_to_render(c.feet()));
         }
-        let mut sim = PlaySim { game: &mut self.game, car: self.car.as_mut(), robot: self.robot.as_mut().and_then(|rb| rb.ctl.as_mut()), driving: self.driving, drive, focus };
+        let mut sim = PlaySim { game: &mut self.game, car: self.car.as_mut(), robot: self.robot.as_mut().and_then(|rb| rb.ctl.as_mut()), driving: self.driving, drive, focus, trunks: &mut self.tree_col.trunks };
         let alpha = self.fixed.run(frame_dt, &mut sim, |_| GameInput { yaw, ..input });
         let feet = match self.robot.as_ref().and_then(|rb| rb.ctl.as_ref()) {
             Some(c) => c.feet_at(alpha),
             None => self.game.feet(alpha),
         };
+        // Felled trees: the drawn instance follows its body.
+        if let Some(nt) = &mut self.near {
+            let tc = &self.tree_col;
+            let world = &self.game.world;
+            let fallen: Vec<_> = tc.trunks.fallen().filter_map(|f| world.body_state(f.entity).map(|s| (f.desc.id, s.position, s.rotation, (f.desc.tree_h * ed_sim::LOG_FRACTION).max(f.desc.trunk_h)))).collect();
+            if !fallen.is_empty() || !tc.trunks.overrides().is_empty() {
+                nt.apply_overrides(r, tc.trunks.overrides(), &fallen);
+            }
+        }
         let car_pose = self.car.as_ref().map(|c| (c.pose(alpha), c.wheels(alpha), c.speed()));
         if let (Some(c), Some(v), Some((pose, wheels, _))) = (&self.car, &self.car_view, &car_pose) {
             v.draw(r, &c.veh.desc, *pose, wheels);
@@ -1272,6 +1319,13 @@ impl App {
                 pct(&mut self.trees_ms, 0.5),
                 self.trees_resident_s.map_or("never".into(), |s| format!("{s:.1} s"))
             );
+        }
+        if let Some(p) = &mut self.play
+            && !p.tree_col_ms.is_empty()
+        {
+            let (p50, p99) = (pct(&mut p.tree_col_ms, 0.5), pct(&mut p.tree_col_ms, 0.99));
+            let mx = p.tree_col_ms.iter().copied().fold(0.0, f64::max);
+            println!("ew: trunk collision update ms (main thread, {} frames): p50 {p50:.2} / p99 {p99:.2} / max {mx:.2}; {} trunks standing, max {} bodies/frame, {} pending, {} records", p.tree_col_ms.len(), p.tree_col.stats.standing, p.tree_col.stats.max_ops, p.tree_col.stats.pending, p.tree_col.trunks.overrides().len());
         }
         if !self.ground_ms.is_empty() {
             let (p50, p99) = (pct(&mut self.ground_ms, 0.5), pct(&mut self.ground_ms, 0.99));

@@ -540,6 +540,22 @@ impl StandTree {
     pub fn species_def(&self) -> &'static StandSpecies {
         &STAND_SPECIES[self.species as usize]
     }
+
+    /// Trunk radius (m): diameter at breast height from a height allometry
+    /// (`dbh = 0.0095 h^1.2`, about 0.35 m at 20 m), conifers 15% slimmer. Shrubs get 0.
+    pub fn trunk_radius_m(&self) -> f32 {
+        let sp = self.species_def();
+        if sp.shrub {
+            return 0.0;
+        }
+        let dbh = 0.0095 * self.height_m.max(0.0).powf(1.2) * if sp.conifer { 0.85 } else { 1.0 };
+        0.5 * dbh
+    }
+
+    /// Collidable trunk height (m): up to roughly the crown base (broadleaf 40%, conifer 25% of height).
+    pub fn trunk_height_m(&self) -> f32 {
+        self.height_m * if self.species_def().conifer { 0.25 } else { 0.4 }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -919,6 +935,43 @@ mod tests {
             }
         }
         (s / n, trees)
+    }
+
+    /// Ids and trunks are a pure function of the node: loading nodes in another order, or
+    /// twice, gives identical ids, in id order, with identical trunk sizes (G10).
+    #[test]
+    fn ids_and_trunks_independent_of_load_order() {
+        let f = flat(0.7, 25.0);
+        let c = node_at(46.02, 7.75, 15);
+        let nodes: Vec<NodeId> = (-1..=1).flat_map(|dy| (-1..=1).map(move |dx| (dx, dy))).map(|(dx, dy)| c.neighbour(dx, dy)).collect();
+        let key = |t: &StandTree| (t.id, t.trunk_radius_m().to_bits(), t.trunk_height_m().to_bits());
+        let fwd: Vec<Vec<_>> = nodes.iter().map(|&n| stand_for_node(n, &f, 5).iter().map(key).collect()).collect();
+        let mut rev: Vec<(usize, Vec<_>)> = nodes.iter().enumerate().rev().map(|(i, &n)| (i, stand_for_node(n, &f, 5).iter().map(key).collect())).collect();
+        rev.sort_by_key(|r| r.0);
+        for (i, (a, b)) in fwd.iter().zip(&rev).enumerate() {
+            assert!(!a.is_empty(), "node {i} empty");
+            assert_eq!(a, &b.1);
+            assert!(a.windows(2).all(|w| w[0].0 < w[1].0));
+        }
+        // No tree appears in two nodes.
+        let mut all: Vec<_> = fwd.iter().flatten().map(|k| k.0).collect();
+        let n = all.len();
+        all.sort();
+        all.dedup();
+        assert_eq!(all.len(), n);
+    }
+
+    #[test]
+    fn trunk_sizes_are_sane() {
+        let f = flat(0.8, 25.0);
+        let trees = stand_for_node(node_at(46.02, 7.75, 15), &f, 5);
+        let big = trees.iter().filter(|t| t.height_m > 18.0 && !t.species_def().shrub).collect::<Vec<_>>();
+        assert!(!big.is_empty());
+        for t in big {
+            let r = t.trunk_radius_m();
+            assert!((0.08..0.5).contains(&r), "radius {r} for h {}", t.height_m);
+            assert!(t.trunk_height_m() < t.height_m);
+        }
     }
 
     #[test]

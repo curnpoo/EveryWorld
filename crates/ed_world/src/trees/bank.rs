@@ -439,9 +439,28 @@ pub struct BankMesh {
     pub crown_radius: f32,
     pub leaf_albedo: [f32; 3],
     pub bark_albedo: [f32; 3],
+    /// Branch index per vertex, parallel to `positions` (G11). Only the T0 (near) vertices
+    /// carry one; the far/shell LODs hold [`NO_BRANCH`]. Vertices of the same index form one
+    /// branch with its twigs and leaf cards; 0 is the trunk and any unassigned geometry.
+    pub branch: Vec<u32>,
 }
 
+/// Branch index of vertices that belong to no near-model branch (the far LODs).
+pub const NO_BRANCH: u32 = u32::MAX;
+
 impl BankMesh {
+    /// Vertex indices of branch `b` in T0, ascending.
+    pub fn branch_vertices(&self, b: u32) -> Vec<u32> {
+        self.branch.iter().enumerate().filter(|(_, x)| **x == b).map(|(i, _)| i as u32).collect()
+    }
+    /// Number of distinct near-model branch indices.
+    pub fn branch_count(&self) -> usize {
+        let mut v: Vec<u32> = self.branch.iter().copied().filter(|&b| b != NO_BRANCH).collect();
+        v.sort_unstable();
+        v.dedup();
+        v.len()
+    }
+
     pub fn triangles(&self, lod: usize) -> usize {
         self.lods[lod].0.len() / 3
     }
@@ -511,12 +530,14 @@ struct Lod {
     normals: Vec<[f32; 3]>,
     words: Vec<[u32; 2]>,
     indices: Vec<u32>,
+    /// Branch index per vertex ([`BankMesh::branch`]); empty for generated LODs.
+    branch: Vec<u32>,
 }
 
 /// Converts a generated model (scaled by `s`) into vertex words. `leaf_ref`/`bark_ref`: the
 /// reference colours value and hue are measured against.
 fn convert(model: &TreeModel, s: f32, leaf_ref: [f32; 4], bark_ref: [f32; 4], mid_y: f32) -> Lod {
-    let mut out = Lod { positions: Vec::new(), normals: Vec::new(), words: Vec::new(), indices: Vec::new() };
+    let mut out = Lod { positions: Vec::new(), normals: Vec::new(), words: Vec::new(), indices: Vec::new(), branch: Vec::new() };
     for (mesh, is_bark) in [(&model.bark, true), (&model.leaves, false)] {
         let m = &mesh.mesh;
         let base = out.positions.len() as u32;
@@ -547,6 +568,7 @@ fn convert(model: &TreeModel, s: f32, leaf_ref: [f32; 4], bark_ref: [f32; 4], mi
             out.words.push([pack_uv(uv), pack_aux(value, hue, sway * s, flutter, phase, card[i], bark_v[i], groups[i])]);
         }
         out.indices.extend(m.indices.iter().map(|&i| i + base));
+        out.branch.extend(if is_bark { model.bark_branch.iter() } else { model.leaf_branch.iter() });
     }
     out
 }
@@ -586,7 +608,7 @@ fn shell(near: &Lod, height: f32, trunk_r: f32) -> Lod {
             r[k * NA + az] = ((row0[az] * 2.0 + row0[(az + 1) % NA] + row0[(az + NA - 1) % NA]) / 4.0 * 0.85).max(0.15);
         }
     }
-    let mut out = Lod { positions: Vec::new(), normals: Vec::new(), words: Vec::new(), indices: Vec::new() };
+    let mut out = Lod { positions: Vec::new(), normals: Vec::new(), words: Vec::new(), indices: Vec::new(), branch: Vec::new() };
     let leaf_word = |value: f32, y: f32| pack_aux(value, 0.0, 0.035 * height * (y / height).clamp(0.0, 1.5).powf(1.8), 0.0, 0.0, false, false, 0);
     let uv = pack_uv(atlas_uv(LeafCell::Solid, 0.5, 0.5));
     // Underside centre, rings bottom to top, apex.
@@ -754,6 +776,10 @@ pub fn bank_mesh_with(species: usize, variant: u32, age: u8, parts: Option<&part
         out.positions.extend(l.positions);
         out.normals.extend(l.normals);
         out.words.extend(l.words);
+        if k == 0 {
+            out.branch.extend(l.branch);
+        }
+        out.branch.resize(out.positions.len(), NO_BRANCH);
         out.lods.push((l.indices.into_iter().map(|i| i + base).collect(), errors[k]));
     }
     out.lods.push((Vec::new(), errors[3]));
@@ -805,6 +831,28 @@ pub fn instance_params(t: &StandTree) -> InstanceParams {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// G11: every T0 vertex has a branch index, the far LODs none, and branches are many.
+    #[test]
+    fn near_vertices_carry_branch_indices() {
+        let mut seen = [false; 2];
+        for sp in 0..STAND_SPECIES.len() {
+            let def = &STAND_SPECIES[sp];
+            let class = def.conifer as usize;
+            if def.shrub || seen[class] {
+                continue;
+            }
+            seen[class] = true;
+            let m = bank_mesh(sp, 0, 2);
+            assert_eq!(m.branch.len(), m.positions.len(), "{}", def.name);
+            let n0 = m.lods[0].0.iter().max().map_or(0, |&i| i as usize + 1);
+            assert!(m.branch[..n0].iter().all(|&b| b != NO_BRANCH), "{}: unassigned T0 vertex", def.name);
+            assert!(m.branch[n0..].iter().all(|&b| b == NO_BRANCH) || m.lods[1].0.iter().all(|&i| m.branch[i as usize] == NO_BRANCH), "{}: far LOD carries branches", def.name);
+            assert!(m.branch_count() > 5, "{}: only {} branches", def.name, m.branch_count());
+            assert!(!m.branch_vertices(0).is_empty() || m.branch_count() > 0);
+        }
+        assert_eq!(seen, [true, true]);
+    }
 
     #[test]
     fn aux_round_trip() {

@@ -31,6 +31,7 @@ pub mod session;
 pub mod terrain;
 pub mod trees;
 pub mod terrain_collide;
+pub mod tree_collide;
 pub mod terrain_mat;
 pub mod walker;
 pub mod windowed;

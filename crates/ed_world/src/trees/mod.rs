@@ -139,6 +139,11 @@ pub struct TreeModel {
     pub bark_style: BarkStyle,
     pub height: f32,
     pub crown_radius: f32,
+    /// Branch index per vertex of `bark` and of `leaves` (G11: a destruction phase splits a
+    /// branch off by these). 0 is the trunk and anything not in a branch; each branch (and the
+    /// twigs and leaf cards it carries, not its children) has its own index.
+    pub bark_branch: Vec<u32>,
+    pub leaf_branch: Vec<u32>,
 }
 
 // --------------------------------------------------------------- colors --
@@ -228,9 +233,46 @@ struct Builder {
     /// Near cards as flat quads (2 triangles) instead of cupped 3x2 grids: needle sprays are
     /// small and many, so their count, not their curl, makes the crown (trees look pass).
     pub(crate) flat_cards: bool,
+    /// Branch index of the vertices added since the last [`Builder::mark`], and the per-vertex
+    /// lists stamped so far.
+    cur_branch: u32,
+    next_branch: u32,
+    /// Generators that do not mark branches themselves: every `tube` starts a branch.
+    auto_branch: bool,
+    bark_branch: Vec<u32>,
+    leaf_branch: Vec<u32>,
 }
 
 impl Builder {
+    /// Gives every vertex added since the last mark to the current branch, then makes `id` current.
+    pub(crate) fn mark(&mut self, id: u32) {
+        let cur = self.cur_branch;
+        self.bark_branch.resize(self.bark.mesh.positions.len(), cur);
+        self.leaf_branch.resize(self.leaves.mesh.positions.len(), cur);
+        self.cur_branch = id;
+        self.auto_branch = false;
+    }
+
+    /// A fresh branch index; the current branch is `mark`ed and the new one made current.
+    /// Returns the previous index, to restore with `mark` when the branch ends.
+    pub(crate) fn begin_branch(&mut self) -> u32 {
+        self.next_branch += 1;
+        let prev = self.cur_branch;
+        self.mark(self.next_branch);
+        prev
+    }
+
+    /// The first tube of a tree is its trunk (index 0, with anything added before it); later
+    /// tubes of generators that do not mark branches start one each.
+    fn auto_mark(&mut self) {
+        if self.auto_branch && !self.bark.mesh.positions.is_empty() {
+            self.next_branch += 1;
+            let id = self.next_branch;
+            self.mark(id);
+            self.auto_branch = true;
+        }
+    }
+
     fn new(seed: u64, far: bool, far_keep: f32) -> Self {
         Self {
             bark: WindMesh::default(),
@@ -251,6 +293,11 @@ impl Builder {
             bark_pattern: None,
             card_tint: [1.0; 4],
             flat_cards: false,
+            cur_branch: 0,
+            next_branch: 0,
+            auto_branch: true,
+            bark_branch: Vec::new(),
+            leaf_branch: Vec::new(),
         }
     }
 
@@ -262,6 +309,7 @@ impl Builder {
 
     /// Sweep a tube along `path` with per-point `radii` and `whip`.
     fn tube(&mut self, path: &[Vec3], radii: &[f32], whip: &[f32], phase: f32, st: TubeStyle) {
+        self.auto_mark();
         let n_pts = path.len();
         if n_pts < 2 {
             return;
@@ -454,6 +502,7 @@ impl Builder {
 
     /// Bake AO, crown rim and bent normals; produce the model.
     fn finish(mut self) -> TreeModel {
+        self.mark(0);
         // Crown volume from leaf cards.
         let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
         let mut any = false;
@@ -511,7 +560,7 @@ impl Builder {
             self.bark.mesh.colors[i] = scalec(self.bark.mesh.colors[i], ao * ground);
         }
         let crown_radius = if any { radii.x.max(radii.z) } else { 0.5 };
-        TreeModel { bark: self.bark, leaves: self.leaves, bark_style: self.bark_style, height, crown_radius }
+        TreeModel { bark: self.bark, leaves: self.leaves, bark_style: self.bark_style, height, crown_radius, bark_branch: self.bark_branch, leaf_branch: self.leaf_branch }
     }
 
     /// Grow a smooth path: `segs` steps of `len/segs`, bending toward `+Y *
@@ -583,6 +632,7 @@ const SEGS: [usize; 5] = [12, 7, 5, 4, 3];
 impl Builder {
     #[allow(clippy::too_many_arguments)]
     fn branch(&mut self, spec: &BranchSpec, level: usize, start: Vec3, dir: Vec3, len: f32, r0: f32, whip0: f32, phase: f32, flare: f32) {
+        let prev_branch = if level == 0 { self.cur_branch } else { self.begin_branch() };
         let segs = SEGS[level.min(4)];
         let up = spec.up[level.min(3)];
         let wiggle = spec.wiggle[level.min(3)];
@@ -633,6 +683,9 @@ impl Builder {
                 let sway = self.sway(p, whip);
                 self.card(p - up_dir.normalize_or(Vec3::Y) * size * 0.12, up_dir, face, size * l.aspect, size, l.cell, sway, phase + self.rng.r(0.0, 0.1), l.curl, self.card_tint);
             }
+        }
+        if level > 0 {
+            self.mark(prev_branch);
         }
     }
 

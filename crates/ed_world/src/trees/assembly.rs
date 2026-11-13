@@ -244,6 +244,7 @@ pub(super) fn assembled_conifer(b: &mut Builder, leaf: u32, sp: &AsmSpecies, g: 
         .collect();
     let trunk_r = sp.trunk_r * (h / 20.0).clamp(0.08, 1.6);
     let radii: Vec<f32> = (0..trunk.len()).map(|i| trunk_r * (1.0 - i as f32 / 16.0).max(0.03).powf(0.9)).collect();
+    b.mark(0);
     b.tube(&trunk, &radii, &[0.0; 17], 0.0, TubeStyle { flare: 0.6, ..TubeStyle::bark(8) });
     let at = |y: f32| lerp_path(&trunk, (y + 0.4) / (h + 0.4)).0;
 
@@ -321,6 +322,8 @@ pub(super) fn assembled_conifer(b: &mut Builder, leaf: u32, sp: &AsmSpecies, g: 
     for (br, sh) in branches.iter().zip(&shapes) {
         let r = Rng::new(seed ^ 0x5B7A ^ br.key.wrapping_mul(0xD1B5_4A32_D192_ED03));
         let phase = r.f();
+        // Everything this branch adds (stub or limb, its sprays) carries its index.
+        b.mark(br.key as u32 + 1);
         let Some(s) = sh else {
             // Dead lower branch: a short bare stub (near only), some broken off.
             let keep = r.f() < g.dead_stub;
