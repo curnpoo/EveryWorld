@@ -30,7 +30,7 @@ file and the catalogue disagree, this file wins. Decisions: F8, F13 in `../DECIS
 | Roads | **Overture transportation** (pinned release) + raw OSM tags | YELLOW (**ODbL**) | `../plans/streets.md` |
 | Buildings | **Overture buildings** (pinned release) | YELLOW (**ODbL**) | Stable GERS ids are used in `ObjectId` |
 | Building heights | Overture where present; PLATEAU (Japan) and 3D BAG (Netherlands) for hero cities; otherwise the inference rule below | per source | |
-| Canopy height | A global canopy-height product | YELLOW | Licence to verify before use |
+| Canopy height | ETH Global Canopy Height 2020, 10 m (Lang et al. 2023); later Meta/WRI 1 m for the near field | GREEN (CC BY 4.0, checked 2026-11-12) | Windowed reads only, cached in `.earthdrop-cache/`; attribution "Lang, Jetz, Schindler, Wegner 2023". Feeds the canopy page (`../plans/trees.md`, O3-7) |
 | Climate normals | CHELSA v2.1 | GREEN (CC0 1.0) | Replaces WorldClim. Chosen in Phase 0 |
 | Geology | Macrostrat | YELLOW (CC BY 4.0) | |
 | Night lights | NASA Black Marble (VIIRS) | GREEN (NASA open data) | Feeds R3/R4 emissive |
