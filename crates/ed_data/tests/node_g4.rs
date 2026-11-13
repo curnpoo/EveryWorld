@@ -136,3 +136,26 @@ fn g4_parent_borders_bit_identical() {
         }
     }
 }
+
+/// Fine levels: pages there are de-terraced over a window of source pixels around the node
+/// (`ed_data::node::DEQUANT_FROM_LEVEL`); the window differs per node, the shared edges must not.
+#[test]
+fn g4_fine_level_borders_bit_identical() {
+    let src = Synth::new();
+    let mut rng = Rng(0xF1_4E_2026);
+    let dirs = [(1, 0), (-1, 0), (0, 1), (0, -1)];
+    let mut checked = 0;
+    while checked < 60 {
+        let level = ed_data::node::DEQUANT_FROM_LEVEL + rng.below(6) as u8;
+        let n = 1u64 << level;
+        let id = NodeId::new(BodyId(0), rng.below(4) as u8, level, rng.below(n) as u32, rng.below(n) as u32).unwrap();
+        let (dx, dy) = dirs[rng.below(4) as usize];
+        let nb = id.neighbour(dx, dy);
+        if nb == id {
+            continue;
+        }
+        let (pa, pb) = (node_heights(&src, id), node_heights(&src, nb));
+        assert_eq!(shared_matches(id, &pa, nb, &pb), 257, "{id} and {nb} must share a full edge");
+        checked += 1;
+    }
+}

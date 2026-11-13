@@ -102,7 +102,64 @@ impl Tiles<'_> {
     }
 }
 
-/// Heights for `id`'s 257 x 257 lattice, sampled bilinearly in tile pixel space.
+/// Vertical quantisation of the source at zoom `z` (m): Mapterhorn stores z14 in 1/8 m steps
+/// and halves the precision per zoom out (z13 1/4 m, z12 1/2 m: measured on the cached tiles,
+/// see `source_steps_follow_the_zoom_rule`). Finer zooms are taken as 1/8 m: an upsampled z15
+/// carries the z14 steps, and real finer data is only smoothed within its own 1/16 m.
+pub fn source_step(z: u8) -> f64 {
+    0.125 * (1u64 << (14 - z.min(14))) as f64
+}
+
+/// First node level whose pages are de-terraced ([`DEQUANT_PASSES`]): from here the page cell is
+/// within ~2 source pixels, so the source's height steps show as terraces (on a 3 degree slope a
+/// 1/8 m step every 2.4 m makes flats and risers several metres wide).
+pub const DEQUANT_FROM_LEVEL: u8 = 12;
+/// Smoothing passes of the de-terracing (each a 5-tap binomial, variance 1 px^2; then a clamp
+/// back into the source sample's quantisation bin).
+pub const DEQUANT_PASSES: usize = 12;
+/// Window side above which a node skips de-terracing (only nodes reaching the Mercator clamp
+/// near the poles get here).
+const DEQUANT_MAX_SIDE: i64 = 4096;
+
+/// Source pixels of a window, de-terraced: `DEQUANT_PASSES` rounds of a separable [1 4 6 4 1]/16
+/// smoothing, each clamped to `raw +- step / 2`, so the result is a smooth surface that the source
+/// would have quantised to exactly its own samples. Real relief (ridges, cliffs, breaks of slope)
+/// moves by at most half a step (6 cm at z14); flats and risers of the staircase become the ramp.
+///
+/// Each output pixel depends only on raw pixels within `2 * DEQUANT_PASSES` of it, through the
+/// same arithmetic in the same order, so any window that contains that neighbourhood gives the
+/// same bits (shared node edges stay identical). The valid region shrinks by 2 per pass.
+fn dequantise(raw: &[f64], w: usize, h: usize, step: f64) -> Vec<f64> {
+    let half = 0.5 * step;
+    let mut cur = raw.to_vec();
+    let mut tmp = raw.to_vec();
+    for p in 0..DEQUANT_PASSES {
+        let m = 2 * (p + 1);
+        if 2 * m >= w || 2 * m >= h {
+            break;
+        }
+        // Horizontal pass on rows still needed (valid margin m - 2 vertically).
+        for y in (m - 2)..(h - m + 2) {
+            let r = y * w;
+            for x in m..(w - m) {
+                let c = &cur[r + x - 2..r + x + 3];
+                tmp[r + x] = (c[0] + 4.0 * c[1] + 6.0 * c[2] + 4.0 * c[3] + c[4]) * (1.0 / 16.0);
+            }
+        }
+        for y in m..(h - m) {
+            for x in m..(w - m) {
+                let at = |yy: usize| tmp[yy * w + x];
+                let v = (at(y - 2) + 4.0 * at(y - 1) + 6.0 * at(y) + 4.0 * at(y + 1) + at(y + 2)) * (1.0 / 16.0);
+                let r = raw[y * w + x];
+                cur[y * w + x] = v.clamp(r - half, r + half);
+            }
+        }
+    }
+    cur
+}
+
+/// Heights for `id`'s 257 x 257 lattice, sampled Catmull-Rom in tile pixel space from the
+/// de-terraced source ([`dequantise`], from [`DEQUANT_FROM_LEVEL`]).
 ///
 /// Sample positions are `NodeId::grid_point(i, j, 256)` (f64, shared bit for bit with
 /// neighbours), turned into geodetic lat/lon of the ellipsoid point `d * r(d)` (P0-R1). Pure function of `(id, source)`.
@@ -120,25 +177,59 @@ pub fn node_heights(src: &dyn SourceView, id: NodeId) -> HeightPage {
             None => 256,
         }
     };
-    let mut q = Vec::with_capacity(PAGE_SAMPLES);
+    // Lattice points in fractional pixel coordinates (centres at integers), x unwrapped around
+    // the first point so a node across the antimeridian has one compact window.
+    let world = ((1i64 << z) * size as i64) as f64;
+    let mut pts: Vec<(f64, f64)> = Vec::with_capacity(PAGE_SAMPLES);
+    let mut clamped = false;
     for j in 0..PAGE_N {
         for i in 0..PAGE_N {
             let g = lattice_geodetic(id, i, j);
+            clamped |= g.lat_deg.abs() > ed_geo::tile::MAX_LAT;
             let (gx, gy) = lonlat_to_pixel(g.lon_deg, g.lat_deg, z, size);
-            let (fx, fy) = (gx - 0.5, gy - 0.5);
-            let (x0, y0) = (fx.floor(), fy.floor());
-            let (wx, wy) = (cubic_weights(fx - x0), cubic_weights(fy - y0));
-            let (x0, y0) = (x0 as i64, y0 as i64);
-            let mut h = 0.0;
-            for (m, wm) in wy.iter().enumerate() {
-                let mut row = 0.0;
-                for (k, wk) in wx.iter().enumerate() {
-                    row += wk * tiles.pixel(x0 - 1 + k as i64, y0 - 1 + m as i64, size);
-                }
-                h += wm * row;
+            let mut fx = gx - 0.5;
+            if let Some(&(x0, _)) = pts.first() {
+                fx -= world * ((fx - x0) / world).round();
             }
-            q.push(quantise(h, step));
+            pts.push((fx, gy - 0.5));
         }
+    }
+    let (mut x_lo, mut x_hi, mut y_lo, mut y_hi) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
+    for &(x, y) in &pts {
+        (x_lo, x_hi, y_lo, y_hi) = (x_lo.min(x), x_hi.max(x), y_lo.min(y), y_hi.max(y));
+    }
+    let pad = 2 + 2 * DEQUANT_PASSES as i64;
+    let (wx0, wy0) = (x_lo.floor() as i64 - pad, y_lo.floor() as i64 - pad);
+    let (ww, wh) = ((x_hi.floor() as i64 + 1 + pad - wx0 + 1) as usize, (y_hi.floor() as i64 + 1 + pad - wy0 + 1) as usize);
+    let smooth = id.level() >= DEQUANT_FROM_LEVEL && !clamped && (ww as i64) <= DEQUANT_MAX_SIDE && (wh as i64) <= DEQUANT_MAX_SIDE;
+    let win: Option<Vec<f64>> = smooth.then(|| {
+        let mut raw = Vec::with_capacity(ww * wh);
+        for y in 0..wh {
+            for x in 0..ww {
+                raw.push(tiles.pixel(wx0 + x as i64, wy0 + y as i64, size));
+            }
+        }
+        dequantise(&raw, ww, wh, source_step(z))
+    });
+    let mut q = Vec::with_capacity(PAGE_SAMPLES);
+    for &(fx, fy) in &pts {
+        let (x0, y0) = (fx.floor(), fy.floor());
+        let (wx, wy) = (cubic_weights(fx - x0), cubic_weights(fy - y0));
+        let (x0, y0) = (x0 as i64, y0 as i64);
+        let mut h = 0.0;
+        for (m, wm) in wy.iter().enumerate() {
+            let mut row = 0.0;
+            for (k, wk) in wx.iter().enumerate() {
+                let (px, py) = (x0 - 1 + k as i64, y0 - 1 + m as i64);
+                let v = match &win {
+                    Some(win) => win[(py - wy0) as usize * ww + (px - wx0) as usize],
+                    None => tiles.pixel(px, py, size),
+                };
+                row += wk * v;
+            }
+            h += wm * row;
+        }
+        q.push(quantise(h, step));
     }
     page_from_quantised(&q, step)
 }
@@ -271,6 +362,36 @@ mod tests {
             let ang = (cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]).sqrt().atan2(dot);
             assert!(ang < 1e-9, "dir {d:?} angle {ang}");
         }
+    }
+
+    #[test]
+    fn dequantise_turns_a_staircase_into_its_ramp_and_keeps_a_ridge() {
+        let (w, h, q) = (120usize, 40usize, 0.125);
+        // A 2 % ramp at 3.3 m pixels quantised to 1/8 m (flats ~2 px wide), plus a sharp ridge.
+        let truth: Vec<f64> = (0..w * h).map(|k| 0.02 * 3.3 * (k % w) as f64 + if k % w == 90 { 6.0 } else { 0.0 }).collect();
+        let raw: Vec<f64> = truth.iter().map(|&t| (t / q).round() * q).collect();
+        let out = dequantise(&raw, w, h, q);
+        let m = 2 + 2 * DEQUANT_PASSES;
+        let (mut ramp_err, mut slope_dev) = (0.0f64, 0.0f64);
+        for y in m..h - m {
+            for x in m..80 {
+                let k = y * w + x;
+                ramp_err = ramp_err.max((out[k] - truth[k]).abs());
+                slope_dev = slope_dev.max((out[k + 1] - out[k] - 0.066).abs());
+            }
+            // Every output stays inside its source sample's bin: the ridge keeps its height.
+            for x in m..w - m {
+                assert!((out[y * w + x] - raw[y * w + x]).abs() <= 0.5 * q + 1e-12);
+            }
+        }
+        let raw_dev = (0..79).map(|x| ((raw[x + 1] - raw[x]) - 0.066f64).abs()).fold(0.0, f64::max);
+        assert!(ramp_err < 0.03, "ramp error {ramp_err}");
+        assert!(slope_dev < 0.25 * raw_dev, "per-pixel slope deviation {slope_dev} vs staircase {raw_dev}");
+    }
+
+    #[test]
+    fn source_steps_follow_the_zoom_rule() {
+        assert_eq!([source_step(12), source_step(13), source_step(14), source_step(15)], [0.5, 0.25, 0.125, 0.125]);
     }
 
     #[test]

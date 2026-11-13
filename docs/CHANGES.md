@@ -1,3 +1,15 @@
+## 2026-11-12: Terrain stairs, second pass (seen at eye height)
+
+- **Owner report:** after the first fix the ground still showed a stair pattern, just larger.
+- **Causes (A/B shots at 1.7 m and 50 m with a raking sun):**
+  1. The 1/8 m page step: the ±1–2 m shading normal turned every step into a contour line (topo-map rings from 50 m). Unchanged with `ED_TERRAIN_NOLOD=1`, so not the index LODs.
+  2. The source itself: cached Mapterhorn z14 stores heights in 1/8 m steps (z13 1/4 m, z12 1/2 m); on 1–2 % slopes 69 % of neighbouring samples are equal. Catmull-Rom passes through every sample and kept the flats and risers.
+- **What:** page step halves per level from level 13 (1/256 m at 17; `height_step_for_level`). `ed_data` removes source quantization from level 12: 12 smoothing passes, each clamped to within half a source step of the original sample (ridges move ≤ 6 cm at z14). Fixed neighbourhoods keep shared node edges bit-identical (new `g4_fine_level_borders_bit_identical`, 60 pairs, levels 12–17).
+- **Tool:** `ew --headless --ground LAT,LON,HEADING,PITCH,AGL --sun AZ,EL` for near-ground shots.
+- **Checked:** stair bands gone at 1.7 m, contour rings gone at 50 m. Harness 0 holes; 1 m AGL terrain + shadow 1.80 ms. Proving frame identical. Page build ~+0.3 s per 12-frame run.
+- **Open:** beading along the Vispa riverbed (2–3 px diagonal channel in the source); level 16 roughness spikes from z15 upsampled from z14; polar nodes skip the smoothing; LOD is still cell-size based, not error based.
+- **Mac check:** the owner walks the meadows.
+
 ## 2026-11-12: P-slice S6 — terrain at about 2 ms at ground level
 
 - **What:** four index-buffer LODs over the shared 65×65 grid (stride 1/2/4/8), picked per node from projected cell size in the main view and per cascade from texels per cell (cascade 0 stays at 2, then 4/8/8); main-list frustum culling; a NOMORPH flag skips the geomorph for nodes inside the morph start; one instanced draw per LOD group. Spawn: per-sampler tile cache instead of a global mutex per bicubic tap, contiguous page chunks per worker thread.

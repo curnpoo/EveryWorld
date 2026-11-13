@@ -9,17 +9,28 @@ pub const PAGE_SAMPLES: usize = PAGE_N * PAGE_N;
 /// Quantisation step in metres of the canonical (data-layer) pages: 65535 steps cover 32.7 km,
 /// more than sea floor to summit.
 pub const HEIGHT_STEP_M: f32 = 0.5;
-/// Finer step used from [`FINE_FROM_LEVEL`] up: 1/8 m is below what the eye reads as a terrace
-/// on a 10 degree slope (0.5 m stairs were visible), and 65535 steps still cover 8.19 km, more
-/// relief than one level-11 node (~5 km wide) holds. A power of two, so decoding is exact.
+/// Step at [`FINE_FROM_LEVEL`]: 1/8 m; 65535 steps still cover 8.19 km, more relief than one
+/// level-11 node (~5 km wide) holds.
 pub const HEIGHT_STEP_FINE_M: f32 = 0.125;
 /// First node level that uses [`HEIGHT_STEP_FINE_M`].
 pub const FINE_FROM_LEVEL: u8 = 11;
+/// From this level the step halves per level (the node halves, so the range 65535 steps cover
+/// stays ~3.3x the node width: a 73 degree mean slope corner to corner).
+pub const HALVING_FROM_LEVEL: u8 = 12;
+/// Finest step (level 17 and up on Earth).
+pub const HEIGHT_STEP_MIN_M: f32 = 1.0 / 256.0;
 
 /// Quantisation step of the canonical pages of node level `level`: a fixed rule per level, so
-/// same-level neighbours decode a shared edge to the same bits.
+/// same-level neighbours decode a shared edge to the same bits. Near the ground the step must
+/// sit far below the source's own precision: the shading normal differentiates the page over a
+/// metre or two, and a 1/8 m step there drew every quantum as a contour line (seen from 50 m on
+/// the Zermatt valley floor). Powers of two, so decoding is exact.
 pub fn height_step_for_level(level: u8) -> f32 {
-    if level >= FINE_FROM_LEVEL { HEIGHT_STEP_FINE_M } else { HEIGHT_STEP_M }
+    if level < FINE_FROM_LEVEL {
+        HEIGHT_STEP_M
+    } else {
+        (HEIGHT_STEP_FINE_M / (1u32 << level.saturating_sub(HALVING_FROM_LEVEL).min(16)) as f32).max(HEIGHT_STEP_MIN_M)
+    }
 }
 
 /// `height(i, j) = offset + scale * samples[j * 257 + i]`, decoded in f64. `i` runs along the
@@ -113,6 +124,17 @@ mod tests {
         q.samples[1] = 10; // (1, 0): only the lower-right triangle (00, 10, 11) sees it
         assert!((q.sample(0.75 / 256.0, 0.25 / 256.0) - 5.0).abs() < 1e-9);
         assert!(q.sample(0.25 / 256.0, 0.75 / 256.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn step_rule_halves_with_the_node() {
+        let steps: Vec<f32> = (9..=19).map(height_step_for_level).collect();
+        assert_eq!(steps, [0.5, 0.5, 0.125, 0.125, 0.0625, 0.03125, 1.0 / 64.0, 1.0 / 128.0, 1.0 / 256.0, 1.0 / 256.0, 1.0 / 256.0]);
+        // 65535 steps cover > 3x the node width (Earth: face edge ~10 018 km / 2^level).
+        for l in HALVING_FROM_LEVEL..=17 {
+            let width = 10_018_000.0 / (1u64 << l) as f64;
+            assert!(65_535.0 * height_step_for_level(l) as f64 > 3.0 * width, "level {l}");
+        }
     }
 
     #[test]

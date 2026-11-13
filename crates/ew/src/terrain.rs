@@ -64,6 +64,23 @@ pub fn path_pose(place: &Place, t: f64) -> Pose {
     Pose::from_camera(&Camera::look_at(eye, target))
 }
 
+/// A fixed near-ground eye (`--ground`): `h` metres above the ellipsoid at (lat, lon), looking
+/// along `heading` (degrees from north, clockwise) and `pitch` (degrees, + up) in the local
+/// east/north/up frame of that point. Render frame of `place`'s anchor.
+pub fn ground_pose(place: &Place, lat: f64, lon: f64, heading: f64, pitch: f64, h: f64) -> Pose {
+    let anchor = place_anchor(place);
+    let d = geodetic_dir(lat, lon);
+    let eye_b = anchor.body.point(d, h);
+    let up = d;
+    let east = DVec3::Z.cross(up).normalize();
+    let north = up.cross(east);
+    let (hd, pt) = (heading.to_radians(), pitch.to_radians());
+    let look = (east * hd.sin() + north * hd.cos()) * pt.cos() + up * pt.sin();
+    let eye = anchor.body_to_render(eye_b);
+    let target = anchor.body_to_render(eye_b + look * 100.0);
+    Pose::from_camera(&Camera::look_at(eye, target))
+}
+
 /// Body direction of the ellipsoid point at (lat, lon): `ed_data`'s lattice rule inverted.
 pub fn geodetic_dir(lat: f64, lon: f64) -> DVec3 {
     let e = ed_geo::Geodetic::new(lat, lon, 0.0).to_ecef();

@@ -189,9 +189,16 @@ pub fn run(args: &Args) -> Result<Report, String> {
     for i in 0..frames {
         // Camera (scripted path; game mode: the follow camera) and the session's fixed step.
         let alpha = fixed.run(fixed.dt(), &mut path, |_| ());
-        let path_cam = match args.camera {
-            Some(p) => crate::camera::Pose { position: crate::proving::ORIGIN + glam::DVec3::new(p[0], p[1], p[2]), yaw: p[3] as f32, pitch: p[4] as f32 }.camera(),
-            None => path.interpolated(alpha),
+        let path_cam = match (args.camera, args.ground.zip(place).zip(world.as_ref())) {
+            (Some(p), _) => crate::camera::Pose { position: crate::proving::ORIGIN + glam::DVec3::new(p[0], p[1], p[2]), yaw: p[3] as f32, pitch: p[4] as f32 }.camera(),
+            (None, Some(((g, pl), wd))) => {
+                // Near-ground eye: AGL above the resident pages' ground (the source height on
+                // the first frame, before any page is resident).
+                let probe = crate::terrain::ground_pose(pl, g[0], g[1], 0.0, 0.0, 0.0).position;
+                let base = wd.ground(probe).or_else(|| wd.source().height(g[0], g[1])).unwrap_or(0.0);
+                crate::terrain::ground_pose(pl, g[0], g[1], g[2], g[3], base + g[4]).camera()
+            }
+            _ => path.interpolated(alpha),
         };
         let mut camera = path_cam;
         if let (Some(s), Some(c)) = (&mut session, &mut content) {
@@ -263,6 +270,13 @@ pub fn run(args: &Args) -> Result<Report, String> {
             pick: (!args.empty && i % PICK_EVERY == PICK_EVERY - 1).then_some((w / 2, h / 2)),
             pop_stats: args.pop && !args.empty,
             vis_readback: vis_readback.filter(|_| last),
+            sun_dir: match args.sun {
+                Some([az, el]) => {
+                    let (az, el) = (az.to_radians(), el.to_radians());
+                    glam::Vec3::new((az.sin() * el.cos()) as f32, el.sin() as f32, (-az.cos() * el.cos()) as f32)
+                }
+                None => FrameParams::default().sun_dir,
+            },
             ..Default::default()
         };
         match &mut session {

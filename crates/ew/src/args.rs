@@ -44,6 +44,12 @@ OPTIONS:
                                ground draws real textured materials (ew::real_materials)
   --camera X,Y,Z,YAW,PITCH     headless: fixed camera (metres from the proving origin, y up;
                                radians) instead of the path; the path still drives time
+  --ground LAT,LON,HEADING,PITCH,AGL
+                               headless terrain paths: fixed eye AGL metres above the
+                               resident ground at LAT,LON (degrees), looking along HEADING
+                               (degrees from north, clockwise) and PITCH (degrees, + up)
+  --sun AZ,EL                  headless: sun azimuth (degrees from north, clockwise) and
+                               elevation (degrees) in the scene's local frame
   --layers DIR                 layer root with authored placements (default assets-src/layers)
   --mode game|editor           start mode (default editor; Tab or F1 switches). Headless game
                                mode walks the character along the scripted route
@@ -98,6 +104,10 @@ pub struct Args {
     pub extra_packs: Vec<PathBuf>,
     /// Fixed headless camera: x, y, z (from the proving origin), yaw, pitch.
     pub camera: Option<[f64; 5]>,
+    /// Fixed near-ground terrain eye: lat, lon, heading, pitch (degrees), height above ground (m).
+    pub ground: Option<[f64; 5]>,
+    /// Sun azimuth and elevation (degrees, local frame).
+    pub sun: Option<[f64; 2]>,
     /// Layer root (authored placements, `assets-src/layers`).
     pub layers: PathBuf,
     /// Run the scripted character route without a GPU and print its hashes.
@@ -160,6 +170,8 @@ impl Default for Args {
             packs: crate::content::default_pack_dir(),
             extra_packs: Vec::new(),
             camera: None,
+            ground: None,
+            sun: None,
             layers: crate::authored::default_layer_root(),
             sim_route: false,
             mode: crate::session::Mode::Editor,
@@ -179,6 +191,14 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Option<Args>, Str
     fn num<T: std::str::FromStr>(flag: &str, v: Option<String>) -> Result<T, String> {
         let v = v.ok_or_else(|| format!("{flag} needs a value"))?;
         v.parse().map_err(|_| format!("{flag}: bad value {v:?}"))
+    }
+    fn nums(flag: &str, v: Option<String>, n: usize) -> Result<Vec<f64>, String> {
+        let v = v.ok_or_else(|| format!("{flag} needs {n} comma-separated numbers"))?;
+        let x: Vec<f64> = v.split(',').map(|x| x.trim().parse::<f64>()).collect::<Result<_, _>>().map_err(|_| format!("{flag}: bad value {v:?}"))?;
+        if x.len() != n || x.iter().any(|x| !x.is_finite()) {
+            return Err(format!("{flag}: expected {n} numbers, got {v:?}"));
+        }
+        Ok(x)
     }
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -231,6 +251,14 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Option<Args>, Str
                     return Err(format!("--camera: expected 5 numbers X,Y,Z,YAW,PITCH, got {v:?}"));
                 }
                 a.camera = Some([n[0], n[1], n[2], n[3], n[4]]);
+            }
+            "--ground" => {
+                let n = nums("--ground", it.next(), 5)?;
+                a.ground = Some([n[0], n[1], n[2], n[3], n[4]]);
+            }
+            "--sun" => {
+                let n = nums("--sun", it.next(), 2)?;
+                a.sun = Some([n[0], n[1]]);
             }
             "--out" => a.out = PathBuf::from(it.next().ok_or("--out needs a value")?),
             "--vsync" => {
@@ -307,6 +335,9 @@ mod tests {
         assert_eq!(p("--help").unwrap(), None);
         assert_eq!(p("--camera 1,2,3,0.5,-0.1").unwrap().unwrap().camera, Some([1.0, 2.0, 3.0, 0.5, -0.1]));
         assert!(p("--camera 1,2,3").is_err());
+        let g = p("--headless --path zermatt --ground 46.02,7.74,90,-5,1.7 --sun 120,8").unwrap().unwrap();
+        assert_eq!((g.ground, g.sun), (Some([46.02, 7.74, 90.0, -5.0, 1.7]), Some([120.0, 8.0])));
+        assert!(p("--sun 1").is_err());
         assert_eq!(p("--packs x/p").unwrap().unwrap().packs, PathBuf::from("x/p"));
         assert_eq!(p("--pack a.ewpack --pack b.ewpack").unwrap().unwrap().extra_packs, vec![PathBuf::from("a.ewpack"), PathBuf::from("b.ewpack")]);
         assert!(p("--pack").is_err());
