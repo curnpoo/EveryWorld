@@ -20,9 +20,11 @@
 //! leaf material, a handful of big cards and a simplified trunk) grown from
 //! the same seed so the silhouette matches.
 
+pub mod assembly;
 pub mod bank;
 pub mod bank_impostor;
 pub mod impostor;
+pub mod parts;
 pub mod species;
 pub mod textures;
 pub use species::{Genome, SpeciesDef};

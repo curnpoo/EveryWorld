@@ -20,6 +20,9 @@ use crate::stand::{STAND_SPECIES, StandTree};
 /// Variants per species (conifers: [`CONIFER_VARIANTS`]).
 pub const BANK_VARIANTS: u32 = 8;
 pub const CONIFER_VARIANTS: u32 = 6;
+/// Variants of the species assembled from authored parts ([`assembly`]): each is its own
+/// genome draw, so more of them cost only bank memory.
+pub const ASSEMBLED_VARIANTS: u32 = 12;
 pub const AGE_CLASSES: u8 = 3;
 /// The far rung's reference tree (m), `ed_render::terrain::TREE_REF_M`.
 pub const TREE_REF_M: f32 = 15.0;
@@ -104,7 +107,22 @@ pub fn leaf_albedo(species: usize) -> [f32; 3] {
 }
 
 pub fn variants(species: usize) -> u32 {
-    if STAND_SPECIES[species].conifer { CONIFER_VARIANTS } else { BANK_VARIANTS }
+    if assembled(shape(species)).is_some() {
+        ASSEMBLED_VARIANTS
+    } else if STAND_SPECIES[species].conifer {
+        CONIFER_VARIANTS
+    } else {
+        BANK_VARIANTS
+    }
+}
+
+/// The assembly species of a shape grown from authored parts (when they are installed).
+pub fn assembled(shape: Shape) -> Option<&'static assembly::AsmSpecies> {
+    match shape {
+        Shape::Spruce => Some(&assembly::SPRUCE_SPECIES),
+        Shape::Larch => Some(&assembly::LARCH_SPECIES),
+        _ => None,
+    }
 }
 
 /// Bank mesh height (m) of an age class: instances scale it to their own height, so the bank
@@ -440,7 +458,10 @@ fn warmth(c: [f32; 4]) -> f32 {
 }
 
 fn in_solid_cell(uv: [f32; 2]) -> bool {
-    uv[0] < 0.25 && uv[1] > 0.75
+    let i = LeafCell::Solid as u32;
+    let (cx, cy) = ((i % textures::ATLAS_COLS) as f32, (i / textures::ATLAS_COLS) as f32);
+    let (u, v) = (uv[0] * textures::ATLAS_COLS as f32 - cx, uv[1] * textures::ATLAS_ROWS as f32 - cy);
+    (0.0..1.0).contains(&u) && (0.0..1.0).contains(&v)
 }
 
 /// Card groups: connected components of the card triangles, binned by their centroid
@@ -635,6 +656,11 @@ pub fn lod_errors(h: f32) -> [f32; 4] {
 /// The bank mesh of stand species `species`, `variant` (`< variants(species)`) and age class
 /// `age` (0 sapling, 1 sub-canopy, 2 canopy). Deterministic; slow (tens of ms): cache it.
 pub fn bank_mesh(species: usize, variant: u32, age: u8) -> BankMesh {
+    bank_mesh_with(species, variant, age, parts::get())
+}
+
+/// [`bank_mesh`] with explicit authored parts (`None`: the procedural generators).
+pub fn bank_mesh_with(species: usize, variant: u32, age: u8, parts: Option<&parts::TreeParts>) -> BankMesh {
     let sp = &STAND_SPECIES[species];
     let shape = shape(species);
     let kind = sp.kind;
@@ -647,7 +673,28 @@ pub fn bank_mesh(species: usize, variant: u32, age: u8) -> BankMesh {
         _ => 1.0,
     };
     let genome = Genome { height: 1.0, width: aspect, leaf_mul: [1.0; 3] };
+    let asm = assembled(shape).and_then(|a| {
+        let set = parts.and_then(|p| p.set(a.prefix));
+        if set.is_none() {
+            static ONCE: std::sync::Once = std::sync::Once::new();
+            ONCE.call_once(|| log::info!("trees: no authored parts for the assembled conifers, using the procedural whorl_conifer"));
+        }
+        set.map(|s| (a, s))
+    });
     let (mut near, mut far) = match shape {
+        _ if asm.is_some() => {
+            let (a, set) = asm.unwrap();
+            let g = assembly::AsmGenome::sample(a.ranges, seed);
+            let h = target_height(species, age);
+            let mut b = Builder::new(seed, false, 1.0);
+            assembly::assembled_conifer(&mut b, leaf, a, &g, &set, h);
+            let units = b.card_index;
+            let n = b.finish();
+            let keep = ((T1_CARDS / assembly::FAR_CARDS) as f32 / units.max(1) as f32).clamp(0.06, 1.0);
+            let mut b = Builder::new(seed, true, keep);
+            assembly::assembled_conifer(&mut b, leaf, a, &g, &set, h);
+            (n, b.finish())
+        }
         Shape::Kind(k) => {
             // The alpha generator's species (shrubs, palms, ...): its own variant stream.
             let v = (variant + age as u32 * BANK_VARIANTS) % 64;
@@ -803,13 +850,76 @@ mod tests {
         assert_ne!(bank_mesh(spruce, 3, 2).positions, a.positions);
     }
 
+    /// Synthetic authored parts: `cards` crossed quads along +X (+Y for leaders), 0.5 m.
+    fn synthetic_parts() -> parts::TreeParts {
+        let quad = |name: &str, cards: usize, cell: LeafCell, leader: bool| {
+            let mut p = parts::Part { name: name.into(), length: 0.5, ..Default::default() };
+            for c in 0..cards {
+                let a = c as f32 / cards as f32 * PI;
+                let side = [0.0, a.cos() * 0.15, a.sin() * 0.15];
+                let base = p.positions.len() as u32;
+                for (u, v) in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)] {
+                    let s = u * 2.0 - 1.0;
+                    let pos = if leader { [side[1] * s, v * 0.5, side[2] * s] } else { [v * 0.5, side[1] * s, side[2] * s] };
+                    p.positions.extend([pos]);
+                    p.normals.extend([[0.0, 1.0, 0.0]]);
+                    p.uvs.extend([[u, v]]);
+                    p.cells.extend([cell]);
+                }
+                p.indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+            }
+            p
+        };
+        let mut t = parts::TreeParts::default();
+        for (prefix, cell) in [("spruce", LeafCell::SpruceSpray), ("larch", LeafCell::LarchShoot)] {
+            for (n, c) in [("spray_a", 6), ("spray_b", 4), ("spray_c", 3), ("spray_far", 2)] {
+                t.parts.extend([quad(&format!("{prefix}_{n}"), c, cell, false)]);
+            }
+            t.parts.extend([quad(&format!("{prefix}_leader"), 3, cell, true)]);
+        }
+        t.seal()
+    }
+
+    #[test]
+    fn assembled_conifers_from_parts() {
+        let p = synthetic_parts();
+        for name in ["Norway spruce", "European larch"] {
+            let sp = STAND_SPECIES.iter().position(|s| s.name == name).unwrap();
+            assert_eq!(variants(sp), ASSEMBLED_VARIANTS);
+            let mut seen = Vec::new();
+            for age in 0..AGE_CLASSES {
+                for v in [0, 5, 11] {
+                    let a = bank_mesh_with(sp, v, age, Some(&p));
+                    let b = bank_mesh_with(sp, v, age, Some(&p));
+                    assert_eq!(a.positions, b.positions, "deterministic");
+                    assert_eq!(a.words, b.words);
+                    assert!(a.triangles(0) <= 6500, "{name} T0 {}", a.triangles(0));
+                    assert!(a.triangles(0) > 500, "{name} T0 {}", a.triangles(0));
+                    // T1: at most T1_CARDS cards (2 triangles each) plus the far trunk.
+                    assert!(a.triangles(1) <= T1_CARDS * 2 + 120, "{name} T1 {}", a.triangles(1));
+                    assert!((a.height - target_height(sp, age)).abs() < 0.2 * a.height);
+                    // Every leaf vertex is a card in an authored cell; aux words carry the flag.
+                    assert!(a.words.iter().any(|w| w[1] & AUX_CARD != 0));
+                    seen.push(a.positions);
+                }
+            }
+            for i in 0..seen.len() {
+                for j in 0..i {
+                    assert_ne!(seen[i], seen[j], "{name}: two bank entries match");
+                }
+            }
+            // Without parts: the procedural conifer.
+            assert_ne!(bank_mesh_with(sp, 0, 2, None).positions, bank_mesh_with(sp, 0, 2, Some(&p)).positions);
+        }
+    }
+
     #[test]
     fn instance_params_vary() {
         let spruce = STAND_SPECIES.iter().position(|s| s.name == "Norway spruce").unwrap() as u8;
         let mk = |seed: u32| StandTree { dir: glam::DVec3::X, fx: 0.0, fy: 0.0, height_m: 25.0, crown_r_m: 3.0, species: spruce, kind: TreeKind::Conifer, age_class: 2, seed, id: ed_geo::ObjectId(0) };
         let ps: Vec<InstanceParams> = (0..100).map(|s| instance_params(&mk(s * 7919 + 1))).collect();
         let variants: std::collections::BTreeSet<u32> = ps.iter().map(|p| p.variant).collect();
-        assert_eq!(variants.len(), CONIFER_VARIANTS as usize);
+        assert_eq!(variants.len(), super::variants(spruce as usize) as usize);
         let users: std::collections::BTreeSet<u32> = ps.iter().map(|p| p.user).collect();
         assert!(users.len() > 95);
         assert_eq!(instance_params(&mk(5)), instance_params(&mk(5)));

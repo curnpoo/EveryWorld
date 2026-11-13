@@ -68,6 +68,78 @@ enum Built {
     Stand { id: NodeId, stand: Vec<StandTree>, keys: Vec<BankKey>, pages_ms: f64, stand_ms: f64 },
 }
 
+/// Loads the authored tree parts baked by `tools/blender/trees/bake_tree_parts.sh` from
+/// `<cache>/tree_parts/` (`tree_parts.glb`: one node per (part, atlas cell) named
+/// `<part>__<cell>`; one PNG per cell). `None` when absent or unreadable (the bank then grows
+/// the procedural conifers).
+pub fn load_tree_parts(cache: &Path) -> Option<ed_world::trees::parts::TreeParts> {
+    use ed_world::trees::parts::{CellImage, Part, TreeParts, cell_named};
+    let dir = cache.join("tree_parts");
+    let bytes = std::fs::read(dir.join("tree_parts.glb")).ok()?;
+    let pieces = match ed_assets::gltf_import::read_geometry(&bytes, Some(&dir)) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("trees: {}: {e:#}", dir.join("tree_parts.glb").display());
+            return None;
+        }
+    };
+    let mut set = TreeParts::default();
+    let mut pieces = pieces;
+    pieces.sort_by_key(|p| p.order);
+    for piece in pieces {
+        let Some((name, cell)) = piece.node_name.split_once("__") else { continue };
+        let Some(cell) = cell_named(cell) else { continue };
+        let m = piece.build;
+        if m.uvs.len() != m.positions.len() || m.normals.len() != m.positions.len() {
+            continue;
+        }
+        let idx = match set.parts.iter().position(|p| p.name == name) {
+            Some(i) => i,
+            None => {
+                set.parts.push(Part { name: name.to_string(), ..Default::default() });
+                set.parts.len() - 1
+            }
+        };
+        let part = &mut set.parts[idx];
+        let base = part.positions.len() as u32;
+        part.indices.extend(m.indices.iter().map(|i| i + base));
+        part.cells.extend(std::iter::repeat_n(cell, m.positions.len()));
+        // glTF v runs down the image; parts use v = 0 at the attaching end (the image bottom).
+        part.uvs.extend(m.uvs.iter().map(|uv| [uv[0], 1.0 - uv[1]]));
+        part.normals.extend(m.normals);
+        part.positions.extend(m.positions);
+    }
+    for part in &mut set.parts {
+        let axis = if part.name.ends_with("leader") { 1 } else { 0 };
+        part.length = part.positions.iter().fold(0.0f32, |a, p| a.max(p[axis]));
+    }
+    for name in ["spruce_spray", "spruce_curtain", "larch_shoot", "spruce_leader"] {
+        let Ok(b) = std::fs::read(dir.join(format!("{name}.png"))) else { continue };
+        let Ok(img) = ed_assets::texture::decode_image(&b) else { continue };
+        if img.width == img.height {
+            set.images.push(CellImage { cell: cell_named(name)?, size: img.width, rgba: img.data });
+        }
+    }
+    if set.set("spruce").is_none() && set.set("larch").is_none() {
+        eprintln!("trees: {} has no complete part set", dir.display());
+        return None;
+    }
+    Some(set.seal())
+}
+
+/// Installs the authored parts once per process (see [`load_tree_parts`]).
+pub fn install_tree_parts(cache: &Path) {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let parts = if std::env::var("EW_AUTHORED_TREES").is_ok_and(|v| v == "0") { None } else { load_tree_parts(cache) };
+        match &parts {
+            Some(p) => eprintln!("trees: authored parts: {} parts, {} textures ({:016x})", p.parts.len(), p.images.len(), p.fingerprint),
+            None => eprintln!("trees: no authored parts in {} (bake: tools/blender/trees/bake_tree_parts.sh); procedural conifers", cache.join("tree_parts").display()),
+        }
+        ed_world::trees::parts::install(parts);
+    });
+}
+
 fn leaf_atlas_asset() -> TextureAsset {
     let a = ed_world::trees::textures::leaf_atlas();
     let mut mips = Vec::new();
@@ -364,6 +436,7 @@ pub fn near_from_env() -> bool {
 
 impl NearTrees {
     pub fn new(cache: &Path) -> NearTrees {
+        install_tree_parts(cache);
         let wind = std::env::var("EW_WIND").map_or(true, |v| v != "0").then(WindField::default);
         NearTrees {
             on: near_from_env(),
@@ -939,6 +1012,9 @@ fn imp_cache_key(key: (u8, u32, u8), m: &bank::BankMesh, tier: ImpostorTier) -> 
         eat(p[2].to_bits());
         eat(m.words[i as usize][0]);
         eat(m.words[i as usize][1]);
+    }
+    for w in [ed_world::trees::parts::fingerprint() as u32, (ed_world::trees::parts::fingerprint() >> 32) as u32] {
+        eat(w);
     }
     format!("impostors/v{}/{}_{}_{}_{}_{:016x}.bin", bank_impostor::BAKE_VERSION, key.0, key.1, key.2, tier.frame_px(), h)
 }

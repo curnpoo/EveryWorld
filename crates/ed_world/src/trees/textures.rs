@@ -2,7 +2,8 @@
 //! a fissured bark tile and a ringed palm-trunk tile. Engine-free RGBA8
 //! sRGB images with a full mip chain, so the game just uploads them.
 //!
-//! Atlas convention: 4x4 cells of `CELL` px. Inside a cell, v = 0 is the
+//! Atlas convention: 4x5 cells of `CELL` px (the last row holds the authored cells of trees
+//! G6, `parts`, with procedural stand-ins when the parts are not installed). Inside a cell, v = 0 is the
 //! *bottom* (where the twig attaches) and v = 1 the tip. Leaves are painted
 //! in a neutral mid green; vertex colors tint them per species.
 
@@ -11,7 +12,7 @@ use glam::Vec2;
 use std::f32::consts::{PI, TAU};
 
 pub const ATLAS_COLS: u32 = 4;
-pub const ATLAS_ROWS: u32 = 4;
+pub const ATLAS_ROWS: u32 = 5;
 pub const CELL: u32 = 512;
 
 /// Atlas cells.
@@ -49,7 +50,18 @@ pub enum LeafCell {
     DeadFrond = 14,
     /// Silvery olive leaves (narrow, two-tone).
     Olive = 15,
+    /// Authored (trees G6): top view of a Norway spruce branch end.
+    SpruceSpray = 16,
+    /// Authored: the hanging "comb" branchlets under a spruce branch (side view).
+    SpruceCurtain = 17,
+    /// Authored: a European larch long shoot with short-shoot rosettes.
+    LarchShoot = 18,
+    /// Authored: a spruce leader (tree top).
+    SpruceLeader = 19,
 }
+
+/// Number of atlas cells.
+pub const CELLS: u32 = ATLAS_COLS * ATLAS_ROWS;
 
 /// Atlas UV for cell-local (u, v) in [0,1], v = 0 at the stem end.
 pub fn atlas_uv(cell: LeafCell, u: f32, v: f32) -> [f32; 2] {
@@ -535,8 +547,45 @@ fn solid(cv: &mut Canvas, cell: Cell, rng: &mut Rng) {
     }
 }
 
-/// Paint the full leaf atlas.
+/// Paint the full leaf atlas, with the installed authored parts' textures (`parts::get`).
 pub fn leaf_atlas() -> Rgba8Image {
+    leaf_atlas_with(super::parts::get())
+}
+
+/// An authored texture into its cell, renormalised so its mean leaf colour is [`LEAF_BASE`]
+/// (the renderer divides the texture by that colour; hue comes from the species table).
+fn paint_authored(cv: &mut Canvas, cell: Cell, img: &super::parts::CellImage) {
+    let n = img.size as usize;
+    let s = cell.s as usize;
+    let px = |x: usize, y: usize| {
+        let (sx, sy) = ((x * n / s).min(n - 1), (y * n / s).min(n - 1));
+        let o = (sy * n + sx) * 4;
+        [0, 1, 2, 3].map(|k| img.rgba[o + k] as f32 / 255.0)
+    };
+    let (mut sum, mut w) = ([0.0f32; 3], 0.0f32);
+    for y in 0..s {
+        for x in 0..s {
+            let p = px(x, y);
+            if p[3] > 0.5 {
+                for k in 0..3 {
+                    sum[k] += p[k];
+                }
+                w += 1.0;
+            }
+        }
+    }
+    let gain: [f32; 3] = if w > 0.0 { [0, 1, 2].map(|k| LEAF_BASE[k] / (sum[k] / w).max(1e-3)) } else { [1.0; 3] };
+    for y in 0..s {
+        for x in 0..s {
+            let p = px(x, y);
+            let o = (cell.y0 as usize + y) * cv.w + cell.x0 as usize + x;
+            cv.px[o] = [p[0] * gain[0], p[1] * gain[1], p[2] * gain[2], p[3]];
+        }
+    }
+}
+
+/// [`leaf_atlas`] with explicit parts (`None`: procedural stand-ins in the authored cells).
+pub fn leaf_atlas_with(parts: Option<&super::parts::TreeParts>) -> Rgba8Image {
     let (w, h) = ((ATLAS_COLS * CELL) as usize, (ATLAS_ROWS * CELL) as usize);
     let mut cv = Canvas::new(w, h);
     let cell = |c: LeafCell| {
@@ -562,6 +611,16 @@ pub fn leaf_atlas() -> Rgba8Image {
     frond(&mut cv, cell(LeafCell::DeadFrond), &mut rng, g, 34, false, true);
     // Olive: narrow leaves, silvery undersides showing.
     twig_cluster(&mut cv, cell(LeafCell::Olive), &mut rng, Shape::Lance, 64, 0.2, 0.2, g);
+    // Authored cells (trees G6), procedural stand-ins when the parts are missing (own stream, so
+    // the cells above are the same either way).
+    let mut rng = Rng::new(0xA71A6);
+    for c in [LeafCell::SpruceSpray, LeafCell::SpruceCurtain, LeafCell::LarchShoot, LeafCell::SpruceLeader] {
+        match parts.and_then(|p| p.image(c)) {
+            Some(img) => paint_authored(&mut cv, cell(c), img),
+            None if c == LeafCell::LarchShoot => pine_tufts(&mut cv, cell(c), &mut rng, g),
+            None => needle_spray(&mut cv, cell(c), &mut rng, g, false),
+        }
+    }
     finish(cv, true)
 }
 
@@ -762,10 +821,10 @@ mod tests {
     #[test]
     fn atlas_cells_have_leaves_and_holes() {
         let img = leaf_atlas();
-        assert_eq!(img.width, 2048);
+        assert_eq!((img.width, img.height), (2048, 2560));
         assert_eq!(img.mip_levels, 12);
         let w = img.width as usize;
-        for i in 0..16u32 {
+        for i in 0..CELLS {
             let (cx, cy) = ((i % ATLAS_COLS) * CELL, (i / ATLAS_COLS) * CELL);
             let mut opaque = 0;
             for y in cy..cy + CELL {
@@ -787,6 +846,6 @@ mod tests {
     #[test]
     fn uv_inside_cell() {
         let [u, v] = atlas_uv(LeafCell::Flowers, 0.0, 0.0);
-        assert!((0.75..1.0).contains(&u) && (0.5..0.75).contains(&v));
+        assert!((0.75..1.0).contains(&u) && (0.4..0.6).contains(&v));
     }
 }
