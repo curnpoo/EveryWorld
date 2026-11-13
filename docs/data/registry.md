@@ -19,7 +19,7 @@ Our implementation rules, current-source audit and acquisition plan: `docs/data/
 >   as RED until verified.
 > - **Roads** come from Overture transportation plus raw OpenStreetMap tags, not from
 >   OpenMapTiles vector tiles (`docs/plans/streets.md`).
-> - **Imagery** is used for far-field views only; near-field ground is synthesized.
+> - **Imagery** colours far-field views and calibrates the colour of the synthesized near-field ground (owner, 2026-11-12); near-field ground is still synthesized, never draped imagery.
 > - "Priority: Microsoft + OSM + PLATEAU + Overture" for buildings is replaced by: Overture
 >   buildings as the base (stable ids), PLATEAU and 3D BAG for hero cities, heights inferred
 >   elsewhere by the rule in `README.md` §2.

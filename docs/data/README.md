@@ -25,7 +25,7 @@ file and the catalogue disagree, this file wins. Decisions: F8, F13 in `../DECIS
 |---|---|---|---|
 | Elevation | Copernicus GLO-30 via Mapterhorn; USGS 3DEP and other open national models where present | YELLOW per provider | Record provider per area |
 | Bathymetry | GEBCO 2026 grid | GREEN (public domain) | Acknowledgement requested |
-| Far-field imagery | A Sentinel-2 composite: Copernicus global mosaics, or our own from Level-2A scenes | YELLOW | Replaces the EOX mosaic. Verify mosaic terms |
+| Imagery | A Sentinel-2 composite: Copernicus global mosaics, or our own from Level-2A scenes | YELLOW | Replaces the EOX mosaic. Verify mosaic terms. Far-field colour, and calibration of near-field ground colour (owner, 2026-11-12, phase-2 §7.1) |
 | Land cover | ESA WorldCover 2021 | GREEN (CC BY 4.0) | Drives near-field ground synthesis and vegetation |
 | Roads | **Overture transportation** (pinned release) + raw OSM tags | YELLOW (**ODbL**) | `../plans/streets.md` |
 | Buildings | **Overture buildings** (pinned release) | YELLOW (**ODbL**) | Stable GERS ids are used in `ObjectId` |

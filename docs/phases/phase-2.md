@@ -302,8 +302,16 @@ possible before buildings and roads (Phase 3). Changes:
   volumetric clouds in several layers (low cumulus, mid, high cirrus), procedural and
   weather-driven, lit from above and below. They replace the cloud shell. Owner interest:
   VDB-style clouds. Design first.
-- **In:** far-field colour from real satellite imagery (Sentinel-2 composite, §2 of
-  `../data/README.md`; registry entry and owner OK before any download).
+- **In:** real satellite imagery (Sentinel-2 composite, §2 of `../data/README.md`; registry
+  entry and owner OK before any download). It colours the far field and also calibrates
+  near-field ground colour, so material colour matches the real place worldwide: sand and
+  desert tones, salt flats, red clay, volcanic rock, tundra (owner). Lithology and land
+  cover pick the surface; imagery sets its hue and brightness.
+- **Ground material library:** the Phase 2 version is what the terrain needs now; the owner
+  wants to raise its quality again around Phase 4.
+- **Clouds:** owner agreed (2026-11-12): Nubis-style raymarched volumes, procedural noise
+  and weather maps plus a small library of authored cloud volumes. Layers: low cumulus,
+  mid sheets and patches, high cirrus, each in its own height band; weather sets the mix.
 - **In:** atmosphere iterated against reference photos at several times of day (dawn,
   midday, golden hour, dusk, night) and altitudes (ground, 300 m, 3 km, 10 km, orbit); not
   closed by one setting.
