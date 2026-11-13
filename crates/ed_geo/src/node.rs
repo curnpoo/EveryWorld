@@ -218,6 +218,17 @@ impl NodeId {
         lattice_point(self.face(), self.x() as u64 * c + i as u64, self.y() as u64 * c + j as u64, self.side() as u64 * c)
     }
 
+    /// Node-local lattice fraction `(u, v)` of direction `p` on this node's face: `0..=1` inside
+    /// the node, outside it for a neighbour's points (`p` must project onto this node's face).
+    pub fn local_uv(self, p: DVec3) -> (f64, f64) {
+        let axis = (self.face() / 2) as usize;
+        let k = [p.x, p.y, p.z][axis].abs();
+        let (u, v) = uncube(self.face(), [p.x / k, p.y / k, p.z / k]);
+        let n = self.side() as f64;
+        let f = |t: f64, c: u32| (libm::atan(t) / FRAC_PI_4 + 1.0) * 0.5 * n - c as f64;
+        (f(u, self.x()), f(v, self.y()))
+    }
+
     /// The node at `level` that contains direction `p` (need not be normalised).
     ///
     /// Consistent with the forward mapping: a point on a shared edge belongs to the node on

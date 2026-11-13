@@ -11,3 +11,7 @@ serde = { workspace = true }
 log = { workspace = true }
 earcutr = "0.5"
 serde_json = { workspace = true }
+libm = "0.2"
+
+[dev-dependencies]
+png = "0.18"

@@ -660,7 +660,9 @@ dependencies = [
  "ed_data",
  "ed_geo",
  "glam",
+ "libm",
  "log",
+ "png",
  "serde",
  "serde_json",
 ]
