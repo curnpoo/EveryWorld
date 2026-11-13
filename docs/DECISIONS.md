@@ -114,3 +114,48 @@ Summary only. Alternatives, reasons and revisit conditions are in `phases/phase-
 | P1-D23 | `NodeId`, `ObjectId` and the override-layer reader exist in Phase 1, before any planet (F1, F5) |
 | P1-D24 | Multi-view rendering and GPU picking are core renderer features (F6) |
 | P1-D25 | The alpha look captures are a floor, not the target (owner, 2026-11-10). Every reference scene must clearly exceed them in detail and fidelity, lighting, clouds and building fill (every building present, no empty blocks), and show the solarpunk architecture of `solarpunk/spec.md` instead of the alpha's plain boxes. Refines P1-D18: the alpha's shader maths may be ported, but its look is not the goal |
+
+---
+
+## O3 — Owner decisions, trees and weather (2026-11-13)
+
+The owner's answers to the trees and forests design pass (`plans/trees.md`). Trees are the
+first Phase 2 workstream after erosion v2 (`phases/phase-2.md` §7.1). The implementation
+order and the conflicts between these decisions are in `plans/trees.md` §10.
+
+### Trees
+
+| # | Decision |
+|---|---|
+| O3-1 | **Distribution: data + simulated stand** (brief option C). A seeded growth and competition pass per node — Poisson-disc with a size hierarchy and gap dynamics — with margins. *Flagged for owner:* a per-node stand cannot be recomputed in a shader, so the pass must write its measured cover, canopy height and mix back into the canopy page. That write-back is the riskiest item in the plan. |
+| O3-2 | **Far forest: the owner chose the ray-marched canopy slab** (brief option C, the "+1 ms" option). *Flagged for owner:* it conflicts with O3-10's 2 ms tree budget, and the lift + crown shading rung is needed regardless as the cheap fallback and the T3 hand-off baseline. |
+| O3-3 | **Uniqueness: authored glTF bases × variation**, with the owner's note describing **authored parts assembled by a generator** (3D leaves, fir types, ferns) rather than a bank of whole trees. That is the `BranchSpec` parametric work, not brief option B as written, and it changes the impostor bake (bake the assembled result, bucketed by genome). |
+| O3-4 | **Lighting: page-based terms plus near casters**, and the owner wants **real virtual shadow maps up close for street lights, headlights and other sources** — trees, geometry and terrain all casting against each other. *Flagged for owner:* this is the brief's "look decision, Opus". Trees are currently planned as static casters so wind cannot invalidate cached shadow pages; dynamic near-tree casters need the shadow range, not the player distance, to define "near". |
+| O3-5 | **Ground cover: scatter to 150 m with understory impostors**, hierarchy-based (logs, then moss), dense grass, niche-driven by biome and climate. The brief marks this the Ultra option; it is not costed at the High budget. |
+| O3-6 | **Collision: static trunks now, plus override records** (brief option B). The owner wants a felled tree to fall with enough force and possibly break branches — the branch breaking is coupled to O3-3, because it needs the tree mesh to be splittable, which is an asset requirement. |
+| O3-7 | **Q1: ETH Global Canopy Height 10 m first**, and the owner wants both datasets, with the higher-resolution product parsed locally when closer. *Flagged for owner:* that needs a resolution field in the canopy page or a second local overlay dataset. Both licences are CC BY 4.0, verified 2026-11-12, so the licence gate is closed. |
+| O3-8 | **Q2: per-species crown exaggeration.** A per-species column, applied at bake into the canopy page, never in the renderer. |
+| O3-9 | **Q3: season phase driven by date, latitude and altitude**, with a global rate scalar so seasons can be gradual or fast (the owner mentioned event-driven switching, undecided). |
+| O3-10 | **Q4: the lean tree budget, 2 ms + 0.5 ms.** The owner's reason: buildings, textures, rendering, physics and UI still need frame time, and the cluster (Track G) system does the heavy lifting so no more polygons are rendered than needed. |
+| O3-11 | **Q5: a middle path — 2–3 authored species**, to test the Blender pipeline early. |
+
+Note (owner, 2026-11-13): **Blender is available to the implementation agents.** Authored
+tree parts and the assembly pipeline are therefore not blocked on a human artist. Asset
+licences and art direction still need a human pass.
+
+### Wind and weather
+
+The owner's reference for the simulation is the older plan `alpha/plans/world-sim.md`
+("Plan: procedural climate, weather and storms"), which is still the design of record for
+the climate layers and the `WeatherSample` interface. Weather and climate are procedural,
+not live Earth weather and not real data — **real Earth running its own version, with
+different parameters** (owner).
+
+| # | Decision |
+|---|---|
+| O3-W1 | **Wind and weather are one simulation, and it drives the trees and the grass.** The owner's looks: leaves rustling in the wind, trees swaying softly with a breeze, hard wind making them lean, and **bands of wind flowing through grass fields**. The climate and wind simulation produces all of it. |
+| O3-W2 | **The wind field is the interface, and it must exist before the climate sim does.** The tree meshes already carry per-vertex sway amplitude, leaf flutter and phase (`ed_world/src/trees/mod.rs` `WindMesh`, `pack_wind`), and the grass scatter carries a flex channel (`ed_world/src/ground_scatter.rs`). What is missing is the wind field they sample — `WeatherSample` from `alpha/plans/world-sim.md` layer 4 — and the shader term that applies it. Both must be designed now, because the sim plugs into them. |
+| O3-W3 | **Scope: the procedural climate and weather sim is a later phase**, with the gameplay systems that read it. For now, trees. But the wind path in the shaders, the impostor bake at rest pose, and the shadow cache rule must be settled in the tree work, because they are what the later simulation plugs into. Changing them afterwards costs a rebake and a shader rewrite. |
+| O3-W4 | **The climate simulation is layered, as in `alpha/plans/world-sim.md`:** layer 1 climate base (insolation, lapse rate, pressure belts, prevailing winds, orographic lift), layer 2 a synoptic grid with fronts, highs and lows, layer 3 storm records (hurricane, tornado, mountain vortices, thunderstorm, sandstorm, blizzard, tsunami), layer 4 local realization read as `WeatherSample`. Weather is a pure function of (world seed, UTC time), never of per-client state, so every client sees the same weather. |
+| O3-W5 | **Specific behaviours the owner wants from that simulation:** genuine fronts; clouds that rain, with the rain coming from the clouds rather than from the air; faster clouds with faster wind; terrain affecting the weather (orographic lift, rain shadow); and the wind field visible in the grass as travelling bands. |
+| O3-W6 | **Wind affects every tree and every blade, not a subset.** The owner wants the whole forest and the whole field to respond, so the wind term is a field sample plus the per-vertex data already baked, not a per-instance flag. |

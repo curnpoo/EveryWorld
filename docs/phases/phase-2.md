@@ -325,7 +325,8 @@ possible before buildings and roads (Phase 3). Changes:
 
 **Order after P-slice S7:**
 1. Erosion v2: multi-scale, varies by landform, follows drainage.
-2. Trees and ground cover: a design pass first, then building it.
+2. Trees and ground cover: a design pass first, then building it. The design pass is
+   `../plans/trees.md`; the owner's decisions are `../DECISIONS.md` O3.
 3. Sun VSM and the far height term (W13a/b), which fixes the near-ground streaks.
 4. Atmosphere reference iteration.
 5. Volumetric clouds: a design pass first.
