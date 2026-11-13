@@ -15,7 +15,7 @@ pub mod node;
 pub mod sun;
 pub mod tile;
 
-pub use height_page::{HEIGHT_STEP_M, HeightPage, PAGE_CELLS, PAGE_N, PAGE_SAMPLES};
+pub use height_page::{FINE_FROM_LEVEL, HEIGHT_STEP_FINE_M, HEIGHT_STEP_M, height_step_for_level, HeightPage, PAGE_CELLS, PAGE_N, PAGE_SAMPLES};
 pub use node::{BodyId, NodeId, ObjectId};
 
 use glam::{DMat3, DVec3};

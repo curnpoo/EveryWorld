@@ -103,6 +103,9 @@ struct App {
 }
 
 pub fn run(args: Args) -> Result<(), String> {
+    if args.play.is_some() {
+        return crate::play::run(args);
+    }
     if args.scene() == SceneKind::Proving {
         crate::content::Content::check_required(&args.packs)?;
     }

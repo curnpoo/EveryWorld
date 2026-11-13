@@ -1,0 +1,825 @@
+//! Walk on real terrain (P-slice S4): `ew --play zermatt|blueridge`.
+//!
+//! A window on the place's [`TerrainWorld`], the proving character (`characters/solarcat`)
+//! driven by the `ed_sim` mover on the S3 terrain collision, and a third-person orbit camera.
+//!
+//! * Pages: built on background threads ([`TerrainWorld::start_loader`]), coarse levels and
+//!   nodes near the camera first. The collision 3 x 3 (level 16) around the player is always
+//!   exact: a missing one is built on the spot (rare: a 5 x 5 ring is prefetched first), so the
+//!   sim's collision depends only on where the player is, never on load timing.
+//! * Spawn: blocks until the first view and the collision around the anchor are resident, then
+//!   puts the feet on the ground there.
+//! * Camera: orbit (mouse), lagged target, pulled in front of terrain between it and the head,
+//!   and never below the ground under it.
+//! * Gravity is uniform -z in the sim (anchor frame): fine within a few km of the anchor;
+//!   re-basing is later work. The log warns past [`FAR_FROM_ANCHOR_M`].
+//!
+//! Controls: W A S D walk (relative to the camera), Shift run, Space jump, mouse looks, wheel
+//! zooms, V vsync, Esc quits.
+//!
+//! `EW_AUTOWALK=S`: walks forward for S seconds (Shift held after a third of it) turning a little,
+//! writes `play_start.png`, `walk_*.png`, `run_*.png` and `play_end.png` (offscreen render of the same view) to `--out`,
+//! and exits. For checks without anyone at the keyboard.
+
+use crate::args::Args;
+use crate::content::{CHARACTER_BAKE, Content, PackSpec};
+use crate::fixed_step::FixedStep;
+use crate::game::{CHARACTER, CHARACTER_ASSET, Game, GameInput};
+use crate::terrain::{Place, TerrainWorld};
+use crate::terrain_collide::{COLLISION_LEVEL, TerrainCollision};
+use ed_geo::NodeId;
+use ed_gpu::{BufferDesc, BufferId, Device, DeviceDesc, Format, ResourceState, SurfaceConfig, SurfaceId, TextureDesc, TextureId, TextureKind, Usage, WindowHandle};
+use ed_pack::AssetId;
+use ed_planet::Anchor;
+use ed_render::scene::NodeSlot;
+use ed_render::{Camera, FrameParams, Renderer, View, ViewTarget, Viewport};
+use ed_sim::{QueryFilter, SimConfig, layers};
+use glam::{Affine3A, DVec3, Quat, Vec2};
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use std::collections::BTreeSet;
+use std::path::PathBuf;
+use std::time::Instant;
+use winit::application::ApplicationHandler;
+use winit::dpi::PhysicalSize;
+use winit::event::{DeviceEvent, DeviceId, ElementState, MouseScrollDelta, WindowEvent};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::keyboard::{KeyCode, PhysicalKey};
+use winit::window::{CursorGrabMode, Window, WindowId};
+
+/// Walking and running speeds on terrain, m/s: a brisk hike and a run.
+pub const WALK_MPS: f64 = 1.9;
+pub const RUN_MPS: f64 = 5.5;
+/// Horizontal acceleration, m/s^2: full walking speed in about 0.2 s, a stop in about 0.1 s
+/// from a walk (feet, not ice).
+pub const ACCEL: f64 = 14.0;
+/// Camera: distance from the look point, its height above the feet, its side offset (over the
+/// right shoulder), zoom limits, metres.
+pub const CAM_DIST: f64 = 4.2;
+pub const CAM_HEAD: f64 = 1.55;
+pub const CAM_SHOULDER: f64 = 0.35;
+pub const CAM_MIN: f64 = 1.5;
+pub const CAM_MAX: f64 = 14.0;
+/// Camera clearance above the ground under it and in front of terrain between it and the head.
+pub const CAM_CLEAR: f64 = 0.45;
+/// Look point lag time constants, s (horizontal, vertical: steps and bumps are absorbed).
+pub const LAG_XY_S: f64 = 0.06;
+pub const LAG_Z_S: f64 = 0.16;
+/// Mouse look, radians per pixel, and the pitch range (radians; negative looks down).
+pub const LOOK_RAD_PER_PX: f32 = 0.0022;
+pub const PITCH_MIN: f32 = -1.25;
+pub const PITCH_MAX: f32 = 0.7;
+/// Character turn rate toward its velocity (rad/s, rendering only).
+pub const TURN_RAD_S: f32 = 10.0;
+/// Background page builders and how many pages may be queued or building at once.
+pub const LOADER_THREADS: usize = 6;
+pub const MAX_INFLIGHT: usize = 24;
+/// Past this distance from the anchor the uniform gravity and flat sim frame start to show.
+pub const FAR_FROM_ANCHOR_M: f64 = 2000.0;
+
+/// Level-16 nodes around sim position `s`: the (2k+1)^2 block, centre first then by ring.
+pub fn collision_block(anchor: &Anchor, s: DVec3, k: i32) -> Vec<NodeId> {
+    let dir = anchor.sim_to_body(s).normalize();
+    let c = NodeId::from_unit(anchor.body.id, dir, COLLISION_LEVEL);
+    let mut v: Vec<(i32, NodeId)> = Vec::new();
+    for dy in -k..=k {
+        for dx in -k..=k {
+            v.push((dx.abs().max(dy.abs()), c.neighbour(dx, dy)));
+        }
+    }
+    v.sort();
+    v.dedup_by_key(|x| x.1);
+    v.into_iter().map(|x| x.1).collect()
+}
+
+/// `ids` and all their ancestors (height queries descend from the root).
+fn with_ancestors(ids: &[NodeId]) -> Vec<NodeId> {
+    let mut s = BTreeSet::new();
+    for &id in ids {
+        let mut n = Some(id);
+        while let Some(i) = n {
+            if !s.insert(i) {
+                break;
+            }
+            n = i.parent();
+        }
+    }
+    s.into_iter().collect()
+}
+
+/// The third-person orbit camera (sim frame: ENU, z up).
+#[derive(Clone, Copy, Debug)]
+pub struct OrbitCam {
+    pub yaw: f32,
+    pub pitch: f32,
+    pub dist: f64,
+    /// Lagged look point (sim frame); `None` until the first frame.
+    pub target: Option<DVec3>,
+    /// Current (pulled-in) distance, eased back out after an obstruction.
+    pub cur_dist: f64,
+}
+
+impl OrbitCam {
+    pub fn new(yaw: f32) -> OrbitCam {
+        OrbitCam { yaw, pitch: -0.2, dist: CAM_DIST, target: None, cur_dist: CAM_DIST }
+    }
+
+    fn look(&self) -> Camera {
+        Camera { position: DVec3::ZERO, yaw: self.yaw, pitch: self.pitch, fov_y: Camera::DEFAULT_FOV_Y, near: Camera::DEFAULT_NEAR }
+    }
+
+    /// Advances the lag toward `feet` (sim frame) and returns the render-frame camera.
+    /// `blocked(head, back)` is the fraction of the ray `head -> head + back` that is free;
+    /// `ground(p)` the terrain height (sim z) under sim point `p`.
+    pub fn update(&mut self, feet: DVec3, dt: f64, blocked: impl Fn(DVec3, DVec3) -> Option<f64>, ground: impl Fn(DVec3) -> Option<f64>) -> Camera {
+        let want = feet + DVec3::Z * CAM_HEAD;
+        let t = match self.target {
+            None => want,
+            Some(t) => {
+                let kxy = 1.0 - (-dt / LAG_XY_S).exp();
+                let kz = 1.0 - (-dt / LAG_Z_S).exp();
+                let mut n = t + (want - t) * DVec3::new(kxy, kxy, kz);
+                // Never trail more than half a metre (fast falls, teleports).
+                let d = n - want;
+                if d.length() > 0.5 {
+                    n = want + d * (0.5 / d.length());
+                }
+                n
+            }
+        };
+        self.target = Some(t);
+        let look = self.look();
+        let fwd = Anchor::render_to_sim(look.forward().as_dvec3());
+        let right = Anchor::render_to_sim(look.right().as_dvec3());
+        let pivot = t + right * CAM_SHOULDER * (self.dist / CAM_DIST).min(1.0);
+        let back = -fwd * self.dist;
+        let free = blocked(pivot, back).map_or(self.dist, |f| (f * self.dist - CAM_CLEAR).max(0.4));
+        // Pull in at once, ease back out (no pumping on bumpy ground).
+        self.cur_dist = if free < self.cur_dist { free } else { self.cur_dist + (free - self.cur_dist) * (1.0 - (-dt / 0.25).exp()) };
+        let mut eye = pivot - fwd * self.cur_dist;
+        if let Some(g) = ground(eye) {
+            eye.z = eye.z.max(g + CAM_CLEAR);
+        }
+        Camera { position: Anchor::sim_to_render(eye), ..look }
+    }
+}
+
+/// Character input from held keys, relative to the camera yaw.
+fn game_input(keys: &BTreeSet<KeyCode>, yaw: f32) -> GameInput {
+    let k = |c| if keys.contains(&c) { 1.0 } else { 0.0 };
+    GameInput {
+        axes: Vec2::new(k(KeyCode::KeyD) - k(KeyCode::KeyA), k(KeyCode::KeyW) - k(KeyCode::KeyS)),
+        jump: keys.contains(&KeyCode::Space),
+        sprint: keys.contains(&KeyCode::ShiftLeft) || keys.contains(&KeyCode::ShiftRight),
+        yaw,
+    }
+}
+
+/// The play state: terrain, collision, character, camera (no GPU surface).
+pub struct Play {
+    pub place: &'static Place,
+    pub world: TerrainWorld,
+    pub collision: TerrainCollision,
+    pub game: Game,
+    pub cam: OrbitCam,
+    pub fixed: FixedStep,
+    content: Option<Content>,
+    node: Option<NodeSlot>,
+    heading: f32,
+    /// Procedural gait on the character's skins (`None`: the pack's skeleton is unknown).
+    anim: Option<(crate::walker::Walker, Vec<ed_render::scene::SkinId>)>,
+    pub sync_loads: u64,
+    pub far_warned: bool,
+    /// Worst planted-foot miss (m) since the last log, and steps taken.
+    pub slip_max: f32,
+    pub steps: u64,
+}
+
+impl Play {
+    /// Loads the spawn area (blocking), places the character on the ground at the anchor.
+    pub fn new(r: &mut Renderer, dev: &dyn Device, place: &'static Place, packs: &std::path::Path, viewport: [u32; 2]) -> Result<Play, String> {
+        let t0 = Instant::now();
+        let root = crate::terrain::cache_root();
+        let mut world = TerrainWorld::new(&root, place);
+        if world.source().zooms().is_empty() {
+            return Err(format!("no Mapterhorn tiles under {} (set EARTHDROP_CACHE to an absolute .earthdrop-cache path)", root.display()));
+        }
+        r.set_terrain(dev, Some(world.provider(dev).map_err(|e| format!("terrain provider: {e}"))?));
+        // Spawn: the collision block at the anchor with its ancestors, then the first view.
+        let block = collision_block(&world.anchor, DVec3::ZERO, 1);
+        world.load(&with_ancestors(&block), usize::MAX);
+        let g = world.ground_point(DVec3::ZERO).ok_or("spawn: no ground under the anchor")?;
+        let feet = Anchor::render_to_sim(g) + DVec3::Z * 0.05;
+        let yaw = crate::terrain::path_pose(place, 0.0).yaw;
+        let mut cam = OrbitCam::new(yaw);
+        let first = cam.update(feet, 0.0, |_, _| None, |_| None);
+        cam.target = None;
+        world.update(&first, viewport, usize::MAX, true);
+        let cfg = SimConfig { origin_ecef: world.anchor.origin, ..Default::default() };
+        let mut game = Game::with_config(&cfg, &Default::default(), feet)?;
+        game.speeds = (WALK_MPS, RUN_MPS);
+        game.accel = Some(ACCEL);
+        game.heading = yaw + std::f32::consts::PI;
+        let mut collision = TerrainCollision::new();
+        collision.update(&mut game.world, &world.anchor, world.residency(), feet);
+        world.start_loader(LOADER_THREADS);
+        // The character: only the character pack (the proving pack would bring the proving
+        // ground along). Its renderer node follows the feet; the instance only turns.
+        let spec = PackSpec { name: "character", required: false, bake: CHARACTER_BAKE };
+        let mut content = Content::load_specs(r, dev, packs, &[spec])?;
+        for n in &content.notes {
+            eprintln!("ew: {n}");
+        }
+        let id = AssetId::from_path(CHARACTER_ASSET);
+        let node = r.instances().nodes().iter().rposition(|n| *n == ed_assets::proving::ORIGIN).map(|i| NodeSlot(i as u16));
+        let content = if content.has_asset(id) && node.is_some() {
+            content.set_authored(r, dev, &[(CHARACTER, id, Affine3A::IDENTITY, CHARACTER_ASSET.to_string())])?;
+            Some(content)
+        } else {
+            eprintln!("ew: play: no {CHARACTER_ASSET} (character.ewpack in {}); walking without a body. Build it with: {CHARACTER_BAKE}", packs.display());
+            None
+        };
+        // The gait: the character pack's skeleton on the renderer's skins. This renderer is
+        // fresh and the character is the only skinned content, so its skins are 0..n.
+        let anim = content.as_ref().and_then(|c| {
+            let sk = pack_skeletons(&packs.join("character.ewpack")).into_iter().next()?;
+            let a = crate::walker::Walker::new(&sk)?;
+            let skins: Vec<_> = (0..c.skinned_parts() as u32).map(ed_render::scene::SkinId).collect();
+            let pal = a.palette();
+            skins.iter().all(|s| r.set_skin_pose(*s, &pal).is_ok()).then_some((a, skins))
+        });
+        if content.is_some() && anim.is_none() {
+            eprintln!("ew: play: character skeleton not matched; standing in the rest pose");
+        }
+        println!(
+            "ew: play {}: spawn at {:.4},{:.4}, ground {:.1} m, {} pages resident, {} collision bodies, ready in {:.0} ms",
+            place.name,
+            place.lat,
+            place.lon,
+            world.ground(g).unwrap_or(f64::NAN),
+            world.residency().len(),
+            collision.nodes().len(),
+            t0.elapsed().as_secs_f64() * 1e3
+        );
+        Ok(Play { place, world, collision, game, cam, fixed: FixedStep::default(), content, node, heading: yaw + std::f32::consts::PI, anim, sync_loads: 0, far_warned: false, slip_max: 0.0, steps: 0 })
+    }
+
+    /// One frame before the GPU work: collision, fixed steps, character, camera, pages.
+    pub fn update(&mut self, r: &mut Renderer, input: GameInput, look: Vec2, zoom: f32, frame_dt: f64, viewport: [u32; 2]) -> Camera {
+        self.cam.yaw -= look.x * LOOK_RAD_PER_PX;
+        self.cam.pitch = (self.cam.pitch - look.y * LOOK_RAD_PER_PX).clamp(PITCH_MIN, PITCH_MAX);
+        self.cam.dist = (self.cam.dist * (1.0 - zoom as f64 * 0.1)).clamp(CAM_MIN, CAM_MAX);
+        // Collision first: the 3 x 3 must be exact before the sim steps.
+        self.world.poll();
+        let anchor = self.world.anchor.clone();
+        let feet = self.game.cur;
+        let near = collision_block(&anchor, feet, 1);
+        let missing: Vec<NodeId> = near.iter().copied().filter(|id| self.world.page(*id).is_none()).collect();
+        if !missing.is_empty() {
+            self.sync_loads += missing.len() as u64;
+            self.world.load(&missing, usize::MAX);
+        }
+        self.collision.update(&mut self.game.world, &anchor, self.world.residency(), feet);
+        let ring = collision_block(&anchor, feet, 2);
+        self.world.request(&ring, MAX_INFLIGHT);
+
+        let yaw = self.cam.yaw;
+        let alpha = self.fixed.run(frame_dt, &mut self.game, |_| GameInput { yaw, ..input });
+        let feet = self.game.feet(alpha);
+
+        // Character: render node at the feet, smoothed facing.
+        let want = self.game.heading;
+        let d = (want - self.heading + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+        let step = TURN_RAD_S * frame_dt as f32;
+        self.heading += d.clamp(-step, step);
+        // The walk: feet planted on the drawn terrain, the body's root where the legs put it.
+        let mut root = feet;
+        if let Some((a, skins)) = &mut self.anim {
+            let v = (self.game.cur - self.game.prev) / ed_sim::DT;
+            let terrain = &self.world;
+            let z0 = feet.z;
+            let ground = |p: glam::DVec2| terrain.ground_point(Anchor::sim_to_render(DVec3::new(p.x, p.y, z0))).map(|g| Anchor::render_to_sim(g).z);
+            a.update(frame_dt as f32, feet, self.heading, v, self.game.grounded(), &ground);
+            root = a.root;
+            self.slip_max = self.slip_max.max(a.slip);
+            self.steps = a.steps;
+            let pal = a.palette();
+            for s in skins.iter() {
+                let _ = r.set_skin_pose(*s, &pal);
+            }
+        }
+        if let (Some(c), Some(n)) = (&mut self.content, self.node) {
+            r.instances().set_node(n, Anchor::sim_to_render(root));
+            c.move_object(r, CHARACTER, &Affine3A::from_quat(Quat::from_rotation_y(self.heading)));
+        }
+
+        // Camera: blocked by the sim world (terrain bodies), clamped to the ground.
+        let world = &self.game.world;
+        let filter = QueryFilter { category: layers::DEFAULT, mask: layers::ALL & !layers::MOVER };
+        let terrain = &self.world;
+        let camera = self.cam.update(
+            feet,
+            frame_dt,
+            |from, d| world.cast_ray(from, d, filter).map(|h| h.fraction as f64),
+            |p| terrain.ground_point(Anchor::sim_to_render(p)).map(|g| Anchor::render_to_sim(g).z),
+        );
+
+        // Pages for the view, then the atmosphere on the curved body.
+        self.world.update_async(&camera, viewport, MAX_INFLIGHT);
+        let g = ed_render::terrain::TerrainProvider::camera_ground(&self.world.anchor.body, &self.world.pose(), camera.position, self.world.ground(camera.position));
+        ed_render::atmosphere::apply_camera_ground(r, g);
+        self.world.feed(r);
+        if let (Some(c), None) = (&self.content, &self.anim) {
+            let _ = c.animate(r, (self.fixed.steps() as f64 + alpha as f64) / 60.0);
+        }
+        let dist = DVec3::new(feet.x, feet.y, 0.0).length();
+        if dist > FAR_FROM_ANCHOR_M && !self.far_warned {
+            self.far_warned = true;
+            println!("ew: play: {dist:.0} m from the anchor: gravity is uniform in the anchor frame (re-basing is later work)");
+        }
+        camera
+    }
+
+    pub fn destroy(&mut self, r: &mut Renderer) {
+        if let Some(c) = &mut self.content {
+            c.clear(r);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Window
+// ---------------------------------------------------------------------------------------------
+
+struct Gpu {
+    renderer: Option<Renderer>,
+    surface: SurfaceId,
+    config: SurfaceConfig,
+    window: Window,
+}
+
+/// Offscreen screenshot target (autowalk).
+struct Shot {
+    tex: TextureId,
+    buf: BufferId,
+    w: u32,
+    h: u32,
+}
+
+const SHOT_FORMAT: Format = Format::Rgba8Srgb;
+
+struct App {
+    args: Args,
+    place: &'static Place,
+    dev: Box<dyn Device>,
+    gpu: Option<Gpu>,
+    play: Option<Play>,
+    keys: BTreeSet<KeyCode>,
+    look: Vec2,
+    zoom: f32,
+    pending_size: Option<PhysicalSize<u32>>,
+    last: Option<Instant>,
+    presented: u64,
+    errors: u64,
+    result: Result<(), String>,
+    done: bool,
+    log_t: Instant,
+    log_frames: u64,
+    log_cpu_ms: f64,
+    log_upd_ms: f64,
+    log_worst_ms: f64,
+    worst_ms: f64,
+    /// Frame intervals (ms) after spawn: the whole run and the current second.
+    ft: Vec<f64>,
+    ft_sec: Vec<f64>,
+    /// Auto-walk: seconds to walk, start time, screenshots written.
+    autowalk: Option<f64>,
+    /// Auto-walk time: summed frame intervals (screenshot readbacks excluded).
+    t_walk: Option<f64>,
+    shot: Option<Shot>,
+    shots_done: u32,
+    out: PathBuf,
+}
+
+pub fn run(args: Args) -> Result<(), String> {
+    let place = args.play.and_then(|p| p.place()).ok_or("--play: expected zermatt|blueridge")?;
+    let dev = ed_gpu::create_device(ed_gpu::default_backend(), &DeviceDesc { validation: args.validation, frames_in_flight: args.frames_in_flight })
+        .map_err(|e| format!("device: {e}"))?;
+    println!("ew: {}", crate::caps_line(dev.caps()));
+    let event_loop = EventLoop::new().map_err(|e| format!("event loop: {e}"))?;
+    event_loop.set_control_flow(ControlFlow::Poll);
+    let autowalk = std::env::var("EW_AUTOWALK").ok().and_then(|v| v.parse::<f64>().ok()).filter(|s| *s > 0.0);
+    let mut app = App {
+        out: args.out.clone(),
+        args,
+        place,
+        dev,
+        gpu: None,
+        play: None,
+        keys: BTreeSet::new(),
+        look: Vec2::ZERO,
+        zoom: 0.0,
+        pending_size: None,
+        last: None,
+        presented: 0,
+        errors: 0,
+        result: Ok(()),
+        done: false,
+        log_t: Instant::now(),
+        log_frames: 0,
+        log_cpu_ms: 0.0,
+        log_upd_ms: 0.0,
+        log_worst_ms: 0.0,
+        worst_ms: 0.0,
+        ft: Vec::new(),
+        ft_sec: Vec::new(),
+        autowalk,
+        t_walk: None,
+        shot: None,
+        shots_done: 0,
+    };
+    event_loop.run_app(&mut app).map_err(|e| format!("event loop: {e}"))?;
+    app.shutdown();
+    app.result
+}
+
+impl App {
+    fn create_gpu(&mut self, el: &ActiveEventLoop) -> Result<(), String> {
+        let attrs = Window::default_attributes()
+            .with_title(format!("ew - {} (WASD walk, Shift run, Space jump, mouse look, wheel zoom, Esc quit)", self.place.name))
+            .with_inner_size(PhysicalSize::new(self.args.width, self.args.height));
+        let window = el.create_window(attrs).map_err(|e| format!("window: {e}"))?;
+        let ns_view = match window.window_handle().map_err(|e| format!("window handle: {e}"))?.as_raw() {
+            RawWindowHandle::AppKit(h) => h.ns_view.as_ptr(),
+            other => return Err(format!("unsupported window handle {other:?}")),
+        };
+        let size = window.inner_size();
+        let config = SurfaceConfig { width: size.width.max(1), height: size.height.max(1), format: crate::windowed::SURFACE_FORMAT, vsync: self.args.vsync, hdr: false };
+        let surface = self.dev.create_surface(WindowHandle { window: ns_view, display: std::ptr::null_mut() }, &config).map_err(|e| format!("create_surface: {e}"))?;
+        println!("ew: surface {}x{} vsync={} (scale factor {})", config.width, config.height, config.vsync, window.scale_factor());
+        let mut renderer = Renderer::new(&*self.dev).map_err(|e| format!("renderer: {e}"))?;
+        self.args.apply_lod(renderer.lod_config());
+        let play = Play::new(&mut renderer, &*self.dev, self.place, &self.args.packs, [config.width, config.height])?;
+        self.play = Some(play);
+        if self.autowalk.is_none() {
+            if window.set_cursor_grab(CursorGrabMode::Locked).is_err() {
+                let _ = window.set_cursor_grab(CursorGrabMode::Confined);
+            }
+            window.set_cursor_visible(false);
+        }
+        if let Some(s) = self.autowalk {
+            println!("ew: autowalk {s:.0} s, screenshots to {}", self.out.display());
+            let (w, h) = (config.width, config.height);
+            let tex = self
+                .dev
+                .create_texture(&TextureDesc {
+                    label: "play shot",
+                    kind: TextureKind::D2,
+                    format: SHOT_FORMAT,
+                    width: w,
+                    height: h,
+                    depth_or_layers: 1,
+                    mips: 1,
+                    samples: 1,
+                    usage: Usage { render_target: true, copy_src: true, ..Default::default() },
+                })
+                .map_err(|e| format!("shot target: {e}"))?;
+            let buf = self
+                .dev
+                .create_buffer(&BufferDesc { label: "play shot readback", size: SHOT_FORMAT.copy_row_pitch(w) as u64 * h as u64, usage: Usage { copy_dst: true, cpu_read: true, ..Default::default() } })
+                .map_err(|e| format!("shot readback: {e}"))?;
+            self.shot = Some(Shot { tex, buf, w, h });
+        }
+        self.gpu = Some(Gpu { renderer: Some(renderer), surface, config, window });
+        Ok(())
+    }
+
+    fn reconfigure(&mut self, size: PhysicalSize<u32>, vsync: bool) {
+        let Some(gpu) = &mut self.gpu else { return };
+        let cfg = SurfaceConfig { width: size.width.max(1), height: size.height.max(1), vsync, ..gpu.config.clone() };
+        if (cfg.width, cfg.height, cfg.vsync) == (gpu.config.width, gpu.config.height, gpu.config.vsync) {
+            return;
+        }
+        match self.dev.configure_surface(gpu.surface, &cfg) {
+            Ok(()) => {
+                println!("ew: surface {}x{} vsync={}", cfg.width, cfg.height, vsync);
+                gpu.config = cfg;
+            }
+            Err(e) => {
+                eprintln!("ew: configure_surface failed: {e}");
+                self.errors += 1;
+            }
+        }
+    }
+
+    fn frame(&mut self, el: &ActiveEventLoop) {
+        if let Some(size) = self.pending_size.take() {
+            let vsync = self.gpu.as_ref().map_or(self.args.vsync, |g| g.config.vsync);
+            self.reconfigure(size, vsync);
+        }
+        let now = Instant::now();
+        let frame_dt = self.last.map_or(0.0, |l| (now - l).as_secs_f64());
+        self.last = Some(now);
+        if self.presented > 5 {
+            self.worst_ms = self.worst_ms.max(frame_dt * 1e3);
+            self.log_worst_ms = self.log_worst_ms.max(frame_dt * 1e3);
+            self.ft.push(frame_dt * 1e3);
+            self.ft_sec.push(frame_dt * 1e3);
+        }
+        let (Some(gpu), Some(play)) = (&mut self.gpu, &mut self.play) else { return };
+        let dev = &*self.dev;
+        let (w, h) = (gpu.config.width, gpu.config.height);
+        let t_upd = Instant::now();
+
+        // Input (keyboard or the auto-walk script).
+        let mut shoot = None;
+        let (keys, look) = match self.autowalk {
+            Some(total) => {
+                let tw = self.t_walk.get_or_insert(0.0);
+                *tw += frame_dt;
+                let t = *tw;
+                // Start, a walking burst, a running burst, end (a burst shows the gait's phases).
+                let walk = total * 0.22;
+                let run = total * 0.75;
+                let times = [0.8, walk, walk + 0.08, walk + 0.16, walk + 0.24, run, run + 0.06, run + 0.12, total];
+                const NAMES: [&str; 9] = ["play_start.png", "walk_0.png", "walk_1.png", "walk_2.png", "walk_3.png", "run_0.png", "run_1.png", "run_2.png", "play_end.png"];
+                if let Some(&at) = times.get(self.shots_done as usize)
+                    && t > at
+                {
+                    shoot = Some(NAMES[self.shots_done as usize]);
+                }
+                Self::autowalk_input_static(t, total)
+            }
+            None => (self.keys.clone(), std::mem::take(&mut self.look)),
+        };
+        let renderer = gpu.renderer.as_mut().expect("renderer lives until shutdown");
+        let input = game_input(&keys, 0.0);
+        let zoom = std::mem::take(&mut self.zoom);
+        let camera = play.update(renderer, input, look, zoom, frame_dt, [w, h]);
+        let upd_ms = t_upd.elapsed().as_secs_f64() * 1e3;
+        let tf = Instant::now();
+        if let Err(e) = renderer.flush_uploads(dev) {
+            eprintln!("ew: flush_uploads: {e}");
+            self.errors += 1;
+        }
+        let flush_ms = tf.elapsed().as_secs_f64() * 1e3;
+        let mut enc = match dev.begin_frame() {
+            Ok(e) => e,
+            Err(e) => {
+                self.result = Err(format!("begin_frame: {e}"));
+                el.exit();
+                return;
+            }
+        };
+        let t0 = Instant::now();
+        let shot = shoot.and(self.shot.as_ref());
+        let target = match shot {
+            Some(s) => ViewTarget { texture: s.tex, format: SHOT_FORMAT, width: s.w, height: s.h, initial: ResourceState::Undefined, final_state: None },
+            None => match dev.acquire(gpu.surface) {
+                Ok(tex) => ViewTarget { texture: tex, format: gpu.config.format, width: w, height: h, initial: ResourceState::Undefined, final_state: Some(ResourceState::Present) },
+                Err(e) => {
+                    let _ = dev.end_frame(enc);
+                    if !matches!(e, ed_gpu::Error::SurfaceLost) {
+                        eprintln!("ew: acquire failed: {e}");
+                        self.errors += 1;
+                    }
+                    self.pending_size = Some(gpu.window.inner_size());
+                    return;
+                }
+            },
+        };
+        let view = View { camera, viewport: Viewport { x: 0, y: 0, width: target.width, height: target.height }, target, flags: Default::default() };
+        let params = FrameParams { readback: shot.map(|s| s.buf), ..Default::default() };
+        if let Err(e) = renderer.render(dev, &mut *enc, &view, &params) {
+            eprintln!("ew: render: {e}");
+            self.errors += 1;
+        }
+        match dev.end_frame(enc) {
+            Ok(()) => self.presented += 1,
+            Err(e) => {
+                eprintln!("ew: end_frame: {e}");
+                self.errors += 1;
+            }
+        }
+        if let (Some(name), Some(s)) = (shoot, &self.shot) {
+            dev.wait_idle();
+            let pitch = SHOT_FORMAT.copy_row_pitch(s.w) as usize;
+            let mut raw = Vec::new();
+            match dev.read_buffer(s.buf, &mut raw) {
+                Ok(()) => {
+                    let mut rgba = Vec::with_capacity((s.w * s.h * 4) as usize);
+                    for y in 0..s.h as usize {
+                        rgba.extend_from_slice(&raw[y * pitch..y * pitch + s.w as usize * 4]);
+                    }
+                    let _ = std::fs::create_dir_all(&self.out);
+                    let p = self.out.join(name);
+                    match crate::headless::write_png(&p, s.w, s.h, &rgba) {
+                        Ok(()) => println!("ew: play screenshot {}", p.display()),
+                        Err(e) => eprintln!("ew: {e}"),
+                    }
+                }
+                Err(e) => eprintln!("ew: read_buffer: {e}"),
+            }
+            self.shots_done += 1;
+            // The readback wait is not a frame time.
+            self.last = Some(Instant::now());
+            if self.shots_done >= 9 {
+                el.exit();
+            }
+        }
+        let cpu = flush_ms + t0.elapsed().as_secs_f64() * 1e3;
+        self.log_cpu_ms += cpu;
+        self.log_upd_ms += upd_ms;
+        self.log_frames += 1;
+        let since = self.log_t.elapsed().as_secs_f64();
+        if since >= 1.0 {
+            let n = self.log_frames.max(1) as f64;
+            let gpu_ms = renderer.timings(dev).map_or("-".into(), |t| format!("{:.2}", t.frame_ms));
+            let st = play.world.selection();
+            let feet = play.game.cur;
+            let ground = play.world.ground_point(Anchor::sim_to_render(feet)).map(|g| feet.z - Anchor::render_to_sim(g).z);
+            let lvl = play.world.planet.height(play.world.residency(), play.world.anchor.body.id, play.world.anchor.sim_to_body(feet)).map_or(0, |h| h.1);
+            let p99 = pct(&mut self.ft_sec, 0.99);
+            self.ft_sec.clear();
+            println!(
+                "ew: {:.1} fps, gpu {gpu_ms} ms, cpu {:.2} ms (update {:.2}), frame p99 {p99:.1} / worst {:.1} ms | ground level {lvl} | feet {:.1},{:.1},{:.1} ({:.0} m from anchor), {}, above ground {} | pages {} resident, {} loading, {} holes, sync {} | collision {} nodes | walk: {} steps, worst foot miss {:.3} m",
+                self.log_frames as f64 / since,
+                self.log_cpu_ms / n,
+                self.log_upd_ms / n,
+                self.log_worst_ms,
+                feet.x,
+                feet.y,
+                feet.z,
+                DVec3::new(feet.x, feet.y, 0.0).length(),
+                if play.game.grounded() { "grounded" } else { "airborne" },
+                ground.map_or("-".into(), |g| format!("{g:.3} m")),
+                play.world.residency().len(),
+                play.world.inflight(),
+                st.holes.len(),
+                play.sync_loads,
+                play.collision.nodes().len(),
+                play.steps,
+                play.slip_max,
+            );
+            play.slip_max = 0.0;
+            self.log_t = Instant::now();
+            self.log_frames = 0;
+            self.log_cpu_ms = 0.0;
+            self.log_upd_ms = 0.0;
+            self.log_worst_ms = 0.0;
+        }
+        if let Some(n) = self.args.frames.filter(|&n| n > 0)
+            && self.presented >= n
+        {
+            el.exit();
+        }
+    }
+
+    /// Auto-walk input at `t` seconds: forward, a slow turn, run after a third, a jump at half.
+    fn autowalk_input_static(t: f64, total: f64) -> (BTreeSet<KeyCode>, Vec2) {
+        let mut k = BTreeSet::new();
+        if t > 1.0 {
+            k.insert(KeyCode::KeyW);
+        }
+        if t > total / 3.0 {
+            k.insert(KeyCode::ShiftLeft);
+        }
+        if (t - total / 2.0).abs() < 0.05 {
+            k.insert(KeyCode::Space);
+        }
+        let turn = if t < total / 2.0 { -2.0 } else { 2.0 };
+        (k, Vec2::new(turn, 0.0))
+    }
+
+    fn shutdown(&mut self) {
+        if self.done {
+            return;
+        }
+        self.done = true;
+        self.dev.wait_idle();
+        if let Some(s) = self.shot.take() {
+            self.dev.destroy_texture(s.tex);
+            self.dev.destroy_buffer(s.buf);
+        }
+        if let Some(mut gpu) = self.gpu.take() {
+            if let Some(mut r) = gpu.renderer.take() {
+                if let Some(p) = &mut self.play {
+                    p.destroy(&mut r);
+                }
+                r.destroy(&*self.dev);
+            }
+            self.dev.destroy_surface(gpu.surface);
+            self.dev.wait_idle();
+            drop(gpu.window);
+        }
+        let (p50, p99) = (pct(&mut self.ft, 0.5), pct(&mut self.ft, 0.99));
+        println!("ew: play: {} frames presented, frame interval p50 {p50:.2} / p99 {p99:.2} / worst {:.1} ms, {} errors", self.presented, self.worst_ms, self.errors);
+        if self.errors > 0 && self.result.is_ok() {
+            self.result = Err(format!("{} GPU/surface errors", self.errors));
+        }
+    }
+}
+
+impl ApplicationHandler for App {
+    fn resumed(&mut self, el: &ActiveEventLoop) {
+        if self.gpu.is_none()
+            && let Err(e) = self.create_gpu(el)
+        {
+            self.result = Err(e);
+            el.exit();
+        }
+    }
+
+    fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        match event {
+            WindowEvent::CloseRequested => el.exit(),
+            WindowEvent::Resized(size) => self.pending_size = Some(size),
+            WindowEvent::KeyboardInput { event, .. } => {
+                let PhysicalKey::Code(code) = event.physical_key else { return };
+                let pressed = event.state == ElementState::Pressed;
+                if pressed && !event.repeat {
+                    match code {
+                        KeyCode::Escape => el.exit(),
+                        KeyCode::KeyV => {
+                            if let Some(gpu) = &self.gpu {
+                                let size = PhysicalSize::new(gpu.config.width, gpu.config.height);
+                                let vsync = !gpu.config.vsync;
+                                self.reconfigure(size, vsync);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if pressed {
+                    self.keys.insert(code);
+                } else {
+                    self.keys.remove(&code);
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                self.zoom += match delta {
+                    MouseScrollDelta::LineDelta(_, y) => y,
+                    MouseScrollDelta::PixelDelta(p) => p.y as f32 / 24.0,
+                };
+            }
+            WindowEvent::Focused(false) => self.keys.clear(),
+            WindowEvent::Focused(true) => {
+                if let Some(gpu) = &self.gpu
+                    && self.autowalk.is_none()
+                    && gpu.window.set_cursor_grab(CursorGrabMode::Locked).is_err()
+                {
+                    let _ = gpu.window.set_cursor_grab(CursorGrabMode::Confined);
+                }
+            }
+            WindowEvent::RedrawRequested if !el.exiting() => self.frame(el),
+            _ => {}
+        }
+    }
+
+    fn device_event(&mut self, _el: &ActiveEventLoop, _id: DeviceId, event: DeviceEvent) {
+        if let DeviceEvent::MouseMotion { delta } = event {
+            self.look += Vec2::new(delta.0 as f32, delta.1 as f32);
+        }
+    }
+
+    fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+        if self.gpu.is_some() && !el.exiting() {
+            self.frame(el);
+        }
+    }
+
+    fn exiting(&mut self, _el: &ActiveEventLoop) {
+        self.shutdown();
+    }
+}
+
+/// The `q` quantile of `v` (sorts it); 0 when empty.
+fn pct(v: &mut [f64], q: f64) -> f64 {
+    if v.is_empty() {
+        return 0.0;
+    }
+    v.sort_by(f64::total_cmp);
+    v[((v.len() - 1) as f64 * q).round() as usize]
+}
+
+/// Skeletons in a pack file, in key order.
+pub fn pack_skeletons(path: &std::path::Path) -> Vec<ed_pack::kinds::Skeleton> {
+    let Ok(rd) = ed_pack::PackReader::open_file(path) else { return Vec::new() };
+    let keys: Vec<ed_pack::ChunkKey> = rd.entries().iter().map(|e| e.key).filter(|k| k.kind() == ed_pack::ChunkKind::Skeleton).collect();
+    keys.iter().filter_map(|k| rd.read(k).ok()?.decode().ok()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore]
+    fn print_character_joints() {
+        for sk in pack_skeletons(&crate::content::default_pack_dir().join("character.ewpack")) {
+            eprintln!("skeleton for {:?}: {} joints", sk.mesh, sk.joints.len());
+            for (i, j) in sk.joints.iter().enumerate() {
+                eprintln!("  {i} {} parent {:?} rest t{:?} r{:?}", j.name, j.parent, j.rest.translation, j.rest.rotation);
+            }
+        }
+    }
+}

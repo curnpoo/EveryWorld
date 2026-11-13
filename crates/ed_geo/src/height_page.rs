@@ -9,6 +9,18 @@ pub const PAGE_SAMPLES: usize = PAGE_N * PAGE_N;
 /// Quantisation step in metres of the canonical (data-layer) pages: 65535 steps cover 32.7 km,
 /// more than sea floor to summit.
 pub const HEIGHT_STEP_M: f32 = 0.5;
+/// Finer step used from [`FINE_FROM_LEVEL`] up: 1/8 m is below what the eye reads as a terrace
+/// on a 10 degree slope (0.5 m stairs were visible), and 65535 steps still cover 8.19 km, more
+/// relief than one level-11 node (~5 km wide) holds. A power of two, so decoding is exact.
+pub const HEIGHT_STEP_FINE_M: f32 = 0.125;
+/// First node level that uses [`HEIGHT_STEP_FINE_M`].
+pub const FINE_FROM_LEVEL: u8 = 11;
+
+/// Quantisation step of the canonical pages of node level `level`: a fixed rule per level, so
+/// same-level neighbours decode a shared edge to the same bits.
+pub fn height_step_for_level(level: u8) -> f32 {
+    if level >= FINE_FROM_LEVEL { HEIGHT_STEP_FINE_M } else { HEIGHT_STEP_M }
+}
 
 /// `height(i, j) = offset + scale * samples[j * 257 + i]`, decoded in f64. `i` runs along the
 /// node's lattice x (`node.grid_point(i, j, 256)`), `j` along its lattice y.

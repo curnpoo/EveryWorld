@@ -46,6 +46,11 @@ pub struct GameInput {
 
 /// The ENU velocity for `input` (z = 0).
 pub fn input_velocity(i: &GameInput) -> DVec3 {
+    input_velocity_at(i, WALK_MPS, SPRINT_MPS)
+}
+
+/// The ENU velocity for `input` at the given walk and sprint speeds (z = 0).
+pub fn input_velocity_at(i: &GameInput, walk: f64, sprint: f64) -> DVec3 {
     let cam = Camera { position: DVec3::ZERO, yaw: i.yaw, pitch: 0.0, fov_y: 1.0, near: 0.1 };
     let f = yup_to_enu(cam.forward().as_dvec3());
     let r = yup_to_enu(cam.right().as_dvec3());
@@ -55,7 +60,7 @@ pub fn input_velocity(i: &GameInput) -> DVec3 {
     if len < 1e-9 {
         return DVec3::ZERO;
     }
-    dir / len.max(1.0) * if i.sprint { SPRINT_MPS } else { WALK_MPS }
+    dir / len.max(1.0) * if i.sprint { sprint } else { walk }
 }
 
 /// One authored object's collision: its body and its placed shapes (node frame).
@@ -84,6 +89,13 @@ pub struct Game {
     pub recorder: Option<Recorder>,
     /// Statics creation time, ms.
     pub build_ms: f64,
+    /// Walk and sprint speeds, m/s (default [`WALK_MPS`], [`SPRINT_MPS`]).
+    pub speeds: (f64, f64),
+    /// Horizontal acceleration toward the wanted velocity, m/s^2 (`None`: instant, the
+    /// proving-ground behaviour). Ramped in the fixed step, so replays stay deterministic.
+    pub accel: Option<f64>,
+    /// The velocity the ramp has reached (ENU, z = 0).
+    ramp: DVec3,
 }
 
 /// A placement's node-frame affine (y-up, relative to the proving origin) as the pack ENU
@@ -96,8 +108,14 @@ pub fn place_shapes(shapes: &[CollisionShape], node_affine: &Affine3A) -> Vec<Co
 impl Game {
     /// Builds the world from pack collision, with the mover's feet at `spawn` (node frame ENU).
     pub fn new(col: &PackCollision, spawn: DVec3) -> Result<Game, String> {
+        Self::with_config(&SimConfig { origin_ecef: ORIGIN, ..Default::default() }, col, spawn)
+    }
+
+    /// [`Game::new`] in any region (`cfg.origin_ecef`): the real-terrain play mode passes its
+    /// anchor and no pack collision, and adds the terrain bodies itself.
+    pub fn with_config(cfg: &SimConfig, col: &PackCollision, spawn: DVec3) -> Result<Game, String> {
         let t0 = Instant::now();
-        let mut world = World::new(&SimConfig { origin_ecef: ORIGIN, ..Default::default() });
+        let mut world = World::new(cfg);
         let statics = collide::build_statics(&mut world, &col.node)?;
         let desc = MoverDesc { position: spawn, ..Default::default() };
         let mover = world.create_mover(desc).map_err(|e| format!("mover: {e}"))?;
@@ -117,6 +135,9 @@ impl Game {
             step_ms: Vec::new(),
             recorder: None,
             build_ms: t0.elapsed().as_secs_f64() * 1e3,
+            speeds: (WALK_MPS, SPRINT_MPS),
+            accel: None,
+            ramp: DVec3::ZERO,
         })
     }
 
@@ -267,7 +288,14 @@ impl Game {
 impl Simulation for Game {
     type Input = GameInput;
     fn step(&mut self, input: &GameInput, _dt: f64) {
-        let want = MoverInput { velocity: input_velocity(input), jump_speed: if input.jump { JUMP_MPS } else { 0.0 } };
+        let mut v = input_velocity_at(input, self.speeds.0, self.speeds.1);
+        if let Some(a) = self.accel {
+            let d = v - self.ramp;
+            let max = a * ed_sim::DT;
+            self.ramp += if d.length() > max { d * (max / d.length()) } else { d };
+            v = self.ramp;
+        }
+        let want = MoverInput { velocity: v, jump_speed: if input.jump { JUMP_MPS } else { 0.0 } };
         let mut cmds = Vec::new();
         if self.held != Some(want) {
             self.held = Some(want);

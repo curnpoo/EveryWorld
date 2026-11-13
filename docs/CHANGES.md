@@ -1,3 +1,19 @@
+## 2026-11-12: P-slice S4 — `ew --play zermatt|blueridge` (walk on real terrain)
+
+- **What:** `crates/ew/src/play.rs` runs the play loop: async page loading (worker threads), terrain collision around the player, orbit third-person camera clamped above ground, `apply_camera_ground` every frame. `walker.rs` ports the alpha `body.rs` gait onto the proving character's skin: world-planted feet on the drawn terrain, swing arcs with toe-off and heel strike, two-bone leg IK, pelvis drop as the bob, lean, chest twist, arm swing; walk 1.9 m/s, run 5.5 m/s.
+- **Mover:** `ed_sim` ground probe reaches far enough on steep walkable slopes (same-plane hits only): standing float at 38/45/48° went from 0.13/0.19/0.22 m to < 0.02 m. Replays unchanged.
+- **Controls:** WASD, Shift run, Space jump, mouse orbit, wheel zoom, V vsync, Esc. `EW_AUTOWALK=18 --out DIR` walks unattended and saves stills.
+- **Numbers (M3 Pro, 1280×720, 120 Hz):** most seconds 117–120 fps (GPU 6.2–6.4 ms); views across heavy terrain GPU 10.5–12 ms, vsync drops to 60. Frame p50 8.4 ms, p99 17.3 ms. Holes 0, synchronous collision loads 0, planted-foot miss 0.000 m.
+- **Open:** spawn blocks ~10 s on the first load (bicubic page build is ~4× the taps; worth a look in S6). Feet sit on drawn terrain, the capsule on the level-16 collision (≤ 0.3 m apart, absorbed by the pelvis). Gravity is uniform beyond 2 km (warning printed). Dark streaks in near-ground shadows (S6). No idle or landing polish.
+- **Mac check:** the owner walks it.
+
+## 2026-11-12: Terrain heights without false steps
+
+- **Cause (measured, `crates/ew/tests/terrain_steps.rs`, ignored, real Zermatt):** the 0.5 m height step left 29 % / 67 % / 82 % of adjacent samples equal at levels 16 / 17 / 18: terraces in the geometry. Bilinear upsampling of z14 data added a crease per source cell. Decode noise was not a cause.
+- **What:** `ed_geo::height_step_for_level`: 1/8 m from level 11 (nodes ≤ ~5 km, relief well under the 8.19 km per-page range), 0.5 m above. `ed_data` node pages and `ew` `CacheSource` sample with Catmull-Rom bicubic (B-spline rejected: it cut real relief by a third). Terrain shading normal spans ~1.2 m.
+- **After:** level 16 plateau fraction 0 %, second-difference RMS 0.39 → 0.095 m. Terrain harness 0 holes. Every page byte changed (the determinism test compares two processes).
+- **Open:** close-up detail is still z14 data upsampled 16× (S7).
+
 ## 2026-11-12: P-slice S2 — atmosphere on the curved planet
 
 - **Finding:** the atmosphere shaders already march spherically from the camera altitude along `atmos.up`; only the inputs were flat (up = +Y, altitude = `cam.y − surface_y`).

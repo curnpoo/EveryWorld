@@ -5,6 +5,6 @@ mod heights;
 mod source;
 
 pub use heights::{
-    HeightPage, HEIGHT_STEP_M, PAGE_CELLS, PAGE_SAMPLES, node_heights, parent_heights, source_zoom,
+    HeightPage, HEIGHT_STEP_FINE_M, HEIGHT_STEP_M, cubic_weights, height_step_for_level, PAGE_CELLS, PAGE_SAMPLES, node_heights, parent_heights, source_zoom,
 };
 pub use source::{ElevationSource, Raster, SourceView};

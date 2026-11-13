@@ -9,6 +9,8 @@ ew: EveryWorld engine shell (Phase 1, M4)
 USAGE:
   ew [OPTIONS]                 open a window in the proving ground (fly camera)
   ew --headless [OPTIONS]      render offscreen, no window, write PNG + CSV + summary
+  ew --play zermatt|blueridge  walk on real terrain (window, third-person character; tiles
+                               from EARTHDROP_CACHE, an absolute path, offline)
 
 OPTIONS:
   --width W, --height H        output size in pixels (default 1280x720)
@@ -19,6 +21,10 @@ OPTIONS:
   --out DIR                    headless output directory (default target/headless)
   --path orbit|static|proving  headless camera path (default orbit; proving implies
                                --scene proving)
+  --play zermatt|blueridge     windowed: walk there (W A S D walk, Shift run, Space jump,
+                               mouse looks, wheel zooms, V vsync, Esc quits).
+                               EW_AUTOWALK=S walks S seconds by itself, writes
+                               play_start.png / play_end.png to --out and exits
   --path zermatt|blueridge     headless real terrain from EARTHDROP_CACHE (offline; no
                                scene loaded): ground level, then a climb
   --scene test|proving         what to load (windowed default proving; headless default
@@ -106,6 +112,8 @@ pub struct Args {
     pub collision_debug: bool,
     /// No sim, no layers, no editor (the M3 benchmark exactly).
     pub bare: bool,
+    /// Walk on real terrain at this place (windowed; [`crate::play`]).
+    pub play: Option<PathKind>,
 }
 
 impl Args {
@@ -159,6 +167,7 @@ impl Default for Args {
             inset: false,
             collision_debug: false,
             bare: false,
+            play: None,
         }
     }
 }
@@ -231,6 +240,13 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Option<Args>, Str
                     v => return Err(format!("--vsync: expected on|off, got {v:?}")),
                 }
             }
+            "--play" => {
+                a.play = Some(match it.next().as_deref() {
+                    Some("zermatt") => PathKind::Zermatt,
+                    Some("blueridge") => PathKind::BlueRidge,
+                    v => return Err(format!("--play: expected zermatt|blueridge, got {v:?}")),
+                })
+            }
             "--path" => {
                 a.path = match it.next().as_deref() {
                     Some("orbit") => PathKind::Orbit,
@@ -246,6 +262,9 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Option<Args>, Str
     }
     if a.width == 0 || a.height == 0 {
         return Err("--width and --height must be > 0".into());
+    }
+    if a.play.is_some() && a.headless {
+        return Err("--play opens a window; for headless terrain use --path zermatt|blueridge".into());
     }
     Ok(Some(a))
 }

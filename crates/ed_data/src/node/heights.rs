@@ -1,6 +1,6 @@
 //! Height pages: 257 x 257 u16 samples per terrain node (P2-D3).
 //!
-//! Quantisation is a fixed rule, not a per-node fit: `scale` is always [`HEIGHT_STEP_M`] and
+//! Quantisation is a fixed rule, not a per-node fit: `scale` is always `height_step_for_level` and
 //! `offset` is the lowest quantised sample, so every node decodes the same real height to the
 //! same f32 bits. That is what makes shared edges bit-identical *after decoding* even when two
 //! neighbours have different ranges (a per-node fitted scale cannot do this).
@@ -11,26 +11,39 @@ use ed_geo::{WGS84_A, WGS84_B, WGS84_E2};
 use std::f64::consts::PI;
 use std::sync::Arc;
 
-pub use ed_geo::{HEIGHT_STEP_M, HeightPage, PAGE_CELLS, PAGE_N, PAGE_SAMPLES};
+pub use ed_geo::{HEIGHT_STEP_FINE_M, HEIGHT_STEP_M, HeightPage, height_step_for_level, PAGE_CELLS, PAGE_N, PAGE_SAMPLES};
 
-/// Build from quantised heights in units of [`HEIGHT_STEP_M`] (global grid indices).
-fn page_from_quantised(q: &[i64]) -> HeightPage {
+/// Build from quantised heights in units of `step` (global grid indices).
+fn page_from_quantised(q: &[i64], step: f32) -> HeightPage {
     debug_assert_eq!(q.len(), PAGE_SAMPLES);
     let lo = *q.iter().min().unwrap();
-    let hi = *q.iter().max().unwrap();
+    let hi = (*q.iter().max().unwrap()).min(lo + u16::MAX as i64);
     let samples = q.iter().map(|&v| (v - lo).min(u16::MAX as i64) as u16).collect();
-    let step = HEIGHT_STEP_M as f64;
-    let offset = (lo as f64 * step) as f32;
-    HeightPage { samples, scale: HEIGHT_STEP_M, offset, min_m: offset, max_m: (hi as f64 * step) as f32 }
+    let s = step as f64;
+    let offset = (lo as f64 * s) as f32;
+    HeightPage { samples, scale: step, offset, min_m: offset, max_m: (hi as f64 * s) as f32 }
 }
 
-fn page_quantised(p: &HeightPage) -> Vec<i64> {
-    let base = (p.offset as f64 / HEIGHT_STEP_M as f64).round() as i64;
-    p.samples.iter().map(|&s| base + s as i64).collect()
+/// A page's heights in metres.
+fn page_metres(p: &HeightPage) -> Vec<f64> {
+    p.samples.iter().map(|&s| p.decode(s)).collect()
 }
 
-fn quantise(h: f64) -> i64 {
-    (h / HEIGHT_STEP_M as f64).round() as i64
+fn quantise(h: f64, step: f32) -> i64 {
+    (h / step as f64).round() as i64
+}
+
+/// Cubic weights for the four taps around a cell at fraction `t` (Catmull-Rom: C1, passes
+/// through the source samples, so real ridges and cliffs keep their source sharpness).
+#[inline]
+pub fn cubic_weights(t: f64) -> [f64; 4] {
+    let (t2, t3) = (t * t, t * t * t);
+    [
+        0.5 * (-t3 + 2.0 * t2 - t),
+        0.5 * (3.0 * t3 - 5.0 * t2 + 2.0),
+        0.5 * (-3.0 * t3 + 4.0 * t2 + t),
+        0.5 * (t3 - t2),
+    ]
 }
 
 /// Slippy zoom used for a node level: pixel spacing of a 256 px tile at the equator is at most
@@ -95,6 +108,7 @@ impl Tiles<'_> {
 /// neighbours), turned into geodetic lat/lon of the ellipsoid point `d * r(d)` (P0-R1). Pure function of `(id, source)`.
 pub fn node_heights(src: &dyn SourceView, id: NodeId) -> HeightPage {
     let z = source_zoom(id.level());
+    let step = height_step_for_level(id.level());
     let mut tiles = Tiles { src, z, cache: Vec::new() };
     // Tile size is learned from the first available tile; 256 if there is none.
     let size = {
@@ -113,14 +127,20 @@ pub fn node_heights(src: &dyn SourceView, id: NodeId) -> HeightPage {
             let (gx, gy) = lonlat_to_pixel(g.lon_deg, g.lat_deg, z, size);
             let (fx, fy) = (gx - 0.5, gy - 0.5);
             let (x0, y0) = (fx.floor(), fy.floor());
-            let (tx, ty) = (fx - x0, fy - y0);
+            let (wx, wy) = (cubic_weights(fx - x0), cubic_weights(fy - y0));
             let (x0, y0) = (x0 as i64, y0 as i64);
-            let a = tiles.pixel(x0, y0, size) * (1.0 - tx) + tiles.pixel(x0 + 1, y0, size) * tx;
-            let b = tiles.pixel(x0, y0 + 1, size) * (1.0 - tx) + tiles.pixel(x0 + 1, y0 + 1, size) * tx;
-            q.push(quantise(a * (1.0 - ty) + b * ty));
+            let mut h = 0.0;
+            for (m, wm) in wy.iter().enumerate() {
+                let mut row = 0.0;
+                for (k, wk) in wx.iter().enumerate() {
+                    row += wk * tiles.pixel(x0 - 1 + k as i64, y0 - 1 + m as i64, size);
+                }
+                h += wm * row;
+            }
+            q.push(quantise(h, step));
         }
     }
-    page_from_quantised(&q)
+    page_from_quantised(&q, step)
 }
 
 /// Geodetic lat/lon of a lattice point: the ECEF point `d * r(d)` where `r(d)` is the WGS84
@@ -173,10 +193,12 @@ pub(crate) fn ecef_to_latlon(x: f64, y: f64, z: f64) -> LatLon {
 /// match the children and neighbouring parents bit for bit.
 pub fn parent_heights(children: [&HeightPage; 4]) -> HeightPage {
     const W: usize = 2 * PAGE_CELLS + 1;
+    // The parent keeps the children's step (all four share a level, hence a step).
+    let step = children[0].scale;
     let mut g = vec![0i64; W * W];
     for (c, page) in children.iter().enumerate() {
         let (ox, oy) = ((c & 1) * PAGE_CELLS, (c >> 1) * PAGE_CELLS);
-        let q = page_quantised(page);
+        let q: Vec<i64> = page_metres(page).iter().map(|&m| quantise(m, step)).collect();
         for j in 0..PAGE_N {
             for i in 0..PAGE_N {
                 // Shared child borders are identical by G4; later children overwrite equal values.
@@ -198,7 +220,7 @@ pub fn parent_heights(children: [&HeightPage; 4]) -> HeightPage {
             q.push(v.round() as i64);
         }
     }
-    page_from_quantised(&q)
+    page_from_quantised(&q, step)
 }
 
 #[cfg(test)]

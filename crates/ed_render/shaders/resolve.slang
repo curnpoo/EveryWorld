@@ -178,10 +178,14 @@ float4 terrain_pixel(FrameData* f, FsOut i, uint2 vis, float3 dir) {
     float2 g = t_vertex_grid(tri.x) * b0 + t_vertex_grid(tri.y) * b1 + t_vertex_grid(tri.z) * b2;
     float3 up;
     float h;
-    float3 n = t_smooth_normal(pool, d, g, 1, up, h);
+    // Shading normal over a ~2.4 m baseline (+-1.2 m): +-1 sample of a 0.6 m page turns the
+    // 1/8 m height step into ~6 degrees of normal banding; the source is 6.6 m anyway.
+    float spacing = max(t_sample_spacing(d, g), 0.01);
+    int rn = clamp(int(1.2 / spacing + 0.5), 1, 4);
+    float3 n = t_smooth_normal(pool, d, g, rn, up, h);
     // Material slope over ~T_SLOPE_M: the landform, not source noise (lossy DEM tiles).
-    int r = clamp(int(T_SLOPE_M / max(t_sample_spacing(d, g), 0.01) + 0.5), 1, 6);
-    float3 nm = r == 1 ? n : t_smooth_normal(pool, d, g, r, up, h);
+    int r = clamp(int(T_SLOPE_M / spacing + 0.5), 1, 6);
+    float3 nm = r == rn ? n : t_smooth_normal(pool, d, g, r, up, h);
     float3 albedo = terrain_albedo(h, dot(nm, up));
     float3 v = -dir;
     if (dot(n, v) < 0.0) {

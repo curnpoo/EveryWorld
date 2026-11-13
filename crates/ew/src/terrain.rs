@@ -133,35 +133,51 @@ impl CacheSource {
         t
     }
 
-    /// Height at global pixel coordinates (pixel centres at +0.5) of zoom `zs`, bilinear;
-    /// `None` when a needed tile is missing.
+    /// Height at global pixel coordinates (pixel centres at +0.5) of zoom `zs`, Catmull-Rom
+    /// bicubic (C1: bilinear left a crease on every source cell); `None` when a needed tile is
+    /// missing. Outer taps in a missing neighbour tile fall back to the nearest inner tap.
     fn sample(&self, zs: u8, gx: f64, gy: f64, size: usize, last: &mut Option<(TileKey, Arc<Raster>)>) -> Option<f32> {
         let n = 1i64 << zs;
         let w = n * size as i64;
         let (fx, fy) = (gx - 0.5, gy - 0.5);
         let (x0, y0) = (fx.floor() as i64, fy.floor() as i64);
-        let (tx, ty) = ((fx - x0 as f64) as f32, (fy - y0 as f64) as f32);
-        let mut px = [0.0f32; 4];
-        for (k, (dx, dy)) in [(0, 0), (1, 0), (0, 1), (1, 1)].into_iter().enumerate() {
-            let x = (x0 + dx).rem_euclid(w);
-            let y = (y0 + dy).clamp(0, w - 1);
-            let key = (zs, (x / size as i64) as u32, (y / size as i64) as u32);
-            let t = match last {
-                Some((k, t)) if *k == key => t.clone(),
-                _ => {
-                    let t = self.disk(key.0, key.1, key.2)?;
-                    *last = Some((key, t.clone()));
-                    t
+        let (wx, wy) = (ed_data::node::cubic_weights(fx - x0 as f64), ed_data::node::cubic_weights(fy - y0 as f64));
+        let mut px = [[0.0f64; 4]; 4];
+        let mut have = [[false; 4]; 4];
+        for m in 0..4usize {
+            for k in 0..4usize {
+                let x = (x0 - 1 + k as i64).rem_euclid(w);
+                let y = (y0 - 1 + m as i64).clamp(0, w - 1);
+                let key = (zs, (x / size as i64) as u32, (y / size as i64) as u32);
+                let t = match last {
+                    Some((lk, t)) if *lk == key => Some(t.clone()),
+                    _ => self.disk(key.0, key.1, key.2).inspect(|t| *last = Some((key, t.clone()))),
+                };
+                match t {
+                    Some(t) if t.size == size => {
+                        px[m][k] = t.heights[(y % size as i64) as usize * size + (x % size as i64) as usize] as f64;
+                        have[m][k] = true;
+                    }
+                    _ => {}
                 }
-            };
-            if t.size != size {
-                return None;
             }
-            px[k] = t.heights[(y % size as i64) as usize * size + (x % size as i64) as usize];
         }
-        let a = px[0] * (1.0 - tx) + px[1] * tx;
-        let b = px[2] * (1.0 - tx) + px[3] * tx;
-        Some(a * (1.0 - ty) + b * ty)
+        for m in 0..4usize {
+            for k in 0..4usize {
+                if !have[m][k] {
+                    let (mm, kk) = (m.clamp(1, 2), k.clamp(1, 2));
+                    if !have[mm][kk] {
+                        return None;
+                    }
+                    px[m][k] = px[mm][kk];
+                }
+            }
+        }
+        let mut h = 0.0;
+        for m in 0..4 {
+            h += wy[m] * (0..4).map(|k| wx[k] * px[m][k]).sum::<f64>();
+        }
+        Some(h as f32)
     }
 
     /// A tile not on disk, resampled from a cached zoom `zs`.
@@ -264,6 +280,36 @@ impl Residency for PageStore {
     }
 }
 
+/// Background page builders: a shared job queue, results back on a channel. Workers exit
+/// when the [`Loader`] (its job sender) is dropped.
+struct Loader {
+    jobs: std::sync::mpsc::Sender<NodeId>,
+    done: std::sync::mpsc::Receiver<(NodeId, Arc<HeightPage>)>,
+    inflight: BTreeSet<NodeId>,
+}
+
+impl Loader {
+    fn new(src: Arc<CacheSource>, threads: usize) -> Loader {
+        let (jobs, rx) = std::sync::mpsc::channel::<NodeId>();
+        let (tx, done) = std::sync::mpsc::channel();
+        let rx = Arc::new(Mutex::new(rx));
+        for _ in 0..threads {
+            let (rx, tx, src) = (rx.clone(), tx.clone(), src.clone());
+            std::thread::spawn(move || {
+                loop {
+                    let job = rx.lock().map(|r| r.recv());
+                    let Ok(Ok(id)) = job else { break };
+                    let page = Arc::new(ed_data::node::node_heights(&*src, id));
+                    if tx.send((id, page)).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        Loader { jobs, done, inflight: BTreeSet::new() }
+    }
+}
+
 /// Counters of the latest [`TerrainWorld::update`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WorldStats {
@@ -281,8 +327,10 @@ pub struct TerrainWorld {
     pub planet: Planet,
     pub config: SelectConfig,
     store: PageStore,
-    src: CacheSource,
+    src: Arc<CacheSource>,
     sel: Selection,
+    /// Background page builder (windowed play): `None` builds on the calling thread only.
+    loader: Option<Loader>,
     eye: DVec3,
     ppr: f64,
     /// Pages kept in CPU memory (bytes); least recently wanted ones beyond it are dropped.
@@ -297,8 +345,9 @@ impl TerrainWorld {
             anchor,
             config: SelectConfig::default(),
             store: PageStore::default(),
-            src: CacheSource::new(cache),
+            src: Arc::new(CacheSource::new(cache)),
             sel: Selection::default(),
+            loader: None,
             eye: DVec3::ZERO,
             ppr: 1.0,
             cache_bytes: 1 << 30,
@@ -340,7 +389,7 @@ impl TerrainWorld {
         }
         let threads = std::thread::available_parallelism().map_or(8, |n| n.get()).min(16);
         let chunk = missing.len().div_ceil(threads);
-        let src = &self.src;
+        let src = &*self.src;
         let built: Vec<HeightPage> = std::thread::scope(|s| {
             let hs: Vec<_> = missing.chunks(chunk).map(|c| s.spawn(move || c.iter().map(|&id| ed_data::node::node_heights(src, id)).collect::<Vec<_>>())).collect();
             hs.into_iter().flat_map(|h| h.join().expect("page worker")).collect()
@@ -398,6 +447,100 @@ impl TerrainWorld {
     /// The provider to register on the renderer (`Renderer::set_terrain`).
     pub fn provider(&self, dev: &dyn ed_gpu::Device) -> Result<TerrainProvider, ed_gpu::Error> {
         TerrainProvider::new(dev, TerrainConfig { select: self.config, ..Default::default() })
+    }
+
+    /// Starts `threads` background page builders (windowed play). Pages still arrive only
+    /// through [`TerrainWorld::poll`], and a page is a pure function of its `NodeId`, so the
+    /// order they arrive in changes what is drawn for a few frames, never what a page holds.
+    pub fn start_loader(&mut self, threads: usize) {
+        if self.loader.is_none() {
+            self.loader = Some(Loader::new(self.src.clone(), threads.max(1)));
+        }
+    }
+
+    /// Queues the missing pages of `ids` (in the given priority order) on the background
+    /// loader, keeping at most `max_inflight` queued or building. Returns how many were queued.
+    pub fn request(&mut self, ids: &[NodeId], max_inflight: usize) -> usize {
+        let Some(l) = &mut self.loader else { return 0 };
+        let mut n = 0;
+        for &id in ids {
+            if l.inflight.len() >= max_inflight {
+                break;
+            }
+            if self.store.pages.contains_key(&id) || l.inflight.contains(&id) {
+                continue;
+            }
+            if l.jobs.send(id).is_ok() {
+                l.inflight.insert(id);
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// Takes the pages the background loader finished. Returns how many arrived.
+    pub fn poll(&mut self) -> usize {
+        let Some(l) = &mut self.loader else { return 0 };
+        let mut n = 0;
+        while let Ok((id, page)) = l.done.try_recv() {
+            l.inflight.remove(&id);
+            self.store.pages.entry(id).or_insert(page);
+            n += 1;
+        }
+        n
+    }
+
+    /// Pages queued or building on the background loader.
+    pub fn inflight(&self) -> usize {
+        self.loader.as_ref().map_or(0, |l| l.inflight.len())
+    }
+
+    /// The non-blocking per-frame driver: takes finished pages, selects for `camera`, and
+    /// queues the wanted pages that are missing, coarse levels first and then nearest the
+    /// camera (a parent draws until its children arrive). Needs [`TerrainWorld::start_loader`].
+    pub fn update_async(&mut self, camera: &Camera, viewport: [u32; 2], max_inflight: usize) -> WorldStats {
+        let loaded = self.poll();
+        let view = Self::view_of(camera, viewport);
+        let poses = [self.pose()];
+        let sel = self.planet.select(&view, &poses, &self.store, &self.config);
+        let eye = self.anchor.render_to_body(camera.position).normalize();
+        let mut missing: Vec<(u8, u64, NodeId)> = sel
+            .wanted
+            .iter()
+            .filter(|id| !self.store.pages.contains_key(id))
+            .map(|&id| (id.level(), (id.centre().angle_between(eye) * 1e9) as u64, id))
+            .collect();
+        missing.sort_unstable();
+        let order: Vec<NodeId> = missing.into_iter().map(|m| m.2).collect();
+        self.request(&order, max_inflight);
+        let evicted = self.planet.evict(self.cache_bytes);
+        for id in &evicted {
+            self.store.pages.remove(id);
+        }
+        self.eye = camera.position;
+        self.ppr = view.pixels_per_radian();
+        let st = WorldStats { drawn: sel.draw.len() as u32, wanted: sel.wanted.len() as u32, holes: sel.holes.len() as u32, loaded: loaded as u32, resident: self.store.len() as u32, evicted: evicted.len() as u32 };
+        self.sel = sel;
+        st
+    }
+
+    fn view_of(camera: &Camera, viewport: [u32; 2]) -> View {
+        View {
+            position: camera.position,
+            rotation: DQuat::from_rotation_y(camera.yaw as f64) * DQuat::from_rotation_x(camera.pitch as f64),
+            velocity: DVec3::ZERO,
+            fov_y: camera.fov_y as f64,
+            viewport,
+            look_ahead_s: 0.0,
+        }
+    }
+
+    /// The terrain point under render position `r` (render frame), from resident pages: the
+    /// body point at the terrain height along `r`'s body direction.
+    pub fn ground_point(&self, r: DVec3) -> Option<DVec3> {
+        let b = self.anchor.render_to_body(r);
+        let h = self.planet.height(&self.store, self.anchor.body.id, b)?.0;
+        Some(self.anchor.body_to_render(self.anchor.body.point(b.normalize(), h)))
     }
 
     /// Terrain height (m above the ellipsoid) under render position `r`, from resident pages.

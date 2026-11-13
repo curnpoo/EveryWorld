@@ -236,10 +236,22 @@ pub(crate) fn update(w: u32, m: &mut MoverRt, dt: f32) {
             // the edge's. A ray straight down the capsule axis gives the ground under the feet;
             // if that finds nothing near the contact (feet still past a ledge's edge), a ray at
             // the contact gives the face being stepped onto.
+            //
+            // On a walkable slope of angle a the ground under the axis is below the sphere's
+            // contact by up to probe_r * sin(a) * tan(a) (0.18 m at 50 degrees), so the axis ray
+            // reaches that far. A hit beyond the old 0.1 m margin only counts when its plane
+            // passes through the contact (the same slope), never a lower floor past a ledge.
             let ray_top = pos.y + center.y as f64;
-            let ray_len = (ray_top - hit.point.y) as f32 + 0.1;
-            let down = Vec3::new(0.0, -ray_len, 0.0);
-            let axis = cast_ray(w, B3Pos { x: pos.x, y: ray_top, z: pos.z }, down, mask);
+            let near_len = (ray_top - hit.point.y) as f32 + 0.1;
+            let sin_max = libm::sqrtf((1.0 - cos_max * cos_max).max(0.0));
+            let slope_drop = probe_r * sin_max * sin_max / cos_max.max(0.05);
+            let down = Vec3::new(0.0, -(near_len + slope_drop), 0.0);
+            let axis = cast_ray(w, B3Pos { x: pos.x, y: ray_top, z: pos.z }, down, mask).filter(|rh| {
+                let n = v(rh.normal);
+                let rel = Vec3::new((hit.point.x - rh.point.x) as f32, (hit.point.y - rh.point.y) as f32, (hit.point.z - rh.point.z) as f32);
+                (ray_top - rh.point.y) as f32 <= near_len || (n.y >= cos_max && n.dot(rel).abs() < 0.02)
+            });
+            let down = Vec3::new(0.0, -near_len, 0.0);
             let (ground_y, normal) = match axis {
                 Some(rh) => (rh.point.y, v(rh.normal)),
                 None => match cast_ray(w, B3Pos { x: hit.point.x, y: ray_top, z: hit.point.z }, down, mask) {
@@ -286,5 +298,47 @@ mod tests {
         let _ = solve_planes(Vec3::new(-1.0, 0.0, 1.0), &mut p);
         let c = clip_vector(Vec3::new(-3.0, 0.0, 2.0), &p);
         assert_eq!(c, Vec3::new(0.0, 0.0, 2.0));
+    }
+
+    /// Walking up and down walkable slopes up to near the limit keeps the feet on the surface
+    /// under the axis (no float from the probe sphere touching uphill).
+    #[test]
+    fn feet_stay_on_steep_walkable_slopes() {
+        use crate::{BodyDesc, BodyKind, Command, CommandKind, Geometry, MoverDesc, MoverInput, Shape, ShapeDesc, SimConfig, SimInput, TriMesh, World};
+        for deg in [20.0f32, 38.0, 45.0, 48.0] {
+            let mut w = World::new(&SimConfig::default());
+            let (run, rise) = (40.0f32, 45.0 * deg.to_radians().tan());
+            let mesh = w
+                .add_geometry(Geometry::Mesh(TriMesh {
+                    vertices: vec![Vec3::new(-5.0, -5.0, 0.0), Vec3::new(run, -5.0, rise), Vec3::new(run, 5.0, rise), Vec3::new(-5.0, 5.0, 0.0)],
+                    triangles: vec![[0, 1, 2], [0, 2, 3]],
+                }))
+                .unwrap();
+            let z = |x: f64| (x + 5.0) * (deg as f64).to_radians().tan();
+            w.create_body(BodyDesc::new(BodyKind::Static, DVec3::ZERO).with_shape(ShapeDesc::new(Shape::Mesh(mesh)))).unwrap();
+            let m = w.create_mover(MoverDesc { position: DVec3::new(5.0, 0.0, z(5.0) + 0.5), ..Default::default() }).unwrap();
+            let mut tick = 0;
+            let mut go = |w: &mut World, vx: f64, n: u32| {
+                let mut worst: f64 = 0.0;
+                for i in 0..n {
+                    let c = [Command { entity: m, sequence: tick as u32 + 1, kind: CommandKind::MoverInput(MoverInput { velocity: DVec3::new(vx, 0.0, 0.0), jump_speed: 0.0 }) }];
+                    w.step(&SimInput { tick, commands: if i == 0 { &c } else { &[] }, utc: 0.0 });
+                    tick += 1;
+                    let s = w.mover_state(m).unwrap();
+                    if i > 30 && s.grounded {
+                        worst = worst.max((s.position.z - z(s.position.x)).abs());
+                    }
+                }
+                worst
+            };
+            let settle = go(&mut w, 0.0, 40);
+            let up = go(&mut w, 2.0, 120);
+            let down = go(&mut w, -2.0, 120);
+            let s = w.mover_state(m).unwrap();
+            assert!(s.grounded, "{deg}: {s:?}");
+            for (what, e) in [("standing", settle), ("up", up), ("down", down)] {
+                assert!(e < 0.02, "{deg} deg {what}: feet {e:.3} m off the slope");
+            }
+        }
     }
 }

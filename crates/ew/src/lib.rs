@@ -20,12 +20,14 @@ pub mod harness;
 pub mod headless;
 pub mod hot;
 pub mod perf;
+pub mod play;
 pub mod proving;
 pub mod real_materials;
 pub mod route;
 pub mod session;
 pub mod terrain;
 pub mod terrain_collide;
+pub mod walker;
 pub mod windowed;
 
 /// One line describing the device capabilities (summary files and logs).
