@@ -388,6 +388,16 @@ At most three workers run at once, on disjoint files. W1, W2 and W5 start togeth
 - **P-slice:** S1–S6 done (`CHANGES.md`): terrain in the frame, curved-planet atmosphere, collision from the render heights, `ew --play zermatt|blueridge` with a procedural walk, a placeholder car, terrain + shadow ~2 ms at 1 m AGL. False height steps removed (1/8 m step, bicubic). Waiting on the owner to walk and drive it; then S7.
 - **S7 (2026-11-12):** robot, controller and flight from the alpha (S7a, S7c); worldwide erosion detail and Megascans ground blend (S7b). 2 m data deferred: Zermatt may become a hub later, then swissALTI3D (owner).
 - **Owner feedback on S7b erosion (2026-11-12, flying Blue Ridge):** "looks a little mathematical"; every gully is the same size, so mountainsides read as a repeating texture. Wanted: big and small erosion together, fractal across scales. Next pass: a wider band of sizes with natural falloff, amplitude and character varying by region and rock type, and gullies that follow real drainage, not one fixed set of octaves.
+- **Erosion v2 (S7d) accepted by the owner for now (2026-11-12). Known shortcomings, to revisit after trees:**
+  1. From 300 m and up it reads as an even rough texture. Gullies of 3.5–19 m are only a few pixels wide, and the 43–100 m layers are weak, so large drainage patterns barely show.
+  2. Steep soft hills (Blue Ridge) look combed or furry in hillshade; about 20% too strong there.
+  3. Fine streaks fan out from the tops of small knobs (Zermatt).
+  4. Drainage is a stand-in (hollow vs spur at about 170 m), not real flow accumulation: gullies don't truly converge into a network or grow downstream, and no channel continues into valley streams.
+  5. No deposition: no alluvial fans, talus cones or flat valley fill where material should collect; erosion only cuts.
+  6. No geology input: rock hardness and layering come from landform alone (Macrostrat not wired), so all rock erodes alike.
+  7. Source artefacts it cannot fix: strata zigzags and snow bands on far Zermatt peaks, blocky shelves on the right-hand faces (needs 2 m data or source cleanup).
+  8. Page builds are 25–30% slower; computing landform once per source tile would recover most of it.
+  9. It only adds detail below the source resolution: wrong shapes the source already resolves stay wrong.
 - **Owner on flight (2026-11-12):** alpha feel is fine for testing; tune it later.
 - **Open from P-slice:** near-ground terrain shadow streaks; `terrain_shadow` stall spikes; uniform gravity beyond ~2 km from the anchor (re-basing); the car meshes are a guard exception until a vehicle pack exists.
 - **Waiting on the owner:** the clear-day aerosol choice (W5 CHANGES entry).
