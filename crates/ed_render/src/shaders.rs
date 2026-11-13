@@ -216,7 +216,7 @@ builtin_set! {
     Skin "skin" ["skin"],
     Cull "cull" ["cull_reset", "cull_early", "cull_late", "shadow_reset", "shadow_cull"],
     Hzb "hzb" ["hzb_first", "hzb_down"],
-    Vis "visibility" ["vs_vis", "fs_vis", "fs_vis_dither", "vs_shadow"],
+    Vis "visibility" ["vs_vis", "fs_vis", "fs_vis_dither", "vs_shadow", "vs_foliage", "fs_foliage", "fs_foliage_dither", "vs_shadow_foliage", "fs_shadow_foliage"],
     Overlay "overlay" ["vs_overlay", "fs_overlay"],
     Ao "ao" ["ao_main"],
     Atmos "atmos_tables" ["atmos_transmittance", "atmos_multiscatter", "atmos_skyview", "atmos_ap", "atmos_sh_partial", "atmos_sh_final"],

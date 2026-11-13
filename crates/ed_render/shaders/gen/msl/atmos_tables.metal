@@ -85,6 +85,13 @@ struct AtmosData_natural_0
     packed_uint4 cfg_1;
 };
 
+struct WindData_natural_0
+{
+    packed_float4 wind_0;
+    packed_float4 gust_0;
+    packed_float4 cfg_2;
+};
+
 struct FrameData_natural_0
 {
     _MatrixStorage_float4x4_ColMajornatural_0 view_proj_0;
@@ -103,6 +110,7 @@ struct FrameData_natural_0
     array<HzbLevel_0, int(16)> hzb_0;
     LightData_natural_0 light_0;
     AtmosData_natural_0 atmos_0;
+    WindData_natural_0 wind_1;
 };
 
 FrameData_natural_0 device* ed_buf_1(uint i_1, KernelContext_0 thread* kernelContext_1)

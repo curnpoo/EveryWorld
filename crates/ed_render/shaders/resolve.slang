@@ -498,7 +498,7 @@ struct TForest {
 // The canopy over a terrain pixel. `floor_alb`: the ground's albedo (the forest floor where
 // cover is); `n`: the ground's shading normal; `px_m`: pixel footprint (m); `spacing`: page
 // sample spacing (m).
-TForest t_forest(uint pool, TerrainDraw d, float4 cv, float2 g, float2 w, float3 tu, float3 tv, float3 up, float3 n, float3 floor_alb, float3 l, float px_m, float px_iso, float spacing) {
+TForest t_forest(uint pool, TerrainDraw d, float4 cv, float2 g, float2 w, float3 tu, float3 tv, float3 up, float3 n, float3 floor_alb, float3 l, float px_m, float px_iso, float spacing, float near_px) {
     // Stand edges: the page's cover warped by noise (fixed scales, so no seam where the level
     // changes), so a forest outline is ragged rather than a staircase; only where cover is partial.
     float ew = t_noise(w + 911.0, 64.0) * 0.65 + t_noise(w + 271.0, 16.0) * 0.35;
@@ -537,6 +537,13 @@ TForest t_forest(uint pool, TerrainDraw d, float4 cv, float2 g, float2 w, float3
     float crown_px = cell * rad * 2.0 / max(px_m, 1e-3);
     float det = smoothstep(1.5, 4.0, crown_px);       // individual crowns resolved
     float paint = smoothstep(80.0, 40.0, cell * rad * 2.0 / max(px_iso, 1e-3));  // crowns drawn on the ground at all
+    // Near trees on (G4, `near_px` >= 0: the reference tree's projected height): real trees
+    // stand here down to the hand-off (bank.rs HANDOFF_PX = T_LIFT_NONE_PX), so the ground is
+    // forest floor; the crowns come back as the near trees dither out.
+    bool near_on = near_px >= 0.0;
+    if (near_on) {
+        paint = 1.0 - smoothstep(T_LIFT_NONE_PX, T_LIFT_NONE_PX * 1.25, near_px);
+    }
 
     TForest o;
     // Far: crowns unresolved, an area mix of crowns (with their own shading folded in) and
@@ -551,7 +558,7 @@ TForest t_forest(uint pool, TerrainDraw d, float4 cv, float2 g, float2 w, float3
     o.ao = ao_far;
     o.sun = sun_far;
     o.crown = c;
-    if (det > 0.0) {
+    if (det > 0.0 && (!near_on || paint > 0.0)) {
         float4 kb = pb > 0.0 ? t_crown(w, T_CELL_BROAD, pb, rad, 3u) : float4(0.0, 0.0, 9.0, 0.0);
         float4 kc = pc > 0.0 ? t_crown(w + 1000.0, T_CELL_CONIFER, pc, rad * 0.9, 11u) : float4(0.0, 0.0, 9.0, 0.0);
         bool conifer = kc.z < kb.z;
@@ -608,8 +615,15 @@ TForest t_forest(uint pool, TerrainDraw d, float4 cv, float2 g, float2 w, float3
         o.n = normalize(lerp(n, o.n, paint));
         // Until G4/G5 draw the near trees the floor is seen as if lit from the stand's edge:
         // dimmed, never black.
+        float ao_crown = o.ao;
+        float sun_crown = o.sun;
         o.ao = lerp(max(fl_ao, 0.75), o.ao, paint);
         o.sun = lerp(sun_floor, o.sun, paint);
+        if (near_on) {
+            // The near trees' own shadows and the sky they hide light the floor.
+            o.ao = lerp(fl_ao, ao_crown, paint);
+            o.sun = lerp(1.0 - 0.5 * page_sh, sun_crown, paint);
+        }
         o.crown = o.crown * paint;
     }
     return o;
@@ -698,7 +712,8 @@ float4 terrain_pixel<let TR : int>(FrameData* f, FsOut i, uint2 vis, float3 dir)
         float pa = length(view_dir(f, i.pos.xy + float2(1.0, 0.0)) - dir);
         float px_iso = length(p) * pa;
         float px_m = px_iso / sqrt(max(abs(dot(dir, n)), 0.03));
-        TForest fo = t_forest(pool, d, cv, g, w, tu, tv, up, n, albedo, f.sun_dir.xyz, px_m, px_iso, spacing);
+        float near_px = f.wind.cfg.z > 0.5 && d.polar.w > 0.0 ? d.polar.w / max(length(p), 1.0) : -1.0;
+        TForest fo = t_forest(pool, d, cv, g, w, tu, tv, up, n, albedo, f.sun_dir.xyz, px_m, px_iso, spacing, near_px);
         albedo = fo.albedo;
         n = fo.n;
         rough = lerp(rough, T_CROWN_ROUGH, fo.crown);
@@ -742,6 +757,68 @@ float4 terrain_pixel<let TR : int>(FrameData* f, FsOut i, uint2 vis, float3 dir)
 
 // The resolve; `terrain` is a compile-time constant per entry point, so `fs_resolve` (no
 // terrain provider) compiles to exactly the code it had before terrain existed.
+// ---- Trees (G4) -----------------------------------------------------------------------------
+
+// Leaf atlas mean colour (ed_world trees `LEAF_BASE`, linear): the atlas carries leaf shape and
+// detail; the hue comes from the species table (bank.rs `leaf_albedo`).
+static const float3 LEAF_BASE_LIN = float3(0.147, 0.274, 0.051);
+
+struct TreeSurf {
+    float3 albedo;
+    bool leaf;
+    bool shell;  // the crown shell (LOD 2): neither a card nor bark
+};
+
+float3 tree_hue(float h) {
+    return h >= 0.0 ? lerp(float3(1.0, 1.0, 1.0), float3(0.85, 0.97, 1.2), h) : lerp(float3(1.0, 1.0, 1.0), float3(1.12, 1.0, 0.75), -h);
+}
+
+TreeSurf tree_surface(FrameData* f, GpuInstance inst, GpuMaterial m, uint2 w0, uint2 w1, uint2 w2, float b0, float b1, float b2, float2 pix, float3 p0, float3 e1, float3 e2) {
+    TreeSurf o;
+    uint a = w0.y;
+    float val = (float(w0.y & 127u) * b0 + float(w1.y & 127u) * b1 + float(w2.y & 127u) * b2) * (2.0 / 127.0);
+    float hue = (float((w0.y >> 7) & 15u) * b0 + float((w1.y >> 7) & 15u) * b1 + float((w2.y >> 7) & 15u) * b2) * (2.0 / 15.0) - 1.0;
+    uint user = inst.pad[0];
+    float iv = float(user & 255u) / 128.0;
+    float ih = float((user >> 8) & 255u) / 127.5 - 1.0;
+    o.leaf = (a & AUX_CARD) != 0u;
+    o.shell = false;
+    if ((a & AUX_BARK) != 0u) {
+        o.albedo = m.shade.rgb * val * lerp(1.0, iv, 0.5);
+        return o;
+    }
+    float3 alb = m.base.rgb * val * iv * tree_hue(clamp(hue + 0.5 * ih, -1.0, 1.0));
+    if (o.leaf && m.tex.x != NO_TEXTURE) {
+        float2 t0 = tree_uv(w0.x);
+        float2 d1 = tree_uv(w1.x) - t0;
+        float2 d2 = tree_uv(w2.x) - t0;
+        float2 uv = t0 + d1 * b1 + d2 * b2;
+        float2 bx = ray_bary(view_dir(f, pix + float2(1.0, 0.0)), p0, e1, e2);
+        float2 by = ray_bary(view_dir(f, pix + float2(0.0, 1.0)), p0, e1, e2);
+        float2 ux = t0 + d1 * bx.x + d2 * bx.y - uv;
+        float2 uy = t0 + d1 * by.x + d2 * by.y - uv;
+        float3 tex = ed_tex2d(m.tex.x).SampleGrad(ed_smp(ed_c.smp), uv, ux, uy).rgb;
+        alb *= clamp(tex / LEAF_BASE_LIN, float3(0.2, 0.2, 0.2), float3(2.5, 2.5, 2.5));
+    }
+    o.shell = !o.leaf;
+    o.albedo = min(alb, float3(0.9, 0.9, 0.9));
+    return o;
+}
+
+// Foliage: diffuse-dominant GGX plus light through the leaves (thin translucent cards: the
+// sun from behind a leaf comes through yellow-green, strongest looking towards the sun).
+float3 shade_foliage(FrameData* f, float3 sun, float3 albedo, float rough, float ao, float sv, float sun_vis, float3 n, float3 ng, float3 v, bool leaf) {
+    float3 col = shade_pbr(f, sun, albedo, 0.0, rough, ao, sv, sun_vis, n, v);
+    if (leaf) {
+        float3 l = f.sun_dir.xyz;
+        float back = saturate(-dot(n, l));
+        float fwd = pow(saturate(dot(-v, l)), 4.0);
+        float3 trans = albedo * float3(1.15, 1.25, 0.55);
+        col += sun * sun_vis * trans * (back * (0.45 + 1.2 * fwd)) * (1.0 / 3.14159265);
+    }
+    return col;
+}
+
 float4 resolve_px<let TR : int>(FsOut i, bool terrain) {
     FrameData* f = ed_buf<FrameData>(ed_c.frame);
     uint2 px = uint2(i.pos.xy);
@@ -768,9 +845,25 @@ float4 resolve_px<let TR : int>(FsOut i, bool terrain) {
     Vtx v1 = verts[i1];
     Vtx v2 = verts[i2];
     float3 node = ed_buf<float4>(ed_c.nodes)[inst.node_flags & 0xFFFFu].xyz;
-    float3 l0 = xform_point(inst, float3(v0.px, v0.py, v0.pz));
-    float3 l1 = xform_point(inst, float3(v1.px, v1.py, v1.pz));
-    float3 l2 = xform_point(inst, float3(v2.px, v2.py, v2.pz));
+    bool foliage = (mesh.flags & MESH_FOLIAGE) != 0u;
+    uint2 tw0 = uint2(0u, 0u);
+    uint2 tw1 = uint2(0u, 0u);
+    uint2 tw2 = uint2(0u, 0u);
+    float3 l0, l1, l2;
+    if (foliage) {
+        // Trees: the same moved vertices the raster drew (common.slang `tree_vertex`).
+        uint2* tw = ed_buf<uint2>(ed_c.uvs);
+        tw0 = tw[i0];
+        tw1 = tw[i1];
+        tw2 = tw[i2];
+        l0 = tree_vertex(f, inst, node, float3(v0.px, v0.py, v0.pz), v0.n, tw0.y);
+        l1 = tree_vertex(f, inst, node, float3(v1.px, v1.py, v1.pz), v1.n, tw1.y);
+        l2 = tree_vertex(f, inst, node, float3(v2.px, v2.py, v2.pz), v2.n, tw2.y);
+    } else {
+        l0 = xform_point(inst, float3(v0.px, v0.py, v0.pz));
+        l1 = xform_point(inst, float3(v1.px, v1.py, v1.pz));
+        l2 = xform_point(inst, float3(v2.px, v2.py, v2.pz));
+    }
     // Ray from the camera (origin, camera-relative space) through the pixel.
     float3 p0 = node + l0;
     float3 e1 = l1 - l0;
@@ -794,7 +887,33 @@ float4 resolve_px<let TR : int>(FsOut i, bool terrain) {
     float rough = m.params.y;
     float ao = 1.0;
     bool textured = m.tex.x != NO_TEXTURE || m.tex.y != NO_TEXTURE || m.tex.z != NO_TEXTURE;
-    if (textured) {
+    bool leaf = false;
+    if (foliage) {
+        TreeSurf ts = tree_surface(f, inst, m, tw0, tw1, tw2, b0, b1, b2, i.pos.xy, p0, e1, e2);
+        albedo = ts.albedo;
+        leaf = ts.leaf;
+        // Leaves: matte with a faint sheen (a smoother lobe greys sunlit crowns from above).
+        rough = 0.82;
+        metal = 0.0;
+        if (ts.shell) {
+            // The crown shell is a leaf mass, not a smooth hull: leaf clumps break its
+            // shading (node-local position, stable), the normal leans to the crown's up
+            // (sky-lit tops, the far rung's crown shading), and it is matte.
+            float3 up = normalize(xform_normal(inst, float3(0.0, 1.0, 0.0)));
+            float clump = t_noise(local.xz * 0.9 + local.y * 0.6, 1.0);
+            albedo *= lerp(0.6, 1.15, clump) * 0.85;
+            ao *= lerp(0.65, 1.0, clump);
+            n = normalize(lerp(n, up, 0.4));
+            rough = 1.0;
+        }
+        if (leaf) {
+            // Two-sided cards: the face towards the viewer.
+            float3 ngc = cross(e1, e2);
+            if (dot(ngc, v) * dot(ngc, n) < 0.0) {
+                n = -n;
+            }
+        }
+    } else if (textured) {
         float2* uvs = ed_buf<float2>(ed_c.uvs);
         float2 t0 = uvs[i0];
         float2 t1 = uvs[i1];
@@ -857,7 +976,7 @@ float4 resolve_px<let TR : int>(FsOut i, bool terrain) {
     ao *= occ.x;
     float sv = occ.y;
     float3 sun = sun_light_at(f, p);
-    float3 col = m.base.w > 0.5 ? shade_toon(f, sun, m, albedo, n, v, ao, sv, sun_vis) : shade_pbr(f, sun, albedo, metal, rough, ao, sv, sun_vis, n, v);
+    float3 col = foliage ? shade_foliage(f, sun, albedo, rough, ao, sv, sun_vis, n, ng, v, leaf) : m.base.w > 0.5 ? shade_toon(f, sun, m, albedo, n, v, ao, sv, sun_vis) : shade_pbr(f, sun, albedo, metal, rough, ao, sv, sun_vis, n, v);
     col = apply_aerial(f, col, p, i.pos.xy);
     if (f.light.flags.w == 1u) {
         // Sun visibility (bright = lit) tinted by the cascade that served it.

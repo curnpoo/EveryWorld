@@ -38,6 +38,13 @@ struct AtmosData {
     uint4 cfg;              // x: on, y: debug view (1 transmittance, 2 in-scatter), z, w: unused
 };
 
+// Wind (trees G4b; ed_world::wind::WindField::gpu_words, src/lib.rs `set_wind`).
+struct WindData {
+    float4 wind;            // xyz: mean wind (m/s, render frame), w: time (s, mod 1 h)
+    float4 gust;            // x: gust band phase at the camera (cycles), y: band spacing (m), z: gust strength, w: turbulence
+    float4 cfg;             // x: wind on, y: rest distance (m; trees beyond hold still), z: near trees on (far rung yields), w: unused
+};
+
 struct HzbLevel { uint offset; uint width; uint height; uint pad; };
 struct FrameData {
     float4x4 view_proj;     // camera-relative: rotation and projection only (P1-D7)
@@ -56,6 +63,7 @@ struct FrameData {
     HzbLevel hzb[16];       // depth pyramid levels inside the HZB buffer (floats)
     LightData light;
     AtmosData atmos;
+    WindData wind;
 };
 
 // One instance (128 bytes). Transform rows are a 3x4 affine matrix relative to the node origin.
@@ -76,7 +84,7 @@ struct GpuMesh {
     uint lod_count;
     uint bin_base;          // first bin of this mesh (LOD 0) in each kind/phase range
     uint capacity;          // visible-list slots per bin
-    uint pad;
+    uint flags;             // MESH_FOLIAGE
     uint first_index[4];
     uint index_count[4];
     int base_vertex[4];
@@ -93,6 +101,14 @@ struct GpuMaterial {
     float4 uv;              // xy: uv offset, zw: uv scale (KHR_texture_transform order)
 };
 static const uint NO_TEXTURE = 0xFFFFFFFFu;
+
+// GpuMesh.flags: a tree bank mesh (ed_world::trees::bank). Its `uvs` words are
+// (atlas uv unorm16x2, aux bits) instead of float2, it draws with the foliage pipelines
+// (alpha-tested cards, wind) and resolves with the foliage shading.
+static const uint MESH_FOLIAGE = 1u;
+// Tree vertex aux word (bank.rs `pack_aux`).
+static const uint AUX_CARD = 1u << 27;
+static const uint AUX_BARK = 1u << 28;
 
 // Mesh vertex (16 bytes): position, octahedral normal (snorm16 x2).
 struct Vtx { float px; float py; float pz; uint n; };
@@ -267,4 +283,51 @@ float3 alpha_tonemap(uint lut_buf, float3 hdr, float exposure) {
     float l = dot(c, float3(0.2126, 0.7152, 0.0722));
     c *= lerp(float3(1.0), TM_HIGHLIGHT_TINT, smoothstep(0.35, 0.9, l));
     return pow(saturate(c), float3(1.0 / 2.2));
+}
+
+// ---- Trees (G4, G4b) ----------------------------------------------------------------------
+
+float2 tree_uv(uint w) {
+    return float2(float(w & 0xFFFFu), float(w >> 16)) * (1.0 / 65535.0);
+}
+
+// Tree vertex, node-local (instance transform applied): wind sway along the wind, gust band,
+// leaf flutter along the normal, dropped branch groups collapsed (bank.rs `instance_params`
+// user word: drop mask bits 16-23, phase bits 24-31). The same function moves the view, the
+// shadow casters and the resolve's triangle, so they agree to the bit.
+float3 tree_vertex(FrameData* f, GpuInstance inst, float3 node, float3 pm, uint n, uint aux) {
+    uint user = inst.pad[0];
+    float3 origin = float3(inst.m[0].w, inst.m[1].w, inst.m[2].w);
+    if ((aux & AUX_CARD) != 0u && ((user >> 16) & (1u << (aux >> 29))) != 0u) {
+        return origin;
+    }
+    float3 l = xform_point(inst, pm);
+    WindData w = f.wind;
+    if (w.cfg.x < 0.5) {
+        return l;
+    }
+    float dist = length(node + origin);
+    float fade = saturate((w.cfg.y - dist) / max(0.25 * w.cfg.y, 1.0));
+    if (fade <= 0.0) {
+        return l;
+    }
+    float q = float((aux >> 11) & 127u) / 127.0;
+    float sway = q * q * 4.0;
+    float flutter = float((aux >> 18) & 7u) / 7.0;
+    float phase = float((aux >> 21) & 63u) / 64.0 + float(user >> 24) / 255.0;
+    float speed = length(w.wind.xz);
+    float2 wd = speed > 1e-3 ? w.wind.xz / speed : float2(0.0, 0.0);
+    float band = w.gust.x + dot((node + origin).xz, wd) / max(w.gust.y, 1.0);
+    float s = 0.5 + 0.5 * sin(band * 6.2831853);
+    float gust = s * s * s * w.gust.z;
+    float t = w.wind.w;
+    float k = speed * 0.1 * fade * max_scale(inst);
+    // Steady lean into the wind, the gust on top, and a slow per-tree rock.
+    float rock = 0.55 + gust + 0.3 * sin(t * 1.7 + phase * 6.2831853) + 0.15 * sin(t * 0.63 + phase * 19.0);
+    float3 d = float3(wd.x, 0.0, wd.y) * (sway * k * rock);
+    d.y -= 0.25 * sway * k * rock * rock * 0.3;
+    // Leaf flutter: fast, small, along the normal.
+    float3 nw = normalize(xform_normal(inst, oct_decode(n)));
+    float fl = flutter * w.gust.w * (0.6 + gust) * 0.05 * fade * sin(t * 11.0 + phase * 40.0 + dot(l, float3(3.1, 1.7, 2.3)));
+    return l + d + nw * fl * max_scale(inst);
 }

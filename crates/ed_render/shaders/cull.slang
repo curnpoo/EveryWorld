@@ -359,6 +359,23 @@ void shadow_cull(uint3 tid: SV_DispatchThreadID) {
             Bounds b = bounds(inst, m);
             uint nc = min(uint(f.light.cfg.x), 4u);
             float tile = f.light.cfg.y;
+            // Trees (MESH_FOLIAGE): a tree the view has handed to the far rung (its view LOD is
+            // the empty last level) casts no shadow either; nearer, the shadow LOD stops at the
+            // last drawn level (the shell), so a tree never loses its shadow while it is drawn.
+            uint lod_max = 3u;
+            uint lod_min = 0u;
+            if ((m.flags & MESH_FOLIAGE) != 0u) {
+                float4 proj = f.proj;
+                float dist = max(length(b.c) - b.r, f.params.z);
+                uint vl = select_lod(m, b.scale * proj.w * 0.5 * proj.y / dist, 0u, false, f.params.y, 1.0);
+                if (m.index_count[vl] == 0u || vl + 2u >= m.lod_count) {
+                    nc = 0u;
+                }
+                lod_max = max(m.lod_count, 2u) - 2u;
+                // Leaf shadows come from the simplified level (its cards keep the crown's holes;
+                // the full tree's thousands of cards add little a shadow map can resolve).
+                lod_min = min(1u, lod_max);
+            }
             for (uint c = 0; c < nc; c++) {
                 float4 cs = f.light.cascade[c];
                 float4 s = mul(f.light.shadow[c], float4(b.c, 1.0));
@@ -367,7 +384,7 @@ void shadow_cull(uint3 tid: SV_DispatchThreadID) {
                 if (abs(s.x) > 1.0 + rc || abs(s.y) > 1.0 + rc || s.z < -rz || 2.0 * b.r < SHADOW_MIN_TEXELS * cs.x) {
                     continue;
                 }
-                uint lod = select_lod(m, b.scale / cs.x, 0u, false, f.params.y * SHADOW_LOD_BIAS[c], 1.0);
+                uint lod = clamp(select_lod(m, b.scale / cs.x, 0u, false, f.params.y * SHADOW_LOD_BIAS[c], 1.0), lod_min, lod_max);
                 push(args, args_plain, visible, c * ed_c.bins_kind + m.bin_base + lod, i | (lod << 20), m.capacity, m.index_count[lod] / 3u, e);
                 cnt0 += c == 0 ? 1u : 0u;
                 cnt1 += c == 1 ? 1u : 0u;

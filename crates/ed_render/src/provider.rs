@@ -47,6 +47,11 @@ pub struct SharedInputs {
     pub indices: (Res, u32, BufferId),
     /// Instance slots to process (high-water mark of the pools).
     pub slots: u32,
+    /// Material table, per-vertex uv words and the material sampler (foliage raster: leaf
+    /// cards are alpha-tested against their material's base texture).
+    pub materials: (Res, u32),
+    pub uvs: (Res, u32),
+    pub smp: u32,
 }
 
 /// The targets a provider writes: reverse-Z depth and the visibility buffer
@@ -238,6 +243,8 @@ pub(crate) struct MeshRecord {
     pub index_count: [u32; MAX_LODS],
     pub base_vertex: i32,
     pub error: [f32; MAX_LODS],
+    /// `GpuMesh.flags` ([`gpu::MESH_FOLIAGE`]).
+    pub flags: u32,
 }
 
 /// A ring of `cpu_read` buffers written by the GPU, one per frame in flight.
@@ -291,6 +298,8 @@ pub struct DiscreteLod {
     capacity: Vec<u32>,
     layout_dirty: bool,
     bins: u32,
+    /// Bins of opaque meshes; the foliage meshes' bins follow them in every range.
+    bins_opaque: u32,
     mesh_table: Tracked,
     templ: Tracked,
     max_instances: u32,
@@ -417,6 +426,10 @@ pub(crate) struct LodPipelines {
     shadow_reset: ComputePipelineId,
     shadow_cull: ComputePipelineId,
     shadow_raster: RenderPipelineId,
+    /// Trees (MESH_FOLIAGE): wind and alpha-tested cards, no back-face culling.
+    foliage_solid: RenderPipelineId,
+    foliage_dither: RenderPipelineId,
+    foliage_shadow: RenderPipelineId,
 }
 
 impl LodPipelines {
@@ -454,6 +467,11 @@ impl LodPipelines {
         };
         let vis_solid = b.render(dev, &rp("vis solid", fs))?;
         let vis_dither = b.render(dev, &rp("vis dither", fsd))?;
+        let vsf = b.shader(dev, src, Module::Vis, "vs_foliage", ShaderStage::Vertex, "vs_foliage")?;
+        let fsf = b.shader(dev, src, Module::Vis, "fs_foliage", ShaderStage::Fragment, "fs_foliage")?;
+        let fsfd = b.shader(dev, src, Module::Vis, "fs_foliage_dither", ShaderStage::Fragment, "fs_foliage_dither")?;
+        let foliage_solid = b.render(dev, &RenderPipelineDesc { label: "foliage solid", vertex: vsf, fragment: Some(fsf), cull: Cull::None, ..rp("", fsf) })?;
+        let foliage_dither = b.render(dev, &RenderPipelineDesc { label: "foliage dither", vertex: vsf, fragment: Some(fsfd), cull: Cull::None, ..rp("", fsfd) })?;
         let shadow_reset = b.compute(dev, src, Module::Cull, "shadow_reset", g)?;
         let shadow_cull = b.compute(dev, src, Module::Cull, "shadow_cull", g)?;
         let vss = b.shader(dev, src, Module::Vis, "vs_shadow", ShaderStage::Vertex, "vs_shadow")?;
@@ -472,7 +490,23 @@ impl LodPipelines {
                 samples: 1,
             },
         )?;
-        Ok(Self { built: std::mem::take(b), cull_reset, cull_early, cull_late, hzb_first, hzb_down, vis_solid, vis_dither, shadow_reset, shadow_cull, shadow_raster })
+        let vssf = b.shader(dev, src, Module::Vis, "vs_shadow_foliage", ShaderStage::Vertex, "vs_shadow_foliage")?;
+        let fssf = b.shader(dev, src, Module::Vis, "fs_shadow_foliage", ShaderStage::Fragment, "fs_shadow_foliage")?;
+        let foliage_shadow = b.render(
+            dev,
+            &RenderPipelineDesc {
+                label: "foliage shadow",
+                vertex: vssf,
+                fragment: Some(fssf),
+                color_formats: &[],
+                blend: ed_gpu::Blend::Opaque,
+                depth: Some(DepthDesc { format: crate::DEPTH_FORMAT, write: true, compare: Compare::GreaterEqual, bias: 0.0, slope_bias: 0.0, clamp: true }),
+                cull: Cull::None,
+                topology: Topology::Triangles,
+                samples: 1,
+            },
+        )?;
+        Ok(Self { built: std::mem::take(b), cull_reset, cull_early, cull_late, hzb_first, hzb_down, vis_solid, vis_dither, shadow_reset, shadow_cull, shadow_raster, foliage_solid, foliage_dither, foliage_shadow })
     }
     pub(crate) fn destroy(self, dev: &dyn Device) {
         self.built.destroy(dev);
@@ -495,6 +529,7 @@ impl DiscreteLod {
             capacity: Vec::new(),
             layout_dirty: true,
             bins: 0,
+            bins_opaque: 0,
             mesh_table,
             templ,
             max_instances,
@@ -568,12 +603,22 @@ impl DiscreteLod {
         }
         self.layout_dirty = false;
         let mut base = 0u32;
-        let mut bases = Vec::with_capacity(self.meshes.len());
-        for (m, rec) in self.meshes.iter().enumerate() {
+        let mut bases = vec![0u32; self.meshes.len()];
+        for (m, _) in self.meshes.iter().enumerate() {
             let alive = pools.mesh_alive(m);
             self.capacity[m] = (alive + alive / 4).div_ceil(BIN_ROUND).max(1) * BIN_ROUND;
-            bases.push(base);
-            base += rec.lod_count;
+        }
+        // Opaque meshes' bins first, then the foliage meshes' (drawn with their own pipelines).
+        for foliage in [false, true] {
+            for (m, rec) in self.meshes.iter().enumerate() {
+                if (rec.flags & gpu::MESH_FOLIAGE != 0) == foliage {
+                    bases[m] = base;
+                    base += rec.lod_count;
+                }
+            }
+            if !foliage {
+                self.bins_opaque = base;
+            }
         }
         self.bins = base;
         let s = base as usize;
@@ -613,6 +658,7 @@ impl DiscreteLod {
             w[4] = rec.lod_count;
             w[5] = bases[m];
             w[6] = self.capacity[m];
+            w[7] = rec.flags;
             for l in 0..MAX_LODS {
                 w[8 + l] = rec.first_index[l];
                 w[12 + l] = rec.index_count[l];
@@ -674,6 +720,7 @@ impl GeometryProvider for DiscreteLod {
 
     fn record<'a>(&mut self, g: &mut FrameGraph<'a>, frame_index: u64, inp: &SharedInputs, out: VisTargets) -> ProviderOutputs {
         let (mesh_table, templ_t, bins, config, pipes) = (&self.mesh_table, &self.templ, self.bins, self.config, &self.p);
+        let so = self.bins_opaque;
         let v = &mut self.views[self.cur];
         v.imports.clear();
         let fin = |s| Some(s);
@@ -740,8 +787,9 @@ impl GeometryProvider for DiscreteLod {
             ctx.enc.dispatch(groups, 1, 1);
         });
 
-        let vc = constants(&[inp.frame.1, inp.instances.1, inp.nodes.1, v.visible.bindless.0, inp.verts.1]);
+        let vc = constants(&[inp.frame.1, inp.instances.1, inp.nodes.1, v.visible.bindless.0, inp.verts.1, 0, inp.materials.1, inp.uvs.1, inp.smp]);
         let (solid, dither) = (pipes.vis_solid, pipes.vis_dither);
+        let (fsolid, fdither) = (pipes.foliage_solid, pipes.foliage_dither);
         let idx_id = inp.indices.2;
         let raster = |g: &mut FrameGraph<'a>, name, phase: u32, first: bool| {
             let timer = draw_loop.clone();
@@ -754,6 +802,8 @@ impl GeometryProvider for DiscreteLod {
                 .read(inp.indices.0, ResourceState::ShaderRead)
                 .read(visible, ResourceState::ShaderRead)
                 .read(args, ResourceState::IndirectArgs)
+                .read(inp.materials.0, ResourceState::ShaderRead)
+                .read(inp.uvs.0, ResourceState::ShaderRead)
                 .color(out.vis, cl, StoreOp::Store)
                 .depth(out.depth, dl, StoreOp::Store, true)
                 .exec(move |ctx| {
@@ -762,11 +812,15 @@ impl GeometryProvider for DiscreteLod {
                     }
                     let t0 = std::time::Instant::now();
                     ctx.enc.set_index_buffer(idx_id, 0);
-                    for (kind, pipe) in [(0u32, solid), (1, dither)] {
+                    // Opaque bins, then the foliage bins (none: the exact pre-tree command stream).
+                    for (kind, pipe, first, count) in [(0u32, solid, 0, so), (1, dither, 0, so), (0, fsolid, so, s - so), (1, fdither, so, s - so)] {
+                        if count == 0 {
+                            continue;
+                        }
                         ctx.enc.set_render_pipeline(pipe);
                         ctx.enc.set_draw_constants(&vc);
-                        let off = ((phase * 2 + kind) * s) as u64 * (ARGS_WORDS * 4) as u64;
-                        ctx.enc.draw_indexed_indirect_multi(args_id, off, s, None);
+                        let off = ((phase * 2 + kind) * s + first) as u64 * (ARGS_WORDS * 4) as u64;
+                        ctx.enc.draw_indexed_indirect_multi(args_id, off, count, None);
                     }
                     timer.set(timer.get() + t0.elapsed().as_secs_f64() * 1000.0);
                 });
@@ -826,6 +880,8 @@ impl GeometryProvider for DiscreteLod {
                 ctx.enc.dispatch(groups, 1, 1);
             });
             let svc_base = [inp.frame.1, inp.instances.1, inp.nodes.1, v.shadow_visible.bindless.0, inp.verts.1];
+            let svc_tail = [inp.materials.1, inp.uvs.1, inp.smp];
+            let p_sfol = pipes.foliage_shadow;
             let (n, tile) = (sh.cascades.min(4), sh.tile);
             let atlas_load = if out.preloaded { LoadOp::Load } else { LoadOp::Clear([0.0; 4]) };
             g.add_pass("shadow_raster", PassKind::Raster)
@@ -836,23 +892,31 @@ impl GeometryProvider for DiscreteLod {
                 .read(inp.indices.0, ResourceState::ShaderRead)
                 .read(svis, ResourceState::ShaderRead)
                 .read(sargs, ResourceState::IndirectArgs)
+                .read(inp.materials.0, ResourceState::ShaderRead)
+                .read(inp.uvs.0, ResourceState::ShaderRead)
                 .depth(sh.atlas, atlas_load, StoreOp::Store, true)
                 .exec(move |ctx| {
                     if s == 0 {
                         return;
                     }
                     ctx.enc.set_index_buffer(idx_id, 0);
-                    ctx.enc.set_render_pipeline(p_sraster);
                     for c in 0..n {
                         let (x, y) = ((c % 2) * tile, (c / 2) * tile);
                         ctx.enc.set_viewport(x as f32, y as f32, tile as f32, tile as f32);
                         ctx.enc.set_scissor(x, y, tile, tile);
-                        let mut w = [0u32; 6];
+                        let mut w = [0u32; 9];
                         w[..5].copy_from_slice(&svc_base);
                         w[5] = c;
-                        ctx.enc.set_draw_constants(&constants(&w));
-                        let off = (c * s) as u64 * (ARGS_WORDS * 4) as u64;
-                        ctx.enc.draw_indexed_indirect_multi(sargs_id, off, s, None);
+                        w[6..].copy_from_slice(&svc_tail);
+                        for (pipe, first, count) in [(p_sraster, 0, so), (p_sfol, so, s - so)] {
+                            if count == 0 {
+                                continue;
+                            }
+                            ctx.enc.set_render_pipeline(pipe);
+                            ctx.enc.set_draw_constants(&constants(&w));
+                            let off = (c * s + first) as u64 * (ARGS_WORDS * 4) as u64;
+                            ctx.enc.draw_indexed_indirect_multi(sargs_id, off, count, None);
+                        }
                     }
                 });
         }

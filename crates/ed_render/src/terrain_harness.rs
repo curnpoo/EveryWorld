@@ -350,7 +350,7 @@ impl Gpu {
         let vis = g.create_texture("vis", TextureInfo { format: VIS_FORMAT, width: w, height: h });
         let depth = g.create_texture("depth", TextureInfo { format: DEPTH_FORMAT, width: w, height: h });
         let atlas = g.create_texture("atlas", TextureInfo { format: DEPTH_FORMAT, width: 2 * SHADOW_TILE, height: 2 * SHADOW_TILE });
-        let inp = SharedInputs { frame: (fr, self.frame.bindless.0), instances: (fr, 0), nodes: (fr, 0), verts: (fr, 0), indices: (fr, 0, self.frame.id), slots: 0 };
+        let inp = SharedInputs { frame: (fr, self.frame.bindless.0), instances: (fr, 0), nodes: (fr, 0), verts: (fr, 0), indices: (fr, 0, self.frame.id), slots: 0, materials: (fr, 0), uvs: (fr, 0), smp: 0 };
         let out = VisTargets { depth, vis, shadow: Some(ShadowTargets { atlas, cascades: 4, tile: SHADOW_TILE }), final_hzb: false, preloaded: false };
         tp.record(&mut g, 0, &inp, out);
         let rb = g.import_buffer("vis readback", self.readback, ResourceState::Undefined, None);

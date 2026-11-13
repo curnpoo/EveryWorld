@@ -544,6 +544,8 @@ pub struct Renderer {
     frames_seen: u64,
     materials: Vec<Material>,
     materials_dirty: bool,
+    /// `FrameData.wind` words ([`Renderer::set_wind`]); zero: no wind, no near trees.
+    wind: [u32; gpu::WIND_WORDS],
     pools: InstancePools,
     /// Slots whose data has been flushed (the culling dispatch covers these).
     slots_flushed: u32,
@@ -681,6 +683,7 @@ impl Renderer {
             frames_seen: 0,
             materials: Vec::new(),
             materials_dirty: false,
+            wind: [0; gpu::WIND_WORDS],
             pools: InstancePools::new(desc.max_instances, desc.max_nodes),
             slots_flushed: 0,
             views: vec![view0],
@@ -774,6 +777,7 @@ impl Renderer {
             index_count: [0; MAX_LODS],
             base_vertex: v0 as i32,
             error: [0.0; MAX_LODS],
+            flags: 0,
         };
         let mut first = i0;
         for (l, lod) in m.lods.iter().enumerate() {
@@ -786,21 +790,55 @@ impl Renderer {
     }
 
     fn empty_record() -> MeshRecord {
-        MeshRecord { sphere: Vec4::ZERO, lod_count: 0, first_index: [0; MAX_LODS], index_count: [0; MAX_LODS], base_vertex: 0, error: [0.0; MAX_LODS] }
+        MeshRecord { sphere: Vec4::ZERO, lod_count: 0, first_index: [0; MAX_LODS], index_count: [0; MAX_LODS], base_vertex: 0, error: [0.0; MAX_LODS], flags: 0 }
     }
 
     /// Adds a mesh and its LOD chain to the shared geometry buffers. The data lands at the
     /// next frame start; call outside a frame.
     pub fn add_mesh(&mut self, dev: &dyn Device, m: &MeshAsset) -> Result<MeshId, ed_gpu::Error> {
-        self.add_mesh_scaled(dev, m, 1.0)
+        self.add_mesh_scaled(dev, m, 1.0, 0)
     }
 
-    fn add_mesh_scaled(&mut self, dev: &dyn Device, m: &MeshAsset, radius_scale: f32) -> Result<MeshId, ed_gpu::Error> {
+    /// Adds a tree bank mesh (trees G4, `ed_world::trees::bank::BankMesh`): two raw words per
+    /// vertex (atlas uv unorm16x2, aux bits; carried in the uv stream as `f32::from_bits`) and
+    /// its LOD chain, whose last level may be empty (the hand-off to the far forest rung). It
+    /// draws with the foliage pipelines: wind ([`Renderer::set_wind`]), alpha-tested leaf cards
+    /// (the instance material's base texture), the foliage shading; instance user word 0 is its
+    /// tint, branch drop mask and phase ([`scene::InstancePools::set_user`]).
+    pub fn add_foliage_mesh(&mut self, dev: &dyn Device, positions: &[[f32; 3]], normals: &[[f32; 3]], words: &[[u32; 2]], lods: &[(Vec<u32>, f32)]) -> Result<MeshId, ed_gpu::Error> {
+        let m = MeshAsset {
+            positions: positions.to_vec(),
+            normals: normals.to_vec(),
+            uvs: words.iter().map(|w| [f32::from_bits(w[0]), f32::from_bits(w[1])]).collect(),
+            lods: lods.iter().map(|(indices, error)| scene::MeshLod { indices: indices.clone(), error: *error }).collect(),
+        };
+        self.add_mesh_scaled(dev, &m, 1.0, gpu::MESH_FOLIAGE)
+    }
+
+    /// Wind and near trees for the frame data (common.slang `WindData`): `field` is
+    /// `ed_world::wind::WindField::gpu_words` at the camera, `rest_m` the distance beyond which
+    /// trees hold still (the shadow distance), `near_trees` tells the far forest rung that real
+    /// trees stand in the near band. `field = None`: no wind.
+    pub fn set_wind(&mut self, field: Option<[f32; 8]>, rest_m: f32, near_trees: bool) {
+        let mut w = [0u32; gpu::WIND_WORDS];
+        if let Some(f) = field {
+            for (i, x) in f.iter().enumerate() {
+                w[i] = x.to_bits();
+            }
+            w[8] = 1f32.to_bits();
+        }
+        w[9] = rest_m.to_bits();
+        w[10] = if near_trees { 1f32.to_bits() } else { 0 };
+        self.wind = w;
+    }
+
+    fn add_mesh_scaled(&mut self, dev: &dyn Device, m: &MeshAsset, radius_scale: f32, flags: u32) -> Result<MeshId, ed_gpu::Error> {
         let reuse = self.free_mesh_slots.last().copied();
         if reuse.is_none() && self.lod.mesh_count() as u32 >= self.desc.max_meshes {
             return invalid("add_mesh", "mesh table full");
         }
-        let (slot, rec) = self.upload_mesh(dev, m, radius_scale)?;
+        let (slot, mut rec) = self.upload_mesh(dev, m, radius_scale)?;
+        rec.flags = flags;
         let id = match reuse {
             Some(i) => {
                 self.free_mesh_slots.pop();
@@ -882,7 +920,7 @@ impl Renderer {
             self.skin_alloc.free(src, nv as u32);
             return invalid("add_skinned_mesh", "joint palette full");
         };
-        let mesh = match self.add_mesh_scaled(dev, &m.mesh, m.pose_margin.max(1.0)) {
+        let mesh = match self.add_mesh_scaled(dev, &m.mesh, m.pose_margin.max(1.0), 0) {
             Ok(id) => id,
             Err(e) => {
                 self.skin_alloc.free(src, nv as u32);
@@ -1252,6 +1290,7 @@ impl Renderer {
         let ao_on = scene && lighting.ao;
         let lw = light::light_words(&LightingSettings { ao: ao_on, ..lighting }, &cplan, &sh, (ao_w, ao_h), 1.0);
         fd[FD_LIGHT..FD_LIGHT + light::LIGHT_WORDS].copy_from_slice(&lw);
+        fd[gpu::FD_WIND..gpu::FD_WIND + gpu::WIND_WORDS].copy_from_slice(&self.wind);
         // Terrain culls its casters per cascade: after the cascade matrices are in `fd`.
         if let (true, Some(t)) = (scene, &mut self.terrain) {
             t.prepare(dev, &self.pools, w, h, &mut fd)?;
@@ -1336,6 +1375,9 @@ impl Renderer {
                 verts: (verts, self.vertices.bindless.0),
                 indices: (idx, self.indices.bindless.0, self.indices.id),
                 slots: self.slots_flushed,
+                materials: (mats, self.materials_buf.bindless.0),
+                uvs: (uvs, self.uvs.bindless.0),
+                smp: self.sampler.1.0,
             };
             let depth = g.create_texture("depth", TextureInfo { format: DEPTH_FORMAT, width: w, height: h });
             let vis = g.create_texture("visibility", TextureInfo { format: VIS_FORMAT, width: w, height: h });

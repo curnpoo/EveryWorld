@@ -44,6 +44,7 @@ pub mod terrain;
 pub mod tilegen;
 pub mod trees;
 pub mod water;
+pub mod wind;
 
 /// Deterministic hash -> [0,1). Same input, same world, every run, every Mac.
 pub fn hash01(a: u64, b: u64) -> f32 {

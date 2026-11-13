@@ -51,7 +51,9 @@ pub fn run(args: &Args) -> Result<Report, String> {
     let dev = ed_gpu::create_device(ed_gpu::default_backend(), &DeviceDesc { validation: args.validation, frames_in_flight: args.frames_in_flight })
         .map_err(|e| format!("device: {e}"))?;
     let caps = crate::caps_line(dev.caps());
-    let mut renderer = Renderer::new(&*dev).map_err(|e| format!("renderer: {e}"))?;
+    let near_trees = args.path.place().filter(|_| !args.empty).is_some() && crate::trees::near_from_env();
+    let desc = if near_trees { crate::trees::NearTrees::renderer_desc() } else { ed_render::RendererDesc::default() };
+    let mut renderer = Renderer::with_desc(&*dev, &desc).map_err(|e| format!("renderer: {e}"))?;
     args.apply_lod(renderer.lod_config());
     let scene = args.scene();
     let mut scene_lines = String::new();
@@ -69,6 +71,9 @@ pub fn run(args: &Args) -> Result<Report, String> {
         }
         None => None,
     };
+    // Near trees (trees G4; `EW_TREES_NEAR=0` off, `EW_WIND=0` still).
+    let mut near = world.as_ref().filter(|_| near_trees).map(|_| crate::trees::NearTrees::new(&crate::terrain::cache_root()));
+    let mut trees_ms = 0.0f64;
     let mut terrain_ms = 0.0f64;
     let mut terrain_last = (crate::terrain::WorldStats::default(), None);
     if !args.empty && place.is_none() {
@@ -237,6 +242,20 @@ pub fn run(args: &Args) -> Result<Report, String> {
             ed_render::atmosphere::apply_camera_ground(&mut renderer, g);
             terrain_last = (st, wd.feed(&mut renderer));
             terrain_ms += tw.elapsed().as_secs_f64() * 1e3;
+            if let Some(nt) = &mut near {
+                let tt = Instant::now();
+                nt.update(wd, &mut renderer, &*dev, &camera, [w, h], i as f64 / 60.0)?;
+                trees_ms += tt.elapsed().as_secs_f64() * 1e3;
+                if i + 1 == frames {
+                    let s = nt.stats;
+                    let t = nt.tiers(&camera, [w, h]);
+                    println!(
+                        "near trees: {} nodes, {} instances (T0 {} / T1 {} / T2 {} / past hand-off {}), hand-off {:.0} m; bank {} meshes {:.1} MB in {:.0} ms; pages {:.0} ms; stands {:.0} ms for {} nodes ({:.1} ms/node); apply {:.0} ms; total {:.0} ms",
+                        s.nodes, s.instances, t[0], t[1], t[2], t[3], nt.handoff_m, s.bank_meshes, s.bank_bytes as f64 / 1048576.0, s.bank_ms, s.pages_ms, s.stand_ms, s.stand_nodes,
+                        s.stand_ms / s.stand_nodes.max(1) as f64, s.apply_ms, trees_ms
+                    );
+                }
+            }
         }
         let tf = Instant::now();
         let up = renderer.flush_uploads(&*dev).map_err(|e| format!("flush_uploads: {e}"))?;

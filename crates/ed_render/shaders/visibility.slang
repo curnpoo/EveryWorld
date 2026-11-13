@@ -12,7 +12,10 @@ struct VisC {
     uint visible;
     uint verts;
     uint cascade;   // vs_shadow: which cascade matrix
-    uint pad[10];
+    uint materials; // foliage: material table, per-vertex uv words, sampler
+    uint uvs;
+    uint smp;
+    uint pad[7];
 };
 ED_CONSTANTS(VisC)
 
@@ -93,4 +96,71 @@ ShadowOut vs_shadow(uint vid: SV_VulkanVertexID, uint iid: SV_VulkanInstanceID) 
     ShadowOut o;
     o.pos = mul(f.light.shadow[ed_c.cascade], float4(p, 1.0));
     return o;
+}
+
+// Trees (G4): bank meshes (MESH_FOLIAGE) draw with these. Wind moves the vertices
+// (common.slang `tree_vertex`); leaf cards are alpha-tested against the leaf atlas.
+struct FoliageOut {
+    float4 pos: SV_Position;
+    float2 uv: TEXCOORD0;
+    nointerpolation uint entry: ENTRY;
+    nointerpolation uint tex: TEXID;   // atlas (bindless), NO_TEXTURE: opaque (bark, shells)
+};
+
+FoliageOut foliage_vertex(uint vid, uint iid, bool shadow) {
+    FrameData* f = ed_buf<FrameData>(ed_c.frame);
+    uint entry = ed_buf<uint>(ed_c.visible)[iid];
+    GpuInstance inst = ed_buf<GpuInstance>(ed_c.instances)[entry & ENTRY_INSTANCE_MASK];
+    Vtx v = ed_buf<Vtx>(ed_c.verts)[vid];
+    uint2 w = ed_buf<uint2>(ed_c.uvs)[vid];
+    float3 node = ed_buf<float4>(ed_c.nodes)[inst.node_flags & 0xFFFFu].xyz;
+    float3 p = node + tree_vertex(f, inst, node, float3(v.px, v.py, v.pz), v.n, w.y);
+    FoliageOut o;
+    o.pos = mul(shadow ? f.light.shadow[ed_c.cascade] : f.view_proj, float4(p, 1.0));
+    o.uv = tree_uv(w.x);
+    o.entry = entry;
+    o.tex = (w.y & AUX_CARD) != 0u ? ed_buf<GpuMaterial>(ed_c.materials)[inst.material].tex.x : NO_TEXTURE;
+    return o;
+}
+
+[shader("vertex")]
+FoliageOut vs_foliage(uint vid: SV_VulkanVertexID, uint iid: SV_VulkanInstanceID) {
+    return foliage_vertex(vid, iid, false);
+}
+
+[shader("vertex")]
+FoliageOut vs_shadow_foliage(uint vid: SV_VulkanVertexID, uint iid: SV_VulkanInstanceID) {
+    return foliage_vertex(vid, iid, true);
+}
+
+void foliage_clip(FoliageOut i) {
+    if (i.tex != NO_TEXTURE && ed_tex2d(i.tex).Sample(ed_smp(ed_c.smp), i.uv).a < 0.5) {
+        discard;
+    }
+}
+
+[shader("fragment")]
+uint4 fs_foliage(FoliageOut i, uint prim: SV_PrimitiveID) : SV_Target0 {
+    foliage_clip(i);
+    return vis_value(i.entry, prim);
+}
+
+[shader("fragment")]
+uint4 fs_foliage_dither(FoliageOut i, uint prim: SV_PrimitiveID) : SV_Target0 {
+    foliage_clip(i);
+    uint2 p = uint2(i.pos.xy) & 7u;
+    uint inst = i.entry & ENTRY_INSTANCE_MASK;
+    uint rot = (inst * 0x9E3779B1u) >> 26;
+    uint d = ((BAYER8[p.y * 8u + p.x] + rot) & 63u) * 4u + 2u;
+    uint cov = (i.entry >> 22) & 0xFFu;
+    bool side_prev = ((i.entry >> 30) & 1u) != 0;
+    if ((d < cov) == side_prev) {
+        discard;
+    }
+    return vis_value(i.entry, prim);
+}
+
+[shader("fragment")]
+void fs_shadow_foliage(FoliageOut i) {
+    foliage_clip(i);
 }

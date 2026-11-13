@@ -20,6 +20,7 @@
 //! leaf material, a handful of big cards and a simplified trunk) grown from
 //! the same seed so the silhouette matches.
 
+pub mod bank;
 pub mod impostor;
 pub mod species;
 pub mod textures;

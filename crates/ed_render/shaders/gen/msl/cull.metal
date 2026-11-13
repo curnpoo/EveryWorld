@@ -42,7 +42,7 @@ struct GpuMesh_natural_0
     uint lod_count_0;
     uint bin_base_0;
     uint capacity_0;
-    uint pad_1;
+    uint flags_0;
     array<uint, int(4)> first_index_0;
     array<uint, int(4)> index_count_0;
     array<int, int(4)> base_vertex_0;
@@ -67,7 +67,7 @@ struct GpuInstance_natural_0
     uint material_0;
     uint object_lo_0;
     uint node_flags_0;
-    array<uint, int(4)> pad_2;
+    array<uint, int(4)> pad_1;
 };
 
 GpuInstance_natural_0 device* ed_buf_3(uint i_3, KernelContext_0 thread* kernelContext_3)
@@ -90,7 +90,7 @@ struct HzbLevel_0
     uint offset_0;
     uint width_0;
     uint height_0;
-    uint pad_3;
+    uint pad_2;
 };
 
 struct _Array_natural_matrixx3Cfloatx2C4x2C4x3E4_0
@@ -115,7 +115,7 @@ struct LightData_natural_0
     packed_float4 split_0;
     packed_float4 cfg_0;
     packed_float4 filter_0;
-    packed_uint4 flags_0;
+    packed_uint4 flags_1;
     packed_float4 ao_0;
     packed_float4 sky_0;
     _Array_natural_vectorx3Cfloatx2C4x3E9_0 sh_0;
@@ -138,6 +138,13 @@ struct AtmosData_natural_0
     packed_uint4 cfg_1;
 };
 
+struct WindData_natural_0
+{
+    packed_float4 wind_0;
+    packed_float4 gust_0;
+    packed_float4 cfg_2;
+};
+
 struct FrameData_natural_0
 {
     _MatrixStorage_float4x4_ColMajornatural_0 view_proj_0;
@@ -156,6 +163,7 @@ struct FrameData_natural_0
     array<HzbLevel_0, int(16)> hzb_1;
     LightData_natural_0 light_0;
     AtmosData_natural_0 atmos_0;
+    WindData_natural_0 wind_1;
 };
 
 FrameData_natural_0 device* ed_buf_4(uint i_4, KernelContext_0 thread* kernelContext_4)
@@ -836,6 +844,40 @@ bool occluded_0(FrameData_natural_0 device* f_1, float device* hzb_2, float3 c_r
             Bounds_0 _S104 = bounds_0(&_S98, _S103, &kernelContext_12);
             uint _S105 = min(uint((float4((&_S94->light_0)->cfg_0) ).x), 4U);
             float _S106 = (float4((&_S94->light_0)->cfg_0) ).y;
+            bool _S107;
+            uint nc_0;
+            uint lod_min_0;
+            uint lod_max_0;
+            if(((_S103->flags_0) & 1U) != 0U)
+            {
+                float4 _S108 = float4(_S94->proj_0) ;
+                uint _S109 = select_lod_0(_S103, _S104.scale_0 * _S108.w * 0.5f * _S108.y / max(length(_S104.c_0) - _S104.r_0, (float4(_S94->params_0) ).z), 0U, false, (float4(_S94->params_0) ).y, 1.0f);
+                if((_S103->index_count_0[_S109]) == 0U)
+                {
+                    _S107 = true;
+                }
+                else
+                {
+                    _S107 = (_S109 + 2U) >= (_S103->lod_count_0);
+                }
+                if(_S107)
+                {
+                    nc_0 = 0U;
+                }
+                else
+                {
+                    nc_0 = _S105;
+                }
+                uint lod_max_1 = max(_S103->lod_count_0, 2U) - 2U;
+                lod_min_0 = min(1U, lod_max_1);
+                lod_max_0 = lod_max_1;
+            }
+            else
+            {
+                nc_0 = _S105;
+                lod_min_0 = 0U;
+                lod_max_0 = 3U;
+            }
             uint c_3 = 0U;
             cnt0_0 = 0U;
             cnt1_0 = 0U;
@@ -843,74 +885,54 @@ bool occluded_0(FrameData_natural_0 device* f_1, float device* hzb_2, float3 c_r
             cnt3_0 = 0U;
             for(;;)
             {
-                if(c_3 < _S105)
+                if(c_3 < nc_0)
                 {
                 }
                 else
                 {
                     break;
                 }
-                float4 _S107 = float4((&(&_S94->light_0)->cascade_0)->data_4[c_3]) ;
+                float4 _S110 = float4((&(&_S94->light_0)->cascade_0)->data_4[c_3]) ;
                 float4 s_1 = (((float4(_S104.c_0, 1.0f)) * (matrix<float,int(4),int(4)> ((&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(0)][int(0)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(1)][int(0)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(2)][int(0)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(3)][int(0)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(0)][int(1)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(1)][int(1)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(2)][int(1)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(3)][int(1)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(0)][int(2)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(1)][int(2)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(2)][int(2)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(3)][int(2)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(0)][int(3)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(1)][int(3)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(2)][int(3)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(3)][int(3)]))));
-                float _S108 = _S107.x;
-                float rz_0 = _S104.r_0 / _S107.y;
-                float _S109 = 1.0f + _S104.r_0 / (_S108 * _S106 * 0.5f);
-                bool _S110;
-                if((abs(s_1.x)) > _S109)
+                float _S111 = _S110.x;
+                float rz_0 = _S104.r_0 / _S110.y;
+                float _S112 = 1.0f + _S104.r_0 / (_S111 * _S106 * 0.5f);
+                if((abs(s_1.x)) > _S112)
                 {
-                    _S110 = true;
+                    _S107 = true;
                 }
                 else
                 {
-                    _S110 = (abs(s_1.y)) > _S109;
+                    _S107 = (abs(s_1.y)) > _S112;
                 }
-                bool _S111;
-                if(_S110)
+                bool _S113;
+                if(_S107)
                 {
-                    _S111 = true;
+                    _S113 = true;
                 }
                 else
                 {
-                    _S111 = (s_1.z) < (- rz_0);
+                    _S113 = (s_1.z) < (- rz_0);
                 }
-                bool _S112;
-                if(_S111)
+                bool _S114;
+                if(_S113)
                 {
-                    _S112 = true;
+                    _S114 = true;
                 }
                 else
                 {
-                    _S112 = (2.0f * _S104.r_0) < (12.0f * _S108);
+                    _S114 = (2.0f * _S104.r_0) < (12.0f * _S111);
                 }
-                if(_S112)
+                if(_S114)
                 {
                     c_3 = c_3 + 1U;
                     continue;
                 }
-                uint _S113 = select_lod_0(_S103, _S104.scale_0 / _S108, 0U, false, (float4(_S94->params_0) ).y * SHADOW_LOD_BIAS_0[c_3], 1.0f);
-                push_0(_S100, _S99, _S101, c_3 * (&kernelContext_12)->ed_c_0->bins_kind_0 + _S103->bin_base_0 + _S113, i_12 | (_S113 << 20U), _S103->capacity_0, _S103->index_count_0[_S113] / 3U, &e_4);
-                uint _S114;
-                if(c_3 == 0U)
-                {
-                    _S114 = 1U;
-                }
-                else
-                {
-                    _S114 = 0U;
-                }
-                uint cnt0_1 = cnt0_0 + _S114;
-                uint _S115;
-                if(c_3 == 1U)
-                {
-                    _S115 = 1U;
-                }
-                else
-                {
-                    _S115 = 0U;
-                }
-                uint cnt1_1 = cnt1_0 + _S115;
+                uint _S115 = select_lod_0(_S103, _S104.scale_0 / _S111, 0U, false, (float4(_S94->params_0) ).y * SHADOW_LOD_BIAS_0[c_3], 1.0f);
+                uint lod_0 = clamp(_S115, lod_min_0, lod_max_0);
+                push_0(_S100, _S99, _S101, c_3 * (&kernelContext_12)->ed_c_0->bins_kind_0 + _S103->bin_base_0 + lod_0, i_12 | (lod_0 << 20U), _S103->capacity_0, _S103->index_count_0[lod_0] / 3U, &e_4);
                 uint _S116;
-                if(c_3 == 2U)
+                if(c_3 == 0U)
                 {
                     _S116 = 1U;
                 }
@@ -918,9 +940,9 @@ bool occluded_0(FrameData_natural_0 device* f_1, float device* hzb_2, float3 c_r
                 {
                     _S116 = 0U;
                 }
-                uint cnt2_1 = cnt2_0 + _S116;
+                uint cnt0_1 = cnt0_0 + _S116;
                 uint _S117;
-                if(c_3 == 3U)
+                if(c_3 == 1U)
                 {
                     _S117 = 1U;
                 }
@@ -928,7 +950,27 @@ bool occluded_0(FrameData_natural_0 device* f_1, float device* hzb_2, float3 c_r
                 {
                     _S117 = 0U;
                 }
-                uint cnt3_1 = cnt3_0 + _S117;
+                uint cnt1_1 = cnt1_0 + _S117;
+                uint _S118;
+                if(c_3 == 2U)
+                {
+                    _S118 = 1U;
+                }
+                else
+                {
+                    _S118 = 0U;
+                }
+                uint cnt2_1 = cnt2_0 + _S118;
+                uint _S119;
+                if(c_3 == 3U)
+                {
+                    _S119 = 1U;
+                }
+                else
+                {
+                    _S119 = 0U;
+                }
+                uint cnt3_1 = cnt3_0 + _S119;
                 cnt0_0 = cnt0_1;
                 cnt1_0 = cnt1_1;
                 cnt2_0 = cnt2_1;
