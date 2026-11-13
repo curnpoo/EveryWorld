@@ -372,6 +372,8 @@ struct Pipelines {
     /// The resolve with the terrain branch (`fs_resolve_terrain`), used while a terrain
     /// provider is registered.
     resolve_terrain: RenderPipelineId,
+    /// The terrain resolve with the far forest rung (`fs_resolve_trees`, trees G3).
+    resolve_trees: RenderPipelineId,
     tonemap_vs: ShaderId,
     tonemap_fs: ShaderId,
     /// Tonemap pipelines per output format, created on first use (not part of `built`).
@@ -402,6 +404,7 @@ impl Pipelines {
         let vs = b.shader(dev, src, Module::Resolve, "resolve vs", ShaderStage::Vertex, "vs_resolve")?;
         let fs = b.shader(dev, src, Module::Resolve, "resolve fs", ShaderStage::Fragment, "fs_resolve")?;
         let fs_terrain = b.shader(dev, src, Module::Resolve, "resolve terrain fs", ShaderStage::Fragment, "fs_resolve_terrain")?;
+        let fs_trees = b.shader(dev, src, Module::Resolve, "resolve trees fs", ShaderStage::Fragment, "fs_resolve_trees")?;
         let tonemap_vs = b.shader(dev, src, Module::Tonemap, "tonemap vs", ShaderStage::Vertex, "vs_fullscreen")?;
         let tonemap_fs = b.shader(dev, src, Module::Tonemap, "tonemap fs", ShaderStage::Fragment, "fs_tonemap")?;
         let desc = |label, fs| RenderPipelineDesc {
@@ -417,6 +420,7 @@ impl Pipelines {
         };
         let resolve = b.render(dev, &desc("resolve", fs))?;
         let resolve_terrain = b.render(dev, &desc("resolve terrain", fs_terrain))?;
+        let resolve_trees = b.render(dev, &desc("resolve trees", fs_trees))?;
         let pick = b.compute(dev, src, Module::Debug, "pick", [1, 1, 1])?;
         let pop = b.compute(dev, src, Module::Debug, "pop_stats", [8, 8, 1])?;
         let skin = b.compute(dev, src, Module::Skin, "skin", [SKIN_GROUP, 1, 1])?;
@@ -424,7 +428,7 @@ impl Pipelines {
         let atmos = atmosphere::AtmosPipes::build(dev, src, b)?;
         let overlay_vs = b.shader(dev, src, Module::Overlay, "overlay vs", ShaderStage::Vertex, "vs_overlay")?;
         let overlay_fs = b.shader(dev, src, Module::Overlay, "overlay fs", ShaderStage::Fragment, "fs_overlay")?;
-        Ok(Self { built: std::mem::take(b), resolve, resolve_terrain, tonemap_vs, tonemap_fs, tonemap: Vec::new(), pick, pop, skin, ao, atmos, overlay_vs, overlay_fs, overlay: Vec::new() })
+        Ok(Self { built: std::mem::take(b), resolve, resolve_terrain, resolve_trees, tonemap_vs, tonemap_fs, tonemap: Vec::new(), pick, pop, skin, ao, atmos, overlay_vs, overlay_fs, overlay: Vec::new() })
     }
     fn destroy(mut self, dev: &dyn Device) {
         for (_, p) in self.tonemap.drain(..) {
@@ -1391,7 +1395,12 @@ impl Renderer {
                 // Terrain material record in the draw table (0: the flat tint).
                 self.terrain.as_ref().filter(|_| to.is_some()).map_or(0, |t| t.material_record()),
             ]);
-            let resolve = if to.is_some() { self.pipes.resolve_terrain } else { self.pipes.resolve };
+            let trees = self.terrain.as_ref().is_some_and(|t| t.config.trees_far.on());
+            let resolve = match (to.is_some(), trees) {
+                (true, true) => self.pipes.resolve_trees,
+                (true, false) => self.pipes.resolve_terrain,
+                _ => self.pipes.resolve,
+            };
             let atlas = shadow.map(|s| s.atlas);
             let mut rp = g.add_pass("resolve", PassKind::Raster);
             if let Some(a) = atlas {

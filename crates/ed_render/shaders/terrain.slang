@@ -22,16 +22,27 @@ struct TerrainOut {
     nointerpolation uint lod: LOD;
 };
 
-[shader("vertex")]
-TerrainOut vs_terrain(uint vid: SV_VulkanVertexID, uint iid: SV_VulkanInstanceID) {
+TerrainOut terrain_vs<let L : int>(uint vid, uint iid) {
     FrameData* f = ed_buf<FrameData>(ed_c.frame);
     TerrainDraw d = ed_buf<TerrainDraw>(ed_c.draws)[ed_c.base + iid];
-    float3 p = t_vertex(ed_c.pool, d, vid);
+    float3 p = t_vertex<L>(ed_c.pool, d, vid);
     TerrainOut o;
     o.pos = mul(f.view_proj, float4(p, 1.0));
     o.draw = ed_c.base + iid;
     o.lod = (d.slots.z >> T_LOD_SHIFT) & 3u;
     return o;
+}
+
+[shader("vertex")]
+TerrainOut vs_terrain(uint vid: SV_VulkanVertexID, uint iid: SV_VulkanInstanceID) {
+    return terrain_vs<0>(vid, iid);
+}
+
+// With the far forest rung's canopy lift (trees G3): a separate entry so `vs_terrain` keeps its
+// exact code when the rung is off.
+[shader("vertex")]
+TerrainOut vs_terrain_trees(uint vid: SV_VulkanVertexID, uint iid: SV_VulkanInstanceID) {
+    return terrain_vs<1>(vid, iid);
 }
 
 [shader("fragment")]
@@ -45,12 +56,21 @@ struct TerrainShadowOut {
     float4 pos: SV_Position;
 };
 
-[shader("vertex")]
-TerrainShadowOut vs_terrain_shadow(uint vid: SV_VulkanVertexID, uint iid: SV_VulkanInstanceID) {
+TerrainShadowOut terrain_shadow_vs<let L : int>(uint vid, uint iid) {
     FrameData* f = ed_buf<FrameData>(ed_c.frame);
     TerrainDraw d = ed_buf<TerrainDraw>(ed_c.draws)[ed_c.base + iid];
-    float3 p = t_vertex(ed_c.pool, d, vid);
+    float3 p = t_vertex<L>(ed_c.pool, d, vid);
     TerrainShadowOut o;
     o.pos = mul(f.light.shadow[ed_c.cascade], float4(p, 1.0));
     return o;
+}
+
+[shader("vertex")]
+TerrainShadowOut vs_terrain_shadow(uint vid: SV_VulkanVertexID, uint iid: SV_VulkanInstanceID) {
+    return terrain_shadow_vs<0>(vid, iid);
+}
+
+[shader("vertex")]
+TerrainShadowOut vs_terrain_shadow_trees(uint vid: SV_VulkanVertexID, uint iid: SV_VulkanInstanceID) {
+    return terrain_shadow_vs<1>(vid, iid);
 }

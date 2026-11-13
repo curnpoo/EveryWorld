@@ -66,6 +66,11 @@ pub trait Residency {
     fn height_page(&self, id: NodeId) -> Option<Arc<HeightPage>>;
     /// The node's slot in the GPU page atlas, when uploaded.
     fn page_slot(&self, id: NodeId) -> Option<u32>;
+    /// The node's canopy page (trees design §0), when built. Optional: a node without one draws
+    /// bare ground (no forest), never a hole.
+    fn canopy_page(&self, _id: NodeId) -> Option<Arc<ed_geo::CanopyPage>> {
+        None
+    }
 
     fn complete(&self, id: NodeId) -> bool {
         self.chunks(id).complete()

@@ -32,6 +32,8 @@ static const uint T_SKIRT = 1u << 6;            // draw the skirt (else it colla
 static const uint T_LOD_SHIFT = 8;              // bits 8-9: index LOD (stride 1 << lod)
 static const uint T_EDGE_SHIFT = 10;            // bits 10-21: per edge, 3 bits log2 of the neighbour edge's spacing
 static const uint T_NOMORPH = 1u << 22;         // no vertex of the node morphs
+static const uint T_TREES = 1u << 23;           // far forest rung on (trees G3): forest from the canopy page
+static const uint T_TREES_DEBUG = 1u << 24;     // EW_TREES_FAR=debug tint
 static const uint T_PRIM_LOD_SHIFT = 24;        // the visibility primitive carries the LOD here
 
 // One drawn node (176 bytes, `DRAW_WORDS` = 44). World axes, camera-relative.
@@ -43,10 +45,11 @@ struct TerrainDraw {
     float4 fv;      // xyz: face v axis, w: T_v
     float4 shape;   // x: angle per grid cell, y: equatorial radius, z: 1 - a^2/b^2, w: sqrt(1 - z dz_c^2)
     float4 morph;   // x, y: own morph start, end (m); z, w: the coarser level's (edge stitching)
-    float4 polar;   // xyz: body polar axis (+Z body-fixed)
+    float4 polar;   // xyz: body polar axis (+Z body-fixed), w: canopy lift scale (TREE_REF_M x pixels per radian; 0: no lift)
     uint4 slots;    // x: page slot, y: parent page slot (T_NO_SLOT: none), z: flags, w: level
     float4 hq;      // x, y: page scale, offset; z, w: parent page scale, offset
-    float4 tex;     // x, y: node centre face angles times the equatorial radius, mod 4096 m
+    float4 tex;     // x, y: node centre face angles times the equatorial radius, mod 4096 m;
+                    // z, w (bits): own and parent canopy page word offsets in the pool (0: none)
 };
 
 // The terrain material record (P-slice S7, `MAT_WORDS` = 44 words, at index
@@ -72,6 +75,55 @@ float t_page(uint pool, uint slot, uint i, uint j, float scale, float offset) {
 
 float t_own_h(uint pool, TerrainDraw d, uint i, uint j) {
     return t_page(pool, d.slots.x, i * T_PAGE_STRIDE, j * T_PAGE_STRIDE, d.hq.x, d.hq.y);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Canopy pages (trees G3): 257 x 257 packed [cover, height code, mix, under] (RGBA8 in a u32,
+// ed_geo::CanopyPage) per pool slot, after every slot's height words; `off` is the page's first
+// word (0: no page, no forest).
+// ---------------------------------------------------------------------------------------------
+
+// Lift ramp, mirrored in terrain.rs: none while the reference tree is over 12 px, full under 6.
+static const float T_LIFT_NONE_PX = 12.0;
+static const float T_LIFT_FULL_PX = 6.0;
+static const float T_CANOPY_HMIN = 0.5;           // ed_geo canopy_page HEIGHT_MIN_M
+static const float T_CANOPY_LNR = 0.0204447;      // ln(90 / 0.5) / 254
+
+uint t_canopy_raw(uint pool, uint off, uint i, uint j) {
+    return ed_buf<uint>(pool)[off + j * T_PAGE_N + i];
+}
+
+float t_canopy_h(uint code) {
+    return code == 0u ? 0.0 : T_CANOPY_HMIN * exp(float(code - 1u) * T_CANOPY_LNR);
+}
+
+// Lift (m) of one canopy sample: the canopy top, cover-weighted with a steep ramp so a stand's
+// edge is a soft wall rather than a ramp from zero.
+float t_canopy_lift(uint pool, uint off, uint i, uint j) {
+    if (off == 0u) {
+        return 0.0;
+    }
+    uint c = t_canopy_raw(pool, off, i, j);
+    float cover = float(c & 0xFFu) / 255.0;
+    return t_canopy_h((c >> 8) & 0xFFu) * smoothstep(0.06, 0.45, cover);
+}
+
+// How much of the lift a node-relative point gets (by the reference tree's projected size).
+float t_lift_k(TerrainDraw d, float3 p) {
+    if (d.polar.w <= 0.0) {
+        return 0.0;
+    }
+    float px = d.polar.w / max(length(d.origin.xyz + p), 1.0);
+    return smoothstep(T_LIFT_NONE_PX, T_LIFT_FULL_PX, px);
+}
+
+// Own canopy lift at grid vertex (i, j), already scaled by the ramp at node-relative `p`.
+float t_own_lift(uint pool, TerrainDraw d, uint i, uint j, float3 p) {
+    if (d.polar.w <= 0.0) {
+        return 0.0;
+    }
+    float k = t_lift_k(d, p);
+    return k > 0.0 ? k * t_canopy_lift(pool, asuint(d.tex.z), i * T_PAGE_STRIDE, j * T_PAGE_STRIDE) : 0.0;
 }
 
 // Lattice point (i, j) at height h, relative to the node origin. Returns the direction too.
@@ -102,42 +154,59 @@ float3 t_lattice(TerrainDraw d, uint i, uint j, float h, out float3 dir) {
 }
 
 // Unmorphed position of grid vertex (i, j) (own heights), node-relative.
-float3 t_base(uint pool, TerrainDraw d, uint i, uint j) {
+float3 t_base<let L : int>(uint pool, TerrainDraw d, uint i, uint j) {
     float3 dir;
-    return t_lattice(d, i, j, t_own_h(pool, d, i, j), dir);
+    float3 p = t_lattice(d, i, j, t_own_h(pool, d, i, j), dir);
+    if (L != 0 && d.polar.w > 0.0) {
+        p += dir * t_own_lift(pool, d, i, j, p);  // canopy lift (render only, trees G3)
+    }
+    return p;
 }
 
 // Morph target of an even grid vertex: the parent's height at the same lattice point. Border
 // vertices keep their own height (it equals the neighbours' and the coarser level's: G4).
-float3 t_target_even(uint pool, TerrainDraw d, uint i, uint j) {
+float3 t_target_even<let L : int>(uint pool, TerrainDraw d, uint i, uint j) {
     bool border = i == 0 || j == 0 || i == T_CELLS || j == T_CELLS;
     float h;
-    if (border || d.slots.y == T_NO_SLOT) {
+    bool own = border || d.slots.y == T_NO_SLOT;
+    uint qx = (d.slots.z & T_QX) != 0 ? 128u : 0u;
+    uint qy = (d.slots.z & T_QY) != 0 ? 128u : 0u;
+    if (own) {
         h = t_own_h(pool, d, i, j);
     } else {
-        uint qx = (d.slots.z & T_QX) != 0 ? 128u : 0u;
-        uint qy = (d.slots.z & T_QY) != 0 ? 128u : 0u;
         h = t_page(pool, d.slots.y, qx + 2u * i, qy + 2u * j, d.hq.z, d.hq.w);
     }
     float3 dir;
-    return t_lattice(d, i, j, h, dir);
+    float3 p = t_lattice(d, i, j, h, dir);
+    if (L != 0 && d.polar.w > 0.0) {
+        // The parent's lift at the same lattice point (its own canopy page), so a full morph is
+        // the parent's lifted mesh; without a parent canopy page, our own.
+        float k = t_lift_k(d, p);
+        uint poff = asuint(d.tex.w);
+        float lift = 0.0;
+        if (k > 0.0) {
+            lift = own || poff == 0u ? t_canopy_lift(pool, asuint(d.tex.z), i * T_PAGE_STRIDE, j * T_PAGE_STRIDE) : t_canopy_lift(pool, poff, qx + 2u * i, qy + 2u * j);
+        }
+        p += dir * (k * lift);
+    }
+    return p;
 }
 
 // The parent's surface at grid vertex (i, j): even vertices on the parent's lattice, odd ones
 // on the midpoint of the parent edge (or the 00-11 diagonal) they split.
-float3 t_target(uint pool, TerrainDraw d, uint i, uint j) {
+float3 t_target<let L : int>(uint pool, TerrainDraw d, uint i, uint j) {
     bool ei = (i & 1u) == 0;
     bool ej = (j & 1u) == 0;
     if (ei && ej) {
-        return t_target_even(pool, d, i, j);
+        return t_target_even<L>(pool, d, i, j);
     }
     if (!ei && ej) {
-        return 0.5 * (t_target_even(pool, d, i - 1u, j) + t_target_even(pool, d, i + 1u, j));
+        return 0.5 * (t_target_even<L>(pool, d, i - 1u, j) + t_target_even<L>(pool, d, i + 1u, j));
     }
     if (ei && !ej) {
-        return 0.5 * (t_target_even(pool, d, i, j - 1u) + t_target_even(pool, d, i, j + 1u));
+        return 0.5 * (t_target_even<L>(pool, d, i, j - 1u) + t_target_even<L>(pool, d, i, j + 1u));
     }
-    return 0.5 * (t_target_even(pool, d, i - 1u, j - 1u) + t_target_even(pool, d, i + 1u, j + 1u));
+    return 0.5 * (t_target_even<L>(pool, d, i - 1u, j - 1u) + t_target_even<L>(pool, d, i + 1u, j + 1u));
 }
 
 float t_morph(float3 rel, float2 band) {
@@ -146,14 +215,14 @@ float t_morph(float3 rel, float2 band) {
 
 // Grid vertex (i, j) along an edge of a coarser neighbour, `e` the index along that edge and
 // (i, j) = at(e): the coarser node's own edge, with its own morph.
-float3 t_coarse_even(uint pool, TerrainDraw d, uint e, uint2 a, uint2 b, uint2 c) {
-    float3 p = t_base(pool, d, a.x, a.y);
+float3 t_coarse_even<let L : int>(uint pool, TerrainDraw d, uint e, uint2 a, uint2 b, uint2 c) {
+    float3 p = t_base<L>(pool, d, a.x, a.y);
     if ((e & 3u) == 0) {
         return p;
     }
     // A coarse odd vertex: morphs toward the midpoint of its coarse neighbours.
     float m = t_morph(d.origin.xyz + p, d.morph.zw);
-    float3 mid = 0.5 * (t_base(pool, d, b.x, b.y) + t_base(pool, d, c.x, c.y));
+    float3 mid = 0.5 * (t_base<L>(pool, d, b.x, b.y) + t_base<L>(pool, d, c.x, c.y));
     return lerp(p, mid, m);
 }
 
@@ -166,19 +235,19 @@ uint2 t_edge_at(uint edge, uint e) {
     }
 }
 
-float3 t_coarse(uint pool, TerrainDraw d, uint edge, uint e) {
+float3 t_coarse<let L : int>(uint pool, TerrainDraw d, uint edge, uint e) {
     if ((e & 1u) == 0) {
-        return t_coarse_even(pool, d, e, t_edge_at(edge, e), t_edge_at(edge, e - 2u), t_edge_at(edge, e + 2u));
+        return t_coarse_even<L>(pool, d, e, t_edge_at(edge, e), t_edge_at(edge, e - 2u), t_edge_at(edge, e + 2u));
     }
-    float3 a = t_coarse_even(pool, d, e - 1u, t_edge_at(edge, e - 1u), t_edge_at(edge, e - 3u), t_edge_at(edge, e + 1u));
-    float3 b = t_coarse_even(pool, d, e + 1u, t_edge_at(edge, e + 1u), t_edge_at(edge, e - 1u), t_edge_at(edge, e + 3u));
+    float3 a = t_coarse_even<L>(pool, d, e - 1u, t_edge_at(edge, e - 1u), t_edge_at(edge, e - 3u), t_edge_at(edge, e + 1u));
+    float3 b = t_coarse_even<L>(pool, d, e + 1u, t_edge_at(edge, e + 1u), t_edge_at(edge, e - 1u), t_edge_at(edge, e + 3u));
     return 0.5 * (a + b);
 }
 
 // Final position of grid vertex (i, j), node-relative: geomorphed toward the parent. An edge
 // along a coarser neighbour is pinned to that neighbour's (morphing) edge; along a neighbour that
 // draws fewer vertices (index LOD) the vertices between its lattice points slide onto the segment.
-float3 t_grid_vertex(uint pool, TerrainDraw d, uint i, uint j) {
+float3 t_grid_vertex<let L : int>(uint pool, TerrainDraw d, uint i, uint j) {
     uint fl = d.slots.z;
     uint edge = 4;
     uint e = 0;
@@ -190,19 +259,19 @@ float3 t_grid_vertex(uint pool, TerrainDraw d, uint i, uint j) {
         bool cb = (fl & (1u << edge)) != 0;
         uint E = 1u << ((fl >> (T_EDGE_SHIFT + 3u * edge)) & 7u);
         if (cb && E <= 2u) {
-            return t_coarse(pool, d, edge, e);
+            return t_coarse<L>(pool, d, edge, e);
         }
         if (E > 1u) {
             uint lo = e & ~(E - 1u);
             if (lo == e) {
-                return t_base(pool, d, i, j);
+                return t_base<L>(pool, d, i, j);
             }
             uint2 a = t_edge_at(edge, lo);
             uint2 b = t_edge_at(edge, lo + E);
-            return lerp(t_base(pool, d, a.x, a.y), t_base(pool, d, b.x, b.y), float(e - lo) / float(E));
+            return lerp(t_base<L>(pool, d, a.x, a.y), t_base<L>(pool, d, b.x, b.y), float(e - lo) / float(E));
         }
     }
-    float3 p = t_base(pool, d, i, j);
+    float3 p = t_base<L>(pool, d, i, j);
     if ((fl & T_NOMORPH) != 0) {
         return p;
     }
@@ -210,7 +279,7 @@ float3 t_grid_vertex(uint pool, TerrainDraw d, uint i, uint j) {
     if (m <= 0.0) {
         return p;
     }
-    return lerp(p, t_target(pool, d, i, j), m);
+    return lerp(p, t_target<L>(pool, d, i, j), m);
 }
 
 // Skirt ring vertex s (0..255), counter-clockwise seen from above: j = 0 (i rising), i = 64
@@ -226,13 +295,20 @@ uint2 t_ring(uint s) {
 }
 
 // Vertex `v` of the shared node mesh (grid row-major, then the skirt ring), camera-relative.
-float3 t_vertex(uint pool, TerrainDraw d, uint v) {
+// `L` != 0 adds the canopy lift (trees G3); a compile-time constant per entry point so the
+// unlifted shaders keep their exact code.
+float3 t_vertex<let L : int>(uint pool, TerrainDraw d, uint v) {
     if (v < T_GRID_VERTS) {
-        return d.origin.xyz + t_grid_vertex(pool, d, v % T_SIDE, v / T_SIDE);
+        return d.origin.xyz + t_grid_vertex<L>(pool, d, v % T_SIDE, v / T_SIDE);
     }
     uint2 ij = t_ring(v - T_GRID_VERTS);
-    float3 p = t_grid_vertex(pool, d, ij.x, ij.y);
+    float3 p = t_grid_vertex<L>(pool, d, ij.x, ij.y);
     float depth = (d.slots.z & T_SKIRT) != 0 ? d.origin.w : 0.0;
+    if (L != 0 && d.polar.w > 0.0 && depth > 0.0) {
+        // Down past the canopy lift: neighbours lift from their own pages (cracks at forest
+        // edges between levels close against the bare ground).
+        depth += t_own_lift(pool, d, ij.x, ij.y, p);
+    }
     // Radially down (the node's up is close enough to the vertex's for a skirt).
     float3 up = normalize(d.origin.xyz + p - (d.origin.xyz - d.dir_c.xyz * d.dir_c.w));
     return d.origin.xyz + p - up * depth;

@@ -245,7 +245,7 @@ float t_page_bilin(uint pool, TerrainDraw d, float2 s) {
 // up; `h`: height (m); `curv`: landform Laplacian (1/m, + hollow); `curv_f`: fine Laplacian;
 // `w`, `dwx`, `dwy`: face metres and their per-pixel steps; `tu`, `tv`: world directions of
 // +u, +v; `dist`: distance from the camera (m).
-TSurf terrain_material(FrameData* f, TerrainMat m, TerrainDraw d, float3 n, float3 nm, float3 up, float h, float curv, float curv_f, float2 w, float2 dwx, float2 dwy, float dhx, float dhy, float3 tu, float3 tv, float dist) {
+TSurf terrain_material(FrameData* f, TerrainMat m, TerrainDraw d, float3 n, float3 nm, float3 up, float h, float curv, float curv_f, float2 w, float2 dwx, float2 dwy, float dhx, float dhy, float3 tu, float3 tv, float dist, bool trees, float4 cv, float spacing) {
     SamplerState smp = ed_smp(ed_c.smp);
     float cs = dot(nm, up);          // landform slope cosine
     float cf = dot(n, up);           // fine slope cosine
@@ -278,6 +278,12 @@ TSurf terrain_material(FrameData* f, TerrainMat m, TerrainDraw d, float3 n, floa
     float veg = 1.0;
     // Forest: most of the slope below the treeline, with clearings; the flat valley floor is meadow.
     float forest = (1.0 - alpine) * smoothstep(0.99, 0.95, cs) * saturate(0.9 + (n3 - 0.5) * 1.4 + (n2 - 0.5) * 0.8);
+    if (trees) {
+        // Far forest rung (trees G3): the forest floor is where the canopy page has cover. A
+        // steep edge on fine pages; linear in cover on coarse ones (an averaged edge sample
+        // must not widen the stand: the density strip keeps one outline).
+        forest = lerp(cv.x, smoothstep(0.03, 0.5, cv.x), smoothstep(T_FOREST_LINEAR_M, T_FOREST_STEEP_M, spacing));
+    }
     float grass = veg * (1.0 - forest) * smoothstep(3000.0, 2600.0, h + (n1 - 0.5) * 200.0);
     float soil = saturate(hollow_f * 0.8 + (n1 - 0.65) * 1.5) * (1.0 - alpine * 0.5);
     // Snow: above the snowline on what is not too steep to hold it; drifts in hollows.
@@ -395,7 +401,7 @@ TSurf terrain_material(FrameData* f, TerrainMat m, TerrainDraw d, float3 n, floa
     o.albedo *= macro * lerp(1.0, 0.8, hollow_f * (1.0 - snow));
     o.albedo *= lerp(float3(1.0), float3(1.04, 1.0, 0.94), n1 * (1.0 - snow));
     // The forest floor from afar reads as canopy (no trees drawn yet).
-    float canopy = wt[L_FOREST] / max(total, 1e-5) * smoothstep(60.0, 600.0, dist);
+    float canopy = trees ? 0.0 : wt[L_FOREST] / max(total, 1e-5) * smoothstep(60.0, 600.0, dist);
     // Conifer canopy seen from afar, crown shadows included (darker than a sunlit leaf).
     o.albedo = lerp(o.albedo, float3(0.030, 0.044, 0.021) * lerp(0.85, 1.15, n1), canopy);
     // Normal map: fades with distance (the mips average it out anyway), whiteout-style add.
@@ -405,16 +411,218 @@ TSurf terrain_material(FrameData* f, TerrainMat m, TerrainDraw d, float3 n, floa
     return o;
 }
 
+// ---------------------------------------------------------------------------------------------
+// The far forest rung (trees G3, §3 T3 option b, §4 option A): the canopy page read as crowns.
+// ---------------------------------------------------------------------------------------------
+
+// Crown albedo per species family (linear sunlit leaf mass): terrain.rs `CROWN_ALBEDO`, the one
+// table (a test checks these agree).
+static const float3 T_CROWN_BROAD = float3(0.050, 0.110, 0.024);
+static const float3 T_CROWN_CONIFER = float3(0.026, 0.064, 0.020);
+static const float3 T_LITTER = float3(0.050, 0.042, 0.030);   // needle and leaf litter
+static const float T_CROWN_ROUGH = 0.8;
+// Page spacings (m) between which the forest-floor weight goes from a steep edge to linear.
+static const float T_FOREST_STEEP_M = 20.0;
+static const float T_FOREST_LINEAR_M = 80.0;
+// Crown lattices (m; both divide the 4096 m texture period): broadleaf and conifer.
+static const float T_CELL_BROAD = 8.0;
+static const float T_CELL_CONIFER = 5.12;
+
+// Cover-weighted bilinear canopy at page-sample coordinates `s`: cover, height (m), conifer
+// share, understory (as ed_geo `CanopyPage::bilinear`).
+float4 t_canopy_bilin(uint pool, uint off, float2 s) {
+    s = clamp(s, 0.0, float(T_PAGE_N - 1));
+    int2 s0 = int2(min(floor(s), float2(float(T_PAGE_N - 2))));
+    float2 t = s - float2(s0);
+    float cover = 0.0;
+    float hs = 0.0;
+    float hw = 0.0;
+    float mx = 0.0;
+    float un = 0.0;
+    [ForceUnroll]
+    for (uint k = 0; k < 4; k++) {
+        uint c = t_canopy_raw(pool, off, uint(s0.x) + (k & 1u), uint(s0.y) + (k >> 1));
+        float wk = ((k & 1u) != 0 ? t.x : 1.0 - t.x) * ((k >> 1) != 0 ? t.y : 1.0 - t.y);
+        float cc = float(c & 0xFFu) / 255.0;
+        float ww = wk * cc;
+        cover += wk * cc;
+        hs += ww * t_canopy_h((c >> 8) & 0xFFu);
+        mx += ww * float((c >> 16) & 0xFFu) / 255.0;
+        un += wk * float(c >> 24) / 255.0;
+        hw += ww;
+    }
+    return hw > 0.0 ? float4(cover, hs / hw, mx / hw, un) : float4(cover, 0.0, 0.0, un);
+}
+
+// Nearest crown of a jittered lattice (`cell` m, period 4096 m) around face metres `w`: a cell
+// holds a crown when its hash is under `pres`; radius `rad` (cells). Returns xy: the offset
+// from the crown centre in radii, z: distance in radii (9: none), w: the crown's hash.
+float4 t_crown(float2 w, float cell, float pres, float rad, uint salt) {
+    float2 x = w / cell;
+    float2 c0 = floor(x);
+    int per = int(4096.0 / cell + 0.5);
+    float4 best = float4(0.0, 0.0, 9.0, 0.0);
+    [ForceUnroll]
+    for (int k = 0; k < 9; k++) {
+        float2 c = c0 + float2(float(k % 3 - 1), float(k / 3 - 1));
+        int2 ci = int2(c);
+        ci = int2(((ci.x % per) + per) % per, ((ci.y % per) + per) % per);
+        float h0 = t_hash2(ci + int2(int(salt), 0));
+        if (h0 >= pres) {
+            continue;
+        }
+        float h1 = t_hash2(ci + int2(17, int(salt) + 5));
+        float h2 = t_hash2(ci + int2(int(salt) + 9, 31));
+        float r = rad * lerp(0.6, 1.35, h2);
+        float2 ctr = c + 0.5 + (float2(h1, t_hash2(ci + int2(int(salt) + 3, 7))) - 0.5) * 0.8;
+        float2 q = (x - ctr) / r;
+        float dq = length(q);
+        if (dq < best.z) {
+            best = float4(q, dq, h1);
+        }
+    }
+    return best;
+}
+
+struct TForest {
+    float3 albedo;
+    float3 n;
+    float ao;
+    float sun;    // sun visibility cap (crown and page shadows)
+    float crown;  // crown share of the pixel (roughness)
+};
+
+// The canopy over a terrain pixel. `floor_alb`: the ground's albedo (the forest floor where
+// cover is); `n`: the ground's shading normal; `px_m`: pixel footprint (m); `spacing`: page
+// sample spacing (m).
+TForest t_forest(uint pool, TerrainDraw d, float4 cv, float2 g, float2 w, float3 tu, float3 tv, float3 up, float3 n, float3 floor_alb, float3 l, float px_m, float px_iso, float spacing) {
+    // Stand edges: the page's cover warped by noise (fixed scales, so no seam where the level
+    // changes), so a forest outline is ragged rather than a staircase; only where cover is partial.
+    float ew = t_noise(w + 911.0, 64.0) * 0.65 + t_noise(w + 271.0, 16.0) * 0.35;
+    float c = saturate(cv.x + (ew - 0.5) * 1.6 * cv.x * (1.0 - cv.x));
+    float hc = max(cv.y, 2.0);
+    float mx = cv.z;
+    float3 leaf = lerp(T_CROWN_BROAD, T_CROWN_CONIFER, mx);
+    // Stand-scale variation (clumps, age, species patches): what reads at kilometres.
+    float n1 = t_noise(w + 151.0, 32.0);
+    float n2 = t_noise(w + 517.0, 128.0);
+    float stand = lerp(0.8, 1.2, n1) * lerp(0.88, 1.12, n2);
+
+    // Sun in face metres: horizontal direction over its elevation.
+    float sin_el = max(dot(l, up), 0.06);
+    float2 sun2 = float2(dot(l, tu), dot(l, tv));
+    float2 toward = sun2 / sin_el;  // metres along the ground per metre of height
+
+    // Page shadow (one tap, §4): the canopy toward the sun at the distance a crown top casts.
+    float hs = max(hc, 20.0);
+    float4 tap = t_canopy_bilin(pool, asuint(d.tex.z), g * float(T_PAGE_STRIDE) + toward * hs / max(spacing, 0.01));
+    float page_sh = tap.x * smoothstep(0.4, 0.9, tap.y / hs);
+
+    // Forest floor under the canopy: litter, sky dimmed by cover, sun through gaps.
+    float3 fl = lerp(floor_alb, T_LITTER, 0.5 * c);
+    float fl_ao = lerp(1.0, 0.5, c);
+
+    // Crown lattices: broadleaf and conifer, each holding its share of the cover. A crown's
+    // radius grows with canopy height; presence is set so the crowns cover `c` of the ground.
+    // Closed canopies: the crowns grow into each other (gaps only where cover is).
+    float rad = lerp(0.42, 0.62, saturate(hc / 30.0)) + 0.2 * smoothstep(0.6, 1.0, c);
+    float area = 3.14159 * rad * rad;
+    float pres = saturate(c / area);
+    float pb = pres * (1.0 - mx);
+    float pc = pres * mx;
+    float cell = lerp(T_CELL_BROAD, T_CELL_CONIFER, mx);
+    float crown_px = cell * rad * 2.0 / max(px_m, 1e-3);
+    float det = smoothstep(1.5, 4.0, crown_px);       // individual crowns resolved
+    float paint = smoothstep(80.0, 40.0, cell * rad * 2.0 / max(px_iso, 1e-3));  // crowns drawn on the ground at all
+
+    TForest o;
+    // Far: crowns unresolved, an area mix of crowns (with their own shading folded in) and
+    // floor in their shade.
+    float3 crown_far = leaf * 0.82 * stand;
+    float floor_sun_far = 1.0 - 0.92 * max(c, page_sh);
+    float3 a_far = lerp(fl, crown_far, c);
+    float ao_far = lerp(fl_ao, 0.85, c);
+    float sun_far = lerp(floor_sun_far, 1.0, c);
+    o.albedo = a_far;
+    o.n = n;
+    o.ao = ao_far;
+    o.sun = sun_far;
+    o.crown = c;
+    if (det > 0.0) {
+        float4 kb = pb > 0.0 ? t_crown(w, T_CELL_BROAD, pb, rad, 3u) : float4(0.0, 0.0, 9.0, 0.0);
+        float4 kc = pc > 0.0 ? t_crown(w + 1000.0, T_CELL_CONIFER, pc, rad * 0.9, 11u) : float4(0.0, 0.0, 9.0, 0.0);
+        bool conifer = kc.z < kb.z;
+        float4 k = conifer ? kc : kb;
+        float in_crown = smoothstep(1.0, 0.85, k.z);
+        float3 a_near;
+        float3 n_near;
+        float ao_near;
+        float sun_near;
+        float3 t2 = tu * k.x + tv * k.y;  // outward from the crown axis, in radii
+        float r2 = min(dot(k.xy, k.xy), 1.0);
+        // Crown shape: a cone (conifer, steep sides) or a dome (broadleaf).
+        float3 nc = conifer ? normalize(up + t2 * 1.3) : normalize(t2 + up * sqrt(max(1.0 - r2, 0.04)));
+        float3 nn = normalize(n + (nc - up) * 0.9);
+        float3 la = (conifer ? T_CROWN_CONIFER : T_CROWN_BROAD) * lerp(0.75, 1.25, k.w) * stand;
+        // Per-crown hue: yellow-green to blue-green (species and vigour within the family).
+        la *= lerp(float3(1.12, 1.0, 0.75), float3(0.85, 0.97, 1.2), frac(k.w * 7.31));
+        // Leaf clumps inside the crown (fades out as the crown shrinks on screen).
+        la *= lerp(1.0, lerp(0.7, 1.25, t_noise(w * (conifer ? 1.6 : 1.0) + 13.0, 1.0)), smoothstep(6.0, 16.0, crown_px));
+        // Self-shadow inside the crown: the far side from the sun and the crown's skirt.
+        float self_sh = saturate(0.5 + 0.8 * dot(k.xy, sun2 / max(length(sun2), 1e-3)));
+        float crown_ao = lerp(0.7, 1.0, 1.0 - r2) * lerp(1.0, 0.7, (1.0 - self_sh) * 0.6);
+        // Gaps: crown shadows cast by the crowns toward the sun (mid-crown height).
+        // Unresolved below ~3 px a crown: the area mix's floor shade instead (saves 18 hashes).
+        float gap_sun = floor_sun_far;
+        if (crown_px > 3.0) {
+            float2 wt = w + toward * hc * 0.55;
+            float4 sb = pb > 0.0 ? t_crown(wt, T_CELL_BROAD, pb, rad, 3u) : float4(0.0, 0.0, 9.0, 0.0);
+            float4 sc = pc > 0.0 ? t_crown(wt + 1000.0, T_CELL_CONIFER, pc, rad * 0.9, 11u) : float4(0.0, 0.0, 9.0, 0.0);
+            gap_sun = lerp(gap_sun, 1.0 - 0.92 * smoothstep(1.1, 0.7, min(sb.z, sc.z)), smoothstep(3.0, 6.0, crown_px));
+        }
+        gap_sun = min(gap_sun, 1.0 - 0.9 * page_sh);
+        // Between crowns of a closed stand the eye meets lower crowns and crown flanks in
+        // shade, not the floor (oblique views hide the floor where cover is high).
+        float closed = smoothstep(0.5, 0.95, c);
+        float3 fl_gap = lerp(fl, leaf * stand * 0.85, closed);
+        gap_sun = lerp(gap_sun, max(gap_sun, 0.35), closed);
+        a_near = lerp(fl_gap, la, in_crown);
+        n_near = normalize(lerp(n, nn, in_crown));
+        ao_near = lerp(lerp(fl_ao, 0.75, closed), crown_ao, in_crown);
+        sun_near = lerp(gap_sun, 1.0, in_crown);
+        o.albedo = lerp(o.albedo, a_near, det);
+        o.n = normalize(lerp(o.n, n_near, det));
+        o.ao = lerp(o.ao, ao_near, det);
+        o.sun = lerp(o.sun, sun_near, det);
+        o.crown = lerp(o.crown, in_crown, det);
+    }
+    if (paint < 1.0) {
+        // Near: no trees are drawn yet (G4/G5 bring them); the ground reads as forest floor,
+        // dappled where the canopy lets light through.
+        float dap = smoothstep(0.35, 0.75, t_noise(w + 77.0, 4.0) * 0.6 + t_noise(w + 33.0, 1.0) * 0.4);
+        float sun_floor = min(lerp(1.0, 0.4 + 0.6 * dap, c), 1.0 - 0.6 * page_sh);
+        o.albedo = lerp(fl, o.albedo, paint);
+        o.n = normalize(lerp(n, o.n, paint));
+        // Until G4/G5 draw the near trees the floor is seen as if lit from the stand's edge:
+        // dimmed, never black.
+        o.ao = lerp(max(fl_ao, 0.75), o.ao, paint);
+        o.sun = lerp(sun_floor, o.sun, paint);
+        o.crown = o.crown * paint;
+    }
+    return o;
+}
+
 // A terrain pixel: the rasterised triangle refetched from the draw record and page pool (exact
 // position on the drawn facet), a smooth normal from the height page, the slope/altitude tint,
 // then the same light as every opaque pixel.
-float4 terrain_pixel(FrameData* f, FsOut i, uint2 vis, float3 dir) {
+float4 terrain_pixel<let TR : int>(FrameData* f, FsOut i, uint2 vis, float3 dir) {
+    bool trees_on = TR != 0;
     TerrainDraw d = ed_buf<TerrainDraw>(ed_c.t_draws)[vis.x & ~TERRAIN_VIS_BIT];
     uint pool = ed_c.t_pool;
     uint3 tri = t_triangle(vis.y & 0x0FFFFFFFu);
-    float3 p0 = t_vertex(pool, d, tri.x);
-    float3 e1 = t_vertex(pool, d, tri.y) - p0;
-    float3 e2 = t_vertex(pool, d, tri.z) - p0;
+    float3 p0 = t_vertex<TR>(pool, d, tri.x);
+    float3 e1 = t_vertex<TR>(pool, d, tri.y) - p0;
+    float3 e2 = t_vertex<TR>(pool, d, tri.z) - p0;
     float2 bb = ray_bary(dir, p0, e1, e2);
     float b1 = saturate(bb.x);
     float b2 = saturate(bb.y);
@@ -437,6 +645,12 @@ float4 terrain_pixel(FrameData* f, FsOut i, uint2 vis, float3 dir) {
     int r = clamp(int(T_SLOPE_M / spacing + 0.5), 1, 6);
     float3 nm = r == rn ? n : t_smooth_normal(pool, d, g, r, up, h);
     float3 albedo = terrain_albedo(h, dot(nm, up));
+    // Far forest rung (trees G3): the canopy page under the pixel.
+    bool trees = trees_on && (d.slots.z & T_TREES) != 0u;
+    float4 cv = float4(0.0);
+    if (trees && asuint(d.tex.z) != 0u) {
+        cv = t_canopy_bilin(pool, asuint(d.tex.z), g * float(T_PAGE_STRIDE));
+    }
     float rough = T_ROUGH;
     float mat_ao = 1.0;
     if (ed_c.t_mat != 0u) {
@@ -464,11 +678,29 @@ float4 terrain_pixel(FrameData* f, FsOut i, uint2 vis, float3 dir) {
         }
         float dl = float(rl) * spacing;
         float df = float(rf) * spacing;
-        TSurf s = terrain_material(f, m, d, n, nm, up, h, lap / (dl * dl), lapf / (df * df), w, dwx, dwy, dot(dpx, up), dot(dpy, up), tu, tv, length(p));
+        TSurf s = terrain_material(f, m, d, n, nm, up, h, lap / (dl * dl), lapf / (df * df), w, dwx, dwy, dot(dpx, up), dot(dpy, up), tu, tv, length(p), trees, cv, spacing);
         albedo = s.albedo;
         n = s.n;
         rough = s.rough;
         mat_ao = s.ao;
+    }
+    float sun_k = 1.0;
+    if (trees && cv.x > 0.004) {
+        float cell_m = d.shape.x * d.shape.y;
+        float2 w = d.tex.xy + (g - 32.0) * cell_m;
+        float3 tu = normalize(d.fu.xyz - up * dot(d.fu.xyz, up));
+        float3 tv = normalize(d.fv.xyz - up * dot(d.fv.xyz, up));
+        // Pixel footprint on the ground (m): the pixel's angle times distance, stretched by the
+        // grazing angle (geometric mean of the two footprint axes).
+        float pa = length(view_dir(f, i.pos.xy + float2(1.0, 0.0)) - dir);
+        float px_iso = length(p) * pa;
+        float px_m = px_iso / sqrt(max(abs(dot(dir, n)), 0.03));
+        TForest fo = t_forest(pool, d, cv, g, w, tu, tv, up, n, albedo, f.sun_dir.xyz, px_m, px_iso, spacing);
+        albedo = fo.albedo;
+        n = fo.n;
+        rough = lerp(rough, T_CROWN_ROUGH, fo.crown);
+        mat_ao *= fo.ao;
+        sun_k = fo.sun;
     }
     float3 v = -dir;
     if (dot(n, v) < 0.0) {
@@ -481,6 +713,9 @@ float4 terrain_pixel(FrameData* f, FsOut i, uint2 vis, float3 dir) {
         ng = -ng;
     }
     float sun_vis = sun_shadow(f, ed_c.shadow, p, ng, zlin, i.pos.xy);
+    if (trees) {
+        sun_vis = min(sun_vis, sun_k);
+    }
     float2 occ = ao_upsample(f, ed_c.ao, i.pos.xy, zlin);
     float ao = occ.x * mat_ao;
     float sv = occ.y;
@@ -495,12 +730,16 @@ float4 terrain_pixel(FrameData* f, FsOut i, uint2 vis, float3 dir) {
     } else if (f.light.flags.w == 4u) {
         col = float3(0.5 * sv);
     }
+    if (trees && (d.slots.z & T_TREES_DEBUG) != 0u && cv.x > 0.0) {
+        // EW_TREES_FAR=debug: red = canopy height (40 m full), green = cover, blue = conifer share.
+        col = lerp(col, float3(saturate(cv.y / 40.0), cv.x, cv.z) * 0.6, 0.75);
+    }
     return float4(col, 1.0);
 }
 
 // The resolve; `terrain` is a compile-time constant per entry point, so `fs_resolve` (no
 // terrain provider) compiles to exactly the code it had before terrain existed.
-float4 resolve_px(FsOut i, bool terrain) {
+float4 resolve_px<let TR : int>(FsOut i, bool terrain) {
     FrameData* f = ed_buf<FrameData>(ed_c.frame);
     uint2 px = uint2(i.pos.xy);
     uint2 vis = ed_tex2d_uint(ed_c.vis).Load(int3(int2(px), 0)).xy;
@@ -509,7 +748,7 @@ float4 resolve_px(FsOut i, bool terrain) {
         return float4(sky_pixel(f, dir), 1.0);
     }
     if (terrain && (vis.x & TERRAIN_VIS_BIT) != 0) {
-        return terrain_pixel(f, i, vis, dir);
+        return terrain_pixel<TR>(f, i, vis, dir);
     }
     GpuInstance inst = ed_buf<GpuInstance>(ed_c.instances)[vis.x - 1u];
     GpuMesh* mesh = ed_buf<GpuMesh>(ed_c.meshes) + inst.mesh;
@@ -636,11 +875,18 @@ float4 resolve_px(FsOut i, bool terrain) {
 
 [shader("fragment")]
 float4 fs_resolve(FsOut i) : SV_Target0 {
-    return resolve_px(i, false);
+    return resolve_px<0>(i, false);
 }
 
 // With the terrain provider: terrain vis words (`TERRAIN_VIS_BIT`) shade as terrain.
 [shader("fragment")]
 float4 fs_resolve_terrain(FsOut i) : SV_Target0 {
-    return resolve_px(i, true);
+    return resolve_px<0>(i, true);
+}
+
+// With the terrain provider and its far forest rung on (trees G3, `EW_TREES_FAR` not 0): a
+// separate entry so `fs_resolve_terrain` keeps its exact code when the rung is off.
+[shader("fragment")]
+float4 fs_resolve_trees(FsOut i) : SV_Target0 {
+    return resolve_px<1>(i, true);
 }

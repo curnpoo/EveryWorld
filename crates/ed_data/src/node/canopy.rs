@@ -403,4 +403,47 @@ mod tests {
         let n = page.samples.iter().filter(|s| s[0] > 128 && s[1] > 0).count();
         assert!(n > 2000, "treed samples {n}");
     }
+
+    /// Trees gate G3 (the density strip, numerically): the forest share of one forested
+    /// Zermatt patch (an L12 node, ~2.4 km) read from every rung's pages, L8 (what a 50 km view
+    /// draws) to L14 (50 m), with the far rung's forest weight (resolve.slang `terrain_material`:
+    /// a steep edge on fine pages, linear in cover on coarse ones). Each level stays within 10%
+    /// of the finest.
+    #[test]
+    #[ignore = "network"]
+    fn g3_density_strip_zermatt() {
+        let cache = DiskCache::default_location();
+        let patch = node_at(46.012, 7.765, 12);
+        let src = RealCanopySource { cache: &cache };
+        let ss = |e0: f32, e1: f32, x: f32| {
+            let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+            t * t * (3.0 - 2.0 * t)
+        };
+        const N: u32 = 48;
+        let mut share = Vec::new();
+        for level in 8..=14u8 {
+            let mut pages: std::collections::BTreeMap<u64, CanopyPage> = std::collections::BTreeMap::new();
+            let mut sum = 0.0f64;
+            for j in 0..N {
+                for i in 0..N {
+                    let p = patch.grid_point(2 * i + 1, 2 * j + 1, 2 * N);
+                    let id = NodeId::from_unit(BodyId(0), p, level);
+                    let page = pages.entry(id.bits()).or_insert_with(|| node_canopy(&src, id, &|_, _| 1600.0));
+                    let (u, v) = id.local_uv(p);
+                    // Page spacing (m) at this level, and the shader's level-aware weight.
+                    let sp = (id.grid_point(0, 0, PAGE_CELLS as u32) - id.grid_point(1, 0, PAGE_CELLS as u32)).length() * 6.371e6;
+                    let c = page.bilinear(u, v)[0];
+                    let k = ss(80.0, 20.0, sp as f32);
+                    sum += (c + (ss(0.03, 0.5, c) - c) * k) as f64;
+                }
+            }
+            share.push((level, sum / (N * N) as f64));
+        }
+        let fine = share.last().unwrap().1;
+        eprintln!("G3 density strip (forest share by level): {share:?}");
+        assert!(fine > 0.2, "patch is forested: {fine}");
+        for &(level, s) in &share {
+            assert!((s - fine).abs() <= 0.1 * fine, "L{level}: {s:.3} vs L14 {fine:.3}");
+        }
+    }
 }

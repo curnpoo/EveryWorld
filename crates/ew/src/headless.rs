@@ -378,6 +378,18 @@ pub fn run(args: &Args) -> Result<Report, String> {
             "terrain: last frame {} drawn, {} wanted, {} holes, {} resident pages; page builds + selection {:.0} ms over the run; provider {:?}",
             st.drawn, st.wanted, st.holes, st.resident, terrain_ms, ts
         );
+        if let Some(w) = &world
+            && w.trees_far.on()
+        {
+            let (n, ms) = w.canopy_built;
+            let _ = writeln!(
+                footer,
+                "canopy pages (trees G3, EW_TREES_FAR={:?}): {n} built, {ms:.0} ms build time ({:.1} ms each), {} B each",
+                w.trees_far,
+                ms / n.max(1) as f64,
+                ed_geo::PAGE_SAMPLES * 4
+            );
+        }
     }
     let _ = write!(
         footer,

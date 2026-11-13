@@ -210,7 +210,7 @@ macro_rules! builtin_set {
 
 // Every entry point of every module (a missing generated file fails the build).
 builtin_set! {
-    Resolve "resolve" ["vs_resolve", "fs_resolve", "fs_resolve_terrain"],
+    Resolve "resolve" ["vs_resolve", "fs_resolve", "fs_resolve_terrain", "fs_resolve_trees"],
     Tonemap "tonemap" ["vs_fullscreen", "fs_tonemap"],
     Debug "debug" ["pick", "pop_stats"],
     Skin "skin" ["skin"],

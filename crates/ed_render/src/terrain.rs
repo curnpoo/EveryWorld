@@ -28,7 +28,7 @@ use crate::provider::{GeometryProvider, ProviderOutputs, SharedInputs, VisTarget
 use crate::scene::InstancePools;
 use crate::{DEPTH_FORMAT, Tracked, VIS_FORMAT, gpu};
 use ed_geo::node::warp;
-use ed_geo::{HeightPage, NodeId, PAGE_N, PAGE_SAMPLES};
+use ed_geo::{CanopyPage, HeightPage, NodeId, PAGE_N, PAGE_SAMPLES};
 use ed_gpu::{
     Backend, Compare, Cull, DepthDesc, Device, LoadOp, RenderPipelineDesc, RenderPipelineId, ResourceState, ShaderCode, ShaderDesc, ShaderId,
     ShaderStage, StoreOp, Topology, Usage,
@@ -99,6 +99,56 @@ pub const F_LOD_SHIFT: u32 = 8;
 pub const F_EDGE_SHIFT: u32 = 10;
 /// No vertex of the node morphs (the node lies wholly inside its own morph band start).
 pub const F_NOMORPH: u32 = 1 << 22;
+/// The far forest rung is on for this draw (trees G3): forest comes from the canopy page
+/// (`tex.z`, 0 = no page = no forest), not from the old noise rule.
+pub const F_TREES: u32 = 1 << 23;
+/// `EW_TREES_FAR=debug`: the resolve tints canopy pixels by cover, height and mix.
+pub const F_TREES_DEBUG: u32 = 1 << 24;
+
+/// u32 words per canopy pool slot: one packed `[cover, height, mix, under]` per page sample.
+pub const CANOPY_WORDS: usize = PAGE_SAMPLES;
+/// The reference tree of the vertex-lift ramp (m): the lift starts when a tree this tall is
+/// [`LIFT_NONE_PX`] tall on screen and is full at [`LIFT_FULL_PX`] (trees §3, T3). G5 ties these
+/// to the impostor hand-off. Mirrored in terrain_common.slang (`T_LIFT_*`).
+pub const TREE_REF_M: f64 = 15.0;
+pub const LIFT_NONE_PX: f32 = 12.0;
+pub const LIFT_FULL_PX: f32 = 6.0;
+
+/// The far forest rung (trees G3), `EW_TREES_FAR`: `0` the old noise forest, `1` canopy
+/// colour and shading from the canopy page without the vertex lift, `debug` lift plus a
+/// cover/height/mix tint, anything else (the default) lift plus shading.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TreesFar {
+    #[default]
+    Off,
+    Colour,
+    Full,
+    Debug,
+}
+
+impl TreesFar {
+    pub fn from_env() -> TreesFar {
+        match std::env::var("EW_TREES_FAR").as_deref() {
+            Ok("0") | Ok("off") => TreesFar::Off,
+            Ok("1") | Ok("colour") => TreesFar::Colour,
+            Ok("debug") => TreesFar::Debug,
+            _ => TreesFar::Full,
+        }
+    }
+    /// Canopy pages are loaded and drawn.
+    pub fn on(self) -> bool {
+        self != TreesFar::Off
+    }
+    /// Terrain vertices are lifted by the canopy.
+    pub fn lift(self) -> bool {
+        matches!(self, TreesFar::Full | TreesFar::Debug)
+    }
+}
+
+/// Crown albedo per species family (linear, sunlit leaf mass, trees §3 "colour is conserved"):
+/// the one table the canopy rung, impostor bakes and meshes share. Row 0 broadleaf, row 1
+/// conifer. Mirrored in resolve.slang (`T_CROWN_*`; a test checks they agree).
+pub const CROWN_ALBEDO: [[f32; 3]; 2] = [[0.050, 0.110, 0.024], [0.026, 0.064, 0.020]];
 /// Page samples per grid cell.
 const STRIDE: usize = 4;
 /// The morph band uses the node's nominal cell size (equator, face centre) times this, the
@@ -120,11 +170,13 @@ pub struct TerrainConfig {
     pub clear_targets: bool,
     /// The selector's settings (morph bands follow its error metric).
     pub select: SelectConfig,
+    /// The far forest rung (trees G3).
+    pub trees_far: TreesFar,
 }
 
 impl Default for TerrainConfig {
     fn default() -> Self {
-        Self { max_draws: 4096, pool_slots: 1024, skirts: true, clear_targets: false, select: SelectConfig::default() }
+        Self { max_draws: 4096, pool_slots: 1024, skirts: true, clear_targets: false, select: SelectConfig::default(), trees_far: TreesFar::Off }
     }
 }
 
@@ -630,18 +682,23 @@ struct PoolEntry {
     slot: u32,
     stamp: u64,
     page: Arc<HeightPage>,
+    /// The canopy page uploaded into this slot's canopy words, and its tallest canopy (m).
+    canopy: Option<(Arc<CanopyPage>, f32)>,
 }
 
 /// GPU height page pool bookkeeping: `NodeId -> slot`, least recently used first (ties by id).
 struct Pool {
     map: BTreeMap<NodeId, PoolEntry>,
     free: Vec<u32>,
-    pending: Vec<(u32, Vec<u8>)>,
+    /// Uploads: byte offset into the pool buffer, bytes.
+    pending: Vec<(u64, Vec<u8>)>,
+    /// Slots (the canopy words start after the height words of every slot).
+    slots: u32,
 }
 
 impl Pool {
     fn new(slots: u32) -> Self {
-        Self { map: BTreeMap::new(), free: (0..slots).rev().collect(), pending: Vec::new() }
+        Self { map: BTreeMap::new(), free: (0..slots).rev().collect(), pending: Vec::new(), slots }
     }
     /// Slot of `id`'s page, uploading it if needed. `None` when every slot is in use this frame.
     fn ensure(&mut self, id: NodeId, page: &Arc<HeightPage>, stamp: u64) -> Option<u32> {
@@ -654,7 +711,7 @@ impl Pool {
             e.page = page.clone();
             e.stamp = stamp;
             let slot = e.slot;
-            self.pending.push((slot, page_bytes(page)));
+            self.pending.push((slot as u64 * PAGE_WORDS as u64 * 4, page_bytes(page)));
             return Some(slot);
         }
         let slot = match self.free.pop() {
@@ -664,9 +721,34 @@ impl Pool {
                 self.map.remove(&victim).expect("victim").slot
             }
         };
-        self.map.insert(id, PoolEntry { slot, stamp, page: page.clone() });
-        self.pending.push((slot, page_bytes(page)));
+        self.map.insert(id, PoolEntry { slot, stamp, page: page.clone(), canopy: None });
+        self.pending.push((slot as u64 * PAGE_WORDS as u64 * 4, page_bytes(page)));
         Some(slot)
+    }
+
+    /// First u32 word of `slot`'s canopy page in the pool buffer.
+    fn canopy_word(&self, slot: u32) -> u32 {
+        (self.slots as usize * PAGE_WORDS + slot as usize * CANOPY_WORDS) as u32
+    }
+
+    /// Canopy word offset and tallest canopy (m) of `id` (whose height page is already in the
+    /// pool), uploading `page` into the slot's canopy words if it is not there yet. `None`
+    /// page: no canopy (offset 0).
+    fn ensure_canopy(&mut self, id: NodeId, page: Option<Arc<CanopyPage>>) -> (u32, f32) {
+        let Some(page) = page else { return (0, 0.0) };
+        let Some(e) = self.map.get_mut(&id) else { return (0, 0.0) };
+        let slot = e.slot;
+        if let Some((c, m)) = &e.canopy
+            && Arc::ptr_eq(c, &page)
+        {
+            let m = *m;
+            return (self.canopy_word(slot), m);
+        }
+        let max_m = ed_geo::decode_height(page.samples.iter().filter(|s| s[0] > 0).map(|s| s[1]).max().unwrap_or(0));
+        e.canopy = Some((page.clone(), max_m));
+        let off = self.canopy_word(slot);
+        self.pending.push((off as u64 * 4, page.to_bytes()));
+        (off, max_m)
     }
 }
 
@@ -791,6 +873,8 @@ const GEN_MSL: &str = include_str!("../shaders/gen/msl/terrain.metal");
 const GEN_VS: &[u8] = include_bytes!("../shaders/gen/spv/terrain.vs_terrain.spv");
 const GEN_FS: &[u8] = include_bytes!("../shaders/gen/spv/terrain.fs_terrain.spv");
 const GEN_VS_SHADOW: &[u8] = include_bytes!("../shaders/gen/spv/terrain.vs_terrain_shadow.spv");
+const GEN_VS_TREES: &[u8] = include_bytes!("../shaders/gen/spv/terrain.vs_terrain_trees.spv");
+const GEN_VS_SHADOW_TREES: &[u8] = include_bytes!("../shaders/gen/spv/terrain.vs_terrain_shadow_trees.spv");
 
 fn spv_words(b: &[u8]) -> Vec<u32> {
     b.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect()
@@ -799,7 +883,7 @@ fn spv_words(b: &[u8]) -> Vec<u32> {
 impl TerrainProvider {
     pub fn new(dev: &dyn Device, config: TerrainConfig) -> Result<Self, ed_gpu::Error> {
         let mut built = Vec::new();
-        let r = Self::pipelines(dev, &mut built);
+        let r = Self::pipelines(dev, &mut built, config.trees_far.lift());
         let (raster, shadow) = match r {
             Ok(p) => p,
             Err(e) => {
@@ -812,7 +896,9 @@ impl TerrainProvider {
         let upload = Usage { shader_read: true, copy_dst: true, ..Default::default() };
         let index = Tracked::new(dev, "terrain indices", INDEX_COUNT as u64 * 4, upload)?;
         dev.write_buffer(index.id, 0, &gpu::bytes(&indices()))?;
-        let pool_buf = Tracked::new(dev, "terrain page pool", config.pool_slots as u64 * PAGE_WORDS as u64 * 4, upload)?;
+        // Height words of every slot, then (far forest rung on) the canopy words of every slot.
+        let words = PAGE_WORDS as u64 + if config.trees_far.on() { CANOPY_WORDS as u64 } else { 0 };
+        let pool_buf = Tracked::new(dev, "terrain page pool", config.pool_slots as u64 * words * 4, upload)?;
         let view0 = Self::new_view(dev, config.max_draws)?;
         Ok(Self { config, built, raster, shadow, index, pool_buf, pool: Pool::new(config.pool_slots), views: vec![view0], cur: 0, stamp: 0, stats: TerrainStats::default(), eye: DVec3::ZERO, shadow_tile: 2048, mats: None })
     }
@@ -825,18 +911,21 @@ impl TerrainProvider {
         Ok(TerrainView { draws: Tracked::new(dev, "terrain draws", size, per_frame)?, entries: Vec::new(), vis: Vec::new(), bounds: Vec::new(), ranges: [(0, 0); 4], groups: [[(0, 0); LODS]; 5], imports: Vec::new() })
     }
 
-    fn pipelines(dev: &dyn Device, built: &mut Vec<ShaderId>) -> Result<(RenderPipelineId, RenderPipelineId), ed_gpu::Error> {
+    /// `lift`: the vertex entries with the canopy lift (trees G3), else the exact unlifted ones.
+    fn pipelines(dev: &dyn Device, built: &mut Vec<ShaderId>, lift: bool) -> Result<(RenderPipelineId, RenderPipelineId), ed_gpu::Error> {
         let vk = dev.caps().backend == Backend::Vulkan;
-        let (vs_w, fs_w, vss_w) = (spv_words(GEN_VS), spv_words(GEN_FS), spv_words(GEN_VS_SHADOW));
+        let (vs_e, vss_e) = if lift { ("vs_terrain_trees", "vs_terrain_shadow_trees") } else { ("vs_terrain", "vs_terrain_shadow") };
+        let (vs_b, vss_b) = if lift { (GEN_VS_TREES, GEN_VS_SHADOW_TREES) } else { (GEN_VS, GEN_VS_SHADOW) };
+        let (vs_w, fs_w, vss_w) = (spv_words(vs_b), spv_words(GEN_FS), spv_words(vss_b));
         let mut shader = |entry: &str, stage, spv: &[u32]| -> Result<ShaderId, ed_gpu::Error> {
             let code = if vk { ShaderCode::SpirV(spv) } else { ShaderCode::MslSource(GEN_MSL) };
             let s = dev.create_shader(&ShaderDesc { label: entry, stage, entry, code })?;
             built.push(s);
             Ok(s)
         };
-        let vs = shader("vs_terrain", ShaderStage::Vertex, &vs_w)?;
+        let vs = shader(vs_e, ShaderStage::Vertex, &vs_w)?;
         let fs = shader("fs_terrain", ShaderStage::Fragment, &fs_w)?;
-        let vss = shader("vs_terrain_shadow", ShaderStage::Vertex, &vss_w)?;
+        let vss = shader(vss_e, ShaderStage::Vertex, &vss_w)?;
         let raster = dev.create_render_pipeline(&RenderPipelineDesc {
             label: "terrain",
             vertex: vs,
@@ -1027,14 +1116,37 @@ impl TerrainProvider {
             };
             let parent = id.parent().and_then(|p| res.height_page(p).map(|pg| (p, pg)));
             let parent = parent.and_then(|(p, pg)| self.pool.ensure(p, &pg, stamp).map(|s| (s, pg)));
+            // Canopy pages ride in the same slots (trees G3); the height slots are taken first,
+            // so a canopy upload never evicts a height page.
+            let tf = self.config.trees_far;
+            let (canopy, parent_canopy, lift_max) = if tf.on() {
+                let (own, max_m) = self.pool.ensure_canopy(id, res.canopy_page(id));
+                let par = match (&parent, id.parent()) {
+                    (Some(_), Some(p)) => self.pool.ensure_canopy(p, res.canopy_page(p)).0,
+                    _ => 0,
+                };
+                (own, par, if tf.lift() { max_m } else { 0.0 })
+            } else {
+                (0, 0, 0.0)
+            };
             let coarse = coarse_mask(id, &drawn);
             if coarse != 0 {
                 st.stitched += 1;
             }
             let cfg = &self.config.select;
             let bands = [morph_band(body, id.level(), cfg, pixels_per_radian), morph_band(body, id.level().saturating_sub(1), cfg, pixels_per_radian)];
-            let d = node_draw(id, body, pose, eye, bands, self.config.skirts, (slot, &page), parent.as_ref().map(|(s, p)| (*s, &**p)), coarse);
-            bounds.push(node_bound(body, pose, eye, id, &page, d.origin[3] as f64));
+            let mut d = node_draw(id, body, pose, eye, bands, self.config.skirts, (slot, &page), parent.as_ref().map(|(s, p)| (*s, &**p)), coarse);
+            if tf.on() {
+                d.slots[2] |= F_TREES | if tf == TreesFar::Debug { F_TREES_DEBUG } else { 0 };
+                d.tex[2] = f32::from_bits(canopy);
+                d.tex[3] = f32::from_bits(parent_canopy);
+                if tf.lift() {
+                    // Metres times pixels per radian: a tree of height h at distance r is
+                    // `h * polar.w / (TREE_REF_M * r)` pixels tall.
+                    d.polar[3] = (TREE_REF_M * pixels_per_radian) as f32;
+                }
+            }
+            bounds.push(node_bound(body, pose, eye, id, &page, d.origin[3] as f64 + lift_max as f64));
             entries.push(d);
         }
         st.drawn = entries.len() as u32;
@@ -1132,8 +1244,8 @@ impl GeometryProvider for TerrainProvider {
     }
 
     fn flush(&mut self, dev: &dyn Device, _pools: &InstancePools) -> Result<(), ed_gpu::Error> {
-        for (slot, bytes) in self.pool.pending.drain(..) {
-            dev.write_buffer(self.pool_buf.id, slot as u64 * PAGE_WORDS as u64 * 4, &bytes)?;
+        for (off, bytes) in self.pool.pending.drain(..) {
+            dev.write_buffer(self.pool_buf.id, off, &bytes)?;
         }
         Ok(())
     }
@@ -1356,6 +1468,18 @@ mod tests {
     use super::*;
     use ed_geo::BodyId;
     use glam::DQuat;
+
+    /// The crown colour table is one table: the resolve shader's `T_CROWN_*` match it.
+    #[test]
+    fn crown_albedo_matches_shader() {
+        let src = include_str!("../shaders/resolve.slang");
+        for (name, row) in [("T_CROWN_BROAD", CROWN_ALBEDO[0]), ("T_CROWN_CONIFER", CROWN_ALBEDO[1])] {
+            let line = src.lines().find(|l| l.contains(&format!("float3 {name} ="))).expect(name);
+            let args = line.split("float3(").nth(1).unwrap().split(')').next().unwrap();
+            let v: Vec<f32> = args.split(',').map(|x| x.trim().parse().unwrap()).collect();
+            assert_eq!(v, row.to_vec(), "{name}");
+        }
+    }
 
     fn earth() -> Body {
         Body::earth()

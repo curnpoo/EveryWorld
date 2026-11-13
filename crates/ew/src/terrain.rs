@@ -19,7 +19,8 @@ use ed_data::node::{ElevationSource, Raster, SourceView};
 use ed_geo::NodeId;
 use ed_planet::{Anchor, Body, BodyPose, ChunkMask, HeightPage, Planet, Residency, SelectConfig, Selection, View};
 use ed_render::Camera;
-use ed_render::terrain::{TerrainConfig, TerrainProvider, TerrainStats};
+use ed_geo::CanopyPage;
+use ed_render::terrain::{TerrainConfig, TerrainProvider, TerrainStats, TreesFar};
 use glam::{DQuat, DVec3};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -282,10 +283,14 @@ impl CacheSource {
 // Residency and the per-frame driver
 // ---------------------------------------------------------------------------------------------
 
-/// Resident height pages by node (the loader's table).
+/// Resident height pages by node (the loader's table), and canopy pages (trees G3) when the
+/// far forest rung is on: `None` = built, no canopy anywhere on the node.
 #[derive(Default)]
 pub struct PageStore {
     pages: BTreeMap<NodeId, Arc<HeightPage>>,
+    canopy: BTreeMap<NodeId, Option<Arc<CanopyPage>>>,
+    /// Canopy pages are part of a node's bytes.
+    trees: bool,
 }
 
 impl PageStore {
@@ -299,7 +304,7 @@ impl PageStore {
 
 impl Residency for PageStore {
     fn bytes(&self, _id: NodeId) -> u64 {
-        (ed_planet::PAGE_N * ed_planet::PAGE_N * 2) as u64
+        (ed_planet::PAGE_N * ed_planet::PAGE_N * if self.trees { 6 } else { 2 }) as u64
     }
     fn chunks(&self, id: NodeId) -> ChunkMask {
         let mut m = ChunkMask::terrain();
@@ -315,29 +320,53 @@ impl Residency for PageStore {
     fn page_slot(&self, _id: NodeId) -> Option<u32> {
         None
     }
+    fn canopy_page(&self, id: NodeId) -> Option<Arc<CanopyPage>> {
+        self.canopy.get(&id).cloned().flatten()
+    }
+}
+
+/// The canopy page of `id` (trees G3) from the real canopy source through the disk cache, on
+/// the node's own heights; `None` when the node has no canopy at all (ocean, ice, rock).
+pub fn build_canopy(cache: &ed_data::DiskCache, id: NodeId, heights: &HeightPage) -> Option<Arc<CanopyPage>> {
+    let src = ed_data::node::RealCanopySource { cache };
+    let page = ed_data::node::node_canopy(&src, id, &|i, j| heights.height(i, j) as f64);
+    page.samples.iter().any(|s| s[0] > 0).then(|| Arc::new(page))
+}
+
+/// Loader results.
+enum Built {
+    Height(NodeId, Arc<HeightPage>),
+    Canopy(NodeId, Option<Arc<CanopyPage>>),
 }
 
 /// Background page builders: a shared job queue, results back on a channel. Workers exit
 /// when the [`Loader`] (its job sender) is dropped.
 struct Loader {
     jobs: std::sync::mpsc::Sender<NodeId>,
-    done: std::sync::mpsc::Receiver<(NodeId, Arc<HeightPage>)>,
+    done: std::sync::mpsc::Receiver<Built>,
     inflight: BTreeSet<NodeId>,
 }
 
 impl Loader {
-    fn new(src: Arc<CacheSource>, threads: usize) -> Loader {
+    /// `canopy`: also build each node's canopy page after its heights (sent separately, so a
+    /// slow canopy read never holds the terrain back).
+    fn new(src: Arc<CacheSource>, threads: usize, canopy: Option<Arc<ed_data::DiskCache>>) -> Loader {
         let (jobs, rx) = std::sync::mpsc::channel::<NodeId>();
         let (tx, done) = std::sync::mpsc::channel();
         let rx = Arc::new(Mutex::new(rx));
         for _ in 0..threads {
-            let (rx, tx, src) = (rx.clone(), tx.clone(), src.clone());
+            let (rx, tx, src, canopy) = (rx.clone(), tx.clone(), src.clone(), canopy.clone());
             std::thread::spawn(move || {
                 loop {
                     let job = rx.lock().map(|r| r.recv());
                     let Ok(Ok(id)) = job else { break };
                     let page = Arc::new(ed_data::node::node_heights(&*src, id));
-                    if tx.send((id, page)).is_err() {
+                    if tx.send(Built::Height(id, page.clone())).is_err() {
+                        break;
+                    }
+                    if let Some(cache) = &canopy
+                        && tx.send(Built::Canopy(id, build_canopy(cache, id, &page))).is_err()
+                    {
                         break;
                     }
                 }
@@ -372,16 +401,26 @@ pub struct TerrainWorld {
     ppr: f64,
     /// Pages kept in CPU memory (bytes); least recently wanted ones beyond it are dropped.
     pub cache_bytes: u64,
+    /// The far forest rung (`EW_TREES_FAR`, trees G3).
+    pub trees_far: TreesFar,
+    /// Canopy source cache (trees on).
+    canopy_cache: Option<Arc<ed_data::DiskCache>>,
+    /// Canopy page builds: count and total ms (headless report).
+    pub canopy_built: (u32, f64),
 }
 
 impl TerrainWorld {
     pub fn new(cache: &Path, place: &Place) -> TerrainWorld {
         let anchor = place_anchor(place);
+        let trees_far = TreesFar::from_env();
         TerrainWorld {
             planet: Planet::new(vec![anchor.body.clone()]),
             anchor,
             config: SelectConfig::default(),
-            store: PageStore::default(),
+            store: PageStore { trees: trees_far.on(), ..Default::default() },
+            trees_far,
+            canopy_cache: trees_far.on().then(|| Arc::new(ed_data::DiskCache::new(cache))),
+            canopy_built: (0, 0.0),
             src: Arc::new(CacheSource::new(cache)),
             sel: Selection::default(),
             loader: None,
@@ -429,21 +468,31 @@ impl TerrainWorld {
         // Contiguous runs of sorted ids per worker: neighbouring nodes share source tiles, so
         // each worker stays on a few tiles (a shared counter was ~3x more CPU). Results land by
         // index, so the store fills in sorted order whatever the thread timing.
-        let slots: Vec<OnceLock<HeightPage>> = (0..missing.len()).map(|_| OnceLock::new()).collect();
+        type Slot = OnceLock<(HeightPage, Option<Option<Arc<CanopyPage>>>, f64)>;
+        let slots: Vec<Slot> = (0..missing.len()).map(|_| OnceLock::new()).collect();
         let chunk = missing.len().div_ceil(threads);
+        let canopy = self.canopy_cache.as_deref();
         std::thread::scope(|s| {
             for (c, ids) in missing.chunks(chunk).enumerate() {
                 let slots = &slots;
                 s.spawn(move || {
                     for (k, &id) in ids.iter().enumerate() {
-                        let _ = slots[c * chunk + k].set(ed_data::node::node_heights(src, id));
+                        let page = ed_data::node::node_heights(src, id);
+                        let t = std::time::Instant::now();
+                        let cp = canopy.map(|cache| build_canopy(cache, id, &page));
+                        let _ = slots[c * chunk + k].set((page, cp, t.elapsed().as_secs_f64() * 1e3));
                     }
                 });
             }
         });
-        let built: Vec<HeightPage> = slots.into_iter().map(|c| c.into_inner().expect("page worker")).collect();
-        for (id, p) in missing.iter().zip(built) {
+        for (id, slot) in missing.iter().zip(slots) {
+            let (p, cp, ms) = slot.into_inner().expect("page worker");
             self.store.pages.insert(*id, Arc::new(p));
+            if let Some(cp) = cp {
+                self.store.canopy.insert(*id, cp);
+                self.canopy_built.0 += 1;
+                self.canopy_built.1 += ms;
+            }
         }
         missing.len()
     }
@@ -476,6 +525,7 @@ impl TerrainWorld {
         let evicted = self.planet.evict(self.cache_bytes);
         for id in &evicted {
             self.store.pages.remove(id);
+            self.store.canopy.remove(id);
         }
         self.eye = camera.position;
         self.ppr = view.pixels_per_radian();
@@ -494,7 +544,7 @@ impl TerrainWorld {
 
     /// The provider to register on the renderer (`Renderer::set_terrain`).
     pub fn provider(&self, dev: &dyn ed_gpu::Device) -> Result<TerrainProvider, ed_gpu::Error> {
-        let mut t = TerrainProvider::new(dev, TerrainConfig { select: self.config, ..Default::default() })?;
+        let mut t = TerrainProvider::new(dev, TerrainConfig { select: self.config, trees_far: self.trees_far, ..Default::default() })?;
         // Scanned surface layers (P-slice S7): only when a local library is present.
         if let Some(m) = crate::terrain_mat::load() {
             t.set_materials(dev, &m)?;
@@ -507,7 +557,7 @@ impl TerrainWorld {
     /// order they arrive in changes what is drawn for a few frames, never what a page holds.
     pub fn start_loader(&mut self, threads: usize) {
         if self.loader.is_none() {
-            self.loader = Some(Loader::new(self.src.clone(), threads.max(1)));
+            self.loader = Some(Loader::new(self.src.clone(), threads.max(1), self.canopy_cache.clone()));
         }
     }
 
@@ -535,10 +585,23 @@ impl TerrainWorld {
     pub fn poll(&mut self) -> usize {
         let Some(l) = &mut self.loader else { return 0 };
         let mut n = 0;
-        while let Ok((id, page)) = l.done.try_recv() {
-            l.inflight.remove(&id);
-            self.store.pages.entry(id).or_insert(page);
-            n += 1;
+        while let Ok(b) = l.done.try_recv() {
+            match b {
+                Built::Height(id, page) => {
+                    // A node stays in flight until its canopy page is in too (trees on).
+                    if self.canopy_cache.is_none() {
+                        l.inflight.remove(&id);
+                    }
+                    self.store.pages.entry(id).or_insert(page);
+                    n += 1;
+                }
+                Built::Canopy(id, page) => {
+                    l.inflight.remove(&id);
+                    if self.store.pages.contains_key(&id) {
+                        self.store.canopy.insert(id, page);
+                    }
+                }
+            }
         }
         n
     }
@@ -569,6 +632,7 @@ impl TerrainWorld {
         let evicted = self.planet.evict(self.cache_bytes);
         for id in &evicted {
             self.store.pages.remove(id);
+            self.store.canopy.remove(id);
         }
         self.eye = camera.position;
         self.ppr = view.pixels_per_radian();
