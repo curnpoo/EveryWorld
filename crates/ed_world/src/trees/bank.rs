@@ -170,7 +170,9 @@ struct Whorl {
     density: f32,
     card: f32,
     cell: LeafCell,
-    hang: bool,
+    /// Pendulous branchlets: vertical curtains hanging under the branch (spruce, larch,
+    /// hemlock), this long relative to the card (0 = none).
+    hang: f32,
     fir: bool,
     bark: u32,
     /// Live crown starts this far up (fraction of height); dead stubs below.
@@ -178,6 +180,11 @@ struct Whorl {
     trunk_r: f32,
     /// Leader nods over (hemlock).
     nod: f32,
+    /// Branch rise in the upper crown (upper branches angle up, lower ones level then droop).
+    rise: f32,
+    /// Foliage clothes only the outer this-many metres of a branch: needles live a few years,
+    /// so the inner crown is bare wood and the outside a closed shell.
+    foliage_m: f32,
 }
 
 fn whorl_conifer(b: &mut Builder, leaf: u32, p: &Whorl) {
@@ -186,6 +193,7 @@ fn whorl_conifer(b: &mut Builder, leaf: u32, p: &Whorl) {
     b.leaf_col = leaf_tint(leaf);
     b.bark_col = srgb(p.bark);
     b.normal_bend = 0.6;
+    b.flat_cards = true;
     let lean = Vec3::new(b.rng.r(-0.02, 0.02), 0.0, b.rng.r(-0.02, 0.02));
     let mut trunk = b.path(Vec3::new(0.0, -0.4, 0.0), (Vec3::Y + lean).normalize(), h + 0.4, 16, 0.0, 0.012);
     if p.nod > 0.0 {
@@ -194,17 +202,20 @@ fn whorl_conifer(b: &mut Builder, leaf: u32, p: &Whorl) {
             q.x += p.nod * ((i + 4 - n) as f32 / 3.0).powi(2);
         }
     }
+    // Conifer stems taper fast near the butt and then nearly linearly (form factor ~0.45).
     let radii: Vec<f32> = (0..trunk.len()).map(|i| p.trunk_r * (1.0 - i as f32 / 16.0).max(0.03).powf(0.9)).collect();
     let whip = vec![0.0; trunk.len()];
-    b.tube(&trunk, &radii, &whip, 0.0, TubeStyle { flare: 0.45, ..TubeStyle::bark(10) });
+    b.tube(&trunk, &radii, &whip, 0.0, TubeStyle { flare: 0.6, ..TubeStyle::bark(10) });
     let width = p.width_k * h;
     let mut y = 1.0;
+    let mut whorl = 0usize;
     while y < h - 0.6 {
         let t = y / h;
         let (tp, _, _) = lerp_path(&trunk, (y + 0.4) / (h + 0.4));
         let n = 4 + (b.rng.f() * 4.0) as usize;
         let az0 = b.rng.f() * TAU;
         let live = t >= p.crown_base * b.rng.r(0.8, 1.2);
+        whorl += 1;
         for k in 0..n {
             let az = az0 + k as f32 / n as f32 * TAU + b.rng.r(-0.35, 0.35);
             let out = Vec3::new(az.cos(), 0.0, az.sin());
@@ -213,46 +224,62 @@ fn whorl_conifer(b: &mut Builder, leaf: u32, p: &Whorl) {
                 if !b.far && b.rng.f() < 0.6 {
                     let len = b.rng.r(0.4, 1.6) * (h / 20.0);
                     let path = b.path(tp, (out - Vec3::Y * 0.15).normalize(), len, 2, -0.1, 0.1);
-                    let r = 0.03 * (1.0 - t) + 0.012;
+                    let r = 0.025 * (1.0 - t) + 0.01;
                     b.tube(&path, &[r, r * 0.6, r * 0.3], &[0.0; 3], 0.0, TubeStyle::bark(3));
                 }
                 continue;
             }
-            // Crown silhouette: a narrow spire, widest a third up the live crown.
+            // Crown silhouette: a cone, widest a little above the live crown base.
             let ct = ((t - p.crown_base) / (1.0 - p.crown_base)).clamp(0.0, 1.0);
-            let prof = (1.0 - ct).powf(0.85) * (0.75 + 0.25 * (ct * 3.0).min(1.0));
-            let len = (width * prof + 0.3) * b.rng.r(0.8, 1.2);
-            let droop = p.droop * (0.6 + 0.4 * (1.0 - t));
-            let dir = (out + Vec3::Y * if p.fir { 0.05 } else { -0.03 }).normalize();
+            let prof = (1.0 - ct).powf(0.9) * (0.8 + 0.2 * (ct * 4.0).min(1.0));
+            let len = (width * prof + 0.35) * b.rng.r(0.8, 1.2);
+            let droop = p.droop * (0.5 + 0.5 * (1.0 - t));
+            let rise = p.rise * ((t - 0.5) / 0.5).max(0.0).powf(1.5) + if p.fir { 0.05 } else { -0.03 };
+            let dir = (out + Vec3::Y * rise).normalize();
             let path = b.path(tp, dir, len, 5, droop, 0.09);
-            let path: Vec<Vec3> = path.iter().enumerate().map(|(i, q)| *q + Vec3::Y * 0.07 * len * (i as f32 / 5.0).powi(3)).collect();
-            let radii: Vec<f32> = (0..path.len()).map(|i| (0.06 * (1.0 - t) + 0.018) * (1.0 - 0.8 * i as f32 / 5.0)).collect();
+            // Tips turn up again (the spruce's and larch's "swan neck").
+            let path: Vec<Vec3> = path.iter().enumerate().map(|(i, q)| *q + Vec3::Y * 0.09 * len * (i as f32 / 5.0).powi(3)).collect();
+            let radii: Vec<f32> = (0..path.len()).map(|i| (0.04 * (1.0 - t) + 0.014) * (1.0 - 0.85 * i as f32 / 5.0)).collect();
             let whip: Vec<f32> = (0..path.len()).map(|i| 0.04 * len * i as f32 / 5.0).collect();
             let phase = b.rng.f();
             if !b.far {
-                let pick = |v: &[f32]| -> Vec<f32> { v.iter().step_by(2).copied().collect() };
-                let p2: Vec<Vec3> = path.iter().step_by(2).copied().collect();
+                // Bark only on the inner 4/5: the tip is all foliage.
+                let pick = |v: &[f32]| -> Vec<f32> { [v[0], v[4]].to_vec() };
+                let p2: Vec<Vec3> = vec![path[0], path[4]];
                 b.tube(&p2, &pick(&radii), &pick(&whip), phase, TubeStyle::bark(3));
             }
-            let cards = ((len / (0.7 * p.card)).ceil() as usize).max(1);
+            // Foliage on the outer `foliage_m` of the branch (all of it on short branches).
+            let f0 = (1.0 - p.foliage_m / len).clamp(0.0, 0.6);
+            let span = (1.0 - f0) * len;
+            let cards = ((span / (0.6 * p.card)).ceil() as usize).max(1);
+            let side_flip = if (whorl + k) % 2 == 0 { 1.0 } else { -1.0 };
             for c in 0..cards {
                 if b.rng.f() > p.density {
                     continue;
                 }
-                let ct = (c as f32 + 0.3) / cards as f32;
-                let (q, tan, _) = lerp_path(&path, ct * 0.9);
-                let size = (0.7 + 0.45 * (1.0 - ct)) * p.card;
+                let u = (c as f32 + 0.35) / cards as f32;
+                let ct = f0 + (1.0 - f0) * u;
+                let (q, tan, _) = lerp_path(&path, ct * 0.94);
+                // Sprays shorten towards the tip; the tip spray carries on past the twig.
+                let size = (0.75 + 0.35 * (1.0 - u)) * p.card;
                 let sway = b.sway(q, 0.04 * len * ct);
-                let face = (Vec3::Y + b.rng.unit() * 0.4).normalize();
-                b.card(q - tan * size * 0.1, tan, face, size * 0.95, size, p.cell, sway, phase, if p.fir { 0.1 } else { -0.3 }, [1.0; 4]);
                 let side = tan.cross(Vec3::Y).normalize_or(Vec3::X);
+                // Top spray, rolled about the branch to alternate sides: a flat plane of
+                // cards reads as a fern frond, real sprays fan out at angles.
+                let roll = side_flip * if c % 2 == 0 { 0.55 } else { -0.35 } + b.rng.r(-0.2, 0.2);
+                let face = (Vec3::Y * roll.cos() + side * roll.sin() + b.rng.unit() * 0.15).normalize();
+                b.card(q - tan * size * 0.12, tan, face, size * 0.95, size, p.cell, sway, phase, if p.fir { 0.1 } else { -0.3 }, [1.0; 4]);
                 if p.fir {
                     let face2 = (side * 0.85 + Vec3::Y * 0.5).normalize();
                     b.card(q - tan * size * 0.1, tan, face2, size * 0.9, size, p.cell, sway, phase + 0.03, 0.15, [0.95, 0.97, 0.97, 1.0]);
                 }
-                if p.hang && c > 0 {
-                    let hang = (tan * 0.35 - Vec3::Y).normalize();
-                    b.card(q + Vec3::Y * 0.08, hang, side, size * 0.75, size * 0.85, p.cell, sway, phase + 0.05, 0.2, [0.9, 0.94, 0.94, 1.0]);
+                if p.hang > 0.0 && u > 0.15 && (c + k) % 3 == 0 {
+                    // Pendulous branchlets: a curtain hanging under the branch, longest in
+                    // the lower crown, slightly darker (self-shaded under the branch).
+                    let lh = size * p.hang * (0.75 + 0.5 * (1.0 - t)) * b.rng.r(0.85, 1.15);
+                    let hang = (tan * 0.25 - Vec3::Y).normalize();
+                    let fs = (side * side_flip + tan * b.rng.r(-0.3, 0.3)).normalize();
+                    b.card(q + Vec3::Y * 0.06, hang, fs, size * 0.7, lh, p.cell, sway, phase + 0.05, 0.25, [0.86, 0.9, 0.9, 1.0]);
                 }
             }
         }
@@ -314,12 +341,15 @@ fn tulip_poplar(b: &mut Builder, leaf: u32) {
 /// Grows one tree of `shape`; returns the model and its card count (far-model budget).
 fn grow(shape: Shape, kind: TreeKind, seed: u64, leaf: u32, far: bool, keep: f32) -> (TreeModel, u64) {
     let mut b = Builder::new(seed, far, keep);
-    let w = |width_k, step, droop, density, card, cell, hang, fir, bark, crown_base, trunk_r, nod| Whorl { width_k, step, droop, density, card, cell, hang, fir, bark, crown_base, trunk_r, nod };
+    let w = |width_k, step, droop, density, card, cell, hang, fir, bark, crown_base, trunk_r, nod, rise, foliage_m| Whorl { width_k, step, droop, density, card, cell, hang, fir, bark, crown_base, trunk_r, nod, rise, foliage_m };
     match shape {
-        Shape::Spruce => whorl_conifer(&mut b, leaf, &w(0.16, 0.5, -0.32, 1.0, 1.0, LeafCell::NeedleSpray, true, false, 0x5e4a3c, 0.12, 0.42, 0.0)),
-        Shape::Fir => whorl_conifer(&mut b, leaf, &w(0.15, 0.55, -0.06, 1.0, 0.95, LeafCell::NeedleSpray, false, true, 0x7a7266, 0.2, 0.4, 0.0)),
-        Shape::Larch => whorl_conifer(&mut b, leaf, &w(0.17, 0.7, -0.12, 0.5, 0.75, LeafCell::PineTuft, false, false, 0x6b5040, 0.3, 0.4, 0.0)),
-        Shape::Hemlock => whorl_conifer(&mut b, leaf, &w(0.22, 0.5, -0.4, 1.0, 0.9, LeafCell::NeedleSpray, true, false, 0x5a4636, 0.15, 0.45, 0.9)),
+        // Norway spruce: dense dark cone, level branches with hanging "comb" branchlets,
+        // live crown to near the ground, reddish-brown scaly bark, DBH ~0.35 m at 20 m.
+        Shape::Spruce => whorl_conifer(&mut b, leaf, &w(0.2, 0.42, -0.4, 1.0, 1.0, LeafCell::NeedleSpray, 1.1, false, 0x6e5444, 0.08, 0.25, 0.0, 0.35, 2.0)),
+        Shape::Fir => whorl_conifer(&mut b, leaf, &w(0.17, 0.5, -0.06, 1.0, 0.95, LeafCell::NeedleSpray, 0.0, true, 0x8a8478, 0.15, 0.26, 0.0, 0.2, 2.2)),
+        // European larch: a light, open cone; long drooping branchlets with soft tufts.
+        Shape::Larch => whorl_conifer(&mut b, leaf, &w(0.17, 0.6, -0.25, 0.85, 0.85, LeafCell::NeedleSpray, 1.2, false, 0x6a4c3e, 0.25, 0.25, 0.0, 0.45, 2.6)),
+        Shape::Hemlock => whorl_conifer(&mut b, leaf, &w(0.22, 0.45, -0.4, 1.0, 0.9, LeafCell::NeedleSpray, 1.0, false, 0x5e4a3c, 0.12, 0.28, 0.9, 0.2, 2.2)),
         Shape::StonePine => stone_pine(&mut b, leaf, false),
         Shape::MountainPine => stone_pine(&mut b, leaf, true),
         Shape::Pine => pine(&mut b, leaf),
@@ -627,7 +657,11 @@ pub fn bank_mesh(species: usize, variant: u32, age: u8) -> BankMesh {
             let (n, cards) = grow(shape, kind, seed, leaf, false, 1.0);
             // T1 draws at 40..250 px for every tree in a forest: at most ~T1_CARDS cards (the
             // generator enlarges the kept cards to hold the crown's leaf area).
-            let keep = (species::def(kind).far_cards.min(T1_CARDS) as f32 / cards.max(1) as f32).clamp(0.14, 1.0);
+            // Whorled conifers spend the whole budget on enlarged sprays (their crowns are
+            // card-dense; a fixed floor would let T1 grow with the near model's card count).
+            let whorled = matches!(shape, Shape::Spruce | Shape::Fir | Shape::Larch | Shape::Hemlock);
+            let budget = if whorled { T1_CARDS } else { species::def(kind).far_cards.min(T1_CARDS) };
+            let keep = (budget as f32 / cards.max(1) as f32).clamp(if whorled { 0.06 } else { 0.14 }, 1.0);
             (n, grow(shape, kind, seed, leaf, true, keep).0)
         }
     };
@@ -665,8 +699,9 @@ pub fn bank_mesh(species: usize, variant: u32, age: u8) -> BankMesh {
         ..Default::default()
     };
     // Bark albedo: the generator's bark colours are already linear (`mesh::rgb`).
-    // Real bark albedo is 0.05..0.3 (birch bark brighter): scale into that range.
-    out.bark_albedo = [bark_ref[0], bark_ref[1], bark_ref[2]].map(|x| (x * 0.55).clamp(0.02, 0.35));
+    // Real bark albedo is 0.08..0.3 (birch bark brighter): scale into that range. The resolve
+    // darkens fissures procedurally (mean ~0.85), so this is the plates' colour.
+    out.bark_albedo = [bark_ref[0], bark_ref[1], bark_ref[2]].map(|x| (x * 0.85).clamp(0.02, 0.4));
     for (k, l) in [l0, l1, l2].into_iter().enumerate() {
         let base = out.positions.len() as u32;
         out.positions.extend(l.positions);

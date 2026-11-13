@@ -223,6 +223,9 @@ struct Builder {
     bark_pattern: Option<fn(f32, f32, Vec3) -> [f32; 4]>,
     /// Extra tint for cards grown by [`Builder::branch`].
     card_tint: [f32; 4],
+    /// Near cards as flat quads (2 triangles) instead of cupped 3x2 grids: needle sprays are
+    /// small and many, so their count, not their curl, makes the crown (trees look pass).
+    pub(crate) flat_cards: bool,
 }
 
 impl Builder {
@@ -245,6 +248,7 @@ impl Builder {
             bark_style: BarkStyle::Rough,
             bark_pattern: None,
             card_tint: [1.0; 4],
+            flat_cards: false,
         }
     }
 
@@ -372,7 +376,7 @@ impl Builder {
         // Far cards grow around their center so the crown keeps its size.
         let base = if k > 1.0 { base - up * h * (k - 1.0) / (2.0 * k) } else { base };
         // Near: 3 columns (cupped) x 2 rows; far: a flat quad.
-        let n = if self.far { 2 } else { 3 };
+        let n = if self.far || self.flat_cards { 2 } else { 3 };
         let rows = 2;
         let col = mulc(self.leaf_col, tint);
         let first = self.leaves.mesh.positions.len() as u32;

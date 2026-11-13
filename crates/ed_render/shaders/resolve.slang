@@ -780,6 +780,18 @@ float3 tree_hue(float h) {
     return h >= 0.0 ? lerp(float3(1.0, 1.0, 1.0), float3(0.85, 0.97, 1.2), h) : lerp(float3(1.0, 1.0, 1.0), float3(1.12, 1.0, 0.75), -h);
 }
 
+// Bark relief (look pass): conifer and broadleaf bark is plates split by darker fissures,
+// mottled by lichen and darker and wetter at the butt. Procedural on the mesh-space position
+// (cylindrical around the trunk axis, metres): (arc length, height). Returns the plate
+// height 0..1; the caller tints the albedo and tilts the normal by its gradient.
+float bark_height(float2 q) {
+    // Plates: cells ~7 cm wide, ~25 cm tall; fissures where the stretched noise is low.
+    float plates = t_noise(float2(q.x, q.y * 0.3), 0.07);
+    float w = t_noise(q * float2(1.0, 0.25) + 31.0, 0.18) - 0.5;
+    float fiss = smoothstep(0.22, 0.52, t_noise(float2(q.x + w * 0.08, q.y * 0.12), 0.035));
+    return saturate(fiss * (0.55 + 0.45 * plates));
+}
+
 TreeSurf tree_surface(FrameData* f, GpuInstance inst, GpuMaterial m, uint2 w0, uint2 w1, uint2 w2, float b0, float b1, float b2, float2 pix, float3 p0, float3 e1, float3 e2) {
     TreeSurf o;
     uint a = w0.y;
@@ -822,6 +834,10 @@ float3 shade_foliage(FrameData* f, float3 sun, float3 albedo, float rough, float
         float fwd = pow(saturate(dot(-v, l)), 4.0);
         float3 trans = albedo * float3(1.15, 1.25, 0.55);
         col += sun * sun_vis * trans * (back * (0.45 + 1.2 * fwd)) * (1.0 / 3.14159265);
+        // Skylight through the leaf: thin needles and leaves pass ~10-15 % of what lands on
+        // their far side, so a shaded card is lit from behind by the sky, not only in front.
+        // The cheap two-colour hemisphere (no SH loads): it is a fill term, 0.3 weighted.
+        col += trans * hemi_ambient(f, -n) * lerp(f.light.skyvis.y, 1.0, sv) * ao * 0.3;
     }
     return col;
 }
@@ -984,6 +1000,30 @@ float4 resolve_px<let TR : int>(FsOut i, bool terrain) {
             ao *= lerp(0.65, 1.0, clump);
             n = normalize(lerp(n, up, 0.4));
             rough = 1.0;
+        }
+        if (!leaf && !ts.shell && length_squared(p0) < 60.0 * 60.0) {
+            // Bark (near only: the relief is sub-pixel past ~60 m; the normal tilt past ~20 m).
+            float3 pm = float3(v0.px, v0.py, v0.pz) * b0 + float3(v1.px, v1.py, v1.pz) * b1 + float3(v2.px, v2.py, v2.pz) * b2;
+            float rr = max(length(pm.xz), 0.02);
+            float ang = atan2(pm.z, pm.x);
+            float2 q = float2(ang * rr, pm.y);
+            float hb = bark_height(q);
+            // Lichen / weathering: greyer, lighter patches; the butt darker (soil splash, wet).
+            float lich = smoothstep(0.55, 0.85, t_noise(q * float2(1.0, 0.5) + 7.0, 0.45));
+            float butt = lerp(0.72, 1.0, smoothstep(0.0, 1.2, pm.y));
+            float3 grey = dot(albedo, float3(0.3, 0.5, 0.2)) * float3(1.05, 1.05, 1.0);
+            albedo = lerp(albedo, grey * 1.35, lich * 0.45) * lerp(0.5, 1.12, hb) * butt;
+            float3 up = normalize(xform_normal(inst, float3(0.0, 1.0, 0.0)));
+            float3 tu = cross(up, n);
+            if (length_squared(p0) < 20.0 * 20.0 && length_squared(tu) > 1e-6) {
+                const float E = 0.012;
+                float hu = bark_height(q + float2(E, 0.0));
+                float hv = bark_height(q + float2(0.0, E));
+                tu = normalize(tu);
+                float3 tv = normalize(cross(n, tu));
+                n = normalize(n - 0.9 * ((hu - hb) / E * 0.03 * tu + (hv - hb) / E * 0.03 * tv));
+            }
+            ao *= lerp(0.65, 1.0, hb);
         }
         if (leaf) {
             // Two-sided cards: the face towards the viewer.

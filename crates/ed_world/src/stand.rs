@@ -168,12 +168,12 @@ use TreeKind as K;
 /// Zermatt/Alps, Blue Ridge, generic temperate/boreal and tropical rows. Order is the pick order.
 pub static STAND_SPECIES: [StandSpecies; 30] = [
     // --- Europe / Alps ---
-    sp("Norway spruce", K::Conifer, true, 0x2f5a3a, EUROPE, (500.0, 2100.0), (12.0, 50.0), 0.0, 3.0, M_ALL, 55.0, 0.80),
-    sp("Silver fir", K::Fir, true, 0x2c553a, EUROPE, (400.0, 1600.0), (20.0, 50.0), 0.1, 1.2, M_ALL, 55.0, 0.90),
-    sp("European larch", K::Conifer, true, 0x9bb04a, EUROPE, (1300.0, 2400.0), (8.0, 40.0), 0.0, 2.5, M_ALL, 45.0, 0.75),
-    sp("Swiss stone pine", K::Pine, true, 0x3a5f46, EUROPE, (1700.0, 2500.0), (5.0, 25.0), 0.0, 1.5, M_ALL, 28.0, 0.70),
-    sp("Scots pine", K::Pine, true, 0x4a6b3a, EUROPE, (0.0, 1700.0), (10.0, 35.0), -0.3, 1.2, M_ALL, 38.0, 0.85),
-    sp("Mountain pine", K::Pine, true, 0x35553a, EUROPE, (1800.0, 2400.0), (1.0, 8.0), 0.0, 0.8, M_ALL, 6.0, 1.00),
+    sp("Norway spruce", K::Conifer, true, 0x3b5d3b, EUROPE, (500.0, 2100.0), (12.0, 50.0), 0.0, 3.0, M_ALL, 55.0, 0.80),
+    sp("Silver fir", K::Fir, true, 0x3a5b3d, EUROPE, (400.0, 1600.0), (20.0, 50.0), 0.1, 1.2, M_ALL, 55.0, 0.90),
+    sp("European larch", K::Conifer, true, 0x547e4b, EUROPE, (1300.0, 2400.0), (8.0, 40.0), 0.0, 2.5, M_ALL, 45.0, 0.75),
+    sp("Swiss stone pine", K::Pine, true, 0x3e6241, EUROPE, (1700.0, 2500.0), (5.0, 25.0), 0.0, 1.5, M_ALL, 28.0, 0.70),
+    sp("Scots pine", K::Pine, true, 0x496a3e, EUROPE, (0.0, 1700.0), (10.0, 35.0), -0.3, 1.2, M_ALL, 38.0, 0.85),
+    sp("Mountain pine", K::Pine, true, 0x3e5f3b, EUROPE, (1800.0, 2400.0), (1.0, 8.0), 0.0, 0.8, M_ALL, 6.0, 1.00),
     sp("Silver birch", K::Birch, false, 0x86b04a, EUROPE, (0.0, 2000.0), (4.0, 30.0), 0.4, 1.0, M_ALL, 32.0, 0.70),
     sp("Grey alder", K::Broadleaf, false, 0x6f8f55, EUROPE, (200.0, 1800.0), (4.0, 25.0), 0.8, 0.8, M_SAP | M_SUB, 20.0, 0.80),
     shrub(sp("Green alder", K::Shrub, false, 0x5a7d3c, EUROPE, (1400.0, 2400.0), (0.0, 90.0), 0.3, 1.2, M_SAP, 3.5, 1.00)),
@@ -186,14 +186,14 @@ pub static STAND_SPECIES: [StandSpecies; 30] = [
     sp("White oak", K::Broadleaf, false, 0x5d8a3a, E_NAMERICA, (0.0, 1100.0), (15.0, 38.0), 0.0, 2.5, M_ALL, 40.0, 1.20),
     sp("Tulip poplar", K::Broadleaf, false, 0x6aa83e, E_NAMERICA, (0.0, 1000.0), (25.0, 55.0), 0.2, 1.8, M_SUB | M_CAN, 55.0, 0.80),
     sp("Red maple", K::Maple, false, 0x8a9a3a, E_NAMERICA, (0.0, 1500.0), (12.0, 35.0), 0.3, 2.0, M_ALL, 36.0, 1.00),
-    sp("Eastern hemlock", K::Conifer, true, 0x2b5236, E_NAMERICA, (300.0, 1500.0), (18.0, 40.0), 0.6, 1.3, M_ALL, 42.0, 0.80),
-    sp("Eastern white pine", K::Pine, true, 0x41683c, E_NAMERICA, (100.0, 1500.0), (25.0, 50.0), 0.0, 1.0, M_ALL, 52.0, 0.85),
+    sp("Eastern hemlock", K::Conifer, true, 0x385a3a, E_NAMERICA, (300.0, 1500.0), (18.0, 40.0), 0.6, 1.3, M_ALL, 42.0, 0.80),
+    sp("Eastern white pine", K::Pine, true, 0x446941, E_NAMERICA, (100.0, 1500.0), (25.0, 50.0), 0.0, 1.0, M_ALL, 52.0, 0.85),
     sp("Sweet birch", K::Birch, false, 0x7ca545, E_NAMERICA, (600.0, 1500.0), (12.0, 30.0), 0.1, 0.8, M_ALL, 30.0, 0.80),
     sp("Hickory", K::Broadleaf, false, 0x6b9442, E_NAMERICA, (0.0, 800.0), (18.0, 40.0), -0.2, 1.2, M_ALL, 40.0, 1.00),
     shrub(sp("Rosebay rhododendron", K::FloweringBush, false, 0x3f6a3a, E_NAMERICA, (300.0, 1500.0), (0.0, 90.0), 0.5, 2.5, M_SAP, 4.0, 1.00)),
     // --- Generic temperate/boreal (always on, low weight) ---
     sp("Broadleaf (generic)", K::Broadleaf, false, 0x5d8a3a, GLOBAL, (0.0, 4000.0), (0.0, 90.0), 0.0, 0.10, M_ALL, 90.0, 1.00),
-    sp("Spruce (generic)", K::Conifer, true, 0x2f5a3a, GLOBAL, (0.0, 4000.0), (0.0, 90.0), 0.0, 0.10, M_ALL, 90.0, 0.80),
+    sp("Spruce (generic)", K::Conifer, true, 0x3b5d3b, GLOBAL, (0.0, 4000.0), (0.0, 90.0), 0.0, 0.10, M_ALL, 90.0, 0.80),
     sp("Birch (generic)", K::Birch, false, 0x86b04a, GLOBAL, (0.0, 4000.0), (0.0, 90.0), 0.2, 0.05, M_ALL, 90.0, 0.70),
     shrub(sp("Shrub (generic)", K::Shrub, false, 0x5f8a40, GLOBAL, (0.0, 4000.0), (0.0, 90.0), 0.0, 0.30, M_SAP, 3.0, 1.00)),
     // --- Tropics ---
