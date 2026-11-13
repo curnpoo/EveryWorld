@@ -10,6 +10,14 @@
 //! their instances when they fall out of range. Bank meshes are built lazily per (species,
 //! variant, age) the stands use.
 //!
+//! Impostors (trees G5, default on; `EW_TREES_IMPOSTOR=0` returns to the G4 shell chain):
+//! every stand tree out to the T2 -> T3 hand-off (`bank::IMP_OUT_PX`, about twice the G4
+//! distance) goes into the renderer's impostor buffer; mesh instances exist only in nodes
+//! where a tree can still project over `bank::MESH_KEEP_PX`, and their LOD chain ends at T1
+//! (no shell). One octahedral impostor per bank entry, baked on worker threads and cached on
+//! disk (`impostors/v<BAKE_VERSION>/...`). `EW_IMP_TIER=low|medium|high` (frame 32/48/64 px,
+//! default high), `EW_IMP_SHADOWS=0` (impostors cast no sun shadow).
+//!
 //! Switches: `EW_TREES_NEAR=0` (no near trees: the frame is the trees-off frame), `EW_WIND=0`
 //! (trees hold still).
 
@@ -17,7 +25,9 @@ use crate::terrain::{CacheSource, TerrainWorld, build_canopy};
 use ed_data::DiskCache;
 use ed_geo::{CanopyPage, HeightPage, NodeId};
 use ed_render::scene::{InstanceDesc, InstanceId, Material, MaterialId, MaterialTextures, MeshId, NodeSlot, TextureAsset, TextureHandle};
+use ed_render::impostor::{ImpostorBands, ImpostorKind, ImpostorRange, ImpostorTree};
 use ed_render::{Camera, Renderer};
+use ed_world::trees::bank_impostor::{self, ImpostorTier};
 use ed_world::stand::{CanopySample, StandTree, stand_for_node};
 use ed_world::trees::bank;
 use ed_world::wind::WindField;
@@ -40,8 +50,15 @@ type Pages = BTreeMap<NodeId, Option<(Arc<HeightPage>, Arc<CanopyPage>)>>;
 
 struct NodeEntry {
     slot: NodeSlot,
-    /// Instance, trunk base (render frame at placement), height (m).
-    instances: Vec<(InstanceId, DVec3, f32)>,
+    /// Node origin (render frame at placement).
+    origin: DVec3,
+    /// Mesh instances (none while the node is impostors only).
+    instances: Vec<InstanceId>,
+    /// Every tree: trunk base relative to `origin`, height (m).
+    trees: Vec<(Vec3, f32)>,
+    /// Impostor block (impostors on).
+    imp: Option<ImpostorRange>,
+    meshed: bool,
 }
 
 /// Near-tree counters (headless report).
@@ -56,6 +73,13 @@ pub struct NearStats {
     pub stand_ms: f64,
     pub stand_nodes: usize,
     pub apply_ms: f64,
+    pub imp_trees: usize,
+    pub imp_kinds: usize,
+    pub imp_frame_px: u32,
+    pub imp_bytes: usize,
+    pub imp_bake_ms: f64,
+    pub imp_baked: usize,
+    pub imp_cached: usize,
 }
 
 pub struct NearTrees {
@@ -64,7 +88,15 @@ pub struct NearTrees {
     cache: Arc<DiskCache>,
     pages: Pages,
     atlas: Option<TextureHandle>,
-    bank: BTreeMap<(u8, u32, u8), (MeshId, MaterialId, f32)>,
+    /// Mesh, material, height, impostor kind.
+    bank: BTreeMap<(u8, u32, u8), (MeshId, MaterialId, f32, u32)>,
+    /// Impostors on (`EW_TREES_IMPOSTOR`, default on) and their frame tier.
+    pub imp: bool,
+    imp_tier: ImpostorTier,
+    imp_shadows: bool,
+    /// T1 -> T2 hand-off (px): `bank::T1_PX`, or `EW_IMP_T1_PX` (the impostor-in band and
+    /// the mesh-keep range scale with it).
+    imp_t1: f32,
     nodes: BTreeMap<NodeId, NodeEntry>,
     free_slots: Vec<NodeSlot>,
     pub stats: NearStats,
@@ -87,6 +119,14 @@ impl NearTrees {
             pages: BTreeMap::new(),
             atlas: None,
             bank: BTreeMap::new(),
+            imp: std::env::var("EW_TREES_IMPOSTOR").map_or(true, |v| v != "0"),
+            imp_tier: match std::env::var("EW_IMP_TIER").as_deref() {
+                Ok("low") => ImpostorTier::Low,
+                Ok("medium") => ImpostorTier::Medium,
+                _ => ImpostorTier::High,
+            },
+            imp_shadows: std::env::var("EW_IMP_SHADOWS").map_or(true, |v| v != "0"),
+            imp_t1: std::env::var("EW_IMP_T1_PX").ok().and_then(|v| v.parse::<f32>().ok()).filter(|v| *v >= 20.0).unwrap_or(bank::T1_PX),
             nodes: BTreeMap::new(),
             free_slots: Vec::new(),
             stats: NearStats::default(),
@@ -96,7 +136,7 @@ impl NearTrees {
 
     /// Renderer limits for a terrain run with near trees (every instance of a dense forest).
     pub fn renderer_desc() -> ed_render::RendererDesc {
-        ed_render::RendererDesc { max_instances: 1 << 20, max_vertices: 1 << 23, max_indices: 1 << 24, max_meshes: 1024, max_nodes: 1024, ..Default::default() }
+        ed_render::RendererDesc { max_instances: 1 << 20, max_vertices: 1 << 23, max_indices: 1 << 24, max_meshes: 1024, max_nodes: 4000, ..Default::default() }
     }
 
     /// The level-14 nodes that should hold trees for `camera`: inside the hand-off distance, all
@@ -104,7 +144,8 @@ impl NearTrees {
     fn wanted(&self, wd: &TerrainWorld, camera: &Camera, viewport: [u32; 2]) -> (BTreeSet<NodeId>, f64) {
         let body = &wd.anchor.body;
         let ppr = viewport[1] as f64 * 0.5 / (camera.fov_y as f64 * 0.5).tan();
-        let handoff = bank::TREE_REF_M as f64 * ppr / bank::HANDOFF_PX as f64;
+        let handoff_px = if self.imp { bank::IMP_OUT_PX.0 } else { bank::HANDOFF_PX };
+        let handoff = bank::TREE_REF_M as f64 * ppr / handoff_px as f64;
         let cb = wd.anchor.render_to_body(camera.position);
         let cd = cb.normalize();
         let gh = wd.ground(camera.position).unwrap_or(0.0);
@@ -119,7 +160,9 @@ impl NearTrees {
             for dx in -n..=n {
                 let id = c0.neighbour(dx, dy);
                 let d = id.centre().normalize();
-                let p = wd.anchor.body_to_render(body.point(d, gh));
+                // The node's own ground (the camera's ground misplaces nodes on slopes and in
+                // valleys far below a high camera, dropping them out of the cone).
+                let p = wd.anchor.body_to_render(body.point(d, self.ground_at(wd, d).unwrap_or(gh)));
                 let to = p - camera.position;
                 let dist = to.length();
                 if dist > handoff + size * 0.75 {
@@ -211,19 +254,145 @@ impl NearTrees {
             let (s, v, a) = need[k];
             let _ = slots[k].set(bank::bank_mesh(s as usize, v, a));
         });
-        for (key, s) in need.iter().zip(slots) {
-            let m = s.into_inner().expect("bank worker");
+        let meshes: Vec<bank::BankMesh> = slots.into_iter().map(|s| s.into_inner().expect("bank worker")).collect();
+        self.stats.bank_ms += t.elapsed().as_secs_f64() * 1e3;
+        // Impostors: one bake per bank entry (worker threads), cached on disk by content.
+        let mut bakes: Vec<Option<bank_impostor::BankImpostor>> = vec![None; meshes.len()];
+        if self.imp {
+            let ti = Instant::now();
+            let tier = self.imp_tier;
+            let keys: Vec<String> = need.iter().zip(&meshes).map(|(k, m)| imp_cache_key(*k, m, tier)).collect();
+            let cache = &*self.cache;
+            let out: Vec<OnceLock<(bank_impostor::BankImpostor, bool)>> = (0..meshes.len()).map(|_| OnceLock::new()).collect();
+            let leaves = OnceLock::new();
+            par_for(meshes.len(), |k| {
+                if let Some(b) = cache.get(&keys[k], None).and_then(|b| bank_impostor::BankImpostor::from_bytes(&b)) {
+                    let _ = out[k].set((b, true));
+                    return;
+                }
+                let lt = leaves.get_or_init(|| bank_impostor::LeafTex::new(&ed_world::trees::textures::leaf_atlas()));
+                let b = bank_impostor::bake(&meshes[k], 1, lt, tier);
+                let _ = cache.put(&keys[k], &b.to_bytes());
+                let _ = out[k].set((b, false));
+            });
+            for (k, o) in out.into_iter().enumerate() {
+                let (b, cached) = o.into_inner().expect("bake worker");
+                if cached {
+                    self.stats.imp_cached += 1;
+                } else {
+                    self.stats.imp_baked += 1;
+                }
+                bakes[k] = Some(b);
+            }
+            self.stats.imp_bake_ms += ti.elapsed().as_secs_f64() * 1e3;
+            self.stats.imp_frame_px = tier.frame_px();
+        }
+        let t = Instant::now();
+        for ((key, m), bake) in need.iter().zip(meshes).zip(bakes) {
             self.stats.bank_bytes += m.bytes();
-            let mesh = r.add_foliage_mesh(dev, &m.positions, &m.normals, &m.words, &m.lods).map_err(|e| format!("bank mesh {key:?}: {e}"))?;
+            let mesh = if self.imp {
+                // No shell: full, simplified, empty at T1 (the impostor takes over there).
+                let e = bank::lod_errors_impostor(m.height, self.imp_t1);
+                let lods = vec![(m.lods[0].0.clone(), e[0]), (m.lods[1].0.clone(), e[1]), (Vec::new(), e[2])];
+                r.add_foliage_mesh(dev, &m.positions, &m.normals, &m.words, &lods)
+            } else {
+                r.add_foliage_mesh(dev, &m.positions, &m.normals, &m.words, &m.lods)
+            }
+            .map_err(|e| format!("bank mesh {key:?}: {e}"))?;
             let mut mat = Material::pbr(Vec3::from(m.leaf_albedo), 0.0, 0.65);
             mat.shade_color = Vec3::from(m.bark_albedo);
             mat.textures = MaterialTextures { base: self.atlas, ..Default::default() };
             let mat = r.add_material(mat).ok_or("material table full")?;
-            self.bank.insert(*key, (mesh, mat, m.height));
+            let kind = match bake {
+                Some(b) => {
+                    let size = b.size();
+                    let mut tex = [TextureHandle(0); 3];
+                    for (i, mips) in b.tex.iter().enumerate() {
+                        let a = TextureAsset { format: ed_gpu::Format::Bc5Unorm, width: size, height: size, mips: mips.clone() };
+                        tex[i] = r.add_texture(dev, &a).map_err(|e| format!("impostor texture {key:?}: {e}"))?;
+                    }
+                    self.stats.imp_bytes += b.bytes();
+                    let k = ImpostorKind {
+                        tex: [0; 3],
+                        frames: b.frames,
+                        frame_px: b.frame_px,
+                        mips: b.tex[0].len() as u32,
+                        center_y: b.center_y,
+                        radius: b.radius,
+                        height: m.height,
+                        leaf: m.leaf_albedo,
+                        bark: m.bark_albedo,
+                        crown_base: crown_base(&m),
+                        crown_radius: m.crown_radius,
+                        crown_max: m.positions.iter().map(|p| (p[0] * p[0] + p[2] * p[2]).sqrt()).fold(0.0, f32::max),
+                    };
+                    r.add_impostor_kind(dev, tex, k).map_err(|e| format!("impostor kind {key:?}: {e}"))?
+                }
+                None => 0,
+            };
+            self.bank.insert(*key, (mesh, mat, m.height, kind));
         }
+        self.stats.imp_kinds = if self.imp { self.bank.len() } else { 0 };
         self.stats.bank_meshes = self.bank.len();
         self.stats.bank_ms += t.elapsed().as_secs_f64() * 1e3;
         Ok(())
+    }
+
+    /// The one hand-off table (bank.rs) as the renderer's bands.
+    fn bands(&self) -> ImpostorBands {
+        ImpostorBands {
+            t2_in: (bank::IMP_IN_PX.0 * self.imp_t1 / bank::T1_PX, bank::IMP_IN_PX.1 * self.imp_t1 / bank::T1_PX),
+            t3_out: bank::IMP_OUT_PX,
+            lift: bank::LIFT_PX,
+            paint: bank::PAINT_PX,
+            ref_tree_m: bank::TREE_REF_M,
+            pad: bank_impostor::IMP_PAD,
+            value_max: bank_impostor::VALUE_MAX,
+            shadows: self.imp_shadows,
+            shadow_cascade: std::env::var("EW_IMP_SHADOW_CASCADE").ok().and_then(|v| v.parse().ok()).unwrap_or(bank::IMP_SHADOW_CASCADE),
+            ground_pull_px: std::env::var("EW_IMP_PULL_PX").ok().and_then(|v| v.parse().ok()).unwrap_or(bank::IMP_GROUND_PULL_PX),
+        }
+    }
+
+    /// Whether node `e` gets mesh instances: some tree in it can project over `MESH_KEEP_PX`
+    /// (with 150 m of slack so camera moves between updates never show a mesh-less big tree).
+    fn wants_mesh(&self, e: &NodeEntry, camera: &Camera, ppr: f64) -> bool {
+        if !self.imp {
+            return true;
+        }
+        let hmax = e.trees.iter().fold(0.0f32, |m, t| m.max(t.1)) as f64;
+        let range = hmax * ppr / (bank::MESH_KEEP_PX * self.imp_t1 / bank::T1_PX) as f64 + 150.0;
+        e.trees.iter().any(|t| (e.origin + t.0.as_dvec3() - camera.position).length() < range)
+    }
+
+    /// Mesh instances of `trees` (one node's stand) under `slot`.
+    fn add_instances(&self, wd: &TerrainWorld, r: &mut Renderer, slot: NodeSlot, origin: DVec3, gh: f64, trees: &[StandTree]) -> Result<Vec<InstanceId>, String> {
+        let mut out = Vec::with_capacity(trees.len());
+        for tr in trees {
+            let p = bank::instance_params(tr);
+            let Some(&(mesh, material, _, _)) = self.bank.get(&(tr.species, p.variant, p.age)) else { continue };
+            let (base, up) = self.place(wd, tr, gh);
+            let s = p.scale;
+            let rot = Quat::from_rotation_arc(Vec3::Y, up);
+            let lean_axis = Vec3::new(p.lean_az.cos(), 0.0, p.lean_az.sin());
+            let rot = rot * Quat::from_axis_angle(lean_axis, p.lean) * Quat::from_rotation_y(p.yaw);
+            let xf = Affine3A::from_scale_rotation_translation(Vec3::new(s * p.widen, s, s * p.widen), rot, (base - origin).as_vec3());
+            let Some(i) = r.instances().add(&InstanceDesc { node: slot, transform: xf, mesh, material, object: tr.id, flags: 0 }) else {
+                return Err("instance pool full".into());
+            };
+            r.instances().set_user(i, p.user);
+            out.push(i);
+        }
+        Ok(out)
+    }
+
+    /// Trunk base (render frame) and up of stand tree `tr`.
+    fn place(&self, wd: &TerrainWorld, tr: &StandTree, gh: f64) -> (DVec3, Vec3) {
+        let body = &wd.anchor.body;
+        let h = self.ground_at(wd, tr.dir).unwrap_or(gh);
+        let base = wd.anchor.body_to_render(body.point(tr.dir, h));
+        let up = (wd.anchor.body_to_render(body.point(tr.dir, h + 1.0)) - base).normalize().as_vec3();
+        (base, up)
     }
 
     /// Brings the near trees up to date for `camera` (headless: everything wanted is built
@@ -234,65 +403,115 @@ impl NearTrees {
             return Ok(());
         }
         r.set_wind(self.wind.map(|w| w.gpu_words(glam::DVec2::new(camera.position.x, -camera.position.z), time)), rest, true);
+        r.set_impostor_bands(self.imp.then(|| self.bands()));
+        let ppr = viewport[1] as f64 * 0.5 / (camera.fov_y as f64 * 0.5).tan();
         let (wanted, handoff) = self.wanted(wd, camera, viewport);
         self.handoff_m = handoff;
-        // Leave: nodes out of range release their instances and node slot.
+        let t = Instant::now();
+        // Leave: nodes out of range release their instances, impostors and node slot.
         let gone: Vec<NodeId> = self.nodes.keys().copied().filter(|id| !wanted.contains(id)).collect();
         for id in gone {
             let e = self.nodes.remove(&id).expect("listed");
-            for (i, _, _) in e.instances {
+            for i in e.instances {
                 r.instances().remove(i);
+            }
+            if let Some(rg) = e.imp {
+                r.remove_impostor_trees(dev, rg).map_err(|e| format!("impostors: {e}"))?;
             }
             self.free_slots.push(e.slot);
         }
-        let new: Vec<NodeId> = wanted.iter().copied().filter(|id| !self.nodes.contains_key(id)).collect();
-        if new.is_empty() {
-            return Ok(());
-        }
-        self.ensure_pages(wd.source(), &new);
-        let stands = self.stands(&new);
-        let keys: BTreeSet<(u8, u32, u8)> = stands.iter().flatten().map(|t| {
-            let p = bank::instance_params(t);
-            (t.species, p.variant, p.age)
-        }).collect();
-        self.ensure_bank(r, dev, &keys)?;
-        let t = Instant::now();
-        let body = &wd.anchor.body;
-        for (id, trees) in new.iter().zip(stands) {
-            let cd = id.centre().normalize();
-            let gh = self.ground_at(wd, cd).unwrap_or(0.0);
-            let origin = wd.anchor.body_to_render(body.point(cd, gh));
-            let slot = match self.free_slots.pop() {
-                Some(s) => {
-                    r.instances().set_node(s, origin);
-                    s
-                }
-                None => r.instances().add_node(origin).ok_or("renderer node table full")?,
-            };
-            let mut instances = Vec::with_capacity(trees.len());
-            for tr in &trees {
-                let p = bank::instance_params(tr);
-                let Some(&(mesh, material, bank_h)) = self.bank.get(&(tr.species, p.variant, p.age)) else { continue };
-                let h = self.ground_at(wd, tr.dir).unwrap_or(gh);
-                let base = wd.anchor.body_to_render(body.point(tr.dir, h));
-                let up = (wd.anchor.body_to_render(body.point(tr.dir, h + 1.0)) - base).normalize().as_vec3();
-                let s = p.scale;
-                let rot = Quat::from_rotation_arc(Vec3::Y, up);
-                let lean_axis = Vec3::new(p.lean_az.cos(), 0.0, p.lean_az.sin());
-                let rot = rot * Quat::from_axis_angle(lean_axis, p.lean) * Quat::from_rotation_y(p.yaw);
-                let xf = Affine3A::from_scale_rotation_translation(Vec3::new(s * p.widen, s, s * p.widen), rot, (base - origin).as_vec3());
-                let Some(i) = r.instances().add(&InstanceDesc { node: slot, transform: xf, mesh, material, object: tr.id, flags: 0 }) else {
-                    return Err("instance pool full".into());
-                };
-                r.instances().set_user(i, p.user);
-                instances.push((i, base, s * bank_h));
+        // Resident nodes: mesh instances come and go with the camera (impostors stay).
+        let mut remesh = Vec::new();
+        for (id, e) in &self.nodes {
+            let want = self.wants_mesh(e, camera, ppr);
+            if want != e.meshed {
+                remesh.push((*id, want));
             }
-            self.stats.instances += instances.len();
-            self.nodes.insert(*id, NodeEntry { slot, instances });
+        }
+        let mut to_mesh = Vec::new();
+        for (id, want) in remesh {
+            let e = self.nodes.get_mut(&id).expect("listed");
+            e.meshed = want;
+            if want {
+                to_mesh.push(id);
+            } else {
+                for i in std::mem::take(&mut e.instances) {
+                    r.instances().remove(i);
+                }
+            }
+        }
+        self.stats.apply_ms += t.elapsed().as_secs_f64() * 1e3;
+        if !to_mesh.is_empty() {
+            let stands = self.stands(&to_mesh);
+            let t = Instant::now();
+            for (id, trees) in to_mesh.iter().zip(stands) {
+                let (slot, origin) = (self.nodes[id].slot, self.nodes[id].origin);
+                let gh = self.ground_at(wd, id.centre().normalize()).unwrap_or(0.0);
+                let inst = self.add_instances(wd, r, slot, origin, gh, &trees)?;
+                self.nodes.get_mut(id).expect("listed").instances = inst;
+            }
+            self.stats.apply_ms += t.elapsed().as_secs_f64() * 1e3;
+        }
+        let new: Vec<NodeId> = wanted.iter().copied().filter(|id| !self.nodes.contains_key(id)).collect();
+        if !new.is_empty() {
+            self.ensure_pages(wd.source(), &new);
+            let stands = self.stands(&new);
+            let keys: BTreeSet<(u8, u32, u8)> = stands.iter().flatten().map(|t| {
+                let p = bank::instance_params(t);
+                (t.species, p.variant, p.age)
+            }).collect();
+            self.ensure_bank(r, dev, &keys)?;
+            let t = Instant::now();
+            let body = &wd.anchor.body;
+            for (id, trees) in new.iter().zip(stands) {
+                let cd = id.centre().normalize();
+                let gh = self.ground_at(wd, cd).unwrap_or(0.0);
+                let origin = wd.anchor.body_to_render(body.point(cd, gh));
+                let slot = match self.free_slots.pop() {
+                    Some(s) => {
+                        r.instances().set_node(s, origin);
+                        s
+                    }
+                    None => r.instances().add_node(origin).ok_or("renderer node table full")?,
+                };
+                let mut recs = Vec::with_capacity(trees.len());
+                let mut imps = Vec::with_capacity(trees.len());
+                for tr in &trees {
+                    let p = bank::instance_params(tr);
+                    let Some(&(_, _, bank_h, kind)) = self.bank.get(&(tr.species, p.variant, p.age)) else { continue };
+                    let (base, up) = self.place(wd, tr, gh);
+                    let rel = (base - origin).as_vec3();
+                    recs.push((rel, p.scale * bank_h));
+                    if self.imp {
+                        imps.push(ImpostorTree {
+                            pos: rel,
+                            kind,
+                            hash: (tr.seed.wrapping_mul(0x9E37_79B1) >> 24) as u8,
+                            scale: p.scale,
+                            up,
+                            yaw: p.yaw,
+                            widen: p.widen,
+                            user: p.user,
+                        });
+                    }
+                }
+                let imp = if self.imp && !imps.is_empty() {
+                    Some(r.add_impostor_trees(dev, slot, &imps).map_err(|e| format!("impostors: {e}"))?.ok_or("impostor buffer full")?)
+                } else {
+                    None
+                };
+                let mut e = NodeEntry { slot, origin, instances: Vec::new(), trees: recs, imp, meshed: false };
+                e.meshed = self.wants_mesh(&e, camera, ppr);
+                if e.meshed {
+                    e.instances = self.add_instances(wd, r, slot, origin, gh, &trees)?;
+                }
+                self.nodes.insert(*id, e);
+            }
+            self.stats.apply_ms += t.elapsed().as_secs_f64() * 1e3;
         }
         self.stats.instances = self.nodes.values().map(|e| e.instances.len()).sum();
+        self.stats.imp_trees = self.nodes.values().filter(|e| e.imp.is_some()).map(|e| e.trees.len()).sum();
         self.stats.nodes = self.nodes.len();
-        self.stats.apply_ms += t.elapsed().as_secs_f64() * 1e3;
         Ok(())
     }
 
@@ -307,20 +526,21 @@ impl NearTrees {
         Some(hp.sample(u, v))
     }
 
-    /// Instances per LOD tier for `camera` (CPU estimate from each tree's projected height, the
-    /// same rule the GPU LOD selection follows): [T0 full, T1 simplified, T2 shell, handed off].
+    /// Trees per tier for `camera` (CPU estimate from each tree's projected height, the same
+    /// rule the GPU follows): [T0 full, T1 simplified, T2 shell or impostor, handed off].
     pub fn tiers(&self, camera: &Camera, viewport: [u32; 2]) -> [usize; 4] {
         let ppr = viewport[1] as f64 * 0.5 / (camera.fov_y as f64 * 0.5).tan();
+        let out_px = if self.imp { (bank::IMP_OUT_PX.0 + bank::IMP_OUT_PX.1) as f64 * 0.5 } else { bank::HANDOFF_PX as f64 };
         let mut out = [0usize; 4];
         for e in self.nodes.values() {
-            for &(_, p, h) in &e.instances {
-                let dist = (p - camera.position).length().max(1.0);
+            for &(p, h) in &e.trees {
+                let dist = (e.origin + p.as_dvec3() - camera.position).length().max(1.0);
                 let px = h as f64 * ppr / dist;
                 let tier = if px > bank::T0_PX as f64 {
                     0
-                } else if px > bank::T1_PX as f64 {
+                } else if px > if self.imp { self.imp_t1 } else { bank::T1_PX } as f64 {
                     1
-                } else if px > bank::HANDOFF_PX as f64 * h as f64 / bank::TREE_REF_M as f64 {
+                } else if bank::TREE_REF_M as f64 * ppr / dist > out_px {
                     2
                 } else {
                     3
@@ -330,6 +550,29 @@ impl NearTrees {
         }
         out
     }
+}
+
+/// Disk-cache key of a bank entry's impostor: the bake version, tier and a hash of what the
+/// bake reads (the simplified level's geometry and words), so a changed bank never reuses an
+/// old bake.
+fn imp_cache_key(key: (u8, u32, u8), m: &bank::BankMesh, tier: ImpostorTier) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut eat = |w: u32| {
+        for b in w.to_le_bytes() {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100_0000_01b3);
+        }
+    };
+    for &i in &m.lods[1].0 {
+        let p = m.positions[i as usize];
+        eat(i);
+        eat(p[0].to_bits());
+        eat(p[1].to_bits());
+        eat(p[2].to_bits());
+        eat(m.words[i as usize][0]);
+        eat(m.words[i as usize][1]);
+    }
+    format!("impostors/v{}/{}_{}_{}_{}_{:016x}.bin", bank_impostor::BAKE_VERSION, key.0, key.1, key.2, tier.frame_px(), h)
 }
 
 /// Runs `f(0..n)` on worker threads (contiguous chunks); callers store results by index, so the
@@ -347,4 +590,11 @@ fn par_for(n: usize, f: impl Fn(usize) + Sync) {
             });
         }
     });
+}
+
+/// Lowest point of the crown (m, tree space): the lowest vertex well off the trunk axis.
+fn crown_base(m: &bank::BankMesh) -> f32 {
+    let r = 0.35 * m.crown_radius;
+    let y = m.positions.iter().filter(|p| p[0] * p[0] + p[2] * p[2] > r * r).map(|p| p[1]).fold(f32::INFINITY, f32::min);
+    if y.is_finite() { y.clamp(0.0, m.height) } else { 0.3 * m.height }
 }

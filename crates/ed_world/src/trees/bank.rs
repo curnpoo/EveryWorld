@@ -29,6 +29,42 @@ pub const HANDOFF_PX: f32 = 12.0;
 /// LOD 0 -> 1 and 1 -> 2 switch heights (px of the tree's projected height).
 pub const T0_PX: f32 = 250.0;
 pub const T1_PX: f32 = 40.0;
+/// Trees G5 (impostors on, `EW_TREES_IMPOSTOR`): the ONE table of tier hand-offs, in px of
+/// projected height. The renderer gets it as `ed_render::impostor::ImpostorBands` (cull, resolve
+/// and the far rung all read it from `FrameData.imp`).
+///
+/// * T1 -> T2: the bank mesh's empty level sits at [`T1_PX`] (it leaves at about 0.75 x that,
+///   the LOD hysteresis, and comes back at it); the impostor is whole under `IMP_IN_PX.0` of the
+///   tree's own height and gone over `IMP_IN_PX.1`, so it is whole wherever the mesh can leave.
+/// * T2 -> T3: each tree leaves at its own hashed size in `IMP_OUT_PX` (reference tree px);
+///   the far rung's canopy paint rises linearly over the same band (`PAINT_PX`), so the covered
+///   area stays constant, and the crown lift (`LIFT_PX`) ramps in only once the impostors are
+///   gone.
+pub const IMP_IN_PX: (f32, f32) = (42.0, 48.0);
+pub const IMP_OUT_PX: (f32, f32) = (6.0, 8.0);
+pub const PAINT_PX: (f32, f32) = (8.0, 6.0);
+pub const LIFT_PX: (f32, f32) = (6.0, 3.5);
+/// Mesh instances exist only for nodes where some tree can project over this (px; under it
+/// every tree is an impostor whatever the LOD hysteresis).
+pub const MESH_KEEP_PX: f32 = 28.0;
+/// Sun shadow cascades from this one on take every tree's impostor (bank meshes cast only in
+/// the nearer cascades, where their detail shows).
+pub const IMP_SHADOW_CASCADE: u32 = 2;
+/// Impostors are drawn this many pixels' worth of distance nearer the viewer (along their own
+/// view ray, so the picture does not move): trees stand on the finest resident ground but the
+/// terrain draws coarser with distance (16 px selection error), and on convex slopes it would
+/// bury them.
+pub const IMP_GROUND_PULL_PX: f32 = 12.0;
+
+/// LOD errors of the impostor chain (no shell): full, simplified, empty at `t1_px` (the
+/// table's [`T1_PX`] unless the caller moves the T1 -> T2 hand-off; the impostor bands and
+/// the mesh-keep range scale with it).
+pub fn lod_errors_impostor(h: f32, t1_px: f32) -> [f32; 3] {
+    let e2 = h / t1_px;
+    let e1 = (h / T0_PX).min(e2 * 0.8);
+    [0.0, e1, e2]
+}
+
 /// Card budget of the simplified level (T1).
 pub const T1_CARDS: usize = 150;
 /// Far-rung crown albedo per class (broadleaf, conifer), linear;

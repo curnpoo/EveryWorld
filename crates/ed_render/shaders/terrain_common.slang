@@ -114,7 +114,14 @@ float t_lift_k(TerrainDraw d, float3 p) {
         return 0.0;
     }
     float px = d.polar.w / max(length(d.origin.xyz + p), 1.0);
-    return smoothstep(T_LIFT_NONE_PX, T_LIFT_FULL_PX, px);
+    // Tree impostors on (trees G5): the ramp from their one table (`FrameData.imp.far`), so
+    // the lift rises only once the impostors have left.
+    float2 r = float2(T_LIFT_NONE_PX, T_LIFT_FULL_PX);
+    FrameData* f = ed_buf<FrameData>(ed_c.frame);
+    if (f.imp.far.x > 0.0) {
+        r = f.imp.far.xy;
+    }
+    return smoothstep(r.x, r.y, px);
 }
 
 // Own canopy lift at grid vertex (i, j), already scaled by the ramp at node-relative `p`.

@@ -542,7 +542,14 @@ TForest t_forest(uint pool, TerrainDraw d, float4 cv, float2 g, float2 w, float3
     // forest floor; the crowns come back as the near trees dither out.
     bool near_on = near_px >= 0.0;
     if (near_on) {
-        paint = 1.0 - smoothstep(T_LIFT_NONE_PX, T_LIFT_NONE_PX * 1.25, near_px);
+        float4 far = ed_buf<FrameData>(ed_c.frame).imp.far;
+        if (far.z > 0.0) {
+            // Impostors (trees G5): each tree leaves at its hashed size in the same band, so
+            // the painted crowns rise linearly as the share of trees still standing falls.
+            paint = saturate((far.z - near_px) / max(far.z - far.w, 1e-3));
+        } else {
+            paint = 1.0 - smoothstep(T_LIFT_NONE_PX, T_LIFT_NONE_PX * 1.25, near_px);
+        }
     }
 
     TForest o;
@@ -819,6 +826,75 @@ float3 shade_foliage(FrameData* f, float3 sun, float3 albedo, float rough, float
     return col;
 }
 
+// ---- Tree impostors (trees G5) -----------------------------------------------------------
+// The impostor raster wrote the tree index; recompute the same three frames, the ray's uvs on
+// each, and blend the baked surface (coverage-weighted): depth, normal, value, bark. Shaded with
+// the meshes' foliage model and their colour table (leaf/bark albedo, per-tree value and hue).
+float4 impostor_pixel(FrameData* f, FsOut i, uint idx, float3 dir) {
+    GpuTree g = ed_buf<GpuTree>(f.imp.bufs.x)[idx];
+    GpuImpKind k = ed_buf<GpuImpKind>(f.imp.bufs.y)[(g.node_kind >> 12) & 0xFFFu];
+    float3 node = ed_buf<float4>(ed_c.nodes)[g.node_kind & 0xFFFu].xyz;
+    ImpTree t = imp_tree(g, k, node, f.sun_dir.xyz, false);
+    float3 nrm = normalize(t.c);
+    float hit = dot(t.c, nrm) / max(dot(dir, nrm), 1e-4);
+    float3 pq = dir * hit;
+    float3 q = imp_to_tree(t, pq - t.c);
+    float half_t = t.r * f.imp.cfg.y;
+    float2 u0 = imp_frame_uv(t, t.d0, q, half_t);
+    float2 u1 = imp_frame_uv(t, t.d1, q, half_t);
+    float2 u2 = imp_frame_uv(t, t.d2, q, half_t);
+    uint n = k.tex.w;
+    float fpx = k.geo.w;
+    float ppr = f.proj.w * 0.5 * f.proj.y;
+    float texel_m = 2.0 * half_t * t.s * max(t.wd, 1.0) / fpx;
+    float lod = clamp(log2(max(hit / ppr, 1e-6) / texel_m), 0.0, k.leaf.w - 1.0);
+    SamplerState smp = ed_smp(ed_c.smp);
+    Texture2D ta = ed_tex2d(k.tex.x);
+    Texture2D tb = ed_tex2d(k.tex.y);
+    Texture2D tc = ed_tex2d(k.tex.z);
+    float2 a0 = imp_atlas_uv(t.fi.x, n, u0, fpx);
+    float2 a1 = imp_atlas_uv(t.fi.y, n, u1, fpx);
+    float2 a2 = imp_atlas_uv(t.fi.z, n, u2, fpx);
+    float2 s0 = ta.SampleLevel(smp, a0, lod).rg;
+    float2 s1 = ta.SampleLevel(smp, a1, lod).rg;
+    float2 s2 = ta.SampleLevel(smp, a2, lod).rg;
+    float3 wc = t.w * float3(s0.x * (imp_inside(u0) ? 1.0 : 0.0), s1.x * (imp_inside(u1) ? 1.0 : 0.0), s2.x * (imp_inside(u2) ? 1.0 : 0.0));
+    float ws = wc.x + wc.y + wc.z;
+    wc = ws > 1e-4 ? wc / ws : t.w;
+    float d01 = wc.x * s0.y + wc.y * s1.y + wc.z * s2.y;
+    float3 nt = wc.x * imp_oct_sphere(tb.SampleLevel(smp, a0, lod).rg) + wc.y * imp_oct_sphere(tb.SampleLevel(smp, a1, lod).rg) + wc.z * imp_oct_sphere(tb.SampleLevel(smp, a2, lod).rg);
+    float2 vb = wc.x * tc.SampleLevel(smp, a0, lod).rg + wc.y * tc.SampleLevel(smp, a1, lod).rg + wc.z * tc.SampleLevel(smp, a2, lod).rg;
+    float dz = (d01 - 0.5) * 2.0 * half_t * t.s;
+    float3 p = pq - dir * dz;
+    float3 nw = t.ex * (nt.x / t.wd) + t.up * nt.y + t.ez * (nt.z / t.wd);
+    nw = dot(nw, nw) > 1e-8 ? normalize(nw) : -dir;
+    float3 v = -dir;
+    if (dot(nw, v) < 0.0) {
+        nw = normalize(nw - 1.01 * dot(nw, v) * v);
+    }
+    float value = vb.x * f.imp.cfg.z;
+    float bark = saturate(vb.y);
+    float iv = float(g.user & 255u) / 128.0;
+    float ih = float((g.user >> 8) & 255u) / 127.5 - 1.0;
+    float3 leaf_alb = k.leaf.rgb * value * iv * tree_hue(clamp(ih, -1.0, 1.0));
+    float3 bark_alb = k.bark.rgb * value * lerp(1.0, iv, 0.5);
+    float3 albedo = min(lerp(leaf_alb, bark_alb, bark), float3(0.9, 0.9, 0.9));
+    float zlin = -mul(f.view, float4(p, 1.0)).z;
+    float sun_vis = sun_shadow(f, ed_c.shadow, p, nw, zlin, i.pos.xy);
+    float2 occ = ao_upsample(f, ed_c.ao, i.pos.xy, zlin);
+    float3 sun = sun_light_at(f, p);
+    float3 col = shade_foliage(f, sun, albedo, 0.82, occ.x, occ.y, sun_vis, nw, nw, v, bark < 0.5);
+    col = apply_aerial(f, col, p, i.pos.xy);
+    if (f.light.flags.w == 2u) {
+        col = float3(0.5 * occ.x);
+    } else if (f.light.flags.w == 4u) {
+        col = float3(0.5 * occ.y);
+    } else if (f.light.flags.w == 1u) {
+        col = float3(0.04 + 0.5 * sun_vis);
+    }
+    return float4(col, 1.0);
+}
+
 float4 resolve_px<let TR : int>(FsOut i, bool terrain) {
     FrameData* f = ed_buf<FrameData>(ed_c.frame);
     uint2 px = uint2(i.pos.xy);
@@ -829,6 +905,9 @@ float4 resolve_px<let TR : int>(FsOut i, bool terrain) {
     }
     if (terrain && (vis.x & TERRAIN_VIS_BIT) != 0) {
         return terrain_pixel<TR>(f, i, vis, dir);
+    }
+    if ((vis.x & (IMP_VIS_BIT | TERRAIN_VIS_BIT)) == IMP_VIS_BIT) {
+        return impostor_pixel(f, i, vis.x & ~IMP_VIS_BIT, dir);
     }
     GpuInstance inst = ed_buf<GpuInstance>(ed_c.instances)[vis.x - 1u];
     GpuMesh* mesh = ed_buf<GpuMesh>(ed_c.meshes) + inst.mesh;

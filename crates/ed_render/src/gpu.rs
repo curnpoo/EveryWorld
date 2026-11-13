@@ -34,7 +34,7 @@ pub(crate) const VERTEX_WORDS: usize = 4;
 pub(crate) const ARGS_WORDS: usize = 5;
 
 /// `FrameData`: 3 float4x4, 5 planes, 8 float4, uint4 cull, 16 HzbLevel, `LightData`, `AtmosData`.
-pub(crate) const FRAME_WORDS: usize = 48 + 20 + 32 + 4 + 64 + crate::light::LIGHT_WORDS + crate::atmosphere::ATMOS_WORDS + WIND_WORDS;
+pub(crate) const FRAME_WORDS: usize = 48 + 20 + 32 + 4 + 64 + crate::light::LIGHT_WORDS + crate::atmosphere::ATMOS_WORDS + WIND_WORDS + IMP_WORDS;
 pub(crate) const FD_PLANES: usize = 48;
 pub(crate) const FD_SUN_DIR: usize = 68;
 pub(crate) const FD_VIEWPORT: usize = 88;
@@ -51,6 +51,9 @@ pub(crate) const FD_ATMOS: usize = FD_LIGHT + crate::light::LIGHT_WORDS;
 /// near trees on, unused.
 pub(crate) const FD_WIND: usize = FD_ATMOS + crate::atmosphere::ATMOS_WORDS;
 pub(crate) const WIND_WORDS: usize = 12;
+/// `FrameData.imp` (`ImpData`, trees G5 impostors): bufs, band, far, cfg.
+pub(crate) const FD_IMP: usize = FD_WIND + WIND_WORDS;
+pub(crate) const IMP_WORDS: usize = 16;
 /// `GpuMesh.flags` (word 7): a tree bank mesh (common.slang `MESH_FOLIAGE`).
 pub(crate) const MESH_FOLIAGE: u32 = 1;
 /// `GpuInstance.pad[0]`: free per-instance user word (trees: tint, branch drop, wind phase).
@@ -60,7 +63,7 @@ pub(crate) const INST_USER: usize = 28;
 pub(crate) const ENTRY_INSTANCE_BITS: u32 = 20;
 
 /// Cull statistics words (cull.slang `STAT_*`).
-pub(crate) const STAT_WORDS: usize = 16;
+pub(crate) const STAT_WORDS: usize = 20;
 
 pub(crate) fn bytes(words: &[u32]) -> Vec<u8> {
     let mut v = Vec::with_capacity(words.len() * 4);
@@ -115,8 +118,8 @@ mod tests {
 
     #[test]
     fn frame_layout_offsets() {
-        assert_eq!(FRAME_WORDS, 372);
-        assert_eq!(FD_WIND + WIND_WORDS, FRAME_WORDS);
+        assert_eq!(FRAME_WORDS, 388);
+        assert_eq!(FD_IMP + IMP_WORDS, FRAME_WORDS);
         assert_eq!(FD_SUN_DIR, FD_PLANES + 20);
         assert_eq!(FD_CULL, FD_SUN_DIR + 32);
         assert_eq!(FD_HZB + MAX_HZB_LEVELS * 4, FD_LIGHT);

@@ -63,7 +63,6 @@ impl RangeAlloc {
     pub fn used(&self) -> u32 {
         self.used
     }
-    #[cfg(test)]
     /// Highest end of any allocation (the part of the buffer ever written).
     pub fn high_water(&self) -> u32 {
         match self.free.iter().next_back() {
@@ -88,6 +87,8 @@ pub(crate) enum Release {
     MeshSlot(u32),
     SkinSlot(u32),
     TextureSlot(u32),
+    /// Impostor tree slots (start, len).
+    ImpTrees(u32, u32),
 }
 
 /// Releases waiting for frames to finish: `(frames that must complete, release)`.

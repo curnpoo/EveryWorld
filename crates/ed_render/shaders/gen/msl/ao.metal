@@ -106,6 +106,14 @@ struct WindData_natural_0
     packed_float4 cfg_2;
 };
 
+struct ImpData_natural_0
+{
+    packed_uint4 bufs_1;
+    packed_float4 band_0;
+    packed_float4 far_0;
+    packed_float4 cfg_3;
+};
+
 struct FrameData_natural_0
 {
     _MatrixStorage_float4x4_ColMajornatural_0 view_proj_0;
@@ -125,6 +133,7 @@ struct FrameData_natural_0
     LightData_natural_0 light_0;
     AtmosData_natural_0 atmos_0;
     WindData_natural_0 wind_1;
+    ImpData_natural_0 imp_0;
 };
 
 FrameData_natural_0 device* ed_buf_2(uint i_2, KernelContext_0 thread* kernelContext_2)
@@ -242,7 +251,7 @@ float3 view_at_far_0(FrameData_natural_0 device* f_5, int2 q_5, float off_0, flo
     return _S17;
 }
 
-float2 slice_horizons_0(FrameData_natural_0 device* f_6, int2 q_6, float3 p_1, float2 omega_0, float2 low_0, float r0_px_0, float r_px_0, float radius_1, float thin_0, uint steps_0, float jitter_0, float pw_0, bool far_0, float min_px_1, KernelContext_0 thread* kernelContext_8)
+float2 slice_horizons_0(FrameData_natural_0 device* f_6, int2 q_6, float3 p_1, float2 omega_0, float2 low_0, float r0_px_0, float r_px_0, float radius_1, float thin_0, uint steps_0, float jitter_0, float pw_0, bool far_1, float min_px_1, KernelContext_0 thread* kernelContext_8)
 {
     float range_0 = 0.60000002384185791f * radius_1;
     float _S18 = -1.0f / range_0;
@@ -273,7 +282,7 @@ float2 slice_horizons_0(FrameData_natural_0 device* f_6, int2 q_6, float3 p_1, f
         float _S23 = max(r0_px_0 + _S22 * (r_px_0 - r0_px_0), 1.0f + _S21);
         float2 d_1 = omega_0 * float2(_S23) ;
         float3 _S24;
-        if(far_0)
+        if(far_1)
         {
             float3 _S25 = view_at_far_0(f_6, q_6 + int2(round(d_1)), _S23, min_px_1, kernelContext_8);
             _S24 = _S25;
@@ -285,7 +294,7 @@ float2 slice_horizons_0(FrameData_natural_0 device* f_6, int2 q_6, float3 p_1, f
         }
         float3 d0_0 = _S24 - p_1;
         float3 _S27;
-        if(far_0)
+        if(far_1)
         {
             float3 _S28 = view_at_far_0(f_6, q_6 - int2(round(d_1)), _S23, min_px_1, kernelContext_8);
             _S27 = _S28;

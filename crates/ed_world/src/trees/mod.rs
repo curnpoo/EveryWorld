@@ -21,6 +21,7 @@
 //! the same seed so the silhouette matches.
 
 pub mod bank;
+pub mod bank_impostor;
 pub mod impostor;
 pub mod species;
 pub mod textures;

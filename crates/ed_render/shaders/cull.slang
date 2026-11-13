@@ -45,7 +45,9 @@ static const uint STAT_TRIANGLES = 8;
 static const uint STAT_CHANGED = 9;
 static const uint STAT_SHADOW = 10;          // 10..13: shadow casters per cascade
 static const uint STAT_SHADOW_TRIANGLES = 14;
-static const uint STAT_WORDS = 16;
+static const uint STAT_IMPOSTORS = 16;        // impostors drawn (trees G5)
+static const uint STAT_IMP_CASTERS = 17;      // impostor shadow casters, all cascades
+static const uint STAT_WORDS = 20;
 
 // One atomic per wave: every thread of the group reaches the stat_add calls (no early return).
 void stat_add(Atomic<uint>* stats, uint idx, uint v) {
@@ -368,12 +370,18 @@ void shadow_cull(uint3 tid: SV_DispatchThreadID) {
                 float4 proj = f.proj;
                 float dist = max(length(b.c) - b.r, f.params.z);
                 uint vl = select_lod(m, b.scale * proj.w * 0.5 * proj.y / dist, 0u, false, f.params.y, 1.0);
-                if (m.index_count[vl] == 0u || vl + 2u >= m.lod_count) {
+                if (m.index_count[vl] == 0u || (m.lod_count >= 4u && vl + 2u >= m.lod_count)) {
                     nc = 0u;
                 }
                 lod_max = max(m.lod_count, 2u) - 2u;
+                // Impostor shadows on (trees G5): far cascades take every tree's impostor.
+                if ((f.imp.bufs.w & 2u) != 0u) {
+                    nc = min(nc, uint(f.imp.cfg.w));
+                }
                 // Leaf shadows come from the simplified level (its cards keep the crown's holes;
                 // the full tree's thousands of cards add little a shadow map can resolve).
+                // Impostor chains (trees G5: full, simplified, empty) have no shell: the
+                // simplified level casts until the tree leaves to its impostor.
                 lod_min = min(1u, lod_max);
             }
             for (uint c = 0; c < nc; c++) {
@@ -398,4 +406,108 @@ void shadow_cull(uint3 tid: SV_DispatchThreadID) {
     stat_add(stats, STAT_SHADOW + 2, cnt2);
     stat_add(stats, STAT_SHADOW + 3, cnt3);
     stat_add(stats, STAT_SHADOW_TRIANGLES, e.tris);
+}
+
+// ---- Tree impostors (trees G5, src/impostor.rs) ---------------------------------------------
+// The CullC words mean: instances = tree buffer, meshes = kind table, args = the impostor draw
+// arguments (one DrawIndexedArgs for the view, then one per cascade), visible = the impostor
+// visible list (view entries from 0, cascade c's from (c + 1) * bins_kind), count = tree slots,
+// bins_kind = visible-list slots per list.
+// Entry: tree index (bits 0-23) | coverage (24-31, the fades: 255 = whole tree).
+static const uint IMP_INDEX_MASK = 0xFFFFFFu;
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void imp_reset(uint3 tid: SV_DispatchThreadID) {
+    uint i = tid.x;
+    if (i < 5u * ARGS_WORDS) {
+        uint w = i % ARGS_WORDS;
+        uint list = i / ARGS_WORDS;
+        // index count 6 (one quad), instances 0, first index 0, base vertex 0, first instance.
+        ed_buf<uint>(ed_c.args)[i] = w == 0u ? 6u : (w == 4u ? list * ed_c.bins_kind : 0u);
+    }
+}
+
+float imp_hash01(uint h) {
+    return (float(h) + 0.5) / 256.0;
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void imp_cull(uint3 tid: SV_DispatchThreadID) {
+    uint i = tid.x;
+    FrameData* f = ed_buf<FrameData>(ed_c.frame);
+    Atomic<uint>* stats = (Atomic<uint>*)ed_buf<uint>(ed_c.stats);
+    uint drawn = 0;
+    uint casters = 0;
+    if (i < ed_c.count) {
+        GpuTree g = ed_buf<GpuTree>(ed_c.instances)[i];
+        if (g.scale > 0.0) {
+            GpuImpKind k = ed_buf<GpuImpKind>(ed_c.meshes)[(g.node_kind >> 12) & 0xFFFu];
+            float3 node = ed_buf<float4>(ed_c.nodes)[g.node_kind & 0xFFFu].xyz;
+            float3 up = oct_decode(g.up);
+            float wd = 0.5 + float(g.yaw_widen >> 16) / 65535.0;
+            float3 c = node + float3(g.px, g.py, g.pz) + up * (k.geo.x * g.scale);
+            float r = k.geo.y * g.scale * max(wd, 1.0);
+            float dist = max(length(c), f.params.z);
+            float ppr = f.proj.w * 0.5 * f.proj.y;
+            float hpx = k.geo.z * g.scale * ppr / dist;
+            float refpx = f.imp.cfg.x * ppr / dist;
+            float4 band = f.imp.band;
+            // T1 -> T2: the bank mesh leaves at T1 (its empty level); the impostor is whole under
+            // band.x and gone over band.y (the mesh still draws there).
+            float a_in = saturate((band.y - hpx) / max(band.y - band.x, 1e-3));
+            // T2 -> T3: this tree leaves at its own hashed size in band.z..w (the canopy paint
+            // under it rises linearly over the same band, so covered area stays constant), with
+            // a short dither so it does not blink.
+            float thr = band.z + (band.w - band.z) * imp_hash01(g.node_kind >> 24);
+            float a_out = saturate((refpx - thr) / max((band.w - band.z) * 0.15, 1e-3));
+            float a = a_in * a_out;
+            uint cov = uint(a * 255.0 + 0.5);
+            // From cascade `cfg.w` on, every tree's sun shadow is its impostor (the meshes cast
+            // only in the nearer cascades): coverage there is the T3 exit alone.
+            uint cov_far = uint(a_out * 255.0 + 0.5);
+            uint far_c = uint(f.imp.cfg.w);
+            if (cov_far > 0u) {
+                bool vis = cov > 0u && in_frustum(f, c, r);
+                if (vis && f.cull.x > 0) {
+                    vis = !occluded(f, ed_buf<float>(ed_c.hzb), c, r);
+                }
+                if (vis) {
+                    Atomic<uint>* args = (Atomic<uint>*)ed_buf<uint>(ed_c.args);
+                    uint slot = args[1].add(1u, MemoryOrder.Relaxed);
+                    if (slot < ed_c.bins_kind) {
+                        ed_buf<uint>(ed_c.visible)[slot] = i | (cov << 24);
+                        drawn = 1;
+                    }
+                }
+                // Sun shadow casters (IMP_SHADOWS): sun-facing billboards, per cascade.
+                if ((f.imp.bufs.w & 2u) != 0u && f.light.cfg.x > 0.0) {
+                    uint nc = min(uint(f.light.cfg.x), 4u);
+                    float tile = f.light.cfg.y;
+                    Atomic<uint>* args = (Atomic<uint>*)ed_buf<uint>(ed_c.args);
+                    for (uint cc = 0; cc < nc; cc++) {
+                        uint cv = cc >= far_c ? cov_far : cov;
+                        if (cv == 0u) {
+                            continue;
+                        }
+                        float4 cs = f.light.cascade[cc];
+                        float4 sp = mul(f.light.shadow[cc], float4(c, 1.0));
+                        float rc = r / (cs.x * tile * 0.5);
+                        float rz = r / cs.y;
+                        if (abs(sp.x) > 1.0 + rc || abs(sp.y) > 1.0 + rc || sp.z < -rz || 2.0 * r < 2.0 * cs.x) {
+                            continue;
+                        }
+                        uint slot = args[(cc + 1u) * ARGS_WORDS + 1u].add(1u, MemoryOrder.Relaxed);
+                        if (slot < ed_c.bins_kind) {
+                            ed_buf<uint>(ed_c.visible)[(cc + 1u) * ed_c.bins_kind + slot] = i | (cv << 24);
+                            casters += 1u;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    stat_add(stats, STAT_IMPOSTORS, drawn);
+    stat_add(stats, STAT_IMP_CASTERS, casters);
 }

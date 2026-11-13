@@ -177,7 +177,11 @@ pub fn run(args: &Args) -> Result<Report, String> {
     }
 
     let mode = if args.empty { SceneMode::Empty } else { SceneMode::Scene };
-    let all_passes = renderer.pass_names(&FrameParams { mode, pop_stats: args.pop, pick: Some((0, 0)), ..Default::default() });
+    let mut all_passes = renderer.pass_names(&FrameParams { mode, pop_stats: args.pop, pick: Some((0, 0)), ..Default::default() });
+    // Tree impostors (trees G5) record their passes once the first trees are in.
+    if near.as_ref().is_some_and(|n| n.on && n.imp) && !all_passes.contains(&"imp_cull") {
+        all_passes.extend(["imp_cull", "imp_raster"]);
+    }
     let mut log = PerfLog::new(&all_passes, frames as usize);
     let mut path = ScriptedPath::with_speed(args.path, args.speed);
     let mut fixed = FixedStep::default();
@@ -191,6 +195,16 @@ pub fn run(args: &Args) -> Result<Report, String> {
     let mut last_pick: Option<PickResult> = None;
     let mut upload_bytes = 0u64;
 
+    // `EW_FLYOUT=AGL0,AGL1` (with `--ground`): the eye climbs from AGL0 to AGL1 metres,
+    // geometrically over the run, and every frame is written as `fly_NNNN.png` (trees G5 pop
+    // gate; the GPU waits on each frame, so its timings are not representative).
+    let flyout: Option<(f64, f64)> = std::env::var("EW_FLYOUT").ok().and_then(|v| {
+        let n: Vec<f64> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+        (n.len() == 2 && n[0] > 0.0 && n[1] > 0.0).then(|| (n[0], n[1]))
+    });
+    if flyout.is_some() {
+        std::fs::create_dir_all(&args.out).map_err(|e| format!("{}: {e}", args.out.display()))?;
+    }
     for i in 0..frames {
         // Camera (scripted path; game mode: the follow camera) and the session's fixed step.
         let alpha = fixed.run(fixed.dt(), &mut path, |_| ());
@@ -201,7 +215,11 @@ pub fn run(args: &Args) -> Result<Report, String> {
                 // the first frame, before any page is resident).
                 let probe = crate::terrain::ground_pose(pl, g[0], g[1], 0.0, 0.0, 0.0).position;
                 let base = wd.ground(probe).or_else(|| wd.source().height(g[0], g[1])).unwrap_or(0.0);
-                crate::terrain::ground_pose(pl, g[0], g[1], g[2], g[3], base + g[4]).camera()
+                let agl = match flyout {
+                    Some((a, b)) => a * (b / a).powf(i as f64 / (frames - 1).max(1) as f64),
+                    None => g[4],
+                };
+                crate::terrain::ground_pose(pl, g[0], g[1], g[2], g[3], base + agl).camera()
             }
             _ => path.interpolated(alpha),
         };
@@ -254,6 +272,12 @@ pub fn run(args: &Args) -> Result<Report, String> {
                         s.nodes, s.instances, t[0], t[1], t[2], t[3], nt.handoff_m, s.bank_meshes, s.bank_bytes as f64 / 1048576.0, s.bank_ms, s.pages_ms, s.stand_ms, s.stand_nodes,
                         s.stand_ms / s.stand_nodes.max(1) as f64, s.apply_ms, trees_ms
                     );
+                    if s.imp_kinds > 0 {
+                        println!(
+                            "impostors: {} trees, {} kinds ({} px frames), {:.1} MB textures, bake {:.0} ms ({} baked, {} from cache)",
+                            s.imp_trees, s.imp_kinds, s.imp_frame_px, s.imp_bytes as f64 / 1048576.0, s.imp_bake_ms, s.imp_baked, s.imp_cached
+                        );
+                    }
                 }
             }
         }
@@ -289,7 +313,7 @@ pub fn run(args: &Args) -> Result<Report, String> {
         let last = i + 1 == frames;
         let params = FrameParams {
             mode,
-            readback: if last { Some(readback) } else { shot },
+            readback: if last || flyout.is_some() { Some(readback) } else { shot },
             pick: (!args.empty && i % PICK_EVERY == PICK_EVERY - 1).then_some((w / 2, h / 2)),
             pop_stats: args.pop && !args.empty,
             vis_readback: vis_readback.filter(|_| last),
@@ -308,6 +332,17 @@ pub fn run(args: &Args) -> Result<Report, String> {
         }
         if let Err(e) = dev.end_frame(enc) {
             validation_error.get_or_insert(format!("frame {i}: {e}"));
+        }
+        if flyout.is_some() {
+            dev.wait_idle();
+            let mut raw = Vec::new();
+            dev.read_buffer(readback, &mut raw).map_err(|e| format!("read_buffer: {e}"))?;
+            let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+            for y in 0..h as usize {
+                let o = y * pitch as usize;
+                rgba.extend_from_slice(&raw[o..o + w as usize * 4]);
+            }
+            write_png(&args.out.join(format!("fly_{i:04}.png")), w, h, &rgba)?;
         }
         log.rows.push(FrameRow {
             cpu_ms: flush_ms + t0.elapsed().as_secs_f64() * 1e3,
@@ -565,6 +600,8 @@ fn m2_lines(m: &M2Inputs<'_>) -> String {
     let _ = writeln!(s, "  non-empty bins:  {}", mm(&|c| c.nonempty_bins));
     let _ = writeln!(s, "  shadow casters:  c0 {} c1 {} c2 {} c3 {}", mm(&|c| c.shadow_casters[0]), mm(&|c| c.shadow_casters[1]), mm(&|c| c.shadow_casters[2]), mm(&|c| c.shadow_casters[3]));
     let _ = writeln!(s, "  shadow triangles: {}", mm(&|c| c.shadow_triangles));
+    let _ = writeln!(s, "  impostors:       {}", mm(&|c| c.impostors));
+    let _ = writeln!(s, "  impostor casters: {}", mm(&|c| c.impostor_casters));
     let _ = writeln!(
         s,
         "draw calls per frame: {} ({} indirect = {} mesh x LOD bins x solid/dither x early/late; + resolve + tonemap)",

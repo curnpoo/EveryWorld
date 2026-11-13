@@ -16,8 +16,9 @@
 //! dithered (cross-fading) instances, issued as two multi-draws per phase. Unused bins have
 //! zero instances (Metal ignores the count buffer, `Caps::indirect_count == false`).
 
-use crate::gpu::{self, ARGS_WORDS, FD_CULL, FD_HZB, MAX_HZB_LEVELS, MESH_WORDS, STAT_WORDS, constants};
+use crate::gpu::{self, ARGS_WORDS, FD_CULL, FD_HZB, FD_IMP, IMP_WORDS, MAX_HZB_LEVELS, MESH_WORDS, STAT_WORDS, constants};
 use crate::graph::{FrameGraph, PassBuilder, PassKind, Plan, Res};
+use crate::impostor::{IMP_LISTS, ImpostorStore, MAX_IMPOSTOR_TREES};
 use crate::scene::{InstancePools, MAX_LODS};
 use crate::shaders::{Built, Module, ShaderSet};
 use crate::{Tracked, VIS_FORMAT};
@@ -92,6 +93,8 @@ pub struct ProviderOutputs {
     /// The early-phase pyramid is not handed out: it misses what only the late phase drew,
     /// so reading it would make the image depend on the previous frame.
     pub hzb: Option<(Res, u32)>,
+    /// Impostor tree buffer and kind table (trees G5), when impostors drew: the resolve reads them.
+    pub imp: Option<[Res; 2]>,
 }
 
 /// A source of geometry for the visibility buffer (renderer.md §3). Provider 1 is
@@ -165,6 +168,9 @@ pub struct CullStats {
     pub shadow_casters: [u32; 4],
     /// Triangles drawn into the shadow atlas.
     pub shadow_triangles: u32,
+    /// Tree impostors drawn (trees G5) and their shadow casters over all cascades.
+    pub impostors: u32,
+    pub impostor_casters: u32,
 }
 
 impl CullStats {
@@ -186,6 +192,8 @@ impl CullStats {
             changed: w[9],
             shadow_casters: [w[10], w[11], w[12], w[13]],
             shadow_triangles: w[14],
+            impostors: w[16],
+            impostor_casters: w[17],
         }
     }
 }
@@ -311,6 +319,8 @@ pub struct DiscreteLod {
     views: Vec<CullView>,
     cur: usize,
     scratch: Vec<u8>,
+    /// Tree impostors (trees G5): their own buffer, cull and quad draw.
+    pub(crate) imp: ImpostorStore,
 }
 
 /// One view's culling state.
@@ -330,6 +340,8 @@ struct CullView {
     last_draw_loop_ms: f64,
     imports: Vec<(Res, Imported)>,
     hzb_levels: Vec<(u32, u32, u32)>,
+    /// Impostor draw arguments (view + 4 cascades) and visible lists, made on first use.
+    imp: Option<(Tracked, Tracked)>,
 }
 
 impl CullView {
@@ -357,6 +369,7 @@ impl CullView {
             last_draw_loop_ms: 0.0,
             imports: Vec::new(),
             hzb_levels: Vec::new(),
+            imp: None,
         })
     }
     fn destroy(self, dev: &dyn Device) {
@@ -365,6 +378,10 @@ impl CullView {
         }
         if let Some((h, _, _)) = self.hzb {
             h.destroy(dev);
+        }
+        if let Some((a, b)) = self.imp {
+            a.destroy(dev);
+            b.destroy(dev);
         }
         self.stats_ring.destroy(dev);
     }
@@ -396,6 +413,11 @@ enum Imported {
     ShadowVisible,
     Hzb,
     Stats(usize),
+    ImpTrees,
+    ImpKinds,
+    ImpQuad,
+    ImpArgs,
+    ImpVisible,
 }
 
 /// The accesses both culling passes declare. `bufs`: mesh table, state, args, visible, stats.
@@ -430,6 +452,12 @@ pub(crate) struct LodPipelines {
     foliage_solid: RenderPipelineId,
     foliage_dither: RenderPipelineId,
     foliage_shadow: RenderPipelineId,
+    /// Tree impostors (trees G5).
+    imp_reset: ComputePipelineId,
+    imp_cull: ComputePipelineId,
+    imp_raster: RenderPipelineId,
+    imp_shadow: RenderPipelineId,
+    imp_shadow_proxy: RenderPipelineId,
 }
 
 impl LodPipelines {
@@ -506,7 +534,45 @@ impl LodPipelines {
                 samples: 1,
             },
         )?;
-        Ok(Self { built: std::mem::take(b), cull_reset, cull_early, cull_late, hzb_first, hzb_down, vis_solid, vis_dither, shadow_reset, shadow_cull, shadow_raster, foliage_solid, foliage_dither, foliage_shadow })
+        let imp_reset = b.compute(dev, src, Module::Cull, "imp_reset", g)?;
+        let imp_cull = b.compute(dev, src, Module::Cull, "imp_cull", g)?;
+        let vsi = b.shader(dev, src, Module::Vis, "vs_imp", ShaderStage::Vertex, "vs_imp")?;
+        let fsi = b.shader(dev, src, Module::Vis, "fs_imp", ShaderStage::Fragment, "fs_imp")?;
+        let imp_raster = b.render(dev, &RenderPipelineDesc { label: "impostor raster", vertex: vsi, fragment: Some(fsi), cull: Cull::None, ..rp("", fsi) })?;
+        let vsis = b.shader(dev, src, Module::Vis, "vs_imp_shadow", ShaderStage::Vertex, "vs_imp_shadow")?;
+        let fsis = b.shader(dev, src, Module::Vis, "fs_imp_shadow", ShaderStage::Fragment, "fs_imp_shadow")?;
+        let imp_shadow = b.render(
+            dev,
+            &RenderPipelineDesc {
+                label: "impostor shadow",
+                vertex: vsis,
+                fragment: Some(fsis),
+                color_formats: &[],
+                blend: ed_gpu::Blend::Opaque,
+                depth: Some(DepthDesc { format: crate::DEPTH_FORMAT, write: true, compare: Compare::GreaterEqual, bias: 0.0, slope_bias: 0.0, clamp: true }),
+                cull: Cull::None,
+                topology: Topology::Triangles,
+                samples: 1,
+            },
+        )?;
+        // Far cascades: an opaque crown-shaped proxy, depth only (no fragment stage, so the
+        // GPU's hidden-surface removal keeps a dense forest's overdraw cheap).
+        let vsip = b.shader(dev, src, Module::Vis, "vs_imp_shadow_proxy", ShaderStage::Vertex, "vs_imp_shadow_proxy")?;
+        let imp_shadow_proxy = b.render(
+            dev,
+            &RenderPipelineDesc {
+                label: "impostor shadow proxy",
+                vertex: vsip,
+                fragment: None,
+                color_formats: &[],
+                blend: ed_gpu::Blend::Opaque,
+                depth: Some(DepthDesc { format: crate::DEPTH_FORMAT, write: true, compare: Compare::GreaterEqual, bias: 0.0, slope_bias: 0.0, clamp: true }),
+                cull: Cull::None,
+                topology: Topology::Triangles,
+                samples: 1,
+            },
+        )?;
+        Ok(Self { imp_reset, imp_cull, imp_raster, imp_shadow, imp_shadow_proxy, built: std::mem::take(b), cull_reset, cull_early, cull_late, hzb_first, hzb_down, vis_solid, vis_dither, shadow_reset, shadow_cull, shadow_raster, foliage_solid, foliage_dither, foliage_shadow })
     }
     pub(crate) fn destroy(self, dev: &dyn Device) {
         self.built.destroy(dev);
@@ -537,6 +603,7 @@ impl DiscreteLod {
             views: vec![view0],
             cur: 0,
             scratch: Vec::new(),
+            imp: ImpostorStore::new(),
         })
     }
 
@@ -715,6 +782,13 @@ impl GeometryProvider for DiscreteLod {
             fd[FD_HZB + i * 4..FD_HZB + i * 4 + 4].copy_from_slice(&[l.0, l.1, l.2, 0]);
         }
         v.hzb_levels = levels;
+        fd[FD_IMP..FD_IMP + IMP_WORDS].copy_from_slice(&self.imp.words());
+        if self.imp.slots() > 0 && v.imp.is_none() {
+            let rw = Usage { shader_read: true, shader_write: true, ..Default::default() };
+            let a = Tracked::new(dev, "impostor draw args", (IMP_LISTS as usize * ARGS_WORDS * 4) as u64, Usage { indirect_args: true, ..rw })?;
+            let l = Tracked::new(dev, "impostor visible", IMP_LISTS as u64 * MAX_IMPOSTOR_TREES as u64 * 4, rw)?;
+            v.imp = Some((a, l));
+        }
         Ok(())
     }
 
@@ -748,6 +822,20 @@ impl GeometryProvider for DiscreteLod {
         let (hzb_t, dw, dh) = v.hzb.as_ref().expect("prepare before record");
         let hzb = imp(g, "hzb", hzb_t, fin(ResourceState::ShaderRead), Imported::Hzb, &mut list);
         let (hzb_id, hzb_bi, dw, dh) = (hzb_t.id, hzb_t.bindless.0, *dw, *dh);
+        // Tree impostors (trees G5): imported only when they draw.
+        let imp_slots = self.imp.slots();
+        let impb = match (&self.imp.trees, &self.imp.kinds, &self.imp.quad, &v.imp) {
+            (Some(t), Some(k), Some(q), Some((a, l))) if imp_slots > 0 => {
+                let fq = fin(ResourceState::CopyDst);
+                let tr = imp(g, "impostor trees", t, fq, Imported::ImpTrees, &mut list);
+                let kr = imp(g, "impostor kinds", k, fq, Imported::ImpKinds, &mut list);
+                let qr = imp(g, "impostor quad", q, fq, Imported::ImpQuad, &mut list);
+                let ar = imp(g, "impostor draw args", a, fin(ResourceState::IndirectArgs), Imported::ImpArgs, &mut list);
+                let lr = imp(g, "impostor visible", l, fin(ResourceState::ShaderRead), Imported::ImpVisible, &mut list);
+                Some(((tr, t.bindless.0), (kr, k.bindless.0), (qr, q.id), (ar, a.bindless.0, a.id), (lr, l.bindless.0)))
+            }
+            _ => None,
+        };
         v.imports = list;
         let draw_loop = v.draw_loop.clone();
         let hzb_levels = v.hzb_levels.clone();
@@ -847,6 +935,32 @@ impl GeometryProvider for DiscreteLod {
         if occlusion {
             build_hzb(g, "hzb");
         }
+        // Impostor cull: after the early pyramid (conservative: only what drew early occludes).
+        if let Some(((tr, tbi), (kr, kbi), _, (ar, abi, aid), (lr, lbi))) = impb {
+            let icw = [inp.frame.1, tbi, kbi, 0, abi, lbi, v.stats_ring.bufs[slot].bindless.0, hzb_bi, imp_slots, MAX_IMPOSTOR_TREES, 0, inp.nodes.1];
+            let icc = constants(&icw);
+            let (p_ireset, p_icull) = (pipes.imp_reset, pipes.imp_cull);
+            let igroups = imp_slots.div_ceil(CULL_GROUP).max(1);
+            let ip = g
+                .add_pass("imp_cull", PassKind::Compute)
+                .read(inp.frame.0, ResourceState::ShaderRead)
+                .read(inp.nodes.0, ResourceState::ShaderRead)
+                .read(tr, ResourceState::ShaderRead)
+                .read(kr, ResourceState::ShaderRead)
+                .write(ar, sw)
+                .write(lr, sw)
+                .write(stats, sw);
+            let ip = if occlusion { ip.read(hzb, ResourceState::ShaderRead) } else { ip };
+            ip.exec(move |ctx| {
+                ctx.enc.set_compute_pipeline(p_ireset);
+                ctx.enc.set_compute_constants(&icc);
+                ctx.enc.dispatch(1, 1, 1);
+                ctx.enc.transition(&[Transition::Buffer { buffer: aid, from: sw, to: sw }]);
+                ctx.enc.set_compute_pipeline(p_icull);
+                ctx.enc.set_compute_constants(&icc);
+                ctx.enc.dispatch(igroups, 1, 1);
+            });
+        }
 
         let late = cull_pass(g, "cull_late", inp, bufs);
         let late = if occlusion { late.read(hzb, ResourceState::ShaderRead) } else { late };
@@ -856,6 +970,26 @@ impl GeometryProvider for DiscreteLod {
             ctx.enc.dispatch(groups, 1, 1);
         });
         raster(g, "raster_late", 1, false);
+        if let Some(((tr, tbi), (kr, kbi), (qr, qid), (ar, _, aid), (lr, lbi))) = impb {
+            let ivc = constants(&[inp.frame.1, tbi, inp.nodes.1, lbi, kbi, 0, inp.materials.1, inp.uvs.1, inp.smp]);
+            let p_iras = pipes.imp_raster;
+            g.add_pass("imp_raster", PassKind::Raster)
+                .read(inp.frame.0, ResourceState::ShaderRead)
+                .read(inp.nodes.0, ResourceState::ShaderRead)
+                .read(tr, ResourceState::ShaderRead)
+                .read(kr, ResourceState::ShaderRead)
+                .read(qr, ResourceState::ShaderRead)
+                .read(lr, ResourceState::ShaderRead)
+                .read(ar, ResourceState::IndirectArgs)
+                .color(out.vis, LoadOp::Load, StoreOp::Store)
+                .depth(out.depth, LoadOp::Load, StoreOp::Store, true)
+                .exec(move |ctx| {
+                    ctx.enc.set_index_buffer(qid, 0);
+                    ctx.enc.set_render_pipeline(p_iras);
+                    ctx.enc.set_draw_constants(&ivc);
+                    ctx.enc.draw_indexed_indirect_multi(aid, 0, 1, None);
+                });
+        }
         if out.final_hzb {
             build_hzb(g, "hzb_final");
         }
@@ -884,7 +1018,7 @@ impl GeometryProvider for DiscreteLod {
             let p_sfol = pipes.foliage_shadow;
             let (n, tile) = (sh.cascades.min(4), sh.tile);
             let atlas_load = if out.preloaded { LoadOp::Load } else { LoadOp::Clear([0.0; 4]) };
-            g.add_pass("shadow_raster", PassKind::Raster)
+            let sp = g.add_pass("shadow_raster", PassKind::Raster)
                 .read(inp.frame.0, ResourceState::ShaderRead)
                 .read(inp.instances.0, ResourceState::ShaderRead)
                 .read(inp.nodes.0, ResourceState::ShaderRead)
@@ -893,9 +1027,32 @@ impl GeometryProvider for DiscreteLod {
                 .read(svis, ResourceState::ShaderRead)
                 .read(sargs, ResourceState::IndirectArgs)
                 .read(inp.materials.0, ResourceState::ShaderRead)
-                .read(inp.uvs.0, ResourceState::ShaderRead)
-                .depth(sh.atlas, atlas_load, StoreOp::Store, true)
+                .read(inp.uvs.0, ResourceState::ShaderRead);
+            let sp = match impb {
+                Some(((tr, _), (kr, _), (qr, _), (ar, _, _), (lr, _))) => sp
+                    .read(tr, ResourceState::ShaderRead)
+                    .read(kr, ResourceState::ShaderRead)
+                    .read(qr, ResourceState::ShaderRead)
+                    .read(lr, ResourceState::ShaderRead)
+                    .read(ar, ResourceState::IndirectArgs),
+                None => sp,
+            };
+            let p_ishadow = pipes.imp_shadow;
+            let p_iproxy = pipes.imp_shadow_proxy;
+            let proxy_from = self.imp.bands.map_or(u32::MAX, |b| b.shadow_cascade);
+            sp.depth(sh.atlas, atlas_load, StoreOp::Store, true)
                 .exec(move |ctx| {
+                    if let Some(((_, tbi), (_, kbi), (_, qid), (_, _, aid), (_, lbi))) = impb {
+                        ctx.enc.set_index_buffer(qid, 0);
+                        for c in 0..n {
+                            ctx.enc.set_render_pipeline(if c >= proxy_from { p_iproxy } else { p_ishadow });
+                            let (x, y) = ((c % 2) * tile, (c / 2) * tile);
+                            ctx.enc.set_viewport(x as f32, y as f32, tile as f32, tile as f32);
+                            ctx.enc.set_scissor(x, y, tile, tile);
+                            ctx.enc.set_draw_constants(&constants(&[svc_base[0], tbi, svc_base[2], lbi, kbi, c, svc_tail[0], svc_tail[1], svc_tail[2]]));
+                            ctx.enc.draw_indexed_indirect_multi(aid, ((c + 1) * ARGS_WORDS as u32 * 4) as u64, 1, None);
+                        }
+                    }
                     if s == 0 {
                         return;
                     }
@@ -920,7 +1077,7 @@ impl GeometryProvider for DiscreteLod {
                     }
                 });
         }
-        ProviderOutputs { meshes: (meshes, mesh_table.bindless.0), state: (state, v.state.bindless.0), hzb: out.final_hzb.then_some((hzb, hzb_bi)) }
+        ProviderOutputs { meshes: (meshes, mesh_table.bindless.0), state: (state, v.state.bindless.0), hzb: out.final_hzb.then_some((hzb, hzb_bi)), imp: impb.map(|i| [i.0.0, i.1.0]) }
     }
 
     fn finish(&mut self, plan: &Plan) {
@@ -941,15 +1098,21 @@ impl GeometryProvider for DiscreteLod {
                     }
                 }
                 Imported::Stats(i) => v.stats_ring.bufs[i].state = s,
+                Imported::ImpTrees => self.imp.trees.as_mut().expect("imported").state = s,
+                Imported::ImpKinds => self.imp.kinds.as_mut().expect("imported").state = s,
+                Imported::ImpQuad => self.imp.quad.as_mut().expect("imported").state = s,
+                Imported::ImpArgs => v.imp.as_mut().expect("imported").0.state = s,
+                Imported::ImpVisible => v.imp.as_mut().expect("imported").1.state = s,
             }
         }
     }
 
     fn pass_names(&self) -> &'static [&'static str] {
-        if self.config.occlusion {
-            &["cull_early", "raster_early", "hzb", "cull_late", "raster_late"]
-        } else {
-            &["cull_early", "raster_early", "cull_late", "raster_late"]
+        match (self.config.occlusion, self.imp.slots() > 0) {
+            (true, false) => &["cull_early", "raster_early", "hzb", "cull_late", "raster_late"],
+            (false, false) => &["cull_early", "raster_early", "cull_late", "raster_late"],
+            (true, true) => &["cull_early", "raster_early", "hzb", "imp_cull", "cull_late", "raster_late", "imp_raster"],
+            (false, true) => &["cull_early", "raster_early", "imp_cull", "cull_late", "raster_late", "imp_raster"],
         }
     }
 
@@ -961,6 +1124,7 @@ impl GeometryProvider for DiscreteLod {
             v.destroy(dev);
         }
         s.p.destroy(dev);
+        s.imp.destroy(dev);
     }
 }
 

@@ -24,6 +24,7 @@
 //! (`shaders/gen/`, `tools/shaders/build.sh`); see [`shaders`].
 
 mod alloc;
+pub mod impostor;
 pub mod atmosphere;
 pub mod atmosphere_model;
 pub mod graph;
@@ -819,6 +820,40 @@ impl Renderer {
     /// `ed_world::wind::WindField::gpu_words` at the camera, `rest_m` the distance beyond which
     /// trees hold still (the shadow distance), `near_trees` tells the far forest rung that real
     /// trees stand in the near band. `field = None`: no wind.
+    /// Adds a tree impostor kind (trees G5): its baked atlas textures (added with
+    /// [`Renderer::add_texture`]) and geometry. Returns the kind index for [`impostor::ImpostorTree::kind`].
+    pub fn add_impostor_kind(&mut self, dev: &dyn Device, tex: [TextureHandle; 3], mut k: impostor::ImpostorKind) -> Result<u32, ed_gpu::Error> {
+        for (i, h) in tex.iter().enumerate() {
+            let Some(e) = self.textures.get(h.0 as usize).and_then(Option::as_ref) else {
+                return invalid("add_impostor_kind", "stale texture");
+            };
+            k.tex[i] = e.bind.0;
+        }
+        self.lod.imp.add_kind(dev, &k)
+    }
+    /// Adds a block of impostor trees under `node`; `None` when the buffer is full.
+    pub fn add_impostor_trees(&mut self, dev: &dyn Device, node: scene::NodeSlot, trees: &[impostor::ImpostorTree]) -> Result<Option<impostor::ImpostorRange>, ed_gpu::Error> {
+        self.lod.imp.add_trees(dev, node, trees)
+    }
+    /// Removes a block: its trees stop drawing at once, the slots are reused after frames in flight.
+    pub fn remove_impostor_trees(&mut self, dev: &dyn Device, r: impostor::ImpostorRange) -> Result<(), ed_gpu::Error> {
+        self.lod.imp.kill(dev, r)?;
+        self.deferred.push(self.frames_seen, Release::ImpTrees(r.start, r.len));
+        Ok(())
+    }
+    /// Sets the tree hand-off table (`None`: no impostors, the far rung keeps its own ramps).
+    pub fn set_impostor_bands(&mut self, b: Option<impostor::ImpostorBands>) {
+        self.lod.imp.bands = b;
+    }
+    /// Draws impostors (`false` hides them; the table still drives the far rung).
+    pub fn set_impostors_on(&mut self, on: bool) {
+        self.lod.imp.on = on;
+    }
+    /// Impostor tree slots in use.
+    pub fn impostor_trees(&self) -> u32 {
+        self.lod.imp.used()
+    }
+
     pub fn set_wind(&mut self, field: Option<[f32; 8]>, rest_m: f32, near_trees: bool) {
         let mut w = [0u32; gpu::WIND_WORDS];
         if let Some(f) = field {
@@ -899,6 +934,7 @@ impl Renderer {
                 Release::MeshSlot(i) => self.free_mesh_slots.push(i),
                 Release::SkinSlot(i) => self.free_skin_slots.push(i),
                 Release::TextureSlot(i) => self.free_tex_slots.push(i),
+                Release::ImpTrees(s, n) => self.lod.imp.free(impostor::ImpostorRange { start: s, len: n }),
             }
         }
     }
@@ -1456,6 +1492,9 @@ impl Renderer {
             }
             if let Some(t) = &to {
                 rp = rp.read(t.meshes.0, ResourceState::ShaderRead).read(t.state.0, ResourceState::ShaderRead);
+            }
+            for r in po.imp.iter().flatten() {
+                rp = rp.read(*r, ResourceState::ShaderRead);
             }
             rp
                 .read(fd_res, ResourceState::ShaderRead)

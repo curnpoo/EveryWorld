@@ -45,6 +45,19 @@ struct WindData {
     float4 cfg;             // x: wind on, y: rest distance (m; trees beyond hold still), z: near trees on (far rung yields), w: unused
 };
 
+// Tree impostors (trees G5, src/impostor.rs `imp_words`; one Rust table sets every band).
+struct ImpData {
+    uint4 bufs;             // bindless: x tree buffer, y kind table; z tree slots, w flags (IMP_ON) in
+                            // bits 0..8, ground pull (1/16 px) above
+    float4 band;            // x, y: T1 -> T2 (impostor full under x px of the tree's height, none over y);
+                            // z, w: T2 -> T3 (each tree leaves at a hashed reference-tree size in z..w px)
+    float4 far;             // x, y: far rung lift none / full (reference px); z, w: canopy paint none / full
+    float4 cfg;             // x: reference tree height (m), y: frame pad, z: value range, w: first cascade
+                            // where impostors cast every tree's shadow (meshes cast only nearer)
+};
+static const uint IMP_ON = 1u;
+static const uint IMP_VIS_BIT = 0x40000000u;   // vis.x: impostor tree index (TERRAIN_VIS_BIT clear)
+
 struct HzbLevel { uint offset; uint width; uint height; uint pad; };
 struct FrameData {
     float4x4 view_proj;     // camera-relative: rotation and projection only (P1-D7)
@@ -64,6 +77,7 @@ struct FrameData {
     LightData light;
     AtmosData atmos;
     WindData wind;
+    ImpData imp;
 };
 
 // One instance (128 bytes). Transform rows are a 3x4 affine matrix relative to the node origin.
@@ -330,4 +344,132 @@ float3 tree_vertex(FrameData* f, GpuInstance inst, float3 node, float3 pm, uint 
     float3 nw = normalize(xform_normal(inst, oct_decode(n)));
     float fl = flutter * w.gust.w * (0.6 + gust) * 0.05 * fade * sin(t * 11.0 + phase * 40.0 + dot(l, float3(3.1, 1.7, 2.3)));
     return l + d + nw * fl * max_scale(inst);
+}
+
+// ---- Tree impostors (trees G5, src/impostor.rs) ---------------------------------------------
+
+// One impostor tree (32 bytes): base position relative to its node, node (12 bits) | kind
+// (12 bits) | hash (8 bits), scale (0: dead slot), up (oct_encode), yaw unorm16 | widen
+// (unorm16, 0.5 + x), user word (value, hue, drop, phase; as the mesh instance's).
+struct GpuTree { float px; float py; float pz; uint node_kind; float scale; uint up; uint yaw_widen; uint user; };
+// One impostor kind (64 bytes): BC5 textures (A coverage/depth, B normal, C value/bark) and
+// frames per side; centre height, radius, tree height, frame px; leaf albedo + mips; bark albedo + crown word (10:11:11 bits: base / height, radius and widest leaf / 1.5 height).
+struct GpuImpKind { uint4 tex; float4 geo; float4 leaf; float4 bark; };
+
+// Rotates `v` by the shortest arc from +Y to `up` (glam `Quat::from_rotation_arc(Y, up)`).
+float3 arc_from_y(float3 up, float3 v) {
+    float3 a = float3(up.z, 0.0, -up.x);    // cross(Y, up)
+    float w = 1.0 + up.y;
+    float l = sqrt(dot(a, a) + w * w);
+    if (l < 1e-6) {
+        return float3(v.x, -v.y, -v.z);     // up = -Y: half turn about X
+    }
+    a /= l;
+    w /= l;
+    float3 t = 2.0 * cross(a, v);
+    return v + w * t + cross(a, t);
+}
+
+// Hemi-octahedral frame grid (ed_world trees/impostor.rs `oct_encode`, `oct_decode`, `view_basis`).
+float2 imp_oct_encode(float3 d) {
+    d.y = max(d.y, 0.0);
+    d /= max(abs(d.x) + abs(d.y) + abs(d.z), 1e-9);
+    return float2(d.x + d.z, d.x - d.z) * 0.5 + 0.5;
+}
+float3 imp_oct_decode(float2 uv) {
+    float2 g = uv * 2.0 - 1.0;
+    float x = (g.x + g.y) * 0.5;
+    float z = (g.x - g.y) * 0.5;
+    return normalize(float3(x, 1.0 - abs(x) - abs(z), z));
+}
+void imp_view_basis(float3 v, out float3 right, out float3 up) {
+    float3 u0 = float3(0.0, 1.0, 0.0) - v * v.y;
+    up = dot(u0, u0) > 1e-6 ? normalize(u0) : float3(0.0, 0.0, 1.0);
+    right = normalize(cross(up, v));
+}
+// Full-sphere octahedral decode of a baked normal (y pole; bank_impostor.rs `oct_sphere`).
+float3 imp_oct_sphere(float2 e) {
+    float2 f = e * 2.0 - 1.0;
+    float3 n = float3(f.x, 1.0 - abs(f.x) - abs(f.y), f.y);
+    float t = saturate(-n.y);
+    n.x += n.x >= 0.0 ? -t : t;
+    n.z += n.z >= 0.0 ? -t : t;
+    return normalize(n);
+}
+
+// A tree's frame of reference and its three blended frames for the view from the camera.
+struct ImpTree {
+    float3 c;       // camera-relative sphere centre
+    float3 ex;      // tree axes (world, unit)
+    float3 up;
+    float3 ez;
+    float s;        // scale
+    float wd;       // crown widen (x, z)
+    float r;        // sphere radius (tree space)
+    float3 cam;     // camera in tree space (unscaled, relative to the centre)
+    uint3 fi;       // frame index (j * N + i) of the three frames
+    float3 w;       // their weights
+    float3 d0; float3 d1; float3 d2;   // their view directions (tree space)
+};
+
+float3 imp_to_tree(ImpTree t, float3 v) {
+    return float3(dot(v, t.ex) / (t.s * t.wd), dot(v, t.up) / t.s, dot(v, t.ez) / (t.s * t.wd));
+}
+
+// `sun`: seen from the sun along `sun_dir` (shadow casters), else from the camera.
+ImpTree imp_tree(GpuTree g, GpuImpKind k, float3 node, float3 sun_dir, bool sun) {
+    ImpTree t;
+    t.up = oct_decode(g.up);
+    float yaw = float(g.yaw_widen & 0xFFFFu) / 65535.0 * 6.2831853;
+    t.wd = 0.5 + float(g.yaw_widen >> 16) / 65535.0;
+    t.s = g.scale;
+    t.ex = arc_from_y(t.up, float3(cos(yaw), 0.0, -sin(yaw)));
+    t.ez = arc_from_y(t.up, float3(sin(yaw), 0.0, cos(yaw)));
+    t.r = k.geo.y;
+    t.c = node + float3(g.px, g.py, g.pz) + t.up * (k.geo.x * t.s);
+    t.cam = imp_to_tree(t, sun ? sun_dir * 1.0e5 : -t.c);
+    float n = float(k.tex.w);
+    float3 v = normalize(t.cam);
+    float2 gpos = clamp(imp_oct_encode(v) * n - 0.5, float2(0.0, 0.0), float2(n - 1.0, n - 1.0));
+    float2 b = min(floor(gpos), float2(n - 2.0, n - 2.0));
+    float2 fr = gpos - b;
+    uint2 b0 = uint2(b);
+    uint N = k.tex.w;
+    uint2 c0 = b0;
+    uint2 c1 = b0 + uint2(1u, 0u);
+    uint2 c2 = b0 + uint2(0u, 1u);
+    if (fr.x + fr.y < 1.0) {
+        t.w = float3(1.0 - fr.x - fr.y, fr.x, fr.y);
+    } else {
+        c0 = b0 + uint2(1u, 1u);
+        t.w = float3(fr.x + fr.y - 1.0, 1.0 - fr.y, 1.0 - fr.x);
+    }
+    t.fi = uint3(c0.y * N + c0.x, c1.y * N + c1.x, c2.y * N + c2.x);
+    t.d0 = imp_oct_decode((float2(c0) + 0.5) / n);
+    t.d1 = imp_oct_decode((float2(c1) + 0.5) / n);
+    t.d2 = imp_oct_decode((float2(c2) + 0.5) / n);
+    return t;
+}
+
+// Frame-local uv (0..1 inside the frame) where the ray from the camera through tree-space point
+// `q` (relative to the centre) meets frame `d`'s plane.
+float2 imp_frame_uv(ImpTree t, float3 d, float3 q, float half_size) {
+    float3 dir = q - t.cam;
+    float den = dot(dir, d);
+    float k = abs(den) > 1e-6 ? -dot(t.cam, d) / den : 1.0;
+    float3 h = t.cam + dir * k;
+    float3 r;
+    float3 u;
+    imp_view_basis(d, r, u);
+    return float2(0.5 + dot(h, r) / (2.0 * half_size), 0.5 - dot(h, u) / (2.0 * half_size));
+}
+
+// Atlas uv of frame `fi` at frame-local `uv` (clamped half a texel inside the frame).
+float2 imp_atlas_uv(uint fi, uint n, float2 uv, float frame_px) {
+    float m = 0.5 / frame_px;
+    float2 l = clamp(uv, float2(m, m), float2(1.0 - m, 1.0 - m));
+    return (float2(float(fi % n), float(fi / n)) + l) / float(n);
+}
+bool imp_inside(float2 uv) {
+    return all(uv >= 0.0) && all(uv <= 1.0);
 }
