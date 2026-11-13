@@ -6,7 +6,10 @@
 //! 0. **cover**: crown cover fraction, `0..=255` is `0..=1`.
 //! 1. **height**: canopy top in metres, log-coded (see [`encode_height`]).
 //! 2. **mix**: conifer share, `0..=255` is `0..=1` (broadleaf is the rest).
-//! 3. **under**: shrub plus ground-cover density, `0..=255` is `0..=1`.
+//! 3. **under + data**: low 6 bits shrub plus ground-cover density (`0..=63` is `0..=1`); top 2
+//!    bits the **data share** (`0..=3` is `0..=1`): 0 = no source data read for this sample
+//!    (offline, uncached), so the far forest falls back to its procedural rule there; 3 = real
+//!    data (an authoritative zero cover included). See [`pack_under`].
 
 use crate::height_page::{PAGE_CELLS, PAGE_N, PAGE_SAMPLES};
 
@@ -37,6 +40,11 @@ pub fn decode_height(q: u8) -> f32 {
         return 0.0;
     }
     HEIGHT_MIN_M * libm::expf((q - 1) as f32 * ratio_ln())
+}
+
+/// Packs understory `0..=1` and data share `0..=1` into the page's fourth byte.
+pub fn pack_under(under: f32, data: f32) -> u8 {
+    (libm::roundf(under.clamp(0.0, 1.0) * 63.0) as u8) | ((libm::roundf(data.clamp(0.0, 1.0) * 3.0) as u8) << 6)
 }
 
 /// A canopy page. `samples[j * 257 + i] = [cover, height, mix, under]`.
@@ -88,7 +96,12 @@ impl CanopyPage {
     /// Understory density `0..=1` at sample `(i, j)`.
     #[inline]
     pub fn under(&self, i: usize, j: usize) -> f32 {
-        self.get(i, j)[3] as f32 / 255.0
+        (self.get(i, j)[3] & 63) as f32 / 63.0
+    }
+    /// Data share `0..=1` at sample `(i, j)`: 0 = no source data (procedural fallback).
+    #[inline]
+    pub fn data(&self, i: usize, j: usize) -> f32 {
+        (self.get(i, j)[3] >> 6) as f32 / 3.0
     }
 
     /// Decoded `[cover, height m, mix, under]` at node-local `(u, v)` in `[0, 1]`, bilinear.
@@ -112,7 +125,7 @@ impl CanopyPage {
             hsum += ww * decode_height(px[k][1]);
             hw += ww;
             mix += ww * px[k][2] as f32 / 255.0;
-            under += w[k] * px[k][3] as f32 / 255.0;
+            under += w[k] * (px[k][3] & 63) as f32 / 63.0;
         }
         let (height, mix) = if hw > 0.0 { (hsum / hw, mix / hw) } else { (0.0, 0.0) };
         [cover, height, mix, under]
@@ -160,7 +173,7 @@ mod tests {
 
     #[test]
     fn bytes_round_trip_and_sampling() {
-        let p = CanopyPage::from_fn(|i, j| [(i % 256) as u8, encode_height(20.0), 100, (j % 256) as u8]);
+        let p = CanopyPage::from_fn(|i, j| [(i % 256) as u8, encode_height(20.0), 100, pack_under((j % 64) as f32 / 63.0, 1.0)]);
         let b = p.to_bytes();
         assert_eq!(b.len(), CANOPY_BYTES);
         assert_eq!(CanopyPage::from_bytes(&b).unwrap(), p);
@@ -168,7 +181,8 @@ mod tests {
         // Sample at lattice point (10, 20) is exact.
         let v = p.bilinear(10.0 / 256.0, 20.0 / 256.0);
         assert!((v[0] - 10.0 / 255.0).abs() < 1e-5);
-        assert!((v[3] - 20.0 / 255.0).abs() < 1e-5);
+        assert!((v[3] - 20.0 / 63.0).abs() < 1e-5);
+        assert_eq!(p.data(10, 20), 1.0);
         assert!((v[1] - decode_height(encode_height(20.0))).abs() < 1e-3);
         // Halfway between two cover values.
         let v = p.bilinear(10.5 / 256.0, 0.0);

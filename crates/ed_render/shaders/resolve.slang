@@ -282,7 +282,10 @@ TSurf terrain_material(FrameData* f, TerrainMat m, TerrainDraw d, float3 n, floa
         // Far forest rung (trees G3): the forest floor is where the canopy page has cover. A
         // steep edge on fine pages; linear in cover on coarse ones (an averaged edge sample
         // must not widen the stand: the density strip keeps one outline).
-        forest = lerp(cv.x, smoothstep(0.03, 0.5, cv.x), smoothstep(T_FOREST_LINEAR_M, T_FOREST_STEEP_M, spacing));
+        // Where the page has no source data (cv.w, bilinear so the border is soft) the old
+        // procedural rule above stays: no node-shaped rectangles of missing forest.
+        float fd = lerp(cv.x, smoothstep(0.03, 0.5, cv.x), smoothstep(T_FOREST_LINEAR_M, T_FOREST_STEEP_M, spacing));
+        forest = lerp(forest, fd, cv.w);
     }
     float grass = veg * (1.0 - forest) * smoothstep(3000.0, 2600.0, h + (n1 - 0.5) * 200.0);
     float soil = saturate(hollow_f * 0.8 + (n1 - 0.65) * 1.5) * (1.0 - alpine * 0.5);
@@ -401,7 +404,7 @@ TSurf terrain_material(FrameData* f, TerrainMat m, TerrainDraw d, float3 n, floa
     o.albedo *= macro * lerp(1.0, 0.8, hollow_f * (1.0 - snow));
     o.albedo *= lerp(float3(1.0), float3(1.04, 1.0, 0.94), n1 * (1.0 - snow));
     // The forest floor from afar reads as canopy (no trees drawn yet).
-    float canopy = trees ? 0.0 : wt[L_FOREST] / max(total, 1e-5) * smoothstep(60.0, 600.0, dist);
+    float canopy = wt[L_FOREST] / max(total, 1e-5) * smoothstep(60.0, 600.0, dist) * (trees ? 1.0 - cv.w : 1.0);
     // Conifer canopy seen from afar, crown shadows included (darker than a sunlit leaf).
     o.albedo = lerp(o.albedo, float3(0.030, 0.044, 0.021) * lerp(0.85, 1.15, n1), canopy);
     // Normal map: fades with distance (the mips average it out anyway), whiteout-style add.
@@ -429,7 +432,7 @@ static const float T_CELL_BROAD = 8.0;
 static const float T_CELL_CONIFER = 5.12;
 
 // Cover-weighted bilinear canopy at page-sample coordinates `s`: cover, height (m), conifer
-// share, understory (as ed_geo `CanopyPage::bilinear`).
+// share, data share (0 = no source data here; as ed_geo `CanopyPage::bilinear`, data bilinear).
 float4 t_canopy_bilin(uint pool, uint off, float2 s) {
     s = clamp(s, 0.0, float(T_PAGE_N - 1));
     int2 s0 = int2(min(floor(s), float2(float(T_PAGE_N - 2))));
@@ -448,7 +451,7 @@ float4 t_canopy_bilin(uint pool, uint off, float2 s) {
         cover += wk * cc;
         hs += ww * t_canopy_h((c >> 8) & 0xFFu);
         mx += ww * float((c >> 16) & 0xFFu) / 255.0;
-        un += wk * float(c >> 24) / 255.0;
+        un += wk * float(c >> 30) / 3.0;
         hw += ww;
     }
     return hw > 0.0 ? float4(cover, hs / hw, mx / hw, un) : float4(cover, 0.0, 0.0, un);

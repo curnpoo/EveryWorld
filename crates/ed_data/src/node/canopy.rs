@@ -12,7 +12,9 @@ use super::heights::direction_geodetic;
 use crate::cache::DiskCache;
 use crate::canopy_height::{self, CanopyHeight};
 use crate::worldcover::{self, LandCover};
-use ed_geo::canopy_page::{decode_height, encode_height, CanopyPage};
+use super::canopy_coarse::{self, CoarseTile};
+use ed_geo::canopy_page::{decode_height, encode_height, pack_under, CanopyPage};
+use std::sync::Arc;
 use ed_geo::node::NodeId;
 use ed_geo::{PAGE_CELLS, PAGE_N};
 
@@ -22,6 +24,17 @@ use ed_geo::{PAGE_CELLS, PAGE_N};
 pub trait CanopySource {
     fn land_cover(&self, south: f64, west: f64, north: f64, east: f64, w: usize, h: usize, sub: usize) -> Option<LandCover>;
     fn canopy_height(&self, south: f64, west: f64, north: f64, east: f64, w: usize, h: usize, sub: usize) -> Option<CanopyHeight>;
+    /// True when this source has the coarse canopy layer (`canopy_coarse`); nodes whose lattice
+    /// spacing is at least [`canopy_coarse::COARSE_MIN_SPACING_M`] then read it instead of the
+    /// 10 m grids.
+    fn has_coarse(&self) -> bool {
+        false
+    }
+    /// The coarse tile with indices `(tj, ti)` (south-west corner `3 tj`, `3 ti` degrees);
+    /// `None` = unavailable (no data there).
+    fn coarse_tile(&self, _tj: i64, _ti: i64) -> Option<Arc<CoarseTile>> {
+        None
+    }
 }
 
 /// The real source: WorldCover and ETH canopy height COG range reads through the disk cache
@@ -36,6 +49,12 @@ impl CanopySource for RealCanopySource<'_> {
     }
     fn canopy_height(&self, s: f64, w: f64, n: f64, e: f64, cw: usize, ch: usize, sub: usize) -> Option<CanopyHeight> {
         canopy_height::sample_area(s, w, n, e, cw, ch, sub, self.cache).map_err(|e| log::warn!("canopy: eth height: {e}")).ok()
+    }
+    fn has_coarse(&self) -> bool {
+        true
+    }
+    fn coarse_tile(&self, tj: i64, ti: i64) -> Option<Arc<CoarseTile>> {
+        canopy_coarse::shared_tile(tj, ti, self.cache)
     }
 }
 
@@ -134,11 +153,30 @@ fn q8(x: f32) -> u8 {
     libm::roundf(x.clamp(0.0, 1.0) * 255.0) as u8
 }
 
+/// Lattice spacing (m) of a level's canopy page.
+fn spacing_m(level: u8) -> f64 {
+    10_018_000.0 / (1u64 << level) as f64 / PAGE_CELLS as f64
+}
+
 /// Cell-size exponent `k` (`cell = 3 deg / 2^k`) for `level`: about one lattice spacing, at
 /// most 15 (~10 m, the source resolution).
 fn cell_exp(level: u8) -> u32 {
-    let spacing_m = 10_018_000.0 / (1u64 << level) as f64 / PAGE_CELLS as f64;
-    ((333_585.0 / spacing_m).log2().floor().max(0.0) as u32).min(15)
+    ((333_585.0 / spacing_m(level)).log2().floor().max(0.0) as u32).min(15)
+}
+
+/// Source values of one lattice sample, from either regime.
+#[derive(Clone, Copy, Default)]
+struct Raw {
+    class: u8,
+    tree: f32,
+    shrub: f32,
+    eth_m: f32,
+    eth_ok: bool,
+    /// Source data share `0..=1` (0: nothing was read, the far forest falls back to procedural).
+    data: f32,
+    /// Global cell (village-tree hash); the coarse regime has no built-up class.
+    ci: i64,
+    cj: i64,
 }
 
 /// Builds the canopy page of `id` from `src`. `alt(i, j)` is the terrain altitude (m) at lattice
@@ -150,6 +188,12 @@ fn cell_exp(level: u8) -> u32 {
 /// taper to krummholz over [`TREELINE_BAND_M`] below the treeline (fallback path only: real
 /// data already knows where trees stop); mix comes from the altitude/latitude temperature
 /// proxy. Pure function of `(id, alt, src)`.
+///
+/// Two regimes: lattice spacing under [`canopy_coarse::COARSE_MIN_SPACING_M`] (400 m, L7 and
+/// finer) reads the 10 m sources on the cell grid; from 400 m up (L6 and coarser) the source's
+/// coarse layer (`canopy_coarse`, bilinear at the mip matching the spacing). A source without
+/// the coarse layer always takes the 10 m path. The fourth byte carries the data share
+/// ([`pack_under`]): 0 where no source was read.
 pub fn node_canopy(src: &dyn CanopySource, id: NodeId, alt: &dyn Fn(usize, usize) -> f64) -> CanopyPage {
     // Geodetic position of every lattice sample.
     let mut geo = Vec::with_capacity(PAGE_N * PAGE_N);
@@ -160,42 +204,18 @@ pub fn node_canopy(src: &dyn CanopySource, id: NodeId, alt: &dyn Fn(usize, usize
             geo.push((g.lat_deg, g.lon_deg));
         }
     }
-    let mut k = cell_exp(id.level());
-    let (mut cd, mut ci0, mut cj0, mut w, mut h);
-    loop {
-        cd = 3.0 / (1u64 << k) as f64;
-        let (mut i_lo, mut i_hi, mut j_lo, mut j_hi) = (i64::MAX, i64::MIN, i64::MAX, i64::MIN);
-        for &(lat, lon) in &geo {
-            let (ci, cj) = ((lon / cd).floor() as i64, (lat / cd).floor() as i64);
-            (i_lo, i_hi, j_lo, j_hi) = (i_lo.min(ci), i_hi.max(ci), j_lo.min(cj), j_hi.max(cj));
-        }
-        (ci0, cj0, w, h) = (i_lo, j_lo, (i_hi - i_lo + 1) as usize, (j_hi - j_lo + 1) as usize);
-        if (w <= 1024 && h <= 1024) || k == 0 {
-            break;
-        }
-        k -= 1;
-    }
-    let sub = if k >= 15 { 1 } else { 2 };
-    let (south, west) = (cj0 as f64 * cd, ci0 as f64 * cd);
-    let (north, east) = (south + h as f64 * cd, west + w as f64 * cd);
-    let lc = src.land_cover(south, west, north, east, w, h, sub);
-    let eth = src.canopy_height(south, west, north, east, w, h, sub);
+    let raw = if src.has_coarse() && spacing_m(id.level()) >= canopy_coarse::COARSE_MIN_SPACING_M {
+        coarse_raw(src, id, &geo)
+    } else {
+        fine_raw(src, id, &geo)
+    };
 
     let mut out = Vec::with_capacity(PAGE_N * PAGE_N);
     for j in 0..PAGE_N {
         for i in 0..PAGE_N {
-            let (lat, lon) = geo[j * PAGE_N + i];
-            let (ci, cj) = ((lon / cd).floor() as i64, (lat / cd).floor() as i64);
-            let (cx, cy) = ((ci - ci0) as usize, (cj - cj0) as usize);
-            let idx = (h - 1 - cy) * w + cx; // row 0 = north
-            let (class, tree, shrub) = match &lc {
-                Some(l) => (l.class[idx], l.tree[idx] as f32 / 255.0, l.shrub[idx] as f32 / 255.0),
-                None => (0, 0.0, 0.0),
-            };
-            let (eth_m, eth_ok) = match &eth {
-                Some(e) if e.data[idx] > 127 => (e.height[idx], true),
-                _ => (0.0, false),
-            };
+            let (lat, _lon) = geo[j * PAGE_N + i];
+            let r = raw[j * PAGE_N + i];
+            let (class, tree, shrub, eth_m, eth_ok, ci, cj) = (r.class, r.tree, r.shrub, r.eth_m, r.eth_ok, r.ci, r.cj);
             let altm = alt(i, j);
             let abs_lat = lat.abs() as f32;
 
@@ -239,10 +259,63 @@ pub fn node_canopy(src: &dyn CanopySource, id: NodeId, alt: &dyn Fn(usize, usize
             let boreal = ((abs_lat - 50.0) / 15.0).clamp(0.0, 1.0) * BOREAL_CONIFER;
             let mix = (lut(&CONIFER_BY_T, t) + boreal).min(1.0);
 
-            out.push([q8(cover), encode_height(height), if cover > 0.0 { q8(mix) } else { 0 }, q8(under)]);
+            out.push([q8(cover), encode_height(height), if cover > 0.0 { q8(mix) } else { 0 }, pack_under(under, r.data)]);
         }
     }
     CanopyPage { samples: out }
+}
+
+/// 10 m regime: sampling on the global lat/lon cell grid (`3 deg / 2^k`).
+fn fine_raw(src: &dyn CanopySource, id: NodeId, geo: &[(f64, f64)]) -> Vec<Raw> {
+    let mut k = cell_exp(id.level());
+    let (mut cd, mut ci0, mut cj0, mut w, mut h);
+    loop {
+        cd = 3.0 / (1u64 << k) as f64;
+        let (mut i_lo, mut i_hi, mut j_lo, mut j_hi) = (i64::MAX, i64::MIN, i64::MAX, i64::MIN);
+        for &(lat, lon) in geo {
+            let (ci, cj) = ((lon / cd).floor() as i64, (lat / cd).floor() as i64);
+            (i_lo, i_hi, j_lo, j_hi) = (i_lo.min(ci), i_hi.max(ci), j_lo.min(cj), j_hi.max(cj));
+        }
+        (ci0, cj0, w, h) = (i_lo, j_lo, (i_hi - i_lo + 1) as usize, (j_hi - j_lo + 1) as usize);
+        if (w <= 1024 && h <= 1024) || k == 0 {
+            break;
+        }
+        k -= 1;
+    }
+    let sub = if k >= 15 { 1 } else { 2 };
+    let (south, west) = (cj0 as f64 * cd, ci0 as f64 * cd);
+    let (north, east) = (south + h as f64 * cd, west + w as f64 * cd);
+    let lc = src.land_cover(south, west, north, east, w, h, sub);
+    let eth = src.canopy_height(south, west, north, east, w, h, sub);
+    geo.iter()
+        .map(|&(lat, lon)| {
+            let (ci, cj) = ((lon / cd).floor() as i64, (lat / cd).floor() as i64);
+            let (cx, cy) = ((ci - ci0) as usize, (cj - cj0) as usize);
+            let idx = (h - 1 - cy) * w + cx; // row 0 = north
+            let (class, tree, shrub) = match &lc {
+                Some(l) => (l.class[idx], l.tree[idx] as f32 / 255.0, l.shrub[idx] as f32 / 255.0),
+                None => (0, 0.0, 0.0),
+            };
+            let (eth_m, eth_ok) = match &eth {
+                Some(e) if e.data[idx] > 127 => (e.height[idx], true),
+                _ => (0.0, false),
+            };
+            Raw { class, tree, shrub, eth_m, eth_ok, data: if lc.is_some() { 1.0 } else { 0.0 }, ci, cj }
+        })
+        .collect()
+}
+
+/// Coarse regime: bilinear reads of the coarse layer at the mip matching the page spacing.
+fn coarse_raw(src: &dyn CanopySource, id: NodeId, geo: &[(f64, f64)]) -> Vec<Raw> {
+    let m = canopy_coarse::mip_for_spacing(spacing_m(id.level()));
+    let mut memo: std::collections::HashMap<(i64, i64), Option<Arc<CoarseTile>>> = Default::default();
+    let mut tile = |tj: i64, ti: i64| memo.entry((tj, ti)).or_insert_with(|| src.coarse_tile(tj, ti)).clone();
+    geo.iter()
+        .map(|&(lat, lon)| match canopy_coarse::sample(&mut tile, lat, lon, m) {
+            Some([cover, height, data]) => Raw { tree: cover, eth_m: height, eth_ok: height >= 1.0, data, ..Default::default() },
+            None => Raw::default(),
+        })
+        .collect()
 }
 
 /// Parent page from its four children in `NodeId::children` order ((0,0) (1,0) (0,1) (1,1)):
@@ -270,13 +343,14 @@ pub fn parent_canopy(children: [&CanopyPage; 4]) -> CanopyPage {
                 continue;
             }
             // Integer weights 1 2 1 / 2 4 2 / 1 2 1 (sum 16).
-            let (mut cov, mut und, mut cw, mut hs, mut ms) = (0u32, 0u32, 0u32, 0.0f32, 0.0f32);
+            let (mut cov, mut und, mut dat, mut cw, mut hs, mut ms) = (0u32, 0u32, 0u32, 0u32, 0.0f32, 0.0f32);
             for (dy, wy) in [(-1i32, 1u32), (0, 2), (1, 1)] {
                 for (dx, wx) in [(-1i32, 1u32), (0, 2), (1, 1)] {
                     let p = g[(y as i32 + dy) as usize * W + (x as i32 + dx) as usize];
                     let wt = wx * wy;
                     cov += wt * p[0] as u32;
-                    und += wt * p[3] as u32;
+                    und += wt * (p[3] & 63) as u32;
+                    dat += wt * (p[3] >> 6) as u32;
                     let wc = wt * p[0] as u32;
                     cw += wc;
                     hs += wc as f32 * decode_height(p[1]);
@@ -284,7 +358,7 @@ pub fn parent_canopy(children: [&CanopyPage; 4]) -> CanopyPage {
                 }
             }
             let (h, m) = if cw > 0 { (hs / cw as f32, ms / cw as f32) } else { (0.0, 0.0) };
-            out.push([((cov + 8) / 16) as u8, encode_height(h), libm::roundf(m) as u8, ((und + 8) / 16) as u8]);
+            out.push([((cov + 8) / 16) as u8, encode_height(h), libm::roundf(m) as u8, (((und + 8) / 16) as u8) | ((((dat + 8) / 16) as u8) << 6)]);
         }
     }
     CanopyPage { samples: out }
@@ -375,15 +449,16 @@ mod tests {
     #[test]
     fn parent_is_area_mean() {
         // Linear cover/under ramps: the tent filter reproduces them; borders are copied.
-        let ramp = |ox: usize, oy: usize| CanopyPage::from_fn(|i, j| [((ox + i) / 3) as u8, encode_height(20.0), 128, ((oy + j) / 3) as u8]);
+        let ramp = |ox: usize, oy: usize| CanopyPage::from_fn(|i, j| [((ox + i) / 3) as u8, encode_height(20.0), 128, 0xC0 | ((oy + j) / 12) as u8]);
         let kids = [ramp(0, 0), ramp(256, 0), ramp(0, 256), ramp(256, 256)];
         let p = parent_canopy([&kids[0], &kids[1], &kids[2], &kids[3]]);
         for &(i, j) in &[(0usize, 0usize), (1, 1), (100, 57), (128, 128), (200, 3), (256, 256), (255, 1)] {
             let want_c = (2 * i) as f64 / 3.0;
-            let want_u = (2 * j) as f64 / 3.0;
+            let want_u = (2 * j) as f64 / 12.0;
             let s = p.get(i, j);
             assert!((s[0] as f64 - want_c).abs() <= 1.5, "cover {i},{j}: {} vs {want_c}", s[0]);
-            assert!((s[3] as f64 - want_u).abs() <= 1.5, "under {i},{j}: {} vs {want_u}", s[3]);
+            assert!(((s[3] & 63) as f64 - want_u).abs() <= 1.5, "under {i},{j}: {} vs {want_u}", s[3] & 63);
+            assert_eq!(s[3] >> 6, 3);
             assert!((decode_height(s[1]) - 20.0).abs() < 0.5);
             if s[0] > 0 {
                 assert!((s[2] as i32 - 128).abs() <= 1);
@@ -405,8 +480,8 @@ mod tests {
     }
 
     /// Trees gate G3 (the density strip, numerically): the forest share of one forested
-    /// Zermatt patch (an L12 node, ~2.4 km) read from every rung's pages, L8 (what a 50 km view
-    /// draws) to L14 (50 m), with the far rung's forest weight (resolve.slang `terrain_material`:
+    /// Zermatt patch (an L12 node, ~2.4 km) read from every rung's pages, L5 (coarse layer, what an
+    /// orbit view draws) through L8 (what a 50 km view draws) to L14 (50 m), with the far rung's forest weight (resolve.slang `terrain_material`:
     /// a steep edge on fine pages, linear in cover on coarse ones). Each level stays within 10%
     /// of the finest.
     #[test]
@@ -421,7 +496,7 @@ mod tests {
         };
         const N: u32 = 48;
         let mut share = Vec::new();
-        for level in 8..=14u8 {
+        for level in 5..=14u8 {
             let mut pages: std::collections::BTreeMap<u64, CanopyPage> = std::collections::BTreeMap::new();
             let mut sum = 0.0f64;
             for j in 0..N {
@@ -444,6 +519,36 @@ mod tests {
         assert!(fine > 0.2, "patch is forested: {fine}");
         for &(level, s) in &share {
             assert!((s - fine).abs() <= 0.1 * fine, "L{level}: {s:.3} vs L14 {fine:.3}");
+        }
+    }
+
+    /// G3b report (network, the Alps and Blue Ridge boxes only): builds the coarse tiles of those
+    /// ten 3 deg tiles, prints bytes and build ms, then page build ms at orbit levels.
+    #[test]
+    #[ignore = "network"]
+    fn g3b_coarse_report() {
+        let cache = DiskCache::default_location();
+        for (la, lo) in [(42, 3), (42, 6), (42, 9), (45, 3), (45, 6), (45, 9), (36, -81), (36, -78), (39, -81), (39, -78)] {
+            let t0 = std::time::Instant::now();
+            let t = CoarseTile::load(la as f64, lo as f64, &cache).unwrap();
+            let ms1 = t0.elapsed().as_secs_f64() * 1e3;
+            let t1 = std::time::Instant::now();
+            let b = t.to_bytes();
+            let c = CoarseTile::from_bytes(&b).unwrap();
+            let mean: f64 = (0..384 * 384).map(|k| c.cell(0, k % 384, k / 384)[0] as f64).sum::<f64>() / (384.0 * 384.0) / 255.0;
+            eprintln!("coarse ({la},{lo}): {} bytes, load/build {ms1:.0} ms, bytes+reparse {:.0} ms, mean cover {mean:.3}", b.len(), t1.elapsed().as_secs_f64() * 1e3);
+        }
+        let src = RealCanopySource { cache: &cache };
+        for (name, lat, lon) in [("alps", 46.0, 7.7), ("blue ridge", 37.9, -78.9)] {
+            for level in [2u8, 3, 4, 5, 6, 7] {
+                let id = node_at(lat, lon, level);
+                let t = std::time::Instant::now();
+                let p = node_canopy(&src, id, &|_, _| 1600.0);
+                let ms = t.elapsed().as_secs_f64() * 1e3;
+                let treed = p.samples.iter().filter(|s| s[0] > 20).count();
+                let data = p.samples.iter().map(|s| (s[3] >> 6) as f64 / 3.0).sum::<f64>() / p.samples.len() as f64;
+                eprintln!("{name} L{level}: page {ms:.1} ms, treed samples {treed}, mean data {data:.2}");
+            }
         }
     }
 }

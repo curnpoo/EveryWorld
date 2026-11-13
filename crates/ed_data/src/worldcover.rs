@@ -164,14 +164,34 @@ fn tiles() -> &'static Mutex<HashMap<String, Slot>> {
 }
 
 fn tile(lat: f64, lon: f64, cache: &DiskCache) -> anyhow::Result<Slot> {
+    // Per-thread memo keyed by the 3 deg cell: bulk sampling asks per sample, and the global
+    // lock plus name formatting dominated (and serialised) the coarse-layer build.
+    thread_local! {
+        static MEMO: std::cell::RefCell<HashMap<(i32, i32), Slot>> = Default::default();
+    }
+    let key = ((lat / 3.0).floor() as i32, (lon / 3.0).floor() as i32);
+    if let Some(s) = MEMO.with(|m| m.borrow().get(&key).cloned()) {
+        return Ok(s);
+    }
     let name = tile_name(lat, lon);
     if let Some(s) = tiles().lock().unwrap().get(&name) {
-        return Ok(s.clone());
+        let s = s.clone();
+        MEMO.with(|m| m.borrow_mut().insert(key, s.clone()));
+        return Ok(s);
     }
     let sw_lat = (lat / 3.0).floor() * 3.0;
     let sw_lon = (lon / 3.0).floor() * 3.0;
     let slot = Tile::open(&name, sw_lat, sw_lon, cache)?.map(|t| Arc::new(Mutex::new(t)));
-    Ok(tiles().lock().unwrap().entry(name).or_insert(slot).clone())
+    let s = tiles().lock().unwrap().entry(name).or_insert(slot).clone();
+    MEMO.with(|m| m.borrow_mut().insert(key, s.clone()));
+    Ok(s)
+}
+
+/// Whether the 3 deg source tile under `(lat, lon)` exists (`false` for open ocean); an error
+/// means the network is unavailable. Cheap after the first call: callers skip sampling a tile
+/// that is not there.
+pub fn tile_exists(lat: f64, lon: f64, cache: &DiskCache) -> anyhow::Result<bool> {
+    Ok(tile(lat, lon, cache)?.is_some())
 }
 
 /// Land cover over a lat/lon box as a `w`x`h` grid; each cell takes `sub`x`sub`

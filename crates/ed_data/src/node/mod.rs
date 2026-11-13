@@ -2,6 +2,7 @@
 //! lattice of `ed_geo::node`. No slippy-map type appears in this module's public API.
 
 mod canopy;
+pub mod canopy_coarse;
 mod detail;
 mod heights;
 mod source;

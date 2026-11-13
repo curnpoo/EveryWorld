@@ -326,11 +326,15 @@ impl Residency for PageStore {
 }
 
 /// The canopy page of `id` (trees G3) from the real canopy source through the disk cache, on
-/// the node's own heights; `None` when the node has no canopy at all (ocean, ice, rock).
+/// the node's own heights. `None` = no page, drawn with the old procedural forest: no source data
+/// was read (offline, uncached), or the node is all sea. A land node with real data but no trees
+/// still gets a page (zero cover, data share 3): "no forest here" is authoritative.
 pub fn build_canopy(cache: &ed_data::DiskCache, id: NodeId, heights: &HeightPage) -> Option<Arc<CanopyPage>> {
     let src = ed_data::node::RealCanopySource { cache };
     let page = ed_data::node::node_canopy(&src, id, &|i, j| heights.height(i, j) as f64);
-    page.samples.iter().any(|s| s[0] > 0).then(|| Arc::new(page))
+    let data = page.samples.iter().any(|s| s[3] >> 6 > 0);
+    let land = (0..ed_planet::PAGE_N * ed_planet::PAGE_N).any(|k| heights.height(k % ed_planet::PAGE_N, k / ed_planet::PAGE_N) > 0.5);
+    (data && land).then(|| Arc::new(page))
 }
 
 /// Loader results.
