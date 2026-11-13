@@ -31,6 +31,10 @@ use crate::car::{AutoPhase, CarSim, CarView, ChaseCam};
 use crate::content::{CHARACTER_BAKE, Content, PackSpec};
 use crate::fixed_step::{FixedStep, Simulation};
 use crate::game::{CHARACTER, CHARACTER_ASSET, Game, GameInput};
+use crate::robot::cam::RobotCam;
+use crate::robot::controller::Controller;
+use crate::robot::rig::{self, Gait, RigInput};
+use crate::robot::view::RobotView;
 use crate::terrain::{Place, TerrainWorld};
 use crate::terrain_collide::{COLLISION_LEVEL, TerrainCollision};
 use ed_geo::NodeId;
@@ -129,7 +133,7 @@ impl OrbitCam {
         OrbitCam { yaw, pitch: -0.2, dist: CAM_DIST, target: None, cur_dist: CAM_DIST }
     }
 
-    fn look(&self) -> Camera {
+    pub(crate) fn look(&self) -> Camera {
         Camera { position: DVec3::ZERO, yaw: self.yaw, pitch: self.pitch, fov_y: Camera::DEFAULT_FOV_Y, near: Camera::DEFAULT_NEAR }
     }
 
@@ -180,6 +184,26 @@ fn game_input(keys: &BTreeSet<KeyCode>, yaw: f32) -> GameInput {
     }
 }
 
+/// The robot character: the floating-capsule controller (`None` while driving), the gait that
+/// solves its pose, the drawing, and the camera. The rig runs in the render frame relative to
+/// `origin` so its f32 maths stays precise far from the anchor.
+struct RobotPlay {
+    ctl: Option<Controller>,
+    gait: Gait,
+    view: RobotView,
+    origin: DVec3,
+    cam: RobotCam,
+    planted: [bool; 2],
+    feet_at: [glam::Vec3; 2],
+}
+
+/// Rig-local distance from `origin` beyond which the rig is re-based (the gait restarts).
+const REBASE_M: f64 = 2000.0;
+
+fn to_render_rot(q: glam::DQuat) -> Quat {
+    glam::DQuat::from_xyzw(q.x, q.z, -q.y, q.w).as_quat()
+}
+
 /// The play state: terrain, collision, character, camera (no GPU surface).
 pub struct Play {
     pub place: &'static Place,
@@ -204,12 +228,14 @@ pub struct Play {
     pub driving: bool,
     pub chase: ChaseCam,
     want_use: bool,
+    robot: Option<RobotPlay>,
 }
 
 /// One fixed step of play: the car's forces, then the world (with or without the character).
 struct PlaySim<'a> {
     game: &'a mut Game,
     car: Option<&'a mut CarSim>,
+    robot: Option<&'a mut Controller>,
     driving: bool,
     drive: VehicleInput,
     focus: DVec3,
@@ -224,6 +250,12 @@ impl Simulation for PlaySim<'_> {
         }
         if self.driving {
             self.game.step_world();
+        } else if let Some(ctl) = self.robot.as_deref_mut() {
+            ctl.pre_step(&mut self.game.world, input, dt);
+            self.game.step_world();
+            ctl.post_step(&self.game.world, dt);
+            self.game.prev = self.game.cur;
+            self.game.cur = ctl.feet();
         } else {
             self.game.step(input, dt);
         }
@@ -235,7 +267,7 @@ impl Simulation for PlaySim<'_> {
 
 impl Play {
     /// Loads the spawn area (blocking), places the character on the ground at the anchor.
-    pub fn new(r: &mut Renderer, dev: &dyn Device, place: &'static Place, packs: &std::path::Path, viewport: [u32; 2]) -> Result<Play, String> {
+    pub fn new(r: &mut Renderer, dev: &dyn Device, place: &'static Place, packs: &std::path::Path, viewport: [u32; 2], args_character: crate::args::Character) -> Result<Play, String> {
         let t0 = Instant::now();
         let root = crate::terrain::cache_root();
         let mut world = TerrainWorld::new(&root, place);
@@ -250,6 +282,11 @@ impl Play {
         let feet = Anchor::render_to_sim(g) + DVec3::Z * 0.05;
         let yaw = crate::terrain::path_pose(place, 0.0).yaw;
         let mut cam = OrbitCam::new(yaw);
+        let robot_mode = args_character == crate::args::Character::Robot;
+        if robot_mode {
+            cam.dist = crate::robot::cam::DIST_DEFAULT;
+            cam.cur_dist = cam.dist;
+        }
         let first = cam.update(feet, 0.0, |_, _| None, |_| None);
         cam.target = None;
         world.update(&first, viewport, usize::MAX, true);
@@ -263,14 +300,16 @@ impl Play {
         world.start_loader(LOADER_THREADS);
         // The character: only the character pack (the proving pack would bring the proving
         // ground along). Its renderer node follows the feet; the instance only turns.
-        let spec = PackSpec { name: "character", required: false, bake: CHARACTER_BAKE };
-        let mut content = Content::load_specs(r, dev, packs, &[spec])?;
+        let specs: &[PackSpec] = if robot_mode { &[] } else { &[PackSpec { name: "character", required: false, bake: CHARACTER_BAKE }] };
+        let mut content = Content::load_specs(r, dev, packs, specs)?;
         for n in &content.notes {
             eprintln!("ew: {n}");
         }
         let id = AssetId::from_path(CHARACTER_ASSET);
         let node = r.instances().nodes().iter().rposition(|n| *n == ed_assets::proving::ORIGIN).map(|i| NodeSlot(i as u16));
-        let content = if content.has_asset(id) && node.is_some() {
+        let content = if robot_mode {
+            None
+        } else if content.has_asset(id) && node.is_some() {
             content.set_authored(r, dev, &[(CHARACTER, id, Affine3A::IDENTITY, CHARACTER_ASSET.to_string())])?;
             Some(content)
         } else {
@@ -286,7 +325,7 @@ impl Play {
             let pal = a.palette();
             skins.iter().all(|s| r.set_skin_pose(*s, &pal).is_ok()).then_some((a, skins))
         });
-        if content.is_some() && anim.is_none() {
+        if !robot_mode && content.is_some() && anim.is_none() {
             eprintln!("ew: play: character skeleton not matched; standing in the rest pose");
         }
         // The car: parked beside the spawn (to the right, a little ahead), facing the view.
@@ -315,6 +354,17 @@ impl Play {
                 }
             },
             None => None,
+        };
+        let robot = if robot_mode {
+            // The mover is not used: the robot is its own dynamic body.
+            game.park_mover();
+            let ctl = Controller::spawn(&mut game.world, feet, yaw as f64)?;
+            game.prev = feet;
+            game.cur = feet;
+            let view = RobotView::new(r, dev)?;
+            Some(RobotPlay { ctl: Some(ctl), gait: Gait::default(), view, origin: Anchor::sim_to_render(feet), cam: RobotCam::default(), planted: [false; 2], feet_at: [glam::Vec3::ZERO; 2] })
+        } else {
+            None
         };
         println!(
             "ew: play {}: spawn at {:.4},{:.4}, ground {:.1} m, {} pages resident, {} collision bodies, ready in {:.0} ms",
@@ -346,12 +396,53 @@ impl Play {
             driving: false,
             chase: ChaseCam::new(yaw as f64),
             want_use: false,
+            robot,
         })
     }
 
     /// E: get in or out of the car (handled at the start of the next update).
     pub fn interact(&mut self) {
         self.want_use = true;
+    }
+
+    /// Whether the character stands on the ground.
+    pub fn grounded(&self) -> bool {
+        match &self.robot {
+            Some(rb) => rb.ctl.as_ref().is_some_and(|c| c.grounded),
+            None => self.game.grounded(),
+        }
+    }
+
+    /// C: put the car about 4 m ahead of the robot, on the ground, facing its heading (spawns
+    /// it if there is none).
+    pub fn summon_car(&mut self, r: &mut Renderer, dev: &dyn Device) {
+        if self.driving {
+            return;
+        }
+        let Some(ctl) = self.robot.as_ref().and_then(|rb| rb.ctl.as_ref()) else { return };
+        let (feet, yaw) = (ctl.feet(), ctl.yaw);
+        let at = feet + DVec3::new(-yaw.sin(), yaw.cos(), 0.0) * 4.0;
+        let Some(g) = self.world.ground_point(Anchor::sim_to_render(at)).map(Anchor::render_to_sim) else {
+            println!("ew: play: no ground there for the car");
+            return;
+        };
+        match &mut self.car {
+            Some(c) => c.place(&mut self.game.world, g, yaw),
+            None => match CarSim::spawn(&mut self.game.world, g, yaw) {
+                Ok(c) => {
+                    match CarView::new(r, dev, &c.veh.desc) {
+                        Ok(v) => self.car_view = Some(v),
+                        Err(e) => eprintln!("ew: play: car drawing: {e}"),
+                    }
+                    self.car = Some(c);
+                }
+                Err(e) => {
+                    eprintln!("ew: play: {e}");
+                    return;
+                }
+            },
+        }
+        println!("ew: play: car summoned at {:.1},{:.1},{:.1}", g.x, g.y, g.z);
     }
 
     /// Where the sim is centred: the car while driving, else the character's feet.
@@ -362,7 +453,7 @@ impl Play {
         }
     }
 
-    fn handle_use(&mut self) {
+    fn handle_use(&mut self, r: &mut Renderer) {
         if !std::mem::take(&mut self.want_use) {
             return;
         }
@@ -377,7 +468,23 @@ impl Play {
                 println!("ew: play: no room to get out here");
                 return;
             };
-            if let Err(e) = self.game.unpark_mover(feet) {
+            let car_yaw = CarSim::yaw(car.cur.0.rotation);
+            if let Some(rb) = &mut self.robot {
+                match Controller::spawn(&mut self.game.world, feet, car_yaw) {
+                    Ok(c) => {
+                        rb.ctl = Some(c);
+                        rb.gait = Gait::default();
+                        rb.origin = Anchor::sim_to_render(feet);
+                        rb.cam.reset();
+                        self.game.prev = feet;
+                        self.game.cur = feet;
+                    }
+                    Err(e) => {
+                        eprintln!("ew: play: {e}");
+                        return;
+                    }
+                }
+            } else if let Err(e) = self.game.unpark_mover(feet) {
                 eprintln!("ew: play: {e}");
                 return;
             }
@@ -390,7 +497,14 @@ impl Play {
             self.game.heading = self.heading;
             println!("ew: play: out of the car at {:.1},{:.1},{:.1}", feet.x, feet.y, feet.z);
         } else if car.footprint_distance(self.game.cur) <= crate::car::ENTER_RANGE_M {
-            self.game.park_mover();
+            if let Some(rb) = &mut self.robot {
+                if let Some(c) = rb.ctl.take() {
+                    c.despawn(&mut self.game.world);
+                }
+                rb.view.hide(r);
+            } else {
+                self.game.park_mover();
+            }
             self.driving = true;
             self.chase = ChaseCam::new(self.cam.yaw as f64);
             println!("ew: play: in the car");
@@ -403,9 +517,10 @@ impl Play {
         if !self.driving {
             self.cam.yaw -= look.x * LOOK_RAD_PER_PX;
             self.cam.pitch = (self.cam.pitch - look.y * LOOK_RAD_PER_PX).clamp(PITCH_MIN, PITCH_MAX);
-            self.cam.dist = (self.cam.dist * (1.0 - zoom as f64 * 0.1)).clamp(CAM_MIN, CAM_MAX);
+            let (lo, hi) = if self.robot.is_some() { (crate::robot::cam::DIST_MIN, crate::robot::cam::DIST_MAX) } else { (CAM_MIN, CAM_MAX) };
+            self.cam.dist = (self.cam.dist * (1.0 - zoom as f64 * 0.1)).clamp(lo, hi);
         }
-        self.handle_use();
+        self.handle_use(r);
         // Collision first: the 3 x 3 must be exact before the sim steps.
         self.world.poll();
         let anchor = self.world.anchor.clone();
@@ -423,9 +538,12 @@ impl Play {
         self.world.request(&ring, MAX_INFLIGHT);
 
         let yaw = self.cam.yaw;
-        let mut sim = PlaySim { game: &mut self.game, car: self.car.as_mut(), driving: self.driving, drive, focus };
+        let mut sim = PlaySim { game: &mut self.game, car: self.car.as_mut(), robot: self.robot.as_mut().and_then(|rb| rb.ctl.as_mut()), driving: self.driving, drive, focus };
         let alpha = self.fixed.run(frame_dt, &mut sim, |_| GameInput { yaw, ..input });
-        let feet = self.game.feet(alpha);
+        let feet = match self.robot.as_ref().and_then(|rb| rb.ctl.as_ref()) {
+            Some(c) => c.feet_at(alpha),
+            None => self.game.feet(alpha),
+        };
         let car_pose = self.car.as_ref().map(|c| (c.pose(alpha), c.wheels(alpha), c.speed()));
         if let (Some(c), Some(v), Some((pose, wheels, _))) = (&self.car, &self.car_view, &car_pose) {
             v.draw(r, &c.veh.desc, *pose, wheels);
@@ -436,6 +554,8 @@ impl Play {
             if let (Some(n), Some((pose, _, _))) = (self.node, &car_pose) {
                 r.instances().set_node(n, Anchor::sim_to_render(pose.position - DVec3::Z * 50.0));
             }
+        } else if self.robot.is_some() {
+            self.draw_robot(r, alpha, frame_dt);
         } else {
             // Character: render node at the feet, smoothed facing.
             let want = self.game.heading;
@@ -473,6 +593,15 @@ impl Play {
                 let filter = crate::car::scenery_filter();
                 self.chase.update(*pose, *speed, look, zoom, LOOK_RAD_PER_PX, frame_dt, |from, d| world.cast_ray(from, d, filter).map(|h| h.fraction as f64), ground)
             }
+            _ if self.robot.as_ref().is_some_and(|rb| rb.ctl.is_some()) => {
+                let filter = QueryFilter { category: layers::DEFAULT, mask: layers::ALL & !layers::MOVER };
+                let rb = self.robot.as_mut().unwrap();
+                let ctl = rb.ctl.as_ref().unwrap();
+                let (pelvis, rot) = ctl.pose(alpha);
+                let speed = DVec3::new(ctl.vel.x, ctl.vel.y, 0.0).length();
+                let look = self.cam.look();
+                rb.cam.update(&look, self.cam.dist, pelvis, rot * DVec3::Z, speed, ctl.grounded, frame_dt, |from, d| world.cast_ray(from, d, filter).map(|h| h.fraction as f64), ground)
+            }
             _ => {
                 let filter = QueryFilter { category: layers::DEFAULT, mask: layers::ALL & !layers::MOVER };
                 self.cam.update(feet, frame_dt, |from, d| world.cast_ray(from, d, filter).map(|h| h.fraction as f64), ground)
@@ -494,6 +623,57 @@ impl Play {
             println!("ew: play: {dist:.0} m from the anchor: gravity is uniform in the anchor frame (re-basing is later work)");
         }
         camera
+    }
+
+    /// Solves the robot's pose for this frame and draws it.
+    fn draw_robot(&mut self, r: &mut Renderer, alpha: f32, frame_dt: f64) {
+        let Some(rb) = &mut self.robot else { return };
+        let Some(ctl) = &rb.ctl else { return };
+        let (pelvis, rot) = ctl.pose(alpha);
+        let mut pel = Anchor::sim_to_render(pelvis) - rb.origin;
+        if pel.length() > REBASE_M {
+            rb.origin += pel;
+            rb.gait = Gait::default();
+            pel = DVec3::ZERO;
+        }
+        let o = rb.origin.as_vec3();
+        let f = ctl.feed();
+        let input = RigInput {
+            airborne: f.airborne,
+            yaw: f.yaw,
+            cam_pitch: self.cam.pitch,
+            strafe: f.strafe,
+            jump_charge: f.jump_charge,
+            jump_push_timer: f.jump_push_timer,
+            landing_recovery: f.landing_recovery,
+            rot_err: f.rot_err,
+            accel_smooth: f.accel_smooth,
+            ground_normal: f.ground_normal,
+            foot_ground_hit: [f.foot_ground_hit[0].map(|p| p - o), f.foot_ground_hit[1].map(|p| p - o)],
+            vel: f.vel,
+        };
+        let world = &self.game.world;
+        let filter = crate::car::scenery_filter();
+        let origin = rb.origin;
+        let ground = |p: glam::Vec3, max: f32| {
+            let from = Anchor::render_to_sim(origin + p.as_dvec3());
+            world.cast_ray(from, -DVec3::Z * max as f64, filter).map(|h| (h.fraction as f32) * max)
+        };
+        let t = ((self.fixed.steps() as f64 + alpha as f64) / 60.0) as f32;
+        let pose = rig::solve(&input, &mut rb.gait, pel.as_vec3(), to_render_rot(rot), frame_dt as f32, t, &ground);
+        // Steps and the worst planted-foot slide, for the log.
+        for i in 0..2 {
+            if pose.foot_planted[i] {
+                if rb.planted[i] {
+                    self.slip_max = self.slip_max.max((pose.foot_world_pos[i] - rb.feet_at[i]).length());
+                } else {
+                    self.steps += 1;
+                }
+            }
+            rb.planted[i] = pose.foot_planted[i];
+            rb.feet_at[i] = pose.foot_world_pos[i];
+        }
+        rb.view.draw(r, &pose, rb.origin);
     }
 
     pub fn destroy(&mut self, r: &mut Renderer) {
@@ -614,7 +794,7 @@ pub fn run(args: Args) -> Result<(), String> {
 impl App {
     fn create_gpu(&mut self, el: &ActiveEventLoop) -> Result<(), String> {
         let attrs = Window::default_attributes()
-            .with_title(format!("ew - {} (WASD walk, Shift run, Space jump, E car in/out, mouse look, wheel zoom, Esc quit)", self.place.name))
+            .with_title(format!("ew - {} (WASD walk, Shift run, Space jump, E car in/out, C car here, mouse look, wheel zoom, Esc quit)", self.place.name))
             .with_inner_size(PhysicalSize::new(self.args.width, self.args.height));
         let window = el.create_window(attrs).map_err(|e| format!("window: {e}"))?;
         let ns_view = match window.window_handle().map_err(|e| format!("window handle: {e}"))?.as_raw() {
@@ -627,7 +807,7 @@ impl App {
         println!("ew: surface {}x{} vsync={} (scale factor {})", config.width, config.height, config.vsync, window.scale_factor());
         let mut renderer = Renderer::new(&*self.dev).map_err(|e| format!("renderer: {e}"))?;
         self.args.apply_lod(renderer.lod_config());
-        let play = Play::new(&mut renderer, &*self.dev, self.place, &self.args.packs, [config.width, config.height])?;
+        let play = Play::new(&mut renderer, &*self.dev, self.place, &self.args.packs, [config.width, config.height], self.args.character)?;
         self.play = Some(play);
         if !self.scripted() {
             if window.set_cursor_grab(CursorGrabMode::Locked).is_err() {
@@ -867,7 +1047,7 @@ impl App {
                 feet.y,
                 feet.z,
                 DVec3::new(feet.x, feet.y, 0.0).length(),
-                if play.game.grounded() { "grounded" } else { "airborne" },
+                if play.grounded() { "grounded" } else { "airborne" },
                 ground.map_or("-".into(), |g| format!("{g:.3} m")),
                 play.world.residency().len(),
                 play.world.inflight(),
@@ -989,6 +1169,15 @@ impl ApplicationHandler for App {
                                 && !scripted
                             {
                                 p.interact();
+                            }
+                        }
+                        KeyCode::KeyC => {
+                            let scripted = self.scripted();
+                            if !scripted
+                                && let (Some(p), Some(gpu)) = (&mut self.play, &mut self.gpu)
+                                && let Some(r) = gpu.renderer.as_mut()
+                            {
+                                p.summon_car(r, &*self.dev);
                             }
                         }
                         KeyCode::KeyV => {

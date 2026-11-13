@@ -23,6 +23,7 @@ pub mod hot;
 pub mod perf;
 pub mod play;
 pub mod proving;
+pub mod robot;
 pub mod real_materials;
 pub mod route;
 pub mod session;

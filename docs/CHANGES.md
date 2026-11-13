@@ -1,3 +1,16 @@
+## 2026-11-12: P-slice S7a — the alpha robot in `ew --play`
+
+- **What:** the alpha-early robot is the default character (`crates/ew/src/robot/`).
+  - `rig.rs`: engine-free port of alpha `body.rs` gait and IK (planted feet, two-bone legs and arms, body sway).
+  - `controller.rs`: alpha `player.rs` floating capsule on an `ed_sim` dynamic body: ride height 0.95 m, spring 1850 / damper 780, walk 2.2 m/s, sprint 6.0 m/s, turn 6.5, alpha jump timings.
+  - `cam.rs`: alpha CamRig feel (distance 6, zoom 2–60, FOV 62° widening with speed).
+  - `view.rs`: alpha primitives and colours. Named content-packs exception, like `car.rs`, until characters come from packs.
+- **Rig output kept separate from drawing,** so owner characters (GLB) can take the same locomotion later. `--character solarcat` keeps the old mover and walker.
+- **Controls:** C summons the car beside the robot (re-places it if it exists); E enters and exits; crouch dropped (C was crouch in the alpha).
+- **Not ported:** flight, wingsuit, jetpack, parachute. Emissive eyes are a bright material (no emission in the material model).
+- **Checked:** `cargo test -p ew -p ed_sim` pass; `EW_AUTOWALK=18` on Zermatt: 1379 frames, 105 steps, worst planted-foot slide 0.000 m, 60–110 fps. C and E not exercised live.
+- **Open:** the controller uses std `exp`/`atan2`; not bit-exact across platforms.
+
 ## 2026-11-12: Terrain stairs, second pass (seen at eye height)
 
 - **Owner report:** after the first fix the ground still showed a stair pattern, just larger.

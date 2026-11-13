@@ -61,6 +61,18 @@ impl CarSim {
         Ok(CarSim { veh, prev: (pose, w), cur: (pose, w), pinned: None })
     }
 
+    /// Puts the car on the ground at `ground` facing `yaw`, at rest (summoned by the player).
+    pub fn place(&mut self, world: &mut World, ground: DVec3, yaw: f64) {
+        let p = ground + DVec3::Z * (self.veh.desc.ride_height() + 0.05);
+        let rotation = ed_sim::yaw_rotation(yaw);
+        world.set_transform(self.veh.body, p, rotation);
+        world.set_velocity(self.veh.body, DVec3::ZERO, DVec3::ZERO);
+        let pose = CarPose { position: p, rotation };
+        self.prev.0 = pose;
+        self.cur.0 = pose;
+        self.pinned = None;
+    }
+
     /// Before the world step: forces from `input`, or the hold when parked far away.
     pub fn pre_step(&mut self, world: &mut World, input: &VehicleInput, focus: DVec3, driving: bool) {
         let far = !driving && (self.cur.0.position - focus).truncate().length() > PIN_RANGE_M;

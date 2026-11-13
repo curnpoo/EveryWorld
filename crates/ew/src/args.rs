@@ -25,6 +25,9 @@ OPTIONS:
                                mouse looks, wheel zooms, V vsync, Esc quits).
                                EW_AUTOWALK=S walks S seconds by itself, writes
                                play_start.png / play_end.png to --out and exits
+  --character robot|solarcat   --play: the player character (default robot: the alpha's
+                               procedural robot; solarcat: the authored skinned character).
+                               C puts the car 4 m ahead of the robot
   --path zermatt|blueridge     headless real terrain from EARTHDROP_CACHE (offline; no
                                scene loaded): ground level, then a climb
   --scene test|proving         what to load (windowed default proving; headless default
@@ -124,6 +127,18 @@ pub struct Args {
     pub bare: bool,
     /// Walk on real terrain at this place (windowed; [`crate::play`]).
     pub play: Option<PathKind>,
+    /// `--play`: which character walks (default the robot).
+    pub character: Character,
+}
+
+/// The player character in `--play`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Character {
+    /// The alpha's procedural robot: floating-capsule controller, procedural gait.
+    #[default]
+    Robot,
+    /// The authored skinned character on the mover (the proving-ground controller).
+    Solarcat,
 }
 
 impl Args {
@@ -180,6 +195,7 @@ impl Default for Args {
             collision_debug: false,
             bare: false,
             play: None,
+            character: Character::default(),
         }
     }
 }
@@ -275,6 +291,13 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Option<Args>, Str
                     v => return Err(format!("--play: expected zermatt|blueridge, got {v:?}")),
                 })
             }
+            "--character" => {
+                a.character = match it.next().as_deref() {
+                    Some("robot") => Character::Robot,
+                    Some("solarcat") => Character::Solarcat,
+                    v => return Err(format!("--character: expected robot|solarcat, got {v:?}")),
+                }
+            }
             "--path" => {
                 a.path = match it.next().as_deref() {
                     Some("orbit") => PathKind::Orbit,
@@ -323,6 +346,13 @@ mod tests {
         assert_eq!(p("--scene test").unwrap().unwrap().scene(), SceneKind::Test);
         assert!(p("--lod-fade 64").is_err());
         assert!(p("--scene moon").is_err());
+    }
+
+    #[test]
+    fn parses_character() {
+        assert_eq!(p("--play zermatt").unwrap().unwrap().character, Character::Robot);
+        assert_eq!(p("--play zermatt --character solarcat").unwrap().unwrap().character, Character::Solarcat);
+        assert!(p("--character dog").is_err());
     }
 
     #[test]

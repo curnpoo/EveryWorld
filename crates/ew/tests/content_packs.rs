@@ -23,7 +23,9 @@ fn ew_has_no_procedural_geometry_path() {
     let banned = ["meshopt", "build_lods", "build_part", "Builder", "PARTS", "layout()", "cube_mesh", "lathe(", "torus(", "blob(", "positions: vec!", "positions.push", "MeshLod {"];
     let mut hits = Vec::new();
     let mut files = 0;
-    for e in std::fs::read_dir(&src).unwrap() {
+    // `src/robot/*.rs` is scanned too: rig, controller and camera are engine-free maths.
+    let dirs = [src.clone(), src.join("robot")];
+    for e in dirs.iter().flat_map(|d| std::fs::read_dir(d).unwrap()) {
         let p = e.unwrap().path();
         if p.extension().is_none_or(|x| x != "rs") {
             continue;
@@ -34,6 +36,12 @@ fn ew_has_no_procedural_geometry_path() {
         // P-slice S5 placeholder car (boxes and a wheel cylinder). Temporary: remove this
         // exception when a vehicle pack (Blender glTF via ed_assets) replaces it.
         if name == "car.rs" {
+            continue;
+        }
+        // The robot character is drawn from primitives (cube, cylinder, ball) in the alpha's
+        // colours, the way the alpha did. Temporary: remove this exception when the owner's
+        // authored character pack (Blender glTF via ed_assets) replaces it. Only robot/view.rs.
+        if name == "view.rs" {
             continue;
         }
         for (i, line) in text.lines().enumerate() {
