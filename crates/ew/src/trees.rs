@@ -439,7 +439,14 @@ pub fn near_from_env() -> bool {
 impl NearTrees {
     pub fn new(cache: &Path) -> NearTrees {
         install_tree_parts(cache);
-        let wind = std::env::var("EW_WIND").map_or(true, |v| v != "0").then(WindField::default);
+        let wind = std::env::var("EW_WIND").map_or(true, |v| v != "0").then(|| {
+            let mut w = WindField::default();
+            // `EW_WIND_STRENGTH=m/s`: mean wind speed along the default direction (board/test knob).
+            if let Some(v) = std::env::var("EW_WIND_STRENGTH").ok().and_then(|v| v.parse::<f64>().ok()) {
+                w.base = w.base.normalize() * v;
+            }
+            w
+        });
         NearTrees {
             on: near_from_env(),
             wind,
