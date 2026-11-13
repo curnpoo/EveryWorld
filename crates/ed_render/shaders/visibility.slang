@@ -105,6 +105,7 @@ struct FoliageOut {
     float2 uv: TEXCOORD0;
     nointerpolation uint entry: ENTRY;
     nointerpolation uint tex: TEXID;   // atlas (bindless), NO_TEXTURE: opaque (bark, shells)
+    nointerpolation float2 sd: SEASON; // season: this card's hash and the share of leaves on the tree
 };
 
 FoliageOut foliage_vertex(uint vid, uint iid, bool shadow) {
@@ -120,6 +121,13 @@ FoliageOut foliage_vertex(uint vid, uint iid, bool shadow) {
     o.uv = tree_uv(w.x);
     o.entry = entry;
     o.tex = (w.y & AUX_CARD) != 0u ? ed_buf<GpuMaterial>(ed_c.materials)[inst.material].tex.x : NO_TEXTURE;
+    o.sd = float2(0.0, 1.0);
+    if ((w.y & AUX_CARD) != 0u && f.season.cfg.x > 0.0) {
+        LeafSeason ls = season_of_word(f, inst.pad[1]);
+        // Per-card hash: the spray's phase and branch group, the tree's phase, the card (4 vertices).
+        float h = float((w.y >> 21) & 63u) * (1.0 / 64.0) + float(w.y >> 29) * 0.137 + float(inst.pad[0] >> 24) * (0.618 / 255.0) + frac(float(vid >> 2) * 0.7548776662);
+        o.sd = float2(frac(h), ls.leaves);
+    }
     return o;
 }
 
@@ -134,6 +142,9 @@ FoliageOut vs_shadow_foliage(uint vid: SV_VulkanVertexID, uint iid: SV_VulkanIns
 }
 
 void foliage_clip(FoliageOut i) {
+    if (i.sd.x >= i.sd.y) {
+        discard;
+    }
     if (i.tex != NO_TEXTURE && ed_tex2d(i.tex).Sample(ed_smp(ed_c.smp), i.uv).a < 0.5) {
         discard;
     }
@@ -183,6 +194,7 @@ struct ImpOut {
     nointerpolation float4 w: WEIGHTS;      // xyz: their weights, w: depth scale (m per unit)
     nointerpolation float2 geo: GEO;        // frames per side, frame px
     nointerpolation float front: FRONT;     // how far the quad was moved towards the viewer (m)
+    nointerpolation float lv: LEAVES;       // season: share of the coverage left (bare crowns keep their branches)
 };
 
 ImpOut imp_vertex(uint vid, uint iid, bool shadow) {
@@ -232,6 +244,10 @@ ImpOut imp_vertex(uint vid, uint iid, bool shadow) {
     o.w = float4(t.w, 2.0 * half_t * t.s);
     o.front = front;
     o.geo = float2(float(k.tex.w), k.geo.w);
+    o.lv = 1.0;
+    if (f.season.cfg.x > 0.0) {
+        o.lv = lerp(0.22, 1.0, season_of_word(f, g.season).leaves);
+    }
     return o;
 }
 
@@ -295,7 +311,7 @@ float imp_coverage(ImpOut i) {
     float2 s2 = a.Sample(smp, t2).rg * (imp_inside(i.uv2) ? 1.0 : 0.0);
     float cov = i.w.x * s0.x + i.w.y * s1.x + i.w.z * s2.x;
     // Soft alpha test: dithered between 0.25 and 0.75 coverage, solid above.
-    float c = saturate((cov - 0.5) * 2.0 + 0.5) * float(i.entry >> 24) / 255.0;
+    float c = saturate((cov - 0.5) * 2.0 + 0.5) * float(i.entry >> 24) / 255.0 * i.lv;
     uint2 p = uint2(i.pos.xy) & 7u;
     uint rot = ((i.entry & IMP_ENTRY_MASK) * 0x9E3779B1u) >> 26;
     float th = (float((BAYER8[p.y * 8u + p.x] + rot) & 63u) + 0.5) / 64.0;
@@ -340,7 +356,7 @@ void fs_imp_shadow(ImpOut i) {
         uv = i.uv2;
     }
     float cov = imp_inside(uv) ? a.Sample(smp, imp_atlas_uv(fr, n, uv, i.geo.y)).r : 0.0;
-    float c = saturate((cov - 0.5) * 2.0 + 0.5) * float(i.entry >> 24) / 255.0;
+    float c = saturate((cov - 0.5) * 2.0 + 0.5) * float(i.entry >> 24) / 255.0 * i.lv;
     uint2 p = uint2(i.pos.xy) & 7u;
     uint rot = ((i.entry & IMP_ENTRY_MASK) * 0x9E3779B1u) >> 26;
     float th = (float((BAYER8[p.y * 8u + p.x] + rot) & 63u) + 0.5) / 64.0;

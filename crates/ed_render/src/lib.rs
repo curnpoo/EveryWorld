@@ -85,6 +85,15 @@ pub fn reverse_z_projection(fov_y: f32, aspect: f32, near: f32) -> Mat4 {
 
 /// A camera: f64 position (truth), f32 orientation. Rendering is camera-relative, so the
 /// position never reaches the GPU (P1-D7).
+/// Season table for [`Renderer::set_season`].
+#[derive(Clone, Copy, Debug)]
+pub struct SeasonParams<'a> {
+    pub phase_day: f32,
+    pub autumn_gain: f32,
+    pub far_rows: [u32; 2],
+    pub rows: &'a [[f32; 8]],
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Camera {
     pub position: DVec3,
@@ -547,6 +556,8 @@ pub struct Renderer {
     materials_dirty: bool,
     /// `FrameData.wind` words ([`Renderer::set_wind`]); zero: no wind, no near trees.
     wind: [u32; gpu::WIND_WORDS],
+    /// `FrameData.season` words ([`Renderer::set_season`]); zero: seasons off.
+    season: [u32; gpu::SEASON_WORDS],
     pools: InstancePools,
     /// Slots whose data has been flushed (the culling dispatch covers these).
     slots_flushed: u32,
@@ -685,6 +696,7 @@ impl Renderer {
             materials: Vec::new(),
             materials_dirty: false,
             wind: [0; gpu::WIND_WORDS],
+            season: [0; gpu::SEASON_WORDS],
             pools: InstancePools::new(desc.max_instances, desc.max_nodes),
             slots_flushed: 0,
             views: vec![view0],
@@ -852,6 +864,25 @@ impl Renderer {
     /// Impostor tree slots in use.
     pub fn impostor_trees(&self) -> u32 {
         self.lod.imp.used()
+    }
+
+    /// Tree seasons: `phase_day` (year day after the rate scalar, `ed_world::season::phase_day`;
+    /// `None` turns seasons off, trees draw as in summer), the autumn gain, the far rung's
+    /// broadleaf and conifer rows, and one `ed_world::season::gpu_row` per species (at most 32).
+    pub fn set_season(&mut self, season: Option<SeasonParams<'_>>) {
+        let mut w = [0u32; gpu::SEASON_WORDS];
+        if let Some(p) = season {
+            w[0] = (p.phase_day.max(0.01)).to_bits();
+            w[1] = p.autumn_gain.to_bits();
+            w[2] = (p.far_rows[0] as f32).to_bits();
+            w[3] = (p.far_rows[1] as f32).to_bits();
+            for (i, r) in p.rows.iter().take(gpu::SEASON_ROWS).enumerate() {
+                for (k, x) in r.iter().enumerate() {
+                    w[4 + i * 8 + k] = x.to_bits();
+                }
+            }
+        }
+        self.season = w;
     }
 
     pub fn set_wind(&mut self, field: Option<[f32; 8]>, rest_m: f32, near_trees: bool) {
@@ -1327,6 +1358,7 @@ impl Renderer {
         let lw = light::light_words(&LightingSettings { ao: ao_on, ..lighting }, &cplan, &sh, (ao_w, ao_h), 1.0);
         fd[FD_LIGHT..FD_LIGHT + light::LIGHT_WORDS].copy_from_slice(&lw);
         fd[gpu::FD_WIND..gpu::FD_WIND + gpu::WIND_WORDS].copy_from_slice(&self.wind);
+        fd[gpu::FD_SEASON..gpu::FD_SEASON + gpu::SEASON_WORDS].copy_from_slice(&self.season);
         // Terrain culls its casters per cascade: after the cascade matrices are in `fd`.
         if let (true, Some(t)) = (scene, &mut self.terrain) {
             t.prepare(dev, &self.pools, w, h, &mut fd)?;

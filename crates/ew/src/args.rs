@@ -53,6 +53,8 @@ OPTIONS:
                                (degrees from north, clockwise) and PITCH (degrees, + up)
   --sun AZ,EL                  headless: sun azimuth (degrees from north, clockwise) and
                                elevation (degrees) in the scene's local frame
+  --date YYYY-MM-DD            tree seasons: the calendar date (default midsummer; EW_SEASON=0
+                               turns seasons off, EW_SEASON_RATE=r scales the year about midsummer)
   --layers DIR                 layer root with authored placements (default assets-src/layers)
   --mode game|editor           start mode (default editor; Tab or F1 switches). Headless game
                                mode walks the character along the scripted route
@@ -111,6 +113,8 @@ pub struct Args {
     pub ground: Option<[f64; 5]>,
     /// Sun azimuth and elevation (degrees, local frame).
     pub sun: Option<[f64; 2]>,
+    /// Calendar date (year, month, day) the trees' seasons show (`--date`); default midsummer.
+    pub date: Option<(i32, u32, u32)>,
     /// Layer root (authored placements, `assets-src/layers`).
     pub layers: PathBuf,
     /// Run the scripted character route without a GPU and print its hashes.
@@ -144,6 +148,11 @@ pub enum Character {
 impl Args {
     /// The scene to load: explicit `--scene`, else proving for windowed runs and for
     /// `--path proving`, else the test scene.
+    /// Day of year of `--date`, if given.
+    pub fn season_day(&self) -> Option<f64> {
+        self.date.map(|(y, m, d)| ed_world::season::day_of_year(y, m, d))
+    }
+
     pub fn scene(&self) -> SceneKind {
         self.scene.unwrap_or(if !self.headless || self.path == PathKind::Proving { SceneKind::Proving } else { SceneKind::Test })
     }
@@ -187,6 +196,7 @@ impl Default for Args {
             camera: None,
             ground: None,
             sun: None,
+            date: None,
             layers: crate::authored::default_layer_root(),
             sim_route: false,
             mode: crate::session::Mode::Editor,
@@ -275,6 +285,16 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Option<Args>, Str
             "--sun" => {
                 let n = nums("--sun", it.next(), 2)?;
                 a.sun = Some([n[0], n[1]]);
+            }
+            "--date" => {
+                let v = it.next().ok_or("--date needs YYYY-MM-DD")?;
+                let bad = || format!("--date: expected YYYY-MM-DD, got {v:?}");
+                let mut f = v.split('-');
+                let (y, m, d) = (f.next().and_then(|x| x.parse::<i32>().ok()), f.next().and_then(|x| x.parse::<u32>().ok()), f.next().and_then(|x| x.parse::<u32>().ok()));
+                match (y, m, d, f.next()) {
+                    (Some(y), Some(m), Some(d), None) if (1..=12).contains(&m) && (1..=31).contains(&d) => a.date = Some((y, m, d)),
+                    _ => return Err(bad()),
+                }
             }
             "--out" => a.out = PathBuf::from(it.next().ok_or("--out needs a value")?),
             "--vsync" => {
@@ -368,6 +388,9 @@ mod tests {
         let g = p("--headless --path zermatt --ground 46.02,7.74,90,-5,1.7 --sun 120,8").unwrap().unwrap();
         assert_eq!((g.ground, g.sun), (Some([46.02, 7.74, 90.0, -5.0, 1.7]), Some([120.0, 8.0])));
         assert!(p("--sun 1").is_err());
+        assert_eq!(p("--date 2026-10-20").unwrap().unwrap().date, Some((2026, 10, 20)));
+        assert!(p("--date 2026-13-01").is_err());
+        assert!(p("--date 2026-10").is_err());
         assert_eq!(p("--packs x/p").unwrap().unwrap().packs, PathBuf::from("x/p"));
         assert_eq!(p("--pack a.ewpack --pack b.ewpack").unwrap().unwrap().extra_packs, vec![PathBuf::from("a.ewpack"), PathBuf::from("b.ewpack")]);
         assert!(p("--pack").is_err());

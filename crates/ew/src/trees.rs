@@ -271,7 +271,7 @@ struct Build {
     gh: f64,
     pos: usize,
     /// Per stand tree: trunk base relative to the node origin and up (`None`: no bank entry).
-    placed: Vec<Option<(Vec3, Vec3)>>,
+    placed: Vec<Option<(Vec3, Vec3, u32)>>,
     imps: Vec<ImpostorTree>,
     /// 0 placing, 1 impostors, 2 mesh instances.
     phase: u8,
@@ -342,6 +342,15 @@ pub struct NearTrees {
     pub stats: NearStats,
     /// Hand-off distance of the last update (m).
     pub handoff_m: f64,
+    /// Seasons (trees G5; `EW_SEASON=0` off): the calendar day (default midsummer, `--date`) and
+    /// the rate scalar (`EW_SEASON_RATE`, 1 = real time, 0 holds midsummer).
+    season: Option<SeasonCfg>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SeasonCfg {
+    day: f64,
+    rate: f64,
 }
 
 fn env_num<T: std::str::FromStr>(k: &str, d: T) -> T {
@@ -385,6 +394,15 @@ impl NearTrees {
             free_slots: Vec::new(),
             stats: NearStats::default(),
             handoff_m: 0.0,
+            season: std::env::var("EW_SEASON").map_or(true, |v| v != "0").then(|| SeasonCfg { day: ed_world::season::REF_DAY, rate: env_num("EW_SEASON_RATE", 1.0f64) }),
+        }
+    }
+
+    /// The calendar day of year (`ed_world::season::day_of_year`) the trees show; `None` keeps
+    /// the default (midsummer). Ignored with `EW_SEASON=0`.
+    pub fn set_date(&mut self, day: Option<f64>) {
+        if let (Some(d), Some(s)) = (day, self.season.as_mut()) {
+            s.day = d;
         }
     }
 
@@ -550,7 +568,7 @@ impl NearTrees {
         for tr in trees {
             let p = bank::instance_params(tr);
             let Some(&(mesh, material, _, _)) = self.bank.get(&(tr.species, p.variant, p.age)) else { continue };
-            let (base, up) = self.place(wd, tr, gh);
+            let (base, up, h) = self.place_h(wd, tr, gh);
             let s = p.scale;
             let rot = Quat::from_rotation_arc(Vec3::Y, up);
             let lean_axis = Vec3::new(p.lean_az.cos(), 0.0, p.lean_az.sin());
@@ -560,18 +578,29 @@ impl NearTrees {
                 return Err("instance pool full".into());
             };
             r.instances().set_user(i, p.user);
+            r.instances().set_season(i, self.season_word(tr, h));
             out.push(i);
         }
         Ok(out)
     }
 
-    /// Trunk base (render frame) and up of stand tree `tr`.
-    fn place(&self, wd: &TerrainWorld, tr: &StandTree, gh: f64) -> (DVec3, Vec3) {
+    /// Trunk base (render frame), up and ground height (m) of stand tree `tr`.
+    fn place_h(&self, wd: &TerrainWorld, tr: &StandTree, gh: f64) -> (DVec3, Vec3, f64) {
         let body = &wd.anchor.body;
         let h = self.ground_at(wd, tr.dir).unwrap_or(gh);
         let base = wd.anchor.body_to_render(body.point(tr.dir, h));
         let up = (wd.anchor.body_to_render(body.point(tr.dir, h + 1.0)) - base).normalize().as_vec3();
-        (base, up)
+        (base, up, h)
+    }
+
+    /// The tree's season word (0 with seasons off): its species row and its place's phenology shift.
+    fn season_word(&self, tr: &StandTree, h: f64) -> u32 {
+        if self.season.is_none() {
+            return 0;
+        }
+        // Body frame is ECEF-like: z is north.
+        let lat = tr.dir.z.clamp(-1.0, 1.0).asin().to_degrees();
+        ed_world::season::season_word(tr.species as usize, lat, h)
     }
 
     /// Brings the near trees up to date for `camera`. `settle` builds and applies everything
@@ -586,6 +615,8 @@ impl NearTrees {
         }
         r.set_wind(self.wind.map(|w| w.gpu_words(glam::DVec2::new(camera.position.x, -camera.position.z), time)), rest, true);
         r.set_impostor_bands(self.imp.then(|| self.bands()));
+        let rows = ed_world::season::gpu_rows();
+        r.set_season(self.season.map(|c| ed_render::SeasonParams { phase_day: ed_world::season::phase_day(c.day, c.rate) as f32, autumn_gain: ed_world::season::AUTUMN_GAIN as f32, far_rows: ed_world::season::far_rows(), rows: &rows }));
         let ppr = viewport[1] as f64 * 0.5 / (camera.fov_y as f64 * 0.5).tan();
         let (wanted, handoff) = self.wanted(wd, camera, viewport);
         self.handoff_m = handoff;
@@ -778,9 +809,10 @@ impl NearTrees {
                         b.placed.push(None);
                         continue;
                     };
-                    let (base, up) = self.place(wd, tr, b.gh);
+                    let (base, up, h) = self.place_h(wd, tr, b.gh);
                     let rel = (base - origin).as_vec3();
-                    b.placed.push(Some((rel, up)));
+                    let season = self.season_word(tr, h);
+                    b.placed.push(Some((rel, up, season)));
                     recs.push((rel, p.scale * bank_h));
                     if self.imp {
                         b.imps.push(ImpostorTree {
@@ -792,6 +824,7 @@ impl NearTrees {
                             yaw: p.yaw,
                             widen: p.widen,
                             user: p.user,
+                            season,
                         });
                     }
                 }
@@ -819,7 +852,7 @@ impl NearTrees {
             2 => {
                 let mut out = Vec::new();
                 for (tr, pl) in b.stand[b.pos..end].iter().zip(&b.placed[b.pos..end]) {
-                    let Some((rel, up)) = pl else { continue };
+                    let Some((rel, up, season)) = pl else { continue };
                     let p = bank::instance_params(tr);
                     let Some(&(mesh, material, _, _)) = self.bank.get(&(tr.species, p.variant, p.age)) else { continue };
                     let s = p.scale;
@@ -831,6 +864,7 @@ impl NearTrees {
                         return Err("instance pool full".into());
                     };
                     r.instances().set_user(i, p.user);
+                    r.instances().set_season(i, *season);
                     out.push(i);
                 }
                 self.nodes.get_mut(&b.id).expect("building").instances.extend(out);

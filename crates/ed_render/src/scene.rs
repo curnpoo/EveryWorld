@@ -312,6 +312,7 @@ impl InstancePools {
         w[gpu::INST_OBJECT_LO] = d.object.0 as u32;
         w[gpu::INST_NODE_FLAGS] = d.node.0 as u32 | INSTANCE_ALIVE | (((d.flags & 0x7FFF) as u32) << 17);
         w[gpu::INST_USER] = 0;
+        w[gpu::INST_SEASON] = 0;
         self.objects[i as usize] = d.object;
         self.generations[i as usize] = self.generations[i as usize].wrapping_add(1);
         self.alive += 1;
@@ -342,6 +343,14 @@ impl InstancePools {
     pub fn set_user(&mut self, id: InstanceId, user: u32) -> bool {
         let Some(i) = self.slot(id) else { return false };
         self.words[i * INSTANCE_WORDS + gpu::INST_USER] = user;
+        self.mark(i as u32);
+        true
+    }
+    /// Sets the instance's season word (`GpuInstance.pad[1]`; trees:
+    /// `ed_world::season::season_word`).
+    pub fn set_season(&mut self, id: InstanceId, word: u32) -> bool {
+        let Some(i) = self.slot(id) else { return false };
+        self.words[i * INSTANCE_WORDS + gpu::INST_SEASON] = word;
         self.mark(i as u32);
         true
     }

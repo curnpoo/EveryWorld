@@ -73,6 +73,9 @@ pub fn run(args: &Args) -> Result<Report, String> {
     };
     // Near trees (trees G4; `EW_TREES_NEAR=0` off, `EW_WIND=0` still).
     let mut near = world.as_ref().filter(|_| near_trees).map(|_| crate::trees::NearTrees::new(&crate::terrain::cache_root()));
+    if let Some(n) = near.as_mut() {
+        n.set_date(args.season_day());
+    }
     let mut trees_ms = 0.0f64;
     let mut terrain_ms = 0.0f64;
     let mut terrain_last = (crate::terrain::WorldStats::default(), None);

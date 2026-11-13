@@ -18,7 +18,7 @@ use glam::Vec3;
 pub const MAX_IMPOSTOR_TREES: u32 = 1 << 22;
 /// Most impostor kinds (12 bits of `GpuTree::node_kind`).
 pub const MAX_IMPOSTOR_KINDS: u32 = 4096;
-const TREE_WORDS: usize = 8;
+const TREE_WORDS: usize = 9;
 const KIND_WORDS: usize = 16;
 /// Draw lists: the view, then the four cascades.
 pub(crate) const IMP_LISTS: u32 = 5;
@@ -60,6 +60,8 @@ pub struct ImpostorTree {
     pub widen: f32,
     /// The mesh instance's user word (value, hue, drop, phase).
     pub user: u32,
+    /// The season word (`ed_world::season::season_word`).
+    pub season: u32,
 }
 
 /// A block of tree slots, freed as one.
@@ -170,6 +172,7 @@ impl ImpostorStore {
                 gpu::oct_encode(t.up),
                 yaw | (wd << 16),
                 t.user,
+                t.season,
             ]);
         }
         let tb = self.trees.as_ref().expect("ensured");

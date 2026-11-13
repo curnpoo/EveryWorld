@@ -422,6 +422,7 @@ TSurf terrain_material(FrameData* f, TerrainMat m, TerrainDraw d, float3 n, floa
 // table (a test checks these agree).
 static const float3 T_CROWN_BROAD = float3(0.050, 0.110, 0.024);
 static const float3 T_CROWN_CONIFER = float3(0.026, 0.064, 0.020);
+static const float3 T_CROWN_BARE = float3(0.034, 0.028, 0.022);   // a leafless crown: branches and shade
 static const float3 T_LITTER = float3(0.050, 0.042, 0.030);   // needle and leaf litter
 static const float T_CROWN_ROUGH = 0.8;
 // Page spacings (m) between which the forest-floor weight goes from a steep edge to linear.
@@ -498,14 +499,24 @@ struct TForest {
 // The canopy over a terrain pixel. `floor_alb`: the ground's albedo (the forest floor where
 // cover is); `n`: the ground's shading normal; `px_m`: pixel footprint (m); `spacing`: page
 // sample spacing (m).
-TForest t_forest(uint pool, TerrainDraw d, float4 cv, float2 g, float2 w, float3 tu, float3 tv, float3 up, float3 n, float3 floor_alb, float3 l, float px_m, float px_iso, float spacing, float near_px) {
+TForest t_forest(FrameData* f, float alt_m, uint pool, TerrainDraw d, float4 cv, float2 g, float2 w, float3 tu, float3 tv, float3 up, float3 n, float3 floor_alb, float3 l, float px_m, float px_iso, float spacing, float near_px) {
     // Stand edges: the page's cover warped by noise (fixed scales, so no seam where the level
     // changes), so a forest outline is ragged rather than a staircase; only where cover is partial.
     float ew = t_noise(w + 911.0, 64.0) * 0.65 + t_noise(w + 271.0, 16.0) * 0.35;
     float c = saturate(cv.x + (ew - 0.5) * 1.6 * cv.x * (1.0 - cv.x));
     float hc = max(cv.y, 2.0);
     float mx = cv.z;
-    float3 leaf = lerp(T_CROWN_BROAD, T_CROWN_CONIFER, mx);
+    // Seasons: the far rung follows the same table (the generic broadleaf and spruce rows), the
+    // place's shift from the ground height only. Bare crowns fall back to branch and shadow.
+    float3 crown_b = T_CROWN_BROAD;
+    float3 crown_c = T_CROWN_CONIFER;
+    if (f.season.cfg.x > 0.0) {
+        LeafSeason sb = season_far(f, false, alt_m);
+        LeafSeason sc = season_far(f, true, alt_m);
+        crown_b = lerp(T_CROWN_BARE, season_tint(sb, crown_b), sb.leaves);
+        crown_c = lerp(T_CROWN_BARE, season_tint(sc, crown_c), sc.leaves);
+    }
+    float3 leaf = lerp(crown_b, crown_c, mx);
     // Stand-scale variation (clumps, age, species patches): what reads at kilometres.
     float n1 = t_noise(w + 151.0, 32.0);
     float n2 = t_noise(w + 517.0, 128.0);
@@ -580,7 +591,7 @@ TForest t_forest(uint pool, TerrainDraw d, float4 cv, float2 g, float2 w, float3
         // Crown shape: a cone (conifer, steep sides) or a dome (broadleaf).
         float3 nc = conifer ? normalize(up + t2 * 1.3) : normalize(t2 + up * sqrt(max(1.0 - r2, 0.04)));
         float3 nn = normalize(n + (nc - up) * 0.9);
-        float3 la = (conifer ? T_CROWN_CONIFER : T_CROWN_BROAD) * lerp(0.75, 1.25, k.w) * stand;
+        float3 la = (conifer ? crown_c : crown_b) * lerp(0.75, 1.25, k.w) * stand;
         // Per-crown hue: yellow-green to blue-green (species and vigour within the family).
         la *= lerp(float3(1.12, 1.0, 0.75), float3(0.85, 0.97, 1.2), frac(k.w * 7.31));
         // Leaf clumps inside the crown (fades out as the crown shrinks on screen).
@@ -720,7 +731,7 @@ float4 terrain_pixel<let TR : int>(FrameData* f, FsOut i, uint2 vis, float3 dir)
         float px_iso = length(p) * pa;
         float px_m = px_iso / sqrt(max(abs(dot(dir, n)), 0.03));
         float near_px = f.wind.cfg.z > 0.5 && d.polar.w > 0.0 ? d.polar.w / max(length(p), 1.0) : -1.0;
-        TForest fo = t_forest(pool, d, cv, g, w, tu, tv, up, n, albedo, f.sun_dir.xyz, px_m, px_iso, spacing, near_px);
+        TForest fo = t_forest(f, h, pool, d, cv, g, w, tu, tv, up, n, albedo, f.sun_dir.xyz, px_m, px_iso, spacing, near_px);
         albedo = fo.albedo;
         n = fo.n;
         rough = lerp(rough, T_CROWN_ROUGH, fo.crown);
@@ -819,6 +830,9 @@ TreeSurf tree_surface(FrameData* f, GpuInstance inst, GpuMaterial m, uint2 w0, u
         float3 tex = ed_tex2d(m.tex.x).SampleGrad(ed_smp(ed_c.smp), uv, ux, uy).rgb;
         alb *= clamp(tex / LEAF_BASE_LIN, float3(0.2, 0.2, 0.2), float3(2.5, 2.5, 2.5));
     }
+    if (f.season.cfg.x > 0.0) {
+        alb = season_tint(season_of_word(f, inst.pad[1]), alb);
+    }
     o.shell = !o.leaf;
     o.albedo = min(alb, float3(0.9, 0.9, 0.9));
     return o;
@@ -893,6 +907,9 @@ float4 impostor_pixel(FrameData* f, FsOut i, uint idx, float3 dir) {
     float iv = float(g.user & 255u) / 128.0;
     float ih = float((g.user >> 8) & 255u) / 127.5 - 1.0;
     float3 leaf_alb = k.leaf.rgb * value * iv * tree_hue(clamp(ih, -1.0, 1.0));
+    if (f.season.cfg.x > 0.0) {
+        leaf_alb = season_tint(season_of_word(f, g.season), leaf_alb);
+    }
     float3 bark_alb = k.bark.rgb * value * lerp(1.0, iv, 0.5);
     float3 albedo = min(lerp(leaf_alb, bark_alb, bark), float3(0.9, 0.9, 0.9));
     float zlin = -mul(f.view, float4(p, 1.0)).z;

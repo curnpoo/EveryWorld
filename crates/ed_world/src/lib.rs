@@ -35,6 +35,7 @@ pub mod probes;
 pub mod project;
 pub mod props;
 pub mod roads;
+pub mod season;
 pub mod stand;
 pub mod starfield;
 pub mod soundmap;

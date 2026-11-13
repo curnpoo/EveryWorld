@@ -91,7 +91,7 @@ pub const CLASSES: [ClassParams; 3] = [
 pub const COMPETE: [[f32; 3]; 3] = [[0.55, 0.38, 0.32], [0.38, 0.55, 0.40], [0.32, 0.40, 0.46]];
 
 /// Gap-noise threshold at full cover (fraction of the noise range that becomes clearing).
-const GAP_STRENGTH: f32 = 0.0;
+const GAP_STRENGTH: f32 = 0.30;
 
 /// Calibration: page cover to the density-target cover, the inverse of the competition's
 /// saturation curve measured by `calibrate_cover` (flat field, canopy 25-35 m). Without it a
@@ -147,6 +147,28 @@ pub struct StandSpecies {
     pub max_h: f32,
     /// Crown radius multiplier (conifers narrow, oaks wide).
     pub crown_k: f32,
+    /// Crown bias (O3-8): how much the crown reads in the canopy page relative to the true
+    /// crown (1 = true scale). Applied when the stand writes back into the page ([`measure`]);
+    /// never in a shader.
+    pub crown_bias: f32,
+    /// Leaf phenology ([`crate::season`]).
+    pub pheno: Pheno,
+}
+
+/// Leaf phenology of a species at the reference place (lat 46, altitude 500 m): day of year
+/// of leaf-out, of the autumn colour peak and of leaf drop; `crate::season` shifts them by
+/// latitude and altitude (Hopkins' bioclimatic law).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pheno {
+    pub leaf_out: f32,
+    pub colour: f32,
+    pub drop: f32,
+    /// Deciduous: the autumn leaf albedo (sRGB hex, the colour of the leaf itself, not a tint).
+    /// Evergreen: the winter leaf albedo the crown moves toward by `winter`.
+    pub colour_hex: u32,
+    pub evergreen: bool,
+    /// Evergreen only: how far toward `colour_hex` the crown goes in the cold season (0..1).
+    pub winter: f32,
 }
 
 const GLOBAL: [f32; 4] = [-90.0, 90.0, -180.0, 180.0];
@@ -156,7 +178,23 @@ const TROPICS: [f32; 4] = [-25.0, 25.0, -180.0, 180.0];
 
 #[allow(clippy::too_many_arguments)]
 const fn sp(name: &'static str, kind: TreeKind, conifer: bool, leaf: u32, geo: [f32; 4], alt: (f32, f32), canopy_h: (f32, f32), wet: f32, weight: f32, classes: u8, max_h: f32, crown_k: f32) -> StandSpecies {
-    StandSpecies { name, kind, conifer, shrub: false, leaf, geo, alt, canopy_h, wet, weight, classes, max_h, crown_k }
+    StandSpecies { name, kind, conifer, shrub: false, leaf, geo, alt, canopy_h, wet, weight, classes, max_h, crown_k, crown_bias: 1.0, pheno: EVERGREEN }
+}
+/// Temperate evergreen: a little duller and browner from November to March.
+const EVERGREEN: Pheno = Pheno { leaf_out: 80.0, colour: 300.0, drop: 0.0, colour_hex: 0x38402a, evergreen: true, winter: 0.6 };
+/// Deciduous row: leaf-out, autumn colour peak and drop (day of year at the reference), colour.
+const fn dec(mut s: StandSpecies, leaf_out: f32, colour: f32, drop: f32, hex: u32) -> StandSpecies {
+    s.pheno = Pheno { leaf_out, colour, drop, colour_hex: hex, evergreen: false, winter: 0.0 };
+    s
+}
+/// Tropical evergreen: no seasonal colour.
+const fn trop(mut s: StandSpecies) -> StandSpecies {
+    s.pheno.winter = 0.0;
+    s
+}
+const fn bias(mut s: StandSpecies, b: f32) -> StandSpecies {
+    s.crown_bias = b;
+    s
 }
 const fn shrub(mut s: StandSpecies) -> StandSpecies {
     s.shrub = true;
@@ -168,39 +206,39 @@ use TreeKind as K;
 /// Zermatt/Alps, Blue Ridge, generic temperate/boreal and tropical rows. Order is the pick order.
 pub static STAND_SPECIES: [StandSpecies; 30] = [
     // --- Europe / Alps ---
-    sp("Norway spruce", K::Conifer, true, 0x3b5d3b, EUROPE, (500.0, 2100.0), (12.0, 50.0), 0.0, 3.0, M_ALL, 55.0, 0.80),
-    sp("Silver fir", K::Fir, true, 0x3a5b3d, EUROPE, (400.0, 1600.0), (20.0, 50.0), 0.1, 1.2, M_ALL, 55.0, 0.90),
-    sp("European larch", K::Conifer, true, 0x547e4b, EUROPE, (1300.0, 2400.0), (8.0, 40.0), 0.0, 2.5, M_ALL, 45.0, 0.75),
+    bias(sp("Norway spruce", K::Conifer, true, 0x3b5d3b, EUROPE, (500.0, 2100.0), (12.0, 50.0), 0.0, 3.0, M_ALL, 55.0, 0.80), 1.05),
+    bias(sp("Silver fir", K::Fir, true, 0x3a5b3d, EUROPE, (400.0, 1600.0), (20.0, 50.0), 0.1, 1.2, M_ALL, 55.0, 0.90), 1.05),
+    bias(dec(sp("European larch", K::Conifer, true, 0x547e4b, EUROPE, (1300.0, 2400.0), (8.0, 40.0), 0.0, 2.5, M_ALL, 45.0, 0.75), 110.0, 295.0, 335.0, 0xb88428), 1.05),
     sp("Swiss stone pine", K::Pine, true, 0x3e6241, EUROPE, (1700.0, 2500.0), (5.0, 25.0), 0.0, 1.5, M_ALL, 28.0, 0.70),
     sp("Scots pine", K::Pine, true, 0x496a3e, EUROPE, (0.0, 1700.0), (10.0, 35.0), -0.3, 1.2, M_ALL, 38.0, 0.85),
     sp("Mountain pine", K::Pine, true, 0x3e5f3b, EUROPE, (1800.0, 2400.0), (1.0, 8.0), 0.0, 0.8, M_ALL, 6.0, 1.00),
-    sp("Silver birch", K::Birch, false, 0x86b04a, EUROPE, (0.0, 2000.0), (4.0, 30.0), 0.4, 1.0, M_ALL, 32.0, 0.70),
-    sp("Grey alder", K::Broadleaf, false, 0x6f8f55, EUROPE, (200.0, 1800.0), (4.0, 25.0), 0.8, 0.8, M_SAP | M_SUB, 20.0, 0.80),
-    shrub(sp("Green alder", K::Shrub, false, 0x5a7d3c, EUROPE, (1400.0, 2400.0), (0.0, 90.0), 0.3, 1.2, M_SAP, 3.5, 1.00)),
-    sp("European beech", K::Broadleaf, false, 0x5f8f3a, EUROPE, (0.0, 1400.0), (18.0, 42.0), 0.0, 2.0, M_ALL, 45.0, 1.10),
-    sp("Sycamore maple", K::Maple, false, 0x6c9a3e, EUROPE, (300.0, 1500.0), (15.0, 38.0), 0.2, 0.8, M_ALL, 40.0, 1.00),
-    sp("Pedunculate oak", K::Broadleaf, false, 0x5d8a3a, EUROPE, (0.0, 900.0), (15.0, 40.0), 0.0, 1.2, M_ALL, 42.0, 1.20),
+    dec(sp("Silver birch", K::Birch, false, 0x86b04a, EUROPE, (0.0, 2000.0), (4.0, 30.0), 0.4, 1.0, M_ALL, 32.0, 0.70), 112.0, 285.0, 310.0, 0xc29a28),
+    dec(sp("Grey alder", K::Broadleaf, false, 0x6f8f55, EUROPE, (200.0, 1800.0), (4.0, 25.0), 0.8, 0.8, M_SAP | M_SUB, 20.0, 0.80), 105.0, 300.0, 325.0, 0x7f7a32),
+    dec(shrub(sp("Green alder", K::Shrub, false, 0x5a7d3c, EUROPE, (1400.0, 2400.0), (0.0, 90.0), 0.3, 1.2, M_SAP, 3.5, 1.00)), 118.0, 290.0, 315.0, 0x8a7a30),
+    dec(sp("European beech", K::Broadleaf, false, 0x5f8f3a, EUROPE, (0.0, 1400.0), (18.0, 42.0), 0.0, 2.0, M_ALL, 45.0, 1.10), 113.0, 292.0, 318.0, 0x9a5a22),
+    dec(sp("Sycamore maple", K::Maple, false, 0x6c9a3e, EUROPE, (300.0, 1500.0), (15.0, 38.0), 0.2, 0.8, M_ALL, 40.0, 1.00), 108.0, 288.0, 312.0, 0xb8782a),
+    dec(sp("Pedunculate oak", K::Broadleaf, false, 0x5d8a3a, EUROPE, (0.0, 900.0), (15.0, 40.0), 0.0, 1.2, M_ALL, 42.0, 1.20), 121.0, 298.0, 328.0, 0x8a5e2a),
     shrub(sp("Alpine juniper", K::Juniper, true, 0x4d6e4a, EUROPE, (1500.0, 2700.0), (0.0, 90.0), -0.3, 1.0, M_SAP, 3.0, 1.00)),
     shrub(sp("Alpenrose", K::FloweringBush, false, 0x5b7f46, EUROPE, (1700.0, 2500.0), (0.0, 90.0), 0.0, 1.5, M_SAP, 2.0, 1.00)),
     // --- Eastern North America / Blue Ridge ---
-    sp("White oak", K::Broadleaf, false, 0x5d8a3a, E_NAMERICA, (0.0, 1100.0), (15.0, 38.0), 0.0, 2.5, M_ALL, 40.0, 1.20),
-    sp("Tulip poplar", K::Broadleaf, false, 0x6aa83e, E_NAMERICA, (0.0, 1000.0), (25.0, 55.0), 0.2, 1.8, M_SUB | M_CAN, 55.0, 0.80),
-    sp("Red maple", K::Maple, false, 0x8a9a3a, E_NAMERICA, (0.0, 1500.0), (12.0, 35.0), 0.3, 2.0, M_ALL, 36.0, 1.00),
-    sp("Eastern hemlock", K::Conifer, true, 0x385a3a, E_NAMERICA, (300.0, 1500.0), (18.0, 40.0), 0.6, 1.3, M_ALL, 42.0, 0.80),
+    dec(sp("White oak", K::Broadleaf, false, 0x5d8a3a, E_NAMERICA, (0.0, 1100.0), (15.0, 38.0), 0.0, 2.5, M_ALL, 40.0, 1.20), 133.0, 285.0, 308.0, 0x8c4a2a),
+    dec(sp("Tulip poplar", K::Broadleaf, false, 0x6aa83e, E_NAMERICA, (0.0, 1000.0), (25.0, 55.0), 0.2, 1.8, M_SUB | M_CAN, 55.0, 0.80), 130.0, 278.0, 302.0, 0xcaa42a),
+    dec(sp("Red maple", K::Maple, false, 0x8a9a3a, E_NAMERICA, (0.0, 1500.0), (12.0, 35.0), 0.3, 2.0, M_ALL, 36.0, 1.00), 126.0, 275.0, 300.0, 0xa8321e),
+    bias(sp("Eastern hemlock", K::Conifer, true, 0x385a3a, E_NAMERICA, (300.0, 1500.0), (18.0, 40.0), 0.6, 1.3, M_ALL, 42.0, 0.80), 1.05),
     sp("Eastern white pine", K::Pine, true, 0x446941, E_NAMERICA, (100.0, 1500.0), (25.0, 50.0), 0.0, 1.0, M_ALL, 52.0, 0.85),
-    sp("Sweet birch", K::Birch, false, 0x7ca545, E_NAMERICA, (600.0, 1500.0), (12.0, 30.0), 0.1, 0.8, M_ALL, 30.0, 0.80),
-    sp("Hickory", K::Broadleaf, false, 0x6b9442, E_NAMERICA, (0.0, 800.0), (18.0, 40.0), -0.2, 1.2, M_ALL, 40.0, 1.00),
+    dec(sp("Sweet birch", K::Birch, false, 0x7ca545, E_NAMERICA, (600.0, 1500.0), (12.0, 30.0), 0.1, 0.8, M_ALL, 30.0, 0.80), 128.0, 280.0, 303.0, 0xc09a2a),
+    dec(sp("Hickory", K::Broadleaf, false, 0x6b9442, E_NAMERICA, (0.0, 800.0), (18.0, 40.0), -0.2, 1.2, M_ALL, 40.0, 1.00), 135.0, 283.0, 306.0, 0xb08a2a),
     shrub(sp("Rosebay rhododendron", K::FloweringBush, false, 0x3f6a3a, E_NAMERICA, (300.0, 1500.0), (0.0, 90.0), 0.5, 2.5, M_SAP, 4.0, 1.00)),
     // --- Generic temperate/boreal (always on, low weight) ---
-    sp("Broadleaf (generic)", K::Broadleaf, false, 0x5d8a3a, GLOBAL, (0.0, 4000.0), (0.0, 90.0), 0.0, 0.10, M_ALL, 90.0, 1.00),
+    dec(sp("Broadleaf (generic)", K::Broadleaf, false, 0x5d8a3a, GLOBAL, (0.0, 4000.0), (0.0, 90.0), 0.0, 0.10, M_ALL, 90.0, 1.00), 115.0, 290.0, 315.0, 0x9a6a25),
     sp("Spruce (generic)", K::Conifer, true, 0x3b5d3b, GLOBAL, (0.0, 4000.0), (0.0, 90.0), 0.0, 0.10, M_ALL, 90.0, 0.80),
-    sp("Birch (generic)", K::Birch, false, 0x86b04a, GLOBAL, (0.0, 4000.0), (0.0, 90.0), 0.2, 0.05, M_ALL, 90.0, 0.70),
-    shrub(sp("Shrub (generic)", K::Shrub, false, 0x5f8a40, GLOBAL, (0.0, 4000.0), (0.0, 90.0), 0.0, 0.30, M_SAP, 3.0, 1.00)),
+    dec(sp("Birch (generic)", K::Birch, false, 0x86b04a, GLOBAL, (0.0, 4000.0), (0.0, 90.0), 0.2, 0.05, M_ALL, 90.0, 0.70), 112.0, 285.0, 310.0, 0xc29a28),
+    dec(shrub(sp("Shrub (generic)", K::Shrub, false, 0x5f8a40, GLOBAL, (0.0, 4000.0), (0.0, 90.0), 0.0, 0.30, M_SAP, 3.0, 1.00)), 118.0, 290.0, 315.0, 0x8a7a30),
     // --- Tropics ---
-    sp("Tropical hardwood", K::Broadleaf, false, 0x4f7f2e, TROPICS, (0.0, 2500.0), (15.0, 90.0), 0.0, 3.0, M_ALL, 90.0, 1.10),
-    sp("Rainforest palm", K::Palm, false, 0x6d9a3c, TROPICS, (0.0, 1500.0), (5.0, 90.0), 0.2, 0.8, M_SAP | M_SUB, 14.0, 0.70),
-    shrub(sp("Tree fern", K::Fern, false, 0x4b8a3a, TROPICS, (0.0, 2500.0), (5.0, 90.0), 0.4, 1.0, M_SAP, 3.0, 1.00)),
-    sp("Acacia", K::Acacia, false, 0x7c8e40, TROPICS, (0.0, 2000.0), (3.0, 14.0), -0.5, 0.8, M_ALL, 15.0, 1.30),
+    trop(sp("Tropical hardwood", K::Broadleaf, false, 0x4f7f2e, TROPICS, (0.0, 2500.0), (15.0, 90.0), 0.0, 3.0, M_ALL, 90.0, 1.10)),
+    trop(sp("Rainforest palm", K::Palm, false, 0x6d9a3c, TROPICS, (0.0, 1500.0), (5.0, 90.0), 0.2, 0.8, M_SAP | M_SUB, 14.0, 0.70)),
+    trop(shrub(sp("Tree fern", K::Fern, false, 0x4b8a3a, TROPICS, (0.0, 2500.0), (5.0, 90.0), 0.4, 1.0, M_SAP, 3.0, 1.00))),
+    trop(sp("Acacia", K::Acacia, false, 0x7c8e40, TROPICS, (0.0, 2000.0), (3.0, 14.0), -0.5, 0.8, M_ALL, 15.0, 1.30)),
 ];
 
 /// `1` inside `[lo, hi]`, falling to `0` over `soft` outside it.
@@ -783,7 +821,8 @@ pub fn measure(id: NodeId, trees: &[StandTree], cells: usize) -> Measured {
     let pix = |p: usize, o: f64| o + ((p as f64 + 0.5) / SS as f64 - 0.5) * step;
     for t in trees {
         let (su, sv) = cell_metres(t.fx, t.fy);
-        let (rx, ry) = (t.crown_r_m as f64 / su as f64, t.crown_r_m as f64 / sv as f64);
+        let r_m = t.crown_r_m as f64 * t.species_def().crown_bias as f64;
+        let (rx, ry) = (r_m / su as f64, r_m / sv as f64);
         let (cx, cy) = (t.fx, t.fy);
         // Pixel index of face-cell coordinate f: p = ((f - o)/step + 0.5) * SS - 0.5.
         let to_p = |f: f64, o: f64| ((f - o) / step + 0.5) * SS as f64 - 0.5;

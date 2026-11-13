@@ -34,7 +34,7 @@ pub(crate) const VERTEX_WORDS: usize = 4;
 pub(crate) const ARGS_WORDS: usize = 5;
 
 /// `FrameData`: 3 float4x4, 5 planes, 8 float4, uint4 cull, 16 HzbLevel, `LightData`, `AtmosData`.
-pub(crate) const FRAME_WORDS: usize = 48 + 20 + 32 + 4 + 64 + crate::light::LIGHT_WORDS + crate::atmosphere::ATMOS_WORDS + WIND_WORDS + IMP_WORDS;
+pub(crate) const FRAME_WORDS: usize = 48 + 20 + 32 + 4 + 64 + crate::light::LIGHT_WORDS + crate::atmosphere::ATMOS_WORDS + WIND_WORDS + IMP_WORDS + SEASON_WORDS;
 pub(crate) const FD_PLANES: usize = 48;
 pub(crate) const FD_SUN_DIR: usize = 68;
 pub(crate) const FD_VIEWPORT: usize = 88;
@@ -54,10 +54,17 @@ pub(crate) const WIND_WORDS: usize = 12;
 /// `FrameData.imp` (`ImpData`, trees G5 impostors): bufs, band, far, cfg.
 pub(crate) const FD_IMP: usize = FD_WIND + WIND_WORDS;
 pub(crate) const IMP_WORDS: usize = 16;
+/// `FrameData.season` (`SeasonData`, trees G5 seasons): cfg (phase day, autumn gain, far rows),
+/// then two float4 per species row (`ed_world::season::gpu_row`).
+pub(crate) const FD_SEASON: usize = FD_IMP + IMP_WORDS;
+pub(crate) const SEASON_ROWS: usize = 32;
+pub(crate) const SEASON_WORDS: usize = 4 + SEASON_ROWS * 8;
 /// `GpuMesh.flags` (word 7): a tree bank mesh (common.slang `MESH_FOLIAGE`).
 pub(crate) const MESH_FOLIAGE: u32 = 1;
 /// `GpuInstance.pad[0]`: free per-instance user word (trees: tint, branch drop, wind phase).
 pub(crate) const INST_USER: usize = 28;
+/// `GpuInstance.pad[1]`: the tree's season word (`ed_world::season::season_word`).
+pub(crate) const INST_SEASON: usize = 29;
 
 /// Visible-list entry: instance index bits.
 pub(crate) const ENTRY_INSTANCE_BITS: u32 = 20;
@@ -118,8 +125,8 @@ mod tests {
 
     #[test]
     fn frame_layout_offsets() {
-        assert_eq!(FRAME_WORDS, 388);
-        assert_eq!(FD_IMP + IMP_WORDS, FRAME_WORDS);
+        assert_eq!(FRAME_WORDS, 388 + SEASON_WORDS);
+        assert_eq!(FD_SEASON + SEASON_WORDS, FRAME_WORDS);
         assert_eq!(FD_SUN_DIR, FD_PLANES + 20);
         assert_eq!(FD_CULL, FD_SUN_DIR + 32);
         assert_eq!(FD_HZB + MAX_HZB_LEVELS * 4, FD_LIGHT);

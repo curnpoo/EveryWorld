@@ -100,6 +100,17 @@ struct ImpData_natural_0
     packed_float4 cfg_3;
 };
 
+struct _Array_natural_vectorx3Cfloatx2C4x3E64_0
+{
+    array<packed_float4, int(64)> data_5;
+};
+
+struct SeasonData_natural_0
+{
+    packed_float4 cfg_4;
+    _Array_natural_vectorx3Cfloatx2C4x3E64_0 rows_0;
+};
+
 struct FrameData_natural_0
 {
     _MatrixStorage_float4x4_ColMajornatural_0 view_proj_0;
@@ -120,6 +131,7 @@ struct FrameData_natural_0
     AtmosData_natural_0 atmos_0;
     WindData_natural_0 wind_1;
     ImpData_natural_0 imp_0;
+    SeasonData_natural_0 season_0;
 };
 
 FrameData_natural_0 device* ed_buf_1(uint i_1, KernelContext_0 thread* kernelContext_1)
@@ -285,10 +297,10 @@ float2 atm_trans_uv_0(float rb_4, float rt_1, float h_6, float mu_4)
     return float2((atm_dist_top_0(rb_4, rt_1, _S22, mu_4) - dmin_1) / max(rho_1 + big_h_1 - dmin_1, 9.99999997475242708e-07f), rho_1 / big_h_1);
 }
 
-float4 atm_bilinear_0(packed_float4 device* buf_0, uint w_0, uint row0_0, uint rows_0, float2 uv_0)
+float4 atm_bilinear_0(packed_float4 device* buf_0, uint w_0, uint row0_0, uint rows_1, float2 uv_0)
 {
-    float2 p_0 = saturate(uv_0) * float2(float(w_0 - 1U), float(rows_0 - 1U));
-    uint2 _S23 = min(uint2(p_0), uint2(w_0 - 2U, rows_0 - 2U));
+    float2 p_0 = saturate(uv_0) * float2(float(w_0 - 1U), float(rows_1 - 1U));
+    uint2 _S23 = min(uint2(p_0), uint2(w_0 - 2U, rows_1 - 2U));
     float2 g_0 = p_0 - float2(_S23);
     uint b_0 = (row0_0 + _S23.y) * w_0 + _S23.x;
     float4 _S24 = float4(g_0.x) ;
@@ -646,14 +658,14 @@ float3 atm_sky_ray_0(FrameData_natural_0 device* f_14, float h_17, float mu_11, 
     {
         w_1 = 192U;
     }
-    uint rows_1;
+    uint rows_2;
     if(surf_0)
     {
-        rows_1 = 54U;
+        rows_2 = 54U;
     }
     else
     {
-        rows_1 = 108U;
+        rows_2 = 108U;
     }
     uint _S94 = tid_2.x;
     bool _S95;
@@ -663,7 +675,7 @@ float3 atm_sky_ray_0(FrameData_natural_0 device* f_14, float h_17, float mu_11, 
     }
     else
     {
-        _S95 = (tid_2.y) >= rows_1;
+        _S95 = (tid_2.y) >= rows_2;
     }
     if(_S95)
     {
@@ -678,19 +690,19 @@ float3 atm_sky_ray_0(FrameData_natural_0 device* f_14, float h_17, float mu_11, 
     {
         h_18 = (float4((&_S93->atmos_0)->radii_0) ).z;
     }
-    uint half_rows_0 = rows_1 / 2U;
+    uint half_rows_0 = rows_2 / 2U;
     uint _S96 = tid_2.y;
     bool lower_0 = _S96 >= half_rows_0;
     float u_0 = float(_S94) / float(w_1 - 1U);
     if(lower_0)
     {
-        rows_1 = half_rows_0;
+        rows_2 = half_rows_0;
     }
     else
     {
-        rows_1 = 0U;
+        rows_2 = 0U;
     }
-    float c_1 = float(_S96 - rows_1) / float(half_rows_0 - 1U);
+    float c_1 = float(_S96 - rows_2) / float(half_rows_0 - 1U);
     float _S97 = atm_rb_0(_S93);
     float zha_0 = acos(atm_cos_horizon_0(_S97, h_18));
     float theta_0;
@@ -708,22 +720,22 @@ float3 atm_sky_ray_0(FrameData_natural_0 device* f_14, float h_17, float mu_11, 
     float nu_8 = clamp(mu_12 * mu_s_10 + sin(theta_0) * sqrt(max(1.0f - mu_s_10 * mu_s_10, 0.0f)) * cos(3.1415927410125732f * u_0 * u_0), -1.0f, 1.0f);
     if(surf_0)
     {
-        rows_1 = 20U;
+        rows_2 = 20U;
     }
     else
     {
-        rows_1 = 30U;
+        rows_2 = 30U;
     }
-    float3 _S99 = atm_sky_ray_0(_S93, h_18, mu_12, mu_s_10, nu_8, rows_1, &kernelContext_12);
+    float3 _S99 = atm_sky_ray_0(_S93, h_18, mu_12, mu_s_10, nu_8, rows_2, &kernelContext_12);
     if(surf_0)
     {
-        rows_1 = (uint4((&_S93->atmos_0)->bufs_0) ).w;
+        rows_2 = (uint4((&_S93->atmos_0)->bufs_0) ).w;
     }
     else
     {
-        rows_1 = (uint4((&_S93->atmos_0)->bufs_0) ).z;
+        rows_2 = (uint4((&_S93->atmos_0)->bufs_0) ).z;
     }
-    packed_float4 device* _S100 = ed_buf_0(rows_1, &kernelContext_12);
+    packed_float4 device* _S100 = ed_buf_0(rows_2, &kernelContext_12);
     *(_S100 + (_S96 * w_1 + _S94)) = packed_float4(float4(_S99, 1.0f)) ;
     return;
 }
@@ -815,7 +827,7 @@ float atm_ap_depth_0(FrameData_natural_0 device* f_16, uint k_1)
     return;
 }
 
-float3 atm_sky_view_0(FrameData_natural_0 device* f_17, uint buf_1, uint w_2, uint rows_2, float h_20, float3 d_2, KernelContext_0 thread* kernelContext_14)
+float3 atm_sky_view_0(FrameData_natural_0 device* f_17, uint buf_1, uint w_2, uint rows_3, float h_20, float3 d_2, KernelContext_0 thread* kernelContext_14)
 {
     float mu_14 = clamp(dot(d_2, (float4((&f_17->atmos_0)->up_0) ).xyz), -1.0f, 1.0f);
     float mu_s_12 = (float4((&f_17->atmos_0)->up_0) ).w;
@@ -834,7 +846,7 @@ float3 atm_sky_view_0(FrameData_natural_0 device* f_17, uint buf_1, uint w_2, ui
     float _S113 = atm_rb_0(f_17);
     float zha_1 = acos(atm_cos_horizon_0(_S113, h_20));
     float theta_1 = acos(mu_14);
-    uint half_rows_1 = rows_2 / 2U;
+    uint half_rows_1 = rows_3 / 2U;
     float c_2;
     uint row0_1;
     if(theta_1 < zha_1)

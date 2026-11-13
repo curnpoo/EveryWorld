@@ -867,7 +867,9 @@ impl App {
         self.args.apply_lod(renderer.lod_config());
         let mut play = Play::new(&mut renderer, &*self.dev, self.place, &self.args.packs, [config.width, config.height], self.args.character)?;
         if near {
-            play.near = Some(crate::trees::NearTrees::new(&crate::terrain::cache_root()));
+            let mut n = crate::trees::NearTrees::new(&crate::terrain::cache_root());
+            n.set_date(self.args.season_day());
+            play.near = Some(n);
         }
         self.play = Some(play);
         if !self.scripted() {

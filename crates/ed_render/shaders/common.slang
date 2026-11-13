@@ -58,6 +58,16 @@ struct ImpData {
 static const uint IMP_ON = 1u;
 static const uint IMP_VIS_BIT = 0x40000000u;   // vis.x: impostor tree index (TERRAIN_VIS_BIT clear)
 
+// Seasons (trees G5; ed_world::season, src/lib.rs `set_season`). cfg: x phase day (year day after
+// the rate scalar; 0 = seasons off), y autumn gain, z, w the far rung's broadleaf and conifer rows.
+// Two float4 per species row: (leaf-out, colour, drop days at the reference; evergreen flag),
+// (autumn or winter albedo rgb, linear; winter share).
+static const uint SEASON_ROWS = 32;
+struct SeasonData {
+    float4 cfg;
+    float4 rows[64];
+};
+
 struct HzbLevel { uint offset; uint width; uint height; uint pad; };
 struct FrameData {
     float4x4 view_proj;     // camera-relative: rotation and projection only (P1-D7)
@@ -78,6 +88,7 @@ struct FrameData {
     AtmosData atmos;
     WindData wind;
     ImpData imp;
+    SeasonData season;
 };
 
 // One instance (128 bytes). Transform rows are a 3x4 affine matrix relative to the node origin.
@@ -346,12 +357,90 @@ float3 tree_vertex(FrameData* f, GpuInstance inst, float3 node, float3 pm, uint 
     return l + d + nw * fl * max_scale(inst);
 }
 
+// ---- Tree seasons (trees G5, ed_world::season; ramps mirror season.rs) -------------------------
+struct LeafSeason {
+    float leaves;   // share of the summer leaf mass on the tree: green * (1 - drop); evergreens 1
+    float green;    // leaf-out 0..1
+    float colour;   // how far toward `target` (autumn colour; winter colour for evergreens)
+    float evergreen;
+    float3 target;  // linear albedo
+};
+
+float season_ramp(float lo, float hi, float x) {
+    return smoothstep(lo, hi, x);
+}
+
+LeafSeason season_off() {
+    LeafSeason s;
+    s.leaves = 1.0;
+    s.green = 1.0;
+    s.colour = 0.0;
+    s.evergreen = 0.0;
+    s.target = float3(0.0, 0.0, 0.0);
+    return s;
+}
+
+// One species row at a place: `shift` (spring shift, days) and hemisphere.
+LeafSeason season_state(FrameData* f, uint row, float shift, bool south) {
+    if (f.season.cfg.x <= 0.0) {
+        return season_off();
+    }
+    float d = f.season.cfg.x;
+    if (south) {
+        d = fmod(d + 182.625, 365.25);
+    }
+    float ds = d - shift;
+    float da = d + f.season.cfg.y * shift;
+    float4 r0 = f.season.rows[(row & 31u) * 2u];
+    float4 r1 = f.season.rows[(row & 31u) * 2u + 1u];
+    LeafSeason s;
+    s.target = r1.rgb;
+    s.evergreen = r0.w;
+    if (r0.w > 0.5) {
+        float a = season_ramp(r0.y - 10.0, r0.y + 30.0, da);
+        float rel = 1.0 - season_ramp(r0.x - 10.0, r0.x + 20.0, ds);
+        s.green = 1.0;
+        s.leaves = 1.0;
+        s.colour = r1.w * max(a, rel);
+    } else {
+        s.green = season_ramp(r0.x - 6.0, r0.x + 8.0, ds);
+        s.colour = season_ramp(r0.y - 8.0, r0.y + 14.0, da);
+        s.leaves = s.green * (1.0 - season_ramp(r0.z - 10.0, r0.z + 10.0, da));
+    }
+    return s;
+}
+
+// The per-tree word (season.rs `season_word`).
+LeafSeason season_of_word(FrameData* f, uint word) {
+    return season_state(f, word & 255u, float(int(word) >> 16) * (1.0 / 16.0), ((word >> 8) & 1u) != 0u);
+}
+
+// The far rung's trees: no per-tree place, so the shift comes from the ground height alone.
+LeafSeason season_far(FrameData* f, bool conifer, float alt_m) {
+    uint row = uint(conifer ? f.season.cfg.w : f.season.cfg.z);
+    return season_state(f, row, clamp(4.0 * (alt_m - 500.0) / 122.0, -60.0, 75.0), false);
+}
+
+// Leaf albedo through the season: young leaves yellower, then toward the target colour keeping
+// the texture's own light and dark.
+float3 season_tint(LeafSeason s, float3 alb) {
+    if (s.leaves >= 1.0 && s.colour <= 0.0 && s.green >= 1.0) {
+        return alb;
+    }
+    float lum = dot(alb, float3(0.2126, 0.7152, 0.0722));
+    float3 a = alb;
+    if (s.evergreen < 0.5) {
+        a *= lerp(float3(1.45, 1.3, 0.65), float3(1.0, 1.0, 1.0), s.green);
+    }
+    return lerp(a, s.target * clamp(lum * (1.0 / 0.2), 0.45, 1.5), s.colour);
+}
+
 // ---- Tree impostors (trees G5, src/impostor.rs) ---------------------------------------------
 
 // One impostor tree (32 bytes): base position relative to its node, node (12 bits) | kind
 // (12 bits) | hash (8 bits), scale (0: dead slot), up (oct_encode), yaw unorm16 | widen
 // (unorm16, 0.5 + x), user word (value, hue, drop, phase; as the mesh instance's).
-struct GpuTree { float px; float py; float pz; uint node_kind; float scale; uint up; uint yaw_widen; uint user; };
+struct GpuTree { float px; float py; float pz; uint node_kind; float scale; uint up; uint yaw_widen; uint user; uint season; };
 // One impostor kind (64 bytes): BC5 textures (A coverage/depth, B normal, C value/bark) and
 // frames per side; centre height, radius, tree height, frame px; leaf albedo + mips; bark albedo + crown word (10:11:11 bits: base / height, radius and widest leaf / 1.5 height).
 struct GpuImpKind { uint4 tex; float4 geo; float4 leaf; float4 bark; };

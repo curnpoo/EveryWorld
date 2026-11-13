@@ -109,6 +109,17 @@ struct ImpData_natural_0
     packed_float4 cfg_3;
 };
 
+struct _Array_natural_vectorx3Cfloatx2C4x3E64_0
+{
+    array<packed_float4, int(64)> data_5;
+};
+
+struct SeasonData_natural_0
+{
+    packed_float4 cfg_4;
+    _Array_natural_vectorx3Cfloatx2C4x3E64_0 rows_0;
+};
+
 struct FrameData_natural_0
 {
     _MatrixStorage_float4x4_ColMajornatural_0 view_proj_0;
@@ -129,6 +140,7 @@ struct FrameData_natural_0
     AtmosData_natural_0 atmos_0;
     WindData_natural_0 wind_1;
     ImpData_natural_0 imp_0;
+    SeasonData_natural_0 season_0;
 };
 
 FrameData_natural_0 device* ed_buf_1(uint i_1, KernelContext_0 thread* kernelContext_1)
