@@ -15,6 +15,7 @@
 
 pub mod cache;
 pub mod climate;
+pub mod canopy_height;
 pub mod cog;
 pub mod elevation;
 pub mod geocode;

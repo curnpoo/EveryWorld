@@ -1,6 +1,7 @@
 //! Node-space source data (Phase 2 W2). Resamples public rasters into the cube-sphere node
 //! lattice of `ed_geo::node`. No slippy-map type appears in this module's public API.
 
+mod canopy;
 mod detail;
 mod heights;
 mod source;
@@ -11,3 +12,4 @@ pub use heights::{
 pub use detail::{Landform, erosion_detail, max_detail_m, nominal_spacing};
 pub use heights::{cubic_dweights, detail_enabled};
 pub use source::{ElevationSource, Raster, SourceView};
+pub use canopy::{node_canopy, parent_canopy, CanopySource, RealCanopySource, SyntheticCanopy};
