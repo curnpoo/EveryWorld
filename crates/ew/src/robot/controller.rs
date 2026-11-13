@@ -9,10 +9,12 @@
 //! Frames: the body is in the sim frame (ENU, z up). The rig's inputs ([`RigFeed`]) are given
 //! in the renderer frame (x east, y up, forward -z), where the rig works.
 
-use crate::collide::enu_to_yup;
+use crate::collide::{enu_to_yup, yup_to_enu};
+use super::flight::{FlightIn, FlightPose, FlightState, MoveMode};
+use ed_planet::Anchor;
 use crate::game::{GameInput, input_velocity_at};
 use ed_sim::{BodyDesc, BodyKind, Entity, Filter, Material, QueryFilter, Shape, ShapeDesc, World, layers, yaw_rotation};
-use glam::{DQuat, DVec3, Vec3};
+use glam::{DQuat, DVec3, Quat, Vec3};
 
 /// Capsule ride height above the ground (pelvis to ground), m.
 pub const RIDE_HEIGHT: f64 = 0.95;
@@ -52,6 +54,16 @@ pub struct RigFeed {
     /// Ground points under the hips (renderer frame, relative to the node-frame origin).
     pub foot_ground_hit: [Option<Vec3>; 2],
     pub vel: Vec3,
+    pub fl: FlightPose,
+}
+
+/// Where the body is relative to the planet, for altitude and height above ground. Set by the
+/// caller each frame (the sim frame knows neither).
+#[derive(Clone, Debug, Default)]
+pub struct FlightEnv {
+    pub anchor: Option<Anchor>,
+    /// Terrain height under the body (m above the ellipsoid), when resident.
+    pub ground_alt: Option<f64>,
 }
 
 /// The controller state; the body itself lives in the `World`.
@@ -77,6 +89,14 @@ pub struct Controller {
     strafe: f32,
     ground_normal: Vec3,
     hits: [Option<DVec3>; 2],
+    pub fl: FlightState,
+    /// Look pitch (renderer convention: positive looks up) and the flight environment.
+    pub cam_pitch: f32,
+    pub env: FlightEnv,
+    /// Edge-triggered keys, consumed by the next step: G nudge.
+    pub nudge: bool,
+    /// Height above the ground the last step measured (m).
+    pub agl: f32,
 }
 
 /// The scenery the controller stands on: everything but characters and vehicles.
@@ -133,6 +153,11 @@ impl Controller {
             strafe: 0.0,
             ground_normal: Vec3::Y,
             hits: [None; 2],
+            fl: FlightState::default(),
+            cam_pitch: 0.0,
+            env: FlightEnv::default(),
+            nudge: false,
+            agl: 0.0,
         })
     }
 
@@ -216,7 +241,10 @@ impl Controller {
         }
         self.last_v_up = v_up;
         let has_input = input.axes.length() > 0.05;
-        if self.landing_recovery > 0.0 {
+        let wish = input_velocity_at(input, 1.0, 1.0);
+        if self.landing_recovery > 0.0 && !self.grounded {
+            self.landing_recovery = 0.0;
+        } else if self.landing_recovery > 0.0 {
             let rate = if speed_flat > 1.8 {
                 0.35
             } else if has_input {
@@ -245,6 +273,58 @@ impl Controller {
         }
         self.jump_was_held = held;
 
+        // Flight: edge keys, then the mode (rocket, skydive, parachute...) from the air state.
+        let to_y = |v: DVec3| enu_to_yup(v).as_vec3();
+        let alt = self.altitude(pos);
+        self.agl = if self.grounded {
+            self.ground_dist.unwrap_or(RIDE_HEIGHT) as f32
+        } else {
+            const AGL_REACH: f64 = 120.0;
+            match world.cast_ray(pos, -DVec3::Z * AGL_REACH, ground_filter()) {
+                Some(h) => (h.fraction as f64 * AGL_REACH) as f32,
+                None => match self.env.ground_alt {
+                    Some(g) => ((alt - g) as f32).max(AGL_REACH as f32),
+                    None => (alt as f32).max(AGL_REACH as f32),
+                },
+            }
+        };
+        let (fwd_in, strafe_in) = (input.axes.y.clamp(-1.0, 1.0), input.axes.x.clamp(-1.0, 1.0));
+        let wish_r = to_y(wish).normalize_or_zero();
+        let mut fin = FlightIn {
+            rot: to_render_rot(rot),
+            v: to_y(v),
+            omega: to_y(w),
+            alt,
+            agl: self.agl,
+            grounded: self.grounded,
+            jump_push_timer: self.push_timer,
+            fwd_in,
+            strafe: strafe_in,
+            cam_yaw: input.yaw,
+            cam_pitch: self.cam_pitch,
+            space_held: input.jump,
+            shift: input.sprint,
+            accel_smooth: to_y(self.accel_smooth),
+            wish: wish_r,
+            yaw: self.yaw as f32,
+            yaw_vel: 0.0,
+        };
+        self.fl.update_mode(&fin, dtf);
+        let mode = self.fl.mode;
+        let sprint = input.sprint && self.grounded;
+
+        // Physical test nudge (G): a 3.2 m/s kick at the chest along the wish or the view.
+        if std::mem::take(&mut self.nudge) {
+            let dir = if wish.length() > 0.01 {
+                wish
+            } else {
+                let (s, c) = input.yaw.sin_cos();
+                yup_to_enu(DVec3::new(-s as f64, 0.0, -c as f64))
+            };
+            let chest = pos + rot * DVec3::Z * 0.35;
+            world.apply_impulse_at(self.body, dir * (mass * 3.2), chest);
+        }
+
         // Vertical: ride-height spring, or the push-off.
         let mut f_up = 0.0;
         if self.push_timer > 0.0 {
@@ -258,44 +338,70 @@ impl Controller {
         }
 
         // Horizontal: servo toward the wished velocity; brake with no input.
-        let wish = input_velocity_at(input, 1.0, 1.0);
         let crouched = self.jump_charge > 0.1;
-        let max_speed = if crouched { CHARGE_MPS } else if input.sprint { SPRINT_MPS } else { WALK_MPS };
+        let max_speed = if crouched { CHARGE_MPS } else if sprint { SPRINT_MPS } else { WALK_MPS };
         let mut f_h = DVec3::ZERO;
         if self.grounded {
             if self.landing_recovery > 0.1 {
                 f_h = clamp_len(-v_flat * mass * 7.5, weight * 0.8);
             } else if has_input {
-                let cap = weight * if input.sprint { 0.6 } else { 0.35 };
+                let cap = weight * if sprint { 0.6 } else { 0.35 };
                 f_h = clamp_len((wish * max_speed - v_flat) * mass * SERVO_K, cap);
             } else {
                 f_h = clamp_len(-v_flat * mass * BRAKE_K, weight * 0.9);
             }
         }
-        world.apply_force_at(self.body, f_h + DVec3::Z * f_up, pos);
 
-        // Facing: toward the wish direction (ccw about up; 0 faces north).
+        // Facing: toward the wish on the ground (ccw about up; 0 faces north), toward the view
+        // in the air modes.
         let prev_yaw = self.yaw;
-        if self.landing_recovery <= 0.1 && has_input && wish.length() > 1e-6 {
-            let target = (-wish.x).atan2(wish.y);
-            self.yaw += wrap_pi(target - self.yaw) * (1.0 - (-TURN_RATE * dt).exp());
+        if mode == MoveMode::Walk {
+            if self.landing_recovery <= 0.1 && has_input && wish.length() > 1e-6 {
+                let target = (-wish.x).atan2(wish.y);
+                self.yaw += wrap_pi(target - self.yaw) * (1.0 - (-TURN_RATE * dt).exp());
+            }
+        } else if let Some((target, rate)) = self.fl.yaw_target(input.yaw, has_input) {
+            self.yaw += wrap_pi(target as f64 - self.yaw) * (1.0 - (-(rate as f64) * dt).exp());
         }
         let yaw_vel = wrap_pi(self.yaw - prev_yaw) / dt;
         self.strafe = input.axes.x.clamp(-1.0, 1.0);
+        fin.yaw = self.yaw as f32;
+        fin.yaw_vel = yaw_vel as f32;
 
-        // Upright torque PD: lean into the wish, brake lean, bank into turns.
+        // Posture target: the walking lean (upright, leaning into the wish, brake and turn), or
+        // the flight posture (rocket attitude, skydive, fall, parachute).
         let yaw_frame = yaw_rotation(self.yaw);
         let right_now = yaw_frame * DVec3::X;
         let brake = if !has_input || self.landing_recovery > 0.1 { -v_flat * 0.045 } else { DVec3::ZERO };
         let bank = right_now * (-yaw_vel * speed_flat * 0.04 + self.strafe as f64 * 0.20);
         let lean = clamp_len(wish * 0.14 + brake + bank, 0.48);
         let balanced = (DVec3::Z + lean).normalize();
-        let target = DQuat::from_rotation_arc(DVec3::Z, balanced) * yaw_frame;
+        let mut target = DQuat::from_rotation_arc(DVec3::Z, balanced) * yaw_frame;
+        let mut muscle = 1.0;
+        let mut f_air = DVec3::ZERO;
+        let mut t_air = DVec3::ZERO;
+        let out = self.fl.forces(&fin, dtf);
+        f_air += yup_to_enu(out.force.as_dvec3());
+        t_air += yup_to_enu(out.torque.as_dvec3());
+        for (off, f) in out.points {
+            if f.length_squared() > 0.0 {
+                world.apply_force_at(self.body, yup_to_enu(f.as_dvec3()), pos + yup_to_enu(off.as_dvec3()));
+            }
+        }
+        if let Some(t) = out.target {
+            target = to_sim_rot(t);
+        }
+        if mode != MoveMode::Walk || out.target.is_some() {
+            muscle = out.muscle as f64;
+        }
+        world.apply_force_at(self.body, f_h + DVec3::Z * f_up + f_air, pos);
+
+        // Upright torque PD, sized to the body's inertia.
         let err = rotation_error(rot, target);
         self.rot_err = self.rot_err.lerp(err, 1.0 - (-18.0 * dt).exp());
         let wn = if self.grounded { 7.0 } else { 6.0 };
         let (kp, kd) = (8.5 * wn * wn, 2.0 * 8.5 * wn);
-        let mut torque = err * kp - w * kd;
+        let mut torque = (err * kp - w * kd) * muscle + t_air;
         let spin = w.length();
         if spin > 14.0 {
             torque -= w / spin * (spin - 14.0) * 8.5 * 30.0;
@@ -332,12 +438,53 @@ impl Controller {
             ground_normal: self.ground_normal,
             foot_ground_hit: [self.hits[0].map(|p| to_y(p)), self.hits[1].map(|p| to_y(p))],
             vel: to_y(self.vel),
+            fl: self.fl.pose(),
         }
+    }
+
+    /// Height above the ellipsoid of a sim-frame point (the anchor's, else the sim z).
+    pub fn altitude(&self, pos: DVec3) -> f64 {
+        match &self.env.anchor {
+            Some(a) => {
+                let b = a.sim_to_body(pos);
+                b.length() - a.body.radius(b.normalize())
+            }
+            None => pos.z,
+        }
+    }
+
+    pub fn mode(&self) -> MoveMode {
+        self.fl.mode
+    }
+
+    /// F: wingsuit on or off.
+    pub fn toggle_wingsuit(&mut self) {
+        self.fl.toggle_wingsuit();
+    }
+
+    /// P: parachute on or off (in the air).
+    pub fn toggle_parachute(&mut self) {
+        self.fl.toggle_parachute();
+    }
+
+    /// Camera shake 0..1 (suit buffet, Mach crossing).
+    pub fn shake(&self) -> f32 {
+        self.fl.shake
     }
 
     pub fn crouching(&self) -> bool {
         self.jump_charge > 0.1
     }
+}
+
+/// Sim-frame rotation to the renderer frame and back (conjugation by the proper rotation
+/// (x, y, z) -> (x, z, -y)).
+pub fn to_render_rot(q: DQuat) -> Quat {
+    DQuat::from_xyzw(q.x, q.z, -q.y, q.w).as_quat()
+}
+
+fn to_sim_rot(q: Quat) -> DQuat {
+    DQuat::from_xyzw(q.x as f64, -q.z as f64, q.y as f64, q.w as f64).normalize()
 }
 
 fn clamp_len(v: DVec3, max: f64) -> DVec3 {
@@ -436,5 +583,69 @@ mod tests {
             (c.cur.0, c.yaw)
         };
         assert_eq!(run(), run());
+    }
+
+    fn spawn_at(z: f64) -> (World, Controller) {
+        let mut w = world_with_floor();
+        let c = Controller::spawn(&mut w, DVec3::new(0.0, 0.0, z), 0.0).unwrap();
+        (w, c)
+    }
+
+    #[test]
+    fn holding_space_in_the_air_lights_the_rocket_and_climbs() {
+        let (mut w, mut c) = spawn_at(0.0);
+        for _ in 0..60 {
+            tick(&mut w, &mut c, &GameInput::default());
+        }
+        let hold = GameInput { jump: true, ..Default::default() };
+        let mut rocket = false;
+        for _ in 0..240 {
+            tick(&mut w, &mut c, &hold);
+            rocket |= c.mode() == MoveMode::RocketShoes;
+        }
+        assert!(rocket, "mode {:?}", c.mode());
+        assert!(c.cur.0.z > 15.0 && c.vel.z > 2.0, "z {} vz {}", c.cur.0.z, c.vel.z);
+        assert!(c.fl.throttle > 0.0);
+    }
+
+    fn fall_from(z: f64, chute_after: Option<usize>, ticks: usize) -> (World, Controller, bool, f64) {
+        let (mut w, mut c) = spawn_at(z);
+        let mut skydived = false;
+        let mut peak = 0.0f64;
+        for k in 0..ticks {
+            if chute_after == Some(k) {
+                c.toggle_parachute();
+            }
+            tick(&mut w, &mut c, &GameInput::default());
+            skydived |= c.mode() == MoveMode::Skydive;
+            peak = peak.max(-c.vel.z);
+        }
+        (w, c, skydived, peak)
+    }
+
+    #[test]
+    fn a_long_fall_becomes_a_skydive_and_the_parachute_is_slower() {
+        // The wingsuit glides (it trades the dive for forward speed), so the skydive is compared
+        // by its peak sink rate and the parachute by its steady one.
+        let (_w, dive, skydived, vd) = fall_from(3000.0, None, 60 * 12);
+        assert!(skydived, "mode {:?}", dive.mode());
+        let (_w, chute, _, _) = fall_from(3000.0, Some(60 * 3), 60 * 12);
+        assert_eq!(chute.mode(), MoveMode::Parachute);
+        let vc = -chute.vel.z;
+        assert!(vd > 25.0, "skydive {vd}");
+        assert!(vc < vd * 0.5 && vc > 3.0, "parachute {vc} vs skydive {vd}");
+    }
+
+    #[test]
+    fn parachute_lands_back_in_walk() {
+        let (mut w, mut c) = spawn_at(100.0);
+        for k in 0..60 * 40 {
+            if k == 30 {
+                c.toggle_parachute();
+            }
+            tick(&mut w, &mut c, &GameInput::default());
+        }
+        assert!(c.grounded, "z {}", c.cur.0.z);
+        assert_eq!(c.mode(), MoveMode::Walk);
     }
 }

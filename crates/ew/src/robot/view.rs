@@ -44,9 +44,28 @@ enum Mat {
     Screen,
     Glow,
     Brass,
+    FlameOuter,
+    FlameCore,
+    Canopy,
+    Wing,
 }
 
-const MATS: [Mat; 10] = [Mat::Shell, Mat::ShellDark, Mat::Joint, Mat::Jacket, Mat::JacketDark, Mat::Shoe, Mat::Sole, Mat::Screen, Mat::Glow, Mat::Brass];
+const MATS: [Mat; 14] = [
+    Mat::Shell,
+    Mat::ShellDark,
+    Mat::Joint,
+    Mat::Jacket,
+    Mat::JacketDark,
+    Mat::Shoe,
+    Mat::Sole,
+    Mat::Screen,
+    Mat::Glow,
+    Mat::Brass,
+    Mat::FlameOuter,
+    Mat::FlameCore,
+    Mat::Canopy,
+    Mat::Wing,
+];
 
 /// The alpha's material table: sRGB base colour, roughness, metallic.
 fn material(m: Mat) -> Material {
@@ -63,6 +82,11 @@ fn material(m: Mat) -> Material {
         // cyan stands in.
         Mat::Glow => ([0.35, 0.95, 1.0], 0.3, 0.0),
         Mat::Brass => ([0.85, 0.66, 0.32], 0.3, 0.9),
+        // The alpha's flames and canopy were emissive; bright colours stand in.
+        Mat::FlameOuter => ([1.0, 0.55, 0.12], 0.9, 0.0),
+        Mat::FlameCore => ([1.0, 0.97, 0.80], 0.9, 0.0),
+        Mat::Canopy => ([0.96, 0.42, 0.09], 0.9, 0.0),
+        Mat::Wing => ([0.10, 0.16, 0.34], 0.6, 0.0),
     };
     let lin = |s: f32| s.powf(2.2);
     Material::pbr(Vec3::new(lin(c[0]), lin(c[1]), lin(c[2])), metal, rough)
@@ -193,18 +217,66 @@ fn ball_mesh() -> MeshAsset {
     revolve(&profile, 20)
 }
 
+/// Right triangle (0,0,0) (1,0,0) (0,1,0), both faces, so a wing panel shows from either side.
+fn tri_mesh() -> MeshAsset {
+    let mut m = MeshAsset::default();
+    for (z, idx) in [(1.0f32, [0u32, 1, 2]), (-1.0, [3, 5, 4])] {
+        for p in [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]] {
+            m.positions.push([p[0], p[1], 0.0]);
+            m.normals.push([0.0, 0.0, z]);
+        }
+        let _ = idx;
+    }
+    m.lods.push(MeshLod { indices: vec![0, 1, 2, 3, 5, 4], error: 0.0 });
+    m
+}
+
+/// Unit cone (base diameter 1 at y = +0.5, apex at y = -0.5): a flame pointing down.
+fn cone_mesh() -> MeshAsset {
+    revolve(&[(0.0, -0.5, 0.0, -1.0), (0.5, 0.5, 0.894, 0.447), (0.5, 0.5, 0.0, 1.0), (0.0, 0.5, 0.0, 1.0)], 14)
+}
+
+/// Both faces of a mesh: the reversed triangles share the shape with flipped normals.
+fn double_sided(mut m: MeshAsset) -> MeshAsset {
+    let n = m.positions.len() as u32;
+    let (pos, nor) = (m.positions.clone(), m.normals.clone());
+    m.positions.extend(pos);
+    m.normals.extend(nor.iter().map(|v| [-v[0], -v[1], -v[2]]));
+    let back: Vec<u32> = m.lods[0].indices.chunks(3).flat_map(|t| [t[0] + n, t[2] + n, t[1] + n]).collect();
+    m.lods[0].indices.extend(back);
+    m
+}
+
+/// Upper unit hemisphere (diameter 1, base at y = 0), both faces: the parachute canopy.
+fn dome_mesh() -> MeshAsset {
+    let rings = 8;
+    let profile: Vec<_> = (0..=rings)
+        .map(|k| {
+            let t = std::f32::consts::FRAC_PI_2 + k as f32 / rings as f32 * std::f32::consts::FRAC_PI_2;
+            (t.sin() * 0.5, -t.cos() * 0.5, t.sin(), -t.cos())
+        })
+        .collect();
+    double_sided(revolve(&profile, 20))
+}
+
 pub struct RobotView {
     node: NodeSlot,
     parts: Vec<(InstanceId, Spec)>,
+    wings: Vec<InstanceId>,
+    flames: Vec<InstanceId>,
+    canopy: InstanceId,
     shown: bool,
 }
 
 impl RobotView {
     pub fn new(r: &mut Renderer, dev: &dyn ed_gpu::Device) -> Result<RobotView, String> {
-        let meshes: [MeshId; 3] = [
+        let meshes: [MeshId; 6] = [
             r.add_mesh(dev, &ed_render::cube_mesh()).map_err(|e| format!("robot mesh: {e}"))?,
             r.add_mesh(dev, &cylinder_mesh()).map_err(|e| format!("robot mesh: {e}"))?,
             r.add_mesh(dev, &ball_mesh()).map_err(|e| format!("robot mesh: {e}"))?,
+            r.add_mesh(dev, &tri_mesh()).map_err(|e| format!("robot mesh: {e}"))?,
+            r.add_mesh(dev, &cone_mesh()).map_err(|e| format!("robot mesh: {e}"))?,
+            r.add_mesh(dev, &dome_mesh()).map_err(|e| format!("robot mesh: {e}"))?,
         ];
         let node = r.instances().add_node(DVec3::ZERO).ok_or("robot: node table full")?;
         let mut mats = Vec::new();
@@ -220,7 +292,21 @@ impl RobotView {
                 .ok_or("robot: instance pool full")?;
             out.push((id, spec));
         }
-        Ok(RobotView { node, parts: out, shown: false })
+        let add = |r: &mut Renderer, mesh: MeshId, mat: Mat, id: u128| {
+            r.instances()
+                .add(&InstanceDesc { node, transform: Affine3A::from_scale(Vec3::ZERO), mesh, material: mats[mat as usize], object: ed_geo::ObjectId(0x20B0_1000 + id), flags: 0 })
+                .ok_or("robot: instance pool full")
+        };
+        let mut wings = Vec::new();
+        for k in 0..21 {
+            wings.push(add(r, meshes[3], Mat::Wing, k)?);
+        }
+        let mut flames = Vec::new();
+        for k in 0..4 {
+            flames.push(add(r, meshes[4], if k % 2 == 0 { Mat::FlameOuter } else { Mat::FlameCore }, 100 + k)?);
+        }
+        let canopy = add(r, meshes[5], Mat::Canopy, 200)?;
+        Ok(RobotView { node, parts: out, wings, flames, canopy, shown: false })
     }
 
     /// Places the robot: `pose` is relative to `origin` (render frame, f64).
@@ -247,6 +333,43 @@ impl RobotView {
             };
             r.instances().set_transform(*id, &t);
         }
+        let zero = Affine3A::from_scale(Vec3::ZERO);
+        // Wing panels: each is a fan of triangles from the centroid, so the outline stays flat.
+        for (w, (poly, lift)) in pose.wing_polys.iter().enumerate() {
+            let c = poly.iter().copied().sum::<Vec3>() / 7.0 + *lift;
+            for k in 0..7 {
+                let (b, d) = (poly[k], poly[(k + 1) % 7]);
+                let t = if pose.flying {
+                    let n = (b - c).cross(d - c).normalize_or_zero();
+                    Affine3A::from_mat3_translation(glam::Mat3::from_cols(b - c, d - c, n * 0.01), c)
+                } else {
+                    zero
+                };
+                r.instances().set_transform(self.wings[w * 7 + k], &t);
+            }
+        }
+        // Flames under the boots: an outer cone and a short bright core each.
+        for foot in 0..2 {
+            let phase = pose.time * 62.0 + foot as f32 * 1.9;
+            let flicker = 0.88 + 0.24 * phase.sin() * (1.7 * phase).cos();
+            for (k, inner) in [false, true].into_iter().enumerate() {
+                let t = if pose.throttle > 0.01 {
+                    let len = (0.28 + pose.throttle.min(2.5) * 0.34) * flicker * if inner { 0.62 } else { 1.0 };
+                    let width = (0.09 + pose.throttle.min(2.5) * 0.035) * if inner { 0.58 } else { 1.0 };
+                    let dir = pose.nozzle_dir[foot];
+                    Affine3A::from_scale_rotation_translation(Vec3::new(width, len, width), Quat::from_rotation_arc(Vec3::Y, -dir), pose.nozzle_pos[foot] + dir * (len * 0.5))
+                } else {
+                    zero
+                };
+                r.instances().set_transform(self.flames[foot * 2 + k], &t);
+            }
+        }
+        let t = if pose.canopy {
+            Affine3A::from_scale_rotation_translation(Vec3::new(4.5, 1.6, 2.6) * 2.0, pose.base, pose.pelvis_c + pose.body_up * 6.5)
+        } else {
+            zero
+        };
+        r.instances().set_transform(self.canopy, &t);
     }
 
     /// Hides every part (the robot is in the car).
@@ -255,8 +378,9 @@ impl RobotView {
             return;
         }
         self.shown = false;
-        for (id, _) in &self.parts {
-            r.instances().set_transform(*id, &Affine3A::from_scale(Vec3::ZERO));
+        let ids: Vec<InstanceId> = self.parts.iter().map(|p| p.0).chain(self.wings.iter().copied()).chain(self.flames.iter().copied()).chain([self.canopy]).collect();
+        for id in ids {
+            r.instances().set_transform(id, &Affine3A::from_scale(Vec3::ZERO));
         }
     }
 }
@@ -283,6 +407,7 @@ mod tests {
     fn revolved_meshes_face_outward() {
         assert_outward(&cylinder_mesh());
         assert_outward(&ball_mesh());
+        assert_outward(&cone_mesh());
     }
 
     #[test]

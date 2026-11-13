@@ -1,3 +1,20 @@
+## 2026-11-12: P-slice S7c — robot flight (alpha modes)
+
+- **What:** alpha `player.rs` and `body.rs` flight in `crates/ew/src/robot/flight.rs`, controller, rig and view.
+  - Modes: Walk, Fall, rocket boots, skydive with wingsuit, parachute.
+  - Forces via `ed_flight` (atmosphere, wingsuit, boot force).
+  - Alpha constants: boost g 36 with a 10 s ramp; chute area 28, glide 10 m/s; yaw rates 6 / 4 / 3.5; drag `(0.04 + 0.62·broadside²)·area`.
+  - Flames, wing panels and canopy drawn as bright materials.
+- **Keys (alpha):** Space held in the air = rocket thrust, aimed by look pitch; Shift = afterburner; F = wingsuit; P = parachute; G = nudge.
+- **Checked:**
+  - `cargo test -p ew`: 52 pass (mode transitions, climb, chute slower than skydive, landing back to Walk).
+  - `EW_AUTOFLY=20` on Zermatt: climb 62 m, skydive, chute, land.
+- **Open:**
+  - Height above ground beyond ~120 m reads the terrain height refreshed once per render frame, so the sim depends on frame rate (breaks rule 8); move it to a fixed-step query.
+  - Gravity is uniform in the local frame, and the rig re-bases beyond 2 km (needs anchor re-basing).
+  - Fast flight can outrun page streaming; tunnelling at speed not measured.
+  - Not ported: backpack, sonic boom, gamepad triggers.
+
 ## 2026-11-12: P-slice S7b — worldwide erosion detail and Megascans ground blend
 
 - **Erosion detail** (`ed_data/src/node/detail.rs`, applied in `node_heights`): a pure function of the ECEF point, source height and source gradient (analytic Catmull-Rom derivative).

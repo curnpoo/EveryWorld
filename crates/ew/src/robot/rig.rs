@@ -12,6 +12,7 @@
 //! Constants are the alpha's: limb lengths, hip and shoulder widths, step timing, the
 //! spring-damper gains and the anatomical clamps.
 
+use super::flight::{FlightPose, MoveMode};
 use glam::{EulerRot, Quat, Vec3};
 
 pub const THIGH: f32 = 0.44;
@@ -131,6 +132,8 @@ pub struct RigInput {
     /// Ground under each hip from the controller's probes.
     pub foot_ground_hit: [Option<Vec3>; 2],
     pub vel: Vec3,
+    /// Flight state (mode, wing and fall poses, throttle); walking by default.
+    pub fl: FlightPose,
 }
 
 impl Default for RigInput {
@@ -148,6 +151,7 @@ impl Default for RigInput {
             ground_normal: Vec3::Y,
             foot_ground_hit: [None; 2],
             vel: Vec3::ZERO,
+            fl: FlightPose::default(),
         }
     }
 }
@@ -163,6 +167,19 @@ pub struct Pose {
     /// Where each foot stands (planted point, or under the ankle in the air).
     pub foot_world_pos: [Vec3; 2],
     pub foot_planted: [bool; 2],
+    pub body_up: Vec3,
+    /// The wingsuit is out: draw the wing panels.
+    pub flying: bool,
+    /// The parachute canopy is open.
+    pub canopy: bool,
+    /// Wing panels (left arm, right arm, legs): outline points and the centroid lift.
+    pub wing_polys: [([Vec3; 7], Vec3); 3],
+    /// Boot nozzles: position, thrust direction and forward, per foot; the throttle (0 = off).
+    pub nozzle_pos: [Vec3; 2],
+    pub nozzle_dir: [Vec3; 2],
+    pub throttle: f32,
+    /// Seconds, for flame flicker.
+    pub time: f32,
 }
 
 impl Pose {
@@ -253,6 +270,11 @@ pub fn solve(input: &RigInput, gait: &mut Gait, pelvis: Vec3, base: Quat, dt: f3
     let local_vel = inv_base * v;
     let local_wind = -local_vel;
     let local_err = inv_base * input.rot_err;
+    let fl = input.fl;
+    let mode = if airborne && fl.mode == MoveMode::Walk { MoveMode::Fall } else { fl.mode };
+    let il = inv_base * fl.intent_dir;
+    let wing_amp = if matches!(mode, MoveMode::Skydive | MoveMode::Fall) { ((v.length() - 4.0) / 10.0).clamp(0.0, 1.0) } else { 0.0 };
+    let rot_effort = local_err.length().min(2.5);
 
     let leg = THIGH + SHIN;
     let pelvis_c = pelvis;
@@ -284,7 +306,24 @@ pub fn solve(input: &RigInput, gait: &mut Gait, pelvis: Vec3, base: Quat, dt: f3
             gait.feet[i].stepping = false;
             gait.feet[i].planted = pelvis_c + base * (gait.local_ankles[i].pos - Vec3::Y * ANKLE_H);
             foot_planted[i] = false;
-            target_ankles_local[i] = Vec3::new(side * (HIP_W + 0.05), -(leg * 0.84), 0.08);
+            target_ankles_local[i] = match mode {
+                MoveMode::RocketShoes => {
+                    let stance_w = if fl.afterburner && fl.fwd_in.abs() > 0.1 { HIP_W * 0.80 } else { HIP_W + 0.03 };
+                    let tuck = rot_effort * 0.07;
+                    let knee = Vec3::new(il.x, 0.0, il.z).length().min(1.0) * 0.08;
+                    Vec3::new(side * (stance_w + rot_effort * 0.04), -(leg * 0.96) + tuck + knee, 0.02) + fl.leg_steer
+                }
+                MoveMode::Skydive => {
+                    let spread = 0.09 - 0.04 * (-fl.wing_arch).max(0.0);
+                    let knee_bend = 0.03 + 0.12 * fl.wing_arch.max(0.0);
+                    let suit = Vec3::new(side * (HIP_W + spread), -(leg * (0.94 - knee_bend)), 0.12 + knee_bend * 0.4);
+                    let eagle = Vec3::new(side * (HIP_W + 0.30), -(leg * 0.82), 0.16);
+                    let ball = Vec3::new(side * (HIP_W + 0.02), -(leg * 0.42), -leg * 0.38);
+                    suit.lerp(eagle, fl.fall_spread).lerp(ball, fl.fall_tuck)
+                }
+                MoveMode::Parachute => Vec3::new(side * (HIP_W + 0.03), -(leg * 0.90), 0.06),
+                _ => Vec3::new(side * (HIP_W + 0.05), -(leg * 0.84), 0.08),
+            };
         }
     } else {
         let k_v = 1.0 - (-9.0 * dt).exp();
@@ -395,13 +434,21 @@ pub fn solve(input: &RigInput, gait: &mut Gait, pelvis: Vec3, base: Quat, dt: f3
 
     // Spine: lean into the run, squat into a jump charge, roll with turns, sway with inertia.
     let spine_target = if airborne {
-        Vec3::new(input.strafe * 0.10, 0.0, 0.06)
+        match mode {
+            MoveMode::RocketShoes => Vec3::new((il.x * 0.45).clamp(-0.34, 0.34), 0.0, (il.z * 0.45).clamp(-0.42, 0.38)),
+            MoveMode::Skydive => {
+                let arch = fl.wing_arch * 0.24 + 0.14;
+                let suit = Vec3::new(-fl.wing_turn * 0.22, 0.0, arch);
+                suit.lerp(Vec3::new(0.0, 0.0, 0.30), fl.fall_spread).lerp(Vec3::new(0.0, 0.0, -0.35), fl.fall_tuck)
+            }
+            _ => Vec3::new(input.strafe * 0.10, 0.0, 0.06),
+        }
     } else {
         let run_lean_fwd = -(speed / 7.5).min(1.0) * 0.22;
         let squat_lean = if input.jump_charge > 0.05 { -0.28 * input.jump_charge } else { 0.0 };
         Vec3::new(input.strafe * 0.14, 0.0, run_lean_fwd + squat_lean)
     };
-    let spine_inertial = Vec3::new((-local_accel.x * 0.018).clamp(-0.45, 0.45), 0.0, (-local_accel.z * 0.020).clamp(-0.45, 0.45));
+    let spine_inertial = Vec3::new((-local_accel.x * 0.018).clamp(-0.45, 0.45) + (t_sec * 17.0).sin() * 0.05 * wing_amp, 0.0, (-local_accel.z * 0.020).clamp(-0.45, 0.45) + (t_sec * 13.0).cos() * 0.05 * wing_amp);
     gait.spine_bend.step(spine_target, spine_inertial * 20.0, 85.0, 13.0, dt);
     gait.spine_bend.pos.x = gait.spine_bend.pos.x.clamp(-0.34, 0.34);
     gait.spine_bend.pos.z = gait.spine_bend.pos.z.clamp(-0.42, 0.38);
@@ -424,7 +471,20 @@ pub fn solve(input: &RigInput, gait: &mut Gait, pelvis: Vec3, base: Quat, dt: f3
 
     // Head: looks a little with the camera, idles, and lags the body's accelerations.
     let head_target = if airborne {
-        Vec3::new(-0.42, 0.0, (t_sec * 1.2).sin() * 0.04)
+        match mode {
+            MoveMode::Skydive => Vec3::new(0.60 + fl.wing_arch * 0.15, fl.wing_turn * 0.28, fl.wing_turn * 0.15),
+            MoveMode::RocketShoes => {
+                let pitch_look = if fl.fwd_in > 0.1 {
+                    0.55
+                } else if fl.fwd_in < -0.1 {
+                    -0.25
+                } else {
+                    0.15
+                };
+                Vec3::new(pitch_look, -input.strafe * 0.25, -input.strafe * 0.15)
+            }
+            _ => Vec3::new(-0.42, 0.0, (t_sec * 1.2).sin() * 0.04),
+        }
     } else {
         Vec3::new((input.cam_pitch * 0.35).clamp(-0.4, 0.4) + (t_sec * 0.7).sin() * 0.025, -input.strafe * 0.15, (t_sec * 0.45).sin() * 0.03)
     };
@@ -469,6 +529,9 @@ pub fn solve(input: &RigInput, gait: &mut Gait, pelvis: Vec3, base: Quat, dt: f3
 
     let shoulders_local = [chest_local + chest_twist * Vec3::new(-SHOULDER_W, -0.06, 0.0), chest_local + chest_twist * Vec3::new(SHOULDER_W, -0.06, 0.0)];
     let foot_z_diff = (gait.local_ankles[0].pos.z - gait.local_ankles[1].pos.z).clamp(-0.45, 0.45);
+    let arm_wind_buffet = Vec3::new((t_sec * 19.0).sin() * 0.04, (t_sec * 23.0).cos() * 0.04, (t_sec * 17.0).sin() * 0.04)
+        * (local_wind.length() / 35.0).clamp(0.0, 1.5)
+        * if matches!(mode, MoveMode::Skydive | MoveMode::Fall) { 2.5 } else { 1.0 };
     let arm_inertia = (-local_accel * 0.011 + local_wind * 0.005).clamp_length_max(0.55);
 
     let mut shoulders_world = [Vec3::ZERO; 2];
@@ -479,7 +542,36 @@ pub fn solve(input: &RigInput, gait: &mut Gait, pelvis: Vec3, base: Quat, dt: f3
         let side = if i == 0 { -1.0f32 } else { 1.0f32 };
         let sh = shoulders_local[i];
         let target_wrist = if airborne {
-            sh + Vec3::new(side * 0.44, -0.10, -0.05)
+            match mode {
+                MoveMode::RocketShoes => {
+                    if fl.fwd_in > 0.1 {
+                        let reach = if fl.afterburner { 0.34 } else { 0.26 };
+                        sh + Vec3::new(side * 0.16, -0.18, -reach)
+                    } else if fl.fwd_in < -0.1 {
+                        sh + Vec3::new(side * 0.36, -0.16, 0.24)
+                    } else if input.strafe.abs() > 0.1 {
+                        let asym = side * input.strafe * 0.14;
+                        sh + Vec3::new(side * 0.34, -0.22 + asym, -0.06)
+                    } else if fl.afterburner {
+                        sh + Vec3::new(side * 0.08, -0.48, 0.05)
+                    } else {
+                        sh + Vec3::new(side * 0.25, -0.36, 0.04)
+                    }
+                }
+                MoveMode::Skydive => {
+                    let dive = (-fl.wing_arch).max(0.0);
+                    let sweep_back = dive * 0.24;
+                    let tuck_in = dive * 0.14;
+                    let flare_z = -fl.wing_arch.max(0.0) * 0.20;
+                    let bank_asym = (-side) * fl.wing_turn * 0.16;
+                    let suit = Vec3::new(side * (0.50 - tuck_in), -0.06 - sweep_back + bank_asym, 0.06 + sweep_back * 0.5 + flare_z);
+                    let eagle = Vec3::new(side * 0.58, 0.18, 0.08);
+                    let ball = Vec3::new(side * 0.16, -0.42, -0.30);
+                    sh + suit.lerp(eagle, fl.fall_spread).lerp(ball, fl.fall_tuck)
+                }
+                MoveMode::Parachute => sh + Vec3::new(side * 0.08, 0.46, -0.08),
+                _ => sh + Vec3::new(side * 0.44, -0.10 + (-side) * fl.wing_turn * 0.16, -0.05),
+            }
         } else if input.jump_charge > 0.05 {
             sh + Vec3::new(side * 0.12, -0.38, 0.28 * input.jump_charge)
         } else if input.jump_push_timer > 0.0 {
@@ -489,7 +581,9 @@ pub fn solve(input: &RigInput, gait: &mut Gait, pelvis: Vec3, base: Quat, dt: f3
             let swing_z = side * foot_z_diff * 0.95;
             sh + Vec3::new(side * 0.08, -0.46 + swing_z.abs() * 0.08, swing_z)
         };
-        gait.local_wrists[i].step(target_wrist, arm_inertia * 16.0, 135.0, 18.0, dt);
+        let fling = if mode == MoveMode::RocketShoes { (-local_err.cross(Vec3::new(side * 0.45, -0.25, 0.0)) * 0.55).clamp_length_max(0.5) } else { Vec3::ZERO };
+        let target_wrist = target_wrist + fling;
+        gait.local_wrists[i].step(target_wrist, (arm_inertia + arm_wind_buffet) * 16.0, 135.0, 18.0, dt);
         gait.local_wrists[i].pos = clamp_wrist_anatomical(sh, gait.local_wrists[i].pos, side);
 
         let elbow_pole = Vec3::new(side * 0.35, -0.20, 1.0).normalize();
@@ -538,7 +632,26 @@ pub fn solve(input: &RigInput, gait: &mut Gait, pelvis: Vec3, base: Quat, dt: f3
     ];
 
     let blink = if (t_sec % 3.7) < 0.12 { 0.15 } else { 1.0 };
-    Pose { pelvis_c, base, blink, joints, frames, foot_world_pos, foot_planted }
+    let flying = fl.wingsuit_on && !matches!(mode, MoveMode::Walk | MoveMode::Parachute);
+
+    let back = base * Vec3::Z;
+    let bulge = 0.05 + wing_amp * 0.03 + (0.012 + 0.02 * wing_amp) * (t_sec * 38.0).sin();
+    let side_wing = |i: usize| {
+        let (wrist, ankle) = (wrists_world[i], ankles_world[i]);
+        let trail = (wrist + ankle) * 0.5 + back * (bulge * 0.6);
+        ([shoulders_world[i], elbows_world[i], wrist, trail, ankle, knees_world[i], hips_world[i]], back * bulge)
+    };
+    let crotch = (hips_world[0] + hips_world[1]) * 0.5 - body_up * 0.04;
+    let wing_polys = [
+        side_wing(0),
+        side_wing(1),
+        ([hips_world[0], knees_world[0], ankles_world[0], ankles_world[1], knees_world[1], hips_world[1], crotch], back * (bulge * 0.7)),
+    ];
+    let (p0_fl, q_fl) = frames[F::FootL as usize];
+    let (p0_fr, q_fr) = frames[F::FootR as usize];
+    let nozzle_pos = [p0_fl + q_fl * Vec3::new(0.0, -0.10, -0.03), p0_fr + q_fr * Vec3::new(0.0, -0.10, -0.03)];
+    let nozzle_dir = [q_fl * Vec3::NEG_Y, q_fr * Vec3::NEG_Y];
+    Pose { pelvis_c, base, blink, joints, frames, foot_world_pos, foot_planted, body_up, flying, canopy: mode == MoveMode::Parachute, wing_polys, nozzle_pos, nozzle_dir, throttle: fl.throttle, time: t_sec }
 }
 
 #[cfg(test)]

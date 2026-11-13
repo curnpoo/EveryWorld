@@ -19,6 +19,8 @@
 //! [`crate::car::ENTER_RANGE_M`]) and out again; driving: W throttle, S brake then reverse, A D
 //! steer, Space handbrake, mouse orbits (the view swings back behind the car), wheel zooms.
 //!
+//! `EW_AUTOFLY=S`: walks 2 s, holds Space (rocket thrust) to 7 s, skydives, opens the parachute at
+//! 9 s and lands; `fly_*.png` shots to `--out`. F wingsuit, P parachute, G nudge (alpha keys).
 //! `EW_AUTOWALK=S`: walks forward for S seconds (Shift held after a third of it) turning a little,
 //! writes `play_start.png`, `walk_*.png`, `run_*.png` and `play_end.png` (offscreen render of the same view) to `--out`,
 //! and exits. For checks without anyone at the keyboard.
@@ -405,6 +407,26 @@ impl Play {
         self.want_use = true;
     }
 
+    /// F: wingsuit on/off. P: parachute. G: a nudge (the alpha's test key).
+    pub fn flight_key(&mut self, code: KeyCode) {
+        if self.driving {
+            return;
+        }
+        if let Some(c) = self.robot.as_mut().and_then(|rb| rb.ctl.as_mut()) {
+            match code {
+                KeyCode::KeyF => c.toggle_wingsuit(),
+                KeyCode::KeyP => c.toggle_parachute(),
+                KeyCode::KeyG => c.nudge = true,
+                _ => {}
+            }
+        }
+    }
+
+    /// The movement mode's name, for the window title and the log.
+    pub fn mode_label(&self) -> Option<&'static str> {
+        self.robot.as_ref().and_then(|rb| rb.ctl.as_ref()).map(|c| c.mode().label())
+    }
+
     /// Whether the character stands on the ground.
     pub fn grounded(&self) -> bool {
         match &self.robot {
@@ -538,6 +560,12 @@ impl Play {
         self.world.request(&ring, MAX_INFLIGHT);
 
         let yaw = self.cam.yaw;
+        if let Some(c) = self.robot.as_mut().and_then(|rb| rb.ctl.as_mut()) {
+            // Flight inputs the sim frame cannot know: look pitch, planet anchor, ground height.
+            c.cam_pitch = self.cam.pitch as f32;
+            c.env.anchor = Some(anchor.clone());
+            c.env.ground_alt = self.world.ground(Anchor::sim_to_render(c.feet()));
+        }
         let mut sim = PlaySim { game: &mut self.game, car: self.car.as_mut(), robot: self.robot.as_mut().and_then(|rb| rb.ctl.as_mut()), driving: self.driving, drive, focus };
         let alpha = self.fixed.run(frame_dt, &mut sim, |_| GameInput { yaw, ..input });
         let feet = match self.robot.as_ref().and_then(|rb| rb.ctl.as_ref()) {
@@ -598,9 +626,14 @@ impl Play {
                 let rb = self.robot.as_mut().unwrap();
                 let ctl = rb.ctl.as_ref().unwrap();
                 let (pelvis, rot) = ctl.pose(alpha);
-                let speed = DVec3::new(ctl.vel.x, ctl.vel.y, 0.0).length();
+                let speed = if ctl.grounded { DVec3::new(ctl.vel.x, ctl.vel.y, 0.0).length() } else { ctl.vel.length() };
+                let shake = ctl.shake() as f64;
+                let t = (self.fixed.steps() as f64 + alpha as f64) / 60.0 * 47.0;
                 let look = self.cam.look();
-                rb.cam.update(&look, self.cam.dist, pelvis, rot * DVec3::Z, speed, ctl.grounded, frame_dt, |from, d| world.cast_ray(from, d, filter).map(|h| h.fraction as f64), ground)
+                let mut cam = rb.cam.update(&look, self.cam.dist, pelvis, rot * DVec3::Z, speed, ctl.grounded, frame_dt, |from, d| world.cast_ray(from, d, filter).map(|h| h.fraction as f64), ground);
+                // Buffet: the alpha's camera shake from the suit and the Mach crossing.
+                cam.position += DVec3::new(t.sin(), (t * 1.3).cos(), (t * 0.7).sin()) * shake * 0.25;
+                cam
             }
             _ => {
                 let filter = QueryFilter { category: layers::DEFAULT, mask: layers::ALL & !layers::MOVER };
@@ -651,6 +684,7 @@ impl Play {
             ground_normal: f.ground_normal,
             foot_ground_hit: [f.foot_ground_hit[0].map(|p| p - o), f.foot_ground_hit[1].map(|p| p - o)],
             vel: f.vel,
+            fl: f.fl,
         };
         let world = &self.game.world;
         let filter = crate::car::scenery_filter();
@@ -703,6 +737,9 @@ struct Shot {
 }
 
 const SHOT_FORMAT: Format = Format::Rgba8Srgb;
+/// Flight script shots: walk, rocket thrust at three heights, skydive, parachute, landing.
+const FLY_SHOTS: [&str; 9] = ["fly_0_walk.png", "fly_1_liftoff.png", "fly_2_thrust.png", "fly_3_high.png", "fly_4_skydive.png", "fly_5_skydive.png", "fly_6_parachute.png", "fly_7_chute.png", "fly_8_end.png"];
+
 const WALK_SHOTS: [&str; 9] = ["play_start.png", "walk_0.png", "walk_1.png", "walk_2.png", "walk_3.png", "run_0.png", "run_1.png", "run_2.png", "play_end.png"];
 const DRIVE_SHOTS: [&str; 8] = ["drive_start.png", "drive_in.png", "drive_0.png", "drive_1.png", "drive_turn.png", "drive_brake.png", "drive_stopped.png", "drive_out.png"];
 
@@ -732,6 +769,9 @@ struct App {
     ft_sec: Vec<f64>,
     /// Auto-walk: seconds to walk, start time, screenshots written.
     autowalk: Option<f64>,
+    /// Auto-fly (`EW_AUTOFLY`): seconds of the flight script, and whether it has opened the parachute.
+    autofly: Option<f64>,
+    auto_chute: bool,
     /// Auto-drive: seconds of the drive script (`EW_AUTODRIVE`), and E presses it has made.
     autodrive: Option<f64>,
     auto_uses: u32,
@@ -753,7 +793,8 @@ pub fn run(args: Args) -> Result<(), String> {
     event_loop.set_control_flow(ControlFlow::Poll);
     let env_secs = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<f64>().ok()).filter(|s| *s > 0.0);
     let autodrive = env_secs("EW_AUTODRIVE");
-    let autowalk = if autodrive.is_some() { None } else { env_secs("EW_AUTOWALK") };
+    let autofly = if autodrive.is_some() { None } else { env_secs("EW_AUTOFLY") };
+    let autowalk = if autodrive.is_some() || autofly.is_some() { None } else { env_secs("EW_AUTOWALK") };
     let mut app = App {
         out: args.out.clone(),
         args,
@@ -779,6 +820,8 @@ pub fn run(args: Args) -> Result<(), String> {
         ft: Vec::new(),
         ft_sec: Vec::new(),
         autowalk,
+        autofly,
+        auto_chute: false,
         autodrive,
         auto_uses: 0,
         auto_heading: None,
@@ -794,7 +837,7 @@ pub fn run(args: Args) -> Result<(), String> {
 impl App {
     fn create_gpu(&mut self, el: &ActiveEventLoop) -> Result<(), String> {
         let attrs = Window::default_attributes()
-            .with_title(format!("ew - {} (WASD walk, Shift run, Space jump, E car in/out, C car here, mouse look, wheel zoom, Esc quit)", self.place.name))
+            .with_title(format!("ew - {} (WASD walk, Shift run, Space jump, E car in/out, C car here, F wingsuit, P parachute, mouse look, wheel zoom, Esc quit)", self.place.name))
             .with_inner_size(PhysicalSize::new(self.args.width, self.args.height));
         let window = el.create_window(attrs).map_err(|e| format!("window: {e}"))?;
         let ns_view = match window.window_handle().map_err(|e| format!("window handle: {e}"))?.as_raw() {
@@ -815,8 +858,8 @@ impl App {
             }
             window.set_cursor_visible(false);
         }
-        if let Some(s) = self.autowalk.or(self.autodrive) {
-            let what = if self.autodrive.is_some() { "autodrive" } else { "autowalk" };
+        if let Some(s) = self.autowalk.or(self.autodrive).or(self.autofly) {
+            let what = if self.autodrive.is_some() { "autodrive" } else if self.autofly.is_some() { "autofly" } else { "autowalk" };
             println!("ew: {what} {s:.0} s, screenshots to {}", self.out.display());
             let (w, h) = (config.width, config.height);
             let tex = self
@@ -942,6 +985,24 @@ impl App {
                 shoot = Some(WALK_SHOTS[self.shots_done as usize]);
             }
             Self::autowalk_input_static(t, total)
+        } else if let Some(total) = self.autofly {
+            let tw = self.t_walk.get_or_insert(0.0);
+            *tw += frame_dt;
+            let t = *tw;
+            let times = [1.0, 2.6, 3.8, 6.0, 8.2, 9.5, 11.5, 14.0, total];
+            if let Some(&at) = times.get(self.shots_done as usize)
+                && t > at
+            {
+                shoot = Some(FLY_SHOTS[self.shots_done as usize]);
+            }
+            // Parachute once the skydive has built up speed.
+            if t > 9.0 && !self.auto_chute {
+                self.auto_chute = true;
+                play.flight_key(KeyCode::KeyP);
+            }
+            // Looking up aims the rocket: pitch up for the thrust, level for the dive.
+            play.cam.pitch = if (2.0..7.0).contains(&t) { 0.7 } else if t > 9.0 { 0.45 } else { -0.2 };
+            Self::autofly_input_static(t)
         } else {
             let keys = self.keys.clone();
             drive = crate::car::drive_input(&keys);
@@ -1018,7 +1079,7 @@ impl App {
             self.shots_done += 1;
             // The readback wait is not a frame time.
             self.last = Some(Instant::now());
-            let total = if self.autodrive.is_some() { DRIVE_SHOTS.len() } else { WALK_SHOTS.len() };
+            let total = if self.autodrive.is_some() { DRIVE_SHOTS.len() } else if self.autofly.is_some() { FLY_SHOTS.len() } else { WALK_SHOTS.len() };
             if self.shots_done as usize >= total {
                 el.exit();
             }
@@ -1089,13 +1150,26 @@ impl App {
 
     /// Either script is running (no cursor grab, no keyboard E).
     fn scripted(&self) -> bool {
-        self.autowalk.is_some() || self.autodrive.is_some()
+        self.autowalk.is_some() || self.autodrive.is_some() || self.autofly.is_some()
     }
 
     /// Auto-drive screenshot times for a `total`-second script, with their names.
     fn drive_shots(total: f64) -> ([f64; 8], &'static [&'static str; 8]) {
         let f = |x: f64| x * total;
         ([0.8, 1.7, f(0.3), f(0.45), f(0.62), f(0.8), f(0.88), total], &DRIVE_SHOTS)
+    }
+
+    /// Auto-fly input at `t` seconds: walk 2 s, hold Space (jump, then rocket thrust) to 7 s with
+    /// a little forward lean, then let go.
+    fn autofly_input_static(t: f64) -> (BTreeSet<KeyCode>, Vec2) {
+        let mut k = BTreeSet::new();
+        if (0.5..2.0).contains(&t) {
+            k.insert(KeyCode::KeyW);
+        }
+        if (2.0..7.0).contains(&t) {
+            k.insert(KeyCode::Space);
+        }
+        (k, Vec2::ZERO)
     }
 
     /// Auto-walk input at `t` seconds: forward, a slow turn, run after a third, a jump at half.
@@ -1178,6 +1252,12 @@ impl ApplicationHandler for App {
                                 && let Some(r) = gpu.renderer.as_mut()
                             {
                                 p.summon_car(r, &*self.dev);
+                            }
+                        }
+                        KeyCode::KeyF | KeyCode::KeyP | KeyCode::KeyG => {
+                            let scripted = self.scripted();
+                            if !scripted && let Some(p) = &mut self.play {
+                                p.flight_key(code);
                             }
                         }
                         KeyCode::KeyV => {
