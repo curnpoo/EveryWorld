@@ -115,6 +115,35 @@ impl Tiles<'_> {
     }
 }
 
+impl Tiles<'_> {
+    /// `out.len()` heights of row `py` from global pixel `px0` (same values as [`Tiles::pixel`]).
+    fn row(&mut self, px0: i64, py: i64, size: usize, out: &mut [f64]) {
+        let n = 1i64 << self.z;
+        let w = n * size as i64;
+        let py = py.clamp(0, w - 1);
+        let mut k = 0;
+        while k < out.len() {
+            let px = (px0 + k as i64).rem_euclid(w);
+            let (tx, ox) = (px / size as i64, (px % size as i64) as usize);
+            let run = (size - ox).min(out.len() - k);
+            match self.get(tx as u32, (py / size as i64) as u32) {
+                Some(t) if t.size == size => {
+                    let r = &t.heights[(py % size as i64) as usize * size + ox..][..run];
+                    for (o, v) in out[k..k + run].iter_mut().zip(r) {
+                        *o = *v as f64;
+                    }
+                }
+                _ => {
+                    for (i, o) in out[k..k + run].iter_mut().enumerate() {
+                        *o = self.pixel(px0 + (k + i) as i64, py, size);
+                    }
+                }
+            }
+            k += run;
+        }
+    }
+}
+
 /// Vertical quantisation of the source at zoom `z` (m): Mapterhorn stores z14 in 1/8 m steps
 /// and halves the precision per zoom out (z13 1/4 m, z12 1/2 m: measured on the cached tiles,
 /// see `source_steps_follow_the_zoom_rule`). Finer zooms are taken as 1/8 m: an upsampled z15
@@ -232,6 +261,9 @@ pub fn node_heights(src: &dyn SourceView, id: NodeId) -> HeightPage {
         }
         dequantise(&raw, ww, wh, source_step(z))
     });
+    // Landform fields for the erosion detail (fixed neighbourhood in global source pixels, so
+    // neighbours sample identical bits; see [`Landform`]).
+    let land = (detail_on && !clamped).then(|| Landform::build(&mut tiles, z, size, x_lo, x_hi, y_lo, y_hi));
     let mut q = Vec::with_capacity(PAGE_SAMPLES);
     for (s, &(fx, fy)) in pts.iter().enumerate() {
         let (x0, y0) = (fx.floor(), fy.floor());
@@ -259,11 +291,141 @@ pub fn node_heights(src: &dyn SourceView, id: NodeId) -> HeightPage {
             let (p, lat, lon) = geo[s];
             let pix_m = 2.0 * PI * WGS84_A * libm::cos(lat) / world;
             let grad = [hx / pix_m, -hy / pix_m];
-            h += super::detail::erosion_detail(p, lat, lon, h, grad, id.level());
+            if let Some(land) = &land {
+                let lf = land.sample(fx, fy, h, grad, pix_m);
+                h += super::detail::erosion_detail(p, lat, lon, &lf, id.level());
+            }
         }
         q.push(quantise(h, step));
     }
     page_from_quantised(&q, step)
+}
+
+/// Landform fields around a page, from the source at the page's zoom: block means of
+/// `b x b` source pixels (`b` = 2^(z - 12), so a block is ~38 m x cos(lat) at every zoom),
+/// blurred at two scales. Every block and every blurred cell is a fixed sum over fixed global
+/// pixels in a fixed order, so any window that contains its neighbourhood gives the same bits
+/// (neighbouring pages agree, G4). Raw pixels are used: a block mean already removes the
+/// source's quantisation steps.
+struct Landform {
+    b: i64,
+    x0: i64,
+    y0: i64,
+    w: usize,
+    /// Medium smoothing (sigma ~1.5 blocks, ~50 m), large (sigma 5 blocks, ~170 m), and the
+    /// large-scale mean of squared block heights (variance = sq - hl^2).
+    hm: Vec<f64>,
+    hl: Vec<f64>,
+    sq: Vec<f64>,
+}
+
+const LAND_SIGMA_M: f64 = 1.5;
+const LAND_SIGMA_L: f64 = 5.0;
+const LAND_R_M: i64 = 4;
+const LAND_R_L: i64 = 12;
+
+fn gauss_kernel(sigma: f64, r: i64) -> Vec<f64> {
+    let k: Vec<f64> = (-r..=r).map(|i| libm::exp(-0.5 * (i * i) as f64 / (sigma * sigma))).collect();
+    let s: f64 = k.iter().sum();
+    k.iter().map(|v| v / s).collect()
+}
+
+/// Separable blur of `src` (`w x h`) with `k` (radius `r`); valid where both passes have their
+/// taps (the outer `r` cells are left 0).
+fn blur(src: &[f64], w: usize, h: usize, k: &[f64], r: usize) -> Vec<f64> {
+    let mut tmp = vec![0.0; w * h];
+    for y in 0..h {
+        for x in r..w.saturating_sub(r) {
+            let mut a = 0.0;
+            for (i, kw) in k.iter().enumerate() {
+                a += kw * src[y * w + x + i - r];
+            }
+            tmp[y * w + x] = a;
+        }
+    }
+    let mut out = vec![0.0; w * h];
+    for y in r..h.saturating_sub(r) {
+        for x in r..w.saturating_sub(r) {
+            let mut a = 0.0;
+            for (i, kw) in k.iter().enumerate() {
+                a += kw * tmp[(y + i - r) * w + x];
+            }
+            out[y * w + x] = a;
+        }
+    }
+    out
+}
+
+impl Landform {
+    #[allow(clippy::too_many_arguments)]
+    fn build(tiles: &mut Tiles, z: u8, size: usize, x_lo: f64, x_hi: f64, y_lo: f64, y_hi: f64) -> Landform {
+        let b = 1i64 << z.saturating_sub(12).min(6);
+        let pad = LAND_R_L + 4;
+        let (x0, x1) = ((x_lo.floor() as i64).div_euclid(b) - pad, (x_hi.floor() as i64).div_euclid(b) + pad);
+        let (y0, y1) = ((y_lo.floor() as i64).div_euclid(b) - pad, (y_hi.floor() as i64).div_euclid(b) + pad);
+        let (w, h) = ((x1 - x0 + 1) as usize, (y1 - y0 + 1) as usize);
+        let inv = 1.0 / (b * b) as f64;
+        let mut c = Vec::with_capacity(w * h);
+        let mut row = vec![0.0; w * b as usize];
+        for cy in y0..=y1 {
+            let mut acc = vec![0.0; w];
+            for yy in 0..b {
+                let py = cy * b + yy;
+                tiles.row(x0 * b, py, size, &mut row);
+                for (cx, a) in acc.iter_mut().enumerate() {
+                    for xx in 0..b as usize {
+                        *a += row[cx * b as usize + xx];
+                    }
+                }
+            }
+            c.extend(acc.iter().map(|a| a * inv));
+        }
+        let sqc: Vec<f64> = c.iter().map(|v| v * v).collect();
+        let (km, kl) = (gauss_kernel(LAND_SIGMA_M, LAND_R_M), gauss_kernel(LAND_SIGMA_L, LAND_R_L));
+        let hm = blur(&c, w, h, &km, LAND_R_M as usize);
+        let hl = blur(&c, w, h, &kl, LAND_R_L as usize);
+        let sq = blur(&sqc, w, h, &kl, LAND_R_L as usize);
+        Landform { b, x0, y0, w, hm, hl, sq }
+    }
+
+    /// Landform at fractional source pixel `(fx, fy)` (centres at integers) with the fine source
+    /// height `h`, its gradient `grad` (m/m, east and north) and the source pixel size `pix_m`.
+    fn sample(&self, fx: f64, fy: f64, h: f64, grad: [f64; 2], pix_m: f64) -> super::detail::Landform {
+        let half = (self.b - 1) as f64 * 0.5;
+        let (cx, cy) = ((fx - half) / self.b as f64, (fy - half) / self.b as f64);
+        let (ix, iy) = (cx.floor(), cy.floor());
+        let (wx, wy) = (cubic_weights(cx - ix), cubic_weights(cy - iy));
+        let (dwx, dwy) = (cubic_dweights(cx - ix), cubic_dweights(cy - iy));
+        let (ix, iy) = (ix as i64 - self.x0, iy as i64 - self.y0);
+        let mut f = [[0.0f64; 3]; 3]; // [field][value, d/dx, d/dy]
+        for m in 0..4 {
+            let r = (iy - 1 + m as i64) as usize * self.w;
+            let mut row = [[0.0f64; 2]; 3];
+            for k in 0..4 {
+                let i = r + (ix - 1 + k as i64) as usize;
+                for (fi, field) in [&self.hm, &self.hl, &self.sq].into_iter().enumerate() {
+                    row[fi][0] += wx[k] * field[i];
+                    row[fi][1] += dwx[k] * field[i];
+                }
+            }
+            for fi in 0..3 {
+                f[fi][0] += wy[m] * row[fi][0];
+                f[fi][1] += wy[m] * row[fi][1];
+                f[fi][2] += dwy[m] * row[fi][0];
+            }
+        }
+        let cell_m = pix_m * self.b as f64;
+        let g = |fi: usize| [f[fi][1] / cell_m, -f[fi][2] / cell_m];
+        super::detail::Landform {
+            h,
+            grad,
+            grad_m: g(0),
+            grad_l: g(1),
+            tpi_m: h - f[0][0],
+            tpi_l: f[0][0] - f[1][0],
+            relief: (f[2][0] - f[1][0] * f[1][0]).max(0.0).sqrt(),
+        }
+    }
 }
 
 /// Geodetic lat/lon of a lattice point: the ECEF point `d * r(d)` where `r(d)` is the WGS84

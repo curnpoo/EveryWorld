@@ -1,3 +1,32 @@
+## 2026-11-12: P-slice S7d — erosion v2 (multi-scale, landform-driven, fall-line aligned)
+
+- **Owner feedback addressed:**
+  - v1 looked mathematical: one gully size everywhere, repeating on Blue Ridge slopes.
+  - Small pieces curled around.
+- **What** (`ed_data/src/node/detail.rs` rewrite, `heights.rs`):
+  - **Gullies:** five layers at ratio 2.31 (~100, 43, 19, 8, 3.5 m) plus two sub-metre layers. Power-law falloff (exponent ~0.72: steeper on soft hills, shallower on rock). Each layer has its own rotation and offset.
+  - **Landform per sample**, from fixed world-aligned source blocks (borders bit-identical):
+    - 50 m and 170 m smoothed slope;
+    - relief;
+    - hollow/spur as a drainage proxy;
+    - a km-scale character field.
+  - **Results by landform:** sharp V gullies and two ledge sets on steep rock; rounded, filled drainage on soft hills; swales on flats; deeper cuts in hollows.
+  - **Alignment:** every layer follows the smoothed fall line. Only layers over 25 m are warped, and branching comes in only where the slope flattens.
+  - Detail starts at level 12 at half strength.
+- **Checked:**
+  - Tests pass.
+  - Proving output byte-identical.
+  - `EW_TERRAIN_NODETAIL=1` works.
+  - Harness at 1 m AGL: 2.21–2.33 ms terrain + shadow (2.18 ms baseline on the same run; shader unchanged).
+  - The 1.7 m Blue Ridge scallops are gone; no arcs at 300 m.
+- **Cost:** page builds +25–30% (9.3–10.7 s → 11.7–14.1 s per 12-frame run).
+- **Open:**
+  - The gain at 300 m is modest.
+  - Steep soft hills read slightly combed in hillshade (could come down ~20%).
+  - Hairy streaks fan out from small knobs at Zermatt.
+  - Strata zigzags and snow bands on far Zermatt peaks come from the source or coarse levels.
+  - Landform per source tile instead of per page would recover most of the build cost.
+
 ## 2026-11-12: P-slice S7c — robot flight (alpha modes)
 
 - **What:** alpha `player.rs` and `body.rs` flight in `crates/ew/src/robot/flight.rs`, controller, rig and view.
