@@ -13,6 +13,8 @@ use crate::cache::DiskCache;
 use crate::canopy_height::{self, CanopyHeight};
 use crate::worldcover::{self, LandCover};
 use super::canopy_coarse::{self, CoarseTile};
+use super::ground::GroundPage;
+use super::ground_coarse::{self, GroundCoarseTile};
 use ed_geo::canopy_page::{decode_height, encode_height, pack_under, CanopyPage};
 use std::sync::Arc;
 use ed_geo::node::NodeId;
@@ -35,6 +37,10 @@ pub trait CanopySource {
     fn coarse_tile(&self, _tj: i64, _ti: i64) -> Option<Arc<CoarseTile>> {
         None
     }
+    /// The coarse ground tile (grass plan G2) with indices `(tj, ti)`; `None` = unavailable.
+    fn ground_coarse_tile(&self, _tj: i64, _ti: i64) -> Option<Arc<GroundCoarseTile>> {
+        None
+    }
 }
 
 /// The real source: WorldCover and ETH canopy height COG range reads through the disk cache
@@ -55,6 +61,9 @@ impl CanopySource for RealCanopySource<'_> {
     }
     fn coarse_tile(&self, tj: i64, ti: i64) -> Option<Arc<CoarseTile>> {
         canopy_coarse::shared_tile(tj, ti, self.cache)
+    }
+    fn ground_coarse_tile(&self, tj: i64, ti: i64) -> Option<Arc<GroundCoarseTile>> {
+        ground_coarse::shared_tile(tj, ti, self.cache)
     }
 }
 
@@ -82,9 +91,17 @@ fn centres(s: f64, w: f64, n: f64, e: f64, cw: usize, ch: usize) -> impl Iterato
 
 impl CanopySource for SyntheticCanopy {
     fn land_cover(&self, s: f64, w: f64, n: f64, e: f64, cw: usize, ch: usize, _sub: usize) -> Option<LandCover> {
-        let mut o = LandCover { w: cw, h: ch, class: vec![0; cw * ch], tree: vec![0; cw * ch], shrub: vec![0; cw * ch] };
+        let mut o = LandCover { w: cw, h: ch, class: vec![0; cw * ch], tree: vec![0; cw * ch], shrub: vec![0; cw * ch], grass: vec![0; cw * ch], crop: vec![0; cw * ch], wet: vec![0; cw * ch] };
         for (k, lat, lon) in centres(s, w, n, e, cw, ch) {
             (o.class[k], o.tree[k], o.shrub[k]) = (self.cover)(lat, lon);
+            // The rest of the cell is the class itself.
+            let rest = 255u8.saturating_sub(o.tree[k].saturating_add(o.shrub[k]));
+            match o.class[k] {
+                worldcover::GRASS => o.grass[k] = rest,
+                worldcover::CROP => o.crop[k] = rest,
+                worldcover::WETLAND | worldcover::MOSS => o.wet[k] = rest,
+                _ => {}
+            }
         }
         Some(o)
     }
@@ -154,7 +171,7 @@ fn q8(x: f32) -> u8 {
 }
 
 /// Lattice spacing (m) of a level's canopy page.
-fn spacing_m(level: u8) -> f64 {
+pub(super) fn spacing_m(level: u8) -> f64 {
     10_018_000.0 / (1u64 << level) as f64 / PAGE_CELLS as f64
 }
 
@@ -166,12 +183,14 @@ fn cell_exp(level: u8) -> u32 {
 
 /// Source values of one lattice sample, from either regime.
 #[derive(Clone, Copy, Default)]
-struct Raw {
+pub(super) struct Raw {
     class: u8,
     tree: f32,
     shrub: f32,
     eth_m: f32,
     eth_ok: bool,
+    /// Ground-page shares `0..=1` (grass plan G2): herbaceous, cropland, shrub, wet.
+    pub(super) ground: [f32; 4],
     /// Source data share `0..=1` (0: nothing was read, the far forest falls back to procedural).
     data: f32,
     /// Global cell (village-tree hash); the coarse regime has no built-up class.
@@ -195,7 +214,21 @@ struct Raw {
 /// the coarse layer always takes the 10 m path. The fourth byte carries the data share
 /// ([`pack_under`]): 0 where no source was read.
 pub fn node_canopy(src: &dyn CanopySource, id: NodeId, alt: &dyn Fn(usize, usize) -> f64) -> CanopyPage {
-    // Geodetic position of every lattice sample.
+    let geo = geo_of(id);
+    let (raw, _) = page_raw(src, id, &geo, true, false);
+    canopy_from_raw(&geo, &raw, alt)
+}
+
+/// The canopy page and the ground page of `id` from ONE read of the sources (they share the
+/// land-cover window). Identical to [`node_canopy`] and [`super::node_ground`] called apart.
+pub fn node_canopy_ground(src: &dyn CanopySource, id: NodeId, alt: &dyn Fn(usize, usize) -> f64) -> (CanopyPage, GroundPage) {
+    let geo = geo_of(id);
+    let (raw, _) = page_raw(src, id, &geo, true, true);
+    (canopy_from_raw(&geo, &raw, alt), GroundPage::from_raw(&raw))
+}
+
+/// Geodetic position `(lat, lon)` of every lattice sample.
+pub(super) fn geo_of(id: NodeId) -> Vec<(f64, f64)> {
     let mut geo = Vec::with_capacity(PAGE_N * PAGE_N);
     for j in 0..PAGE_N {
         for i in 0..PAGE_N {
@@ -204,12 +237,33 @@ pub fn node_canopy(src: &dyn CanopySource, id: NodeId, alt: &dyn Fn(usize, usize
             geo.push((g.lat_deg, g.lon_deg));
         }
     }
-    let raw = if src.has_coarse() && spacing_m(id.level()) >= canopy_coarse::COARSE_MIN_SPACING_M {
-        coarse_raw(src, id, &geo)
-    } else {
-        fine_raw(src, id, &geo)
-    };
+    geo
+}
 
+/// Raw source values per lattice sample, either regime. `canopy` = fill the canopy fields
+/// (ETH height read in the fine regime, canopy coarse layer in the coarse one); `ground` = fill
+/// `Raw::ground` (from the same land-cover window, or the ground coarse layer). Returns whether
+/// the coarse regime was used.
+pub(super) fn page_raw(src: &dyn CanopySource, id: NodeId, geo: &[(f64, f64)], canopy: bool, ground: bool) -> (Vec<Raw>, bool) {
+    let coarse = src.has_coarse() && spacing_m(id.level()) >= canopy_coarse::COARSE_MIN_SPACING_M;
+    if !coarse {
+        return (fine_raw(src, id, geo, canopy), false);
+    }
+    let mut raw = if canopy { coarse_raw(src, id, geo) } else { vec![Raw::default(); geo.len()] };
+    if ground {
+        let m = canopy_coarse::mip_for_spacing(spacing_m(id.level()));
+        let mut memo: std::collections::HashMap<(i64, i64), Option<Arc<GroundCoarseTile>>> = Default::default();
+        let mut tile = |tj: i64, ti: i64| memo.entry((tj, ti)).or_insert_with(|| src.ground_coarse_tile(tj, ti)).clone();
+        for (r, &(lat, lon)) in raw.iter_mut().zip(geo) {
+            if let Some(g) = ground_coarse::sample(&mut tile, lat, lon, m) {
+                r.ground = g;
+            }
+        }
+    }
+    (raw, true)
+}
+
+fn canopy_from_raw(geo: &[(f64, f64)], raw: &[Raw], alt: &dyn Fn(usize, usize) -> f64) -> CanopyPage {
     let mut out = Vec::with_capacity(PAGE_N * PAGE_N);
     for j in 0..PAGE_N {
         for i in 0..PAGE_N {
@@ -266,7 +320,7 @@ pub fn node_canopy(src: &dyn CanopySource, id: NodeId, alt: &dyn Fn(usize, usize
 }
 
 /// 10 m regime: sampling on the global lat/lon cell grid (`3 deg / 2^k`).
-fn fine_raw(src: &dyn CanopySource, id: NodeId, geo: &[(f64, f64)]) -> Vec<Raw> {
+fn fine_raw(src: &dyn CanopySource, id: NodeId, geo: &[(f64, f64)], want_eth: bool) -> Vec<Raw> {
     let mut k = cell_exp(id.level());
     let (mut cd, mut ci0, mut cj0, mut w, mut h);
     loop {
@@ -286,21 +340,24 @@ fn fine_raw(src: &dyn CanopySource, id: NodeId, geo: &[(f64, f64)]) -> Vec<Raw> 
     let (south, west) = (cj0 as f64 * cd, ci0 as f64 * cd);
     let (north, east) = (south + h as f64 * cd, west + w as f64 * cd);
     let lc = src.land_cover(south, west, north, east, w, h, sub);
-    let eth = src.canopy_height(south, west, north, east, w, h, sub);
+    let eth = if want_eth { src.canopy_height(south, west, north, east, w, h, sub) } else { None };
     geo.iter()
         .map(|&(lat, lon)| {
             let (ci, cj) = ((lon / cd).floor() as i64, (lat / cd).floor() as i64);
             let (cx, cy) = ((ci - ci0) as usize, (cj - cj0) as usize);
             let idx = (h - 1 - cy) * w + cx; // row 0 = north
-            let (class, tree, shrub) = match &lc {
-                Some(l) => (l.class[idx], l.tree[idx] as f32 / 255.0, l.shrub[idx] as f32 / 255.0),
-                None => (0, 0.0, 0.0),
+            let (class, tree, shrub, ground) = match &lc {
+                Some(l) => {
+                    let f = |v: u8| v as f32 / 255.0;
+                    (l.class[idx], f(l.tree[idx]), f(l.shrub[idx]), [f(l.grass[idx]), f(l.crop[idx]), f(l.shrub[idx]), f(l.wet[idx])])
+                }
+                None => (0, 0.0, 0.0, [0.0; 4]),
             };
             let (eth_m, eth_ok) = match &eth {
                 Some(e) if e.data[idx] > 127 => (e.height[idx], true),
                 _ => (0.0, false),
             };
-            Raw { class, tree, shrub, eth_m, eth_ok, data: if lc.is_some() { 1.0 } else { 0.0 }, ci, cj }
+            Raw { class, tree, shrub, ground, eth_m, eth_ok, data: if lc.is_some() { 1.0 } else { 0.0 }, ci, cj }
         })
         .collect()
 }

@@ -1,3 +1,19 @@
+## 2026-11-14: Grass G2: ground pages (land-cover shares at every level)
+
+- `ed_data::node::ground`: `GroundPage` 257x257 `[herb, crop, shrub, wet]` shares from WorldCover (`LandCover` gains
+  `grass`, `crop`, `wet` = wetland + moss). `parent_ground` uses the same [1 2 1]/4 filter and border copy as canopy.
+  Far nodes (L6 and up) read a new coarse layer `ground_coarse` (cache `ground_coarse/v1`, 84 MB for 2651 tiles,
+  built from WorldCover only; `canopy_coarse` format untouched).
+- `node_canopy_ground` builds canopy and ground pages from ONE land-cover read; `ew` terrain streams both
+  (`PageStore.ground`), no GPU upload yet (G3/G4).
+- Cost: warm canopy + ground 121.5 ms per node at siusi (466 nodes), vs about 150 ms for canopy alone before; cold first run
+  521 ms per node while it builds the coarse tiles.
+- Mean shares (herb/crop/shrub/wet, tree from canopy), fine L12 node: dunes 0/0/0/0 (0), sonoran 0/0/.99/0,
+  jungle .10/0/0/.01 (.76), everglades .01/0/0/.91, tundra .78/0/0/.13, siusi .78/0/0/0 (.22), prairie .51/.26/0/0,
+  iowa .07/.86/0/0, smokies .30/0/0/0 (.70). Coarse L6 agrees in kind.
+- Gate: border test (neighbour edges and parent borders bit-identical over 7 levels); 428 tests pass across
+  ed_render, ew, ed_world, ed_gpu, ed_data.
+
 ## 2026-11-14: Nine biome test places; play anywhere by LAT,LON; online fetch
 
 - `ew/src/terrain.rs` `PLACES`: dunes (Erg Chebbi 31.17,-4.01), sonoran (Tucson Mts 32.25,-111.215),

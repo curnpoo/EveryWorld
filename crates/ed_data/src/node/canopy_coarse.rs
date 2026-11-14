@@ -37,7 +37,7 @@ pub struct CoarseTile {
 }
 
 impl CoarseTile {
-    fn from_planes(base: [Vec<u8>; 3]) -> CoarseTile {
+    pub(crate) fn from_planes(base: [Vec<u8>; 3]) -> CoarseTile {
         let mut mips = vec![base];
         for m in 1..=MAX_MIP {
             let n = COARSE_N >> m;

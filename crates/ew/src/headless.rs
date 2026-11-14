@@ -485,6 +485,8 @@ pub fn run(args: &Args) -> Result<Report, String> {
                 ms / n.max(1) as f64,
                 ed_geo::PAGE_SAMPLES * 4
             );
+            let (gn, gms) = w.ground_built;
+            let _ = writeln!(footer, "ground pages (grass G2): {gn} built with the canopy pages (one shared land-cover read, {gms:.0} ms combined), {} B each", ed_geo::PAGE_SAMPLES * 4);
         }
     }
     let _ = write!(

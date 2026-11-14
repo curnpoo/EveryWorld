@@ -39,6 +39,12 @@ pub struct LandCover {
     pub tree: Vec<u8>,
     /// Share of samples that were shrub, 0..=255.
     pub shrub: Vec<u8>,
+    /// Share of samples that were grassland, 0..=255.
+    pub grass: Vec<u8>,
+    /// Share of samples that were cropland, 0..=255.
+    pub crop: Vec<u8>,
+    /// Share of samples that were wetland or moss/lichen, 0..=255.
+    pub wet: Vec<u8>,
 }
 
 fn url_for(name: &str) -> String {
@@ -202,12 +208,12 @@ pub fn sample_area(south: f64, west: f64, north: f64, east: f64, w: usize, h: us
     let sub = sub.max(1);
     let cell_deg = ((east - west) / w as f64).min((north - south) / h as f64);
     let target = cell_deg / sub as f64;
-    let mut out = LandCover { w, h, class: vec![0; w * h], tree: vec![0; w * h], shrub: vec![0; w * h] };
+    let mut out = LandCover { w, h, class: vec![0; w * h], tree: vec![0; w * h], shrub: vec![0; w * h], grass: vec![0; w * h], crop: vec![0; w * h], wet: vec![0; w * h] };
     let n = (sub * sub) as f32;
     for j in 0..h {
         for i in 0..w {
             let mut counts = [0u16; 128];
-            let (mut trees, mut shrubs) = (0u32, 0u32);
+            let (mut trees, mut shrubs, mut grasses, mut crops, mut wets) = (0u32, 0u32, 0u32, 0u32, 0u32);
             for b in 0..sub {
                 for a in 0..sub {
                     let lon = west + (east - west) * ((i as f64 + (a as f64 + 0.5) / sub as f64) / w as f64);
@@ -221,6 +227,12 @@ pub fn sample_area(south: f64, west: f64, north: f64, east: f64, w: usize, h: us
                         trees += 1;
                     } else if c == SHRUB {
                         shrubs += 1;
+                    } else if c == GRASS {
+                        grasses += 1;
+                    } else if c == CROP {
+                        crops += 1;
+                    } else if c == WETLAND || c == MOSS {
+                        wets += 1;
                     }
                 }
             }
@@ -229,6 +241,9 @@ pub fn sample_area(south: f64, west: f64, north: f64, east: f64, w: usize, h: us
             out.class[k] = best as u8;
             out.tree[k] = (trees as f32 / n * 255.0).round() as u8;
             out.shrub[k] = (shrubs as f32 / n * 255.0).round() as u8;
+            out.grass[k] = (grasses as f32 / n * 255.0).round() as u8;
+            out.crop[k] = (crops as f32 / n * 255.0).round() as u8;
+            out.wet[k] = (wets as f32 / n * 255.0).round() as u8;
         }
     }
     Ok(out)

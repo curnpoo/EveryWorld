@@ -471,6 +471,8 @@ impl CacheSource {
 pub struct PageStore {
     pages: BTreeMap<NodeId, Arc<HeightPage>>,
     canopy: BTreeMap<NodeId, Option<Arc<CanopyPage>>>,
+    /// Ground pages (grass plan G2), built with the canopy page; not uploaded yet (G3/G4).
+    ground: BTreeMap<NodeId, Option<Arc<ed_data::node::GroundPage>>>,
     /// Canopy pages are part of a node's bytes.
     trees: bool,
 }
@@ -515,22 +517,49 @@ impl Residency for PageStore {
 /// On the synthetic grass-lab hills the source is "data present, no cover" (grass, height 0), so
 /// the shader's procedural forest fallback never fires there.
 pub fn build_canopy(heights_src: &CacheSource, cache: &ed_data::DiskCache, id: NodeId, heights: &HeightPage) -> Option<Arc<CanopyPage>> {
+    build_canopy_ground(heights_src, cache, id, heights).0
+}
+
+/// The ground page of `id` (grass plan G2: land-cover shares), alone. `None` = no source data
+/// was read or the node is all sea. Prefer [`build_canopy_ground`] when the canopy page is
+/// wanted too: it reads the land cover once.
+pub fn build_ground(heights_src: &CacheSource, cache: &ed_data::DiskCache, id: NodeId, heights: &HeightPage) -> Option<Arc<ed_data::node::GroundPage>> {
     let page = if heights_src.hills {
-        let src = ed_data::node::SyntheticCanopy { cover: Box::new(|_, _| (ed_data::worldcover::GRASS, 0, 0)), height: Box::new(|_, _| Some(0.0)) };
-        ed_data::node::node_canopy(&src, id, &|i, j| heights.height(i, j) as f64)
+        ed_data::node::node_ground(&hills_source(), id)
     } else {
-        let src = ed_data::node::RealCanopySource { cache };
-        ed_data::node::node_canopy(&src, id, &|i, j| heights.height(i, j) as f64)
+        ed_data::node::node_ground(&ed_data::node::RealCanopySource { cache }, id)
+    };
+    ground_if_land(page, heights)
+}
+
+fn hills_source() -> ed_data::node::SyntheticCanopy {
+    ed_data::node::SyntheticCanopy { cover: Box::new(|_, _| (ed_data::worldcover::GRASS, 0, 0)), height: Box::new(|_, _| Some(0.0)) }
+}
+
+fn ground_if_land(page: ed_data::node::GroundPage, heights: &HeightPage) -> Option<Arc<ed_data::node::GroundPage>> {
+    (page.samples.iter().any(|s| s.iter().any(|&v| v > 0)) && node_has_land(heights)).then(|| Arc::new(page))
+}
+
+fn node_has_land(heights: &HeightPage) -> bool {
+    (0..ed_planet::PAGE_N * ed_planet::PAGE_N).any(|k| heights.height(k % ed_planet::PAGE_N, k / ed_planet::PAGE_N) > 0.5)
+}
+
+/// The canopy and ground pages of `id` from one read of the land cover.
+pub fn build_canopy_ground(heights_src: &CacheSource, cache: &ed_data::DiskCache, id: NodeId, heights: &HeightPage) -> (Option<Arc<CanopyPage>>, Option<Arc<ed_data::node::GroundPage>>) {
+    let alt = |i: usize, j: usize| heights.height(i, j) as f64;
+    let (page, ground) = if heights_src.hills {
+        ed_data::node::node_canopy_ground(&hills_source(), id, &alt)
+    } else {
+        ed_data::node::node_canopy_ground(&ed_data::node::RealCanopySource { cache }, id, &alt)
     };
     let data = page.samples.iter().any(|s| s[3] >> 6 > 0);
-    let land = (0..ed_planet::PAGE_N * ed_planet::PAGE_N).any(|k| heights.height(k % ed_planet::PAGE_N, k / ed_planet::PAGE_N) > 0.5);
-    (data && land).then(|| Arc::new(page))
+    ((data && node_has_land(heights)).then(|| Arc::new(page)), ground_if_land(ground, heights))
 }
 
 /// Loader results.
 enum Built {
     Height(NodeId, Arc<HeightPage>),
-    Canopy(NodeId, Option<Arc<CanopyPage>>),
+    Canopy(NodeId, Option<Arc<CanopyPage>>, Option<Arc<ed_data::node::GroundPage>>, f64),
 }
 
 /// Background page builders: a shared job queue, results back on a channel. Workers exit
@@ -558,10 +587,13 @@ impl Loader {
                     if tx.send(Built::Height(id, page.clone())).is_err() {
                         break;
                     }
-                    if let Some(cache) = &canopy
-                        && tx.send(Built::Canopy(id, build_canopy(&src, cache, id, &page))).is_err()
-                    {
-                        break;
+                    if let Some(cache) = &canopy {
+                        let t = std::time::Instant::now();
+                        let (c, g) = build_canopy_ground(&src, cache, id, &page);
+                        let ms = t.elapsed().as_secs_f64() * 1e3;
+                        if tx.send(Built::Canopy(id, c, g, ms)).is_err() {
+                            break;
+                        }
                     }
                 }
             });
@@ -601,6 +633,9 @@ pub struct TerrainWorld {
     canopy_cache: Option<Arc<ed_data::DiskCache>>,
     /// Canopy page builds: count and total ms (headless report).
     pub canopy_built: (u32, f64),
+    /// Ground pages built (with the canopy page, one shared land-cover read): count and total ms
+    /// of that combined build.
+    pub ground_built: (u32, f64),
     /// The grass lab's synthetic place (grass style A paints its type map there).
     pub grass_lab: bool,
 }
@@ -617,6 +652,7 @@ impl TerrainWorld {
             trees_far,
             canopy_cache: trees_far.on().then(|| Arc::new(ed_data::DiskCache::new(cache))),
             canopy_built: (0, 0.0),
+            ground_built: (0, 0.0),
             grass_lab: place.name == GRASSLAB.name,
             src: Arc::new(if place.name == GRASSLAB.name { CacheSource::hills(cache) } else { CacheSource::for_app(cache) }),
             sel: Selection::default(),
@@ -670,7 +706,7 @@ impl TerrainWorld {
         // Contiguous runs of sorted ids per worker: neighbouring nodes share source tiles, so
         // each worker stays on a few tiles (a shared counter was ~3x more CPU). Results land by
         // index, so the store fills in sorted order whatever the thread timing.
-        type Slot = OnceLock<(HeightPage, Option<Option<Arc<CanopyPage>>>, f64)>;
+        type Slot = OnceLock<(HeightPage, Option<(Option<Arc<CanopyPage>>, Option<Arc<ed_data::node::GroundPage>>)>, f64)>;
         let slots: Vec<Slot> = (0..missing.len()).map(|_| OnceLock::new()).collect();
         let chunk = missing.len().div_ceil(threads);
         let canopy = self.canopy_cache.as_deref();
@@ -681,7 +717,7 @@ impl TerrainWorld {
                     for (k, &id) in ids.iter().enumerate() {
                         let page = ed_data::node::node_heights(src, id);
                         let t = std::time::Instant::now();
-                        let cp = canopy.map(|cache| build_canopy(src, cache, id, &page));
+                        let cp = canopy.map(|cache| build_canopy_ground(src, cache, id, &page));
                         let _ = slots[c * chunk + k].set((page, cp, t.elapsed().as_secs_f64() * 1e3));
                     }
                 });
@@ -690,10 +726,13 @@ impl TerrainWorld {
         for (id, slot) in missing.iter().zip(slots) {
             let (p, cp, ms) = slot.into_inner().expect("page worker");
             self.store.pages.insert(*id, Arc::new(p));
-            if let Some(cp) = cp {
+            if let Some((cp, gp)) = cp {
                 self.store.canopy.insert(*id, cp);
+                self.store.ground.insert(*id, gp);
                 self.canopy_built.0 += 1;
                 self.canopy_built.1 += ms;
+                self.ground_built.0 += 1;
+                self.ground_built.1 += ms;
             }
         }
         missing.len()
@@ -728,6 +767,7 @@ impl TerrainWorld {
         for id in &evicted {
             self.store.pages.remove(id);
             self.store.canopy.remove(id);
+            self.store.ground.remove(id);
         }
         self.eye = camera.position;
         self.ppr = view.pixels_per_radian();
@@ -801,10 +841,15 @@ impl TerrainWorld {
                     self.store.pages.entry(id).or_insert(page);
                     n += 1;
                 }
-                Built::Canopy(id, page) => {
+                Built::Canopy(id, page, ground, ms) => {
                     l.inflight.remove(&id);
                     if self.store.pages.contains_key(&id) {
                         self.store.canopy.insert(id, page);
+                        self.store.ground.insert(id, ground);
+                        self.canopy_built.0 += 1;
+                        self.canopy_built.1 += ms;
+                        self.ground_built.0 += 1;
+                        self.ground_built.1 += ms;
                     }
                 }
             }
@@ -839,6 +884,7 @@ impl TerrainWorld {
         for id in &evicted {
             self.store.pages.remove(id);
             self.store.canopy.remove(id);
+            self.store.ground.remove(id);
         }
         self.eye = camera.position;
         self.ppr = view.pixels_per_radian();

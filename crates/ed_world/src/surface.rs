@@ -792,7 +792,7 @@ mod tests {
     use super::*;
 
     fn landcover(class: u8, tree: u8, shrub: u8) -> ed_data::worldcover::LandCover {
-        ed_data::worldcover::LandCover { w: 4, h: 4, class: vec![class; 16], tree: vec![tree; 16], shrub: vec![shrub; 16] }
+        ed_data::worldcover::LandCover { w: 4, h: 4, class: vec![class; 16], tree: vec![tree; 16], shrub: vec![shrub; 16], grass: vec![0; 16], crop: vec![0; 16], wet: vec![0; 16] }
     }
 
     #[test]

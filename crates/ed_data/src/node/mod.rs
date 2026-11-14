@@ -4,6 +4,8 @@
 mod canopy;
 pub mod canopy_coarse;
 mod detail;
+mod ground;
+pub mod ground_coarse;
 mod heights;
 mod source;
 
@@ -13,4 +15,5 @@ pub use heights::{
 pub use detail::{Landform, erosion_detail, max_detail_m, nominal_spacing};
 pub use heights::{cubic_dweights, detail_enabled};
 pub use source::{ElevationSource, Raster, SourceView};
-pub use canopy::{node_canopy, parent_canopy, CanopySource, RealCanopySource, SyntheticCanopy};
+pub use ground::{node_ground, parent_ground, GroundPage};
+pub use canopy::{node_canopy, node_canopy_ground, parent_canopy, CanopySource, RealCanopySource, SyntheticCanopy};
