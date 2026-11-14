@@ -10,38 +10,12 @@ use super::canopy::{geo_of, page_raw, CanopySource, Raw};
 use ed_geo::node::NodeId;
 use ed_geo::{PAGE_CELLS, PAGE_N};
 
-/// Four share bytes per lattice sample, row-major from `(0, 0)`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct GroundPage {
-    pub samples: Vec<[u8; 4]>,
-}
+pub use ed_geo::GroundPage;
 
-impl GroundPage {
-    pub fn from_fn(mut f: impl FnMut(usize, usize) -> [u8; 4]) -> GroundPage {
-        let mut samples = Vec::with_capacity(PAGE_N * PAGE_N);
-        for j in 0..PAGE_N {
-            for i in 0..PAGE_N {
-                samples.push(f(i, j));
-            }
-        }
-        GroundPage { samples }
-    }
-
-    #[inline]
-    pub fn get(&self, i: usize, j: usize) -> [u8; 4] {
-        self.samples[j * PAGE_N + i]
-    }
-
-    /// Canonical bytes (hashing, a future chunk).
-    pub fn to_bytes(&self) -> Vec<u8> {
-        self.samples.iter().flatten().copied().collect()
-    }
-
-    /// Quantised shares of a raw lattice read.
-    pub(super) fn from_raw(raw: &[Raw]) -> GroundPage {
-        let q = |x: f32| libm::roundf(x.clamp(0.0, 1.0) * 255.0) as u8;
-        GroundPage { samples: raw.iter().map(|r| r.ground.map(q)).collect() }
-    }
+/// Quantised shares of a raw lattice read.
+pub(super) fn ground_from_raw(raw: &[Raw]) -> GroundPage {
+    let q = |x: f32| libm::roundf(x.clamp(0.0, 1.0) * 255.0) as u8;
+    GroundPage { samples: raw.iter().map(|r| r.ground.map(q)).collect() }
 }
 
 /// Builds the ground page of `id` from `src`: a sample takes the shares of the global cell that
@@ -51,7 +25,7 @@ impl GroundPage {
 pub fn node_ground(src: &dyn CanopySource, id: NodeId) -> GroundPage {
     let geo = geo_of(id);
     let (raw, _) = page_raw(src, id, &geo, false, true);
-    GroundPage::from_raw(&raw)
+    ground_from_raw(&raw)
 }
 
 /// Parent page from its four children in `NodeId::children` order: the separable [1 2 1] / 4

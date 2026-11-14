@@ -472,8 +472,9 @@ impl CacheSource {
 pub struct PageStore {
     pages: BTreeMap<NodeId, Arc<HeightPage>>,
     canopy: BTreeMap<NodeId, Option<Arc<CanopyPage>>>,
-    /// Ground pages (grass plan G2), built with the canopy page; not uploaded yet (G3/G4).
-    ground: BTreeMap<NodeId, Option<Arc<ed_data::node::GroundPage>>>,
+    /// Ground pages (grass plan G2) with their corner climate, built with the canopy page; the
+    /// terrain carpet colour reads them (G4).
+    ground: BTreeMap<NodeId, Option<Arc<ed_planet::NodeGround>>>,
     /// Canopy pages are part of a node's bytes.
     trees: bool,
 }
@@ -508,6 +509,19 @@ impl Residency for PageStore {
     fn canopy_page(&self, id: NodeId) -> Option<Arc<CanopyPage>> {
         self.canopy.get(&id).cloned().flatten()
     }
+    fn ground(&self, id: NodeId) -> Option<Arc<ed_planet::NodeGround>> {
+        self.ground.get(&id).cloned().flatten()
+    }
+}
+
+/// `page` with the climate at `id`'s four corners (grass G4: the carpet's climate rows).
+fn node_ground(id: NodeId, page: Option<Arc<ed_data::node::GroundPage>>) -> Option<Arc<ed_planet::NodeGround>> {
+    let page = page?;
+    let climate = std::array::from_fn(|k| {
+        let c = ed_world::ground_cover::Climate::at(id.corner(k as u8));
+        [c.aridity, c.temp_sl]
+    });
+    Some(Arc::new(ed_planet::NodeGround { page, climate }))
 }
 
 /// The canopy page of `id` (trees G3) from the real canopy source through the disk cache, on
@@ -554,7 +568,11 @@ pub fn build_canopy_ground(heights_src: &CacheSource, cache: &ed_data::DiskCache
         ed_data::node::node_canopy_ground(&ed_data::node::RealCanopySource { cache }, id, &alt)
     };
     let data = page.samples.iter().any(|s| s[3] >> 6 > 0);
-    ((data && node_has_land(heights)).then(|| Arc::new(page)), ground_if_land(ground, heights))
+    let land = node_has_land(heights);
+    // An all-zero ground page is real bare ground (sand, rock) when the land cover was read:
+    // keep it, or the carpet falls back to the old tint there (green under desert).
+    let ground = if data && land { Some(Arc::new(ground)) } else { ground_if_land(ground, heights) };
+    ((data && land).then(|| Arc::new(page)), ground)
 }
 
 /// Loader results.
@@ -729,7 +747,7 @@ impl TerrainWorld {
             self.store.pages.insert(*id, Arc::new(p));
             if let Some((cp, gp)) = cp {
                 self.store.canopy.insert(*id, cp);
-                self.store.ground.insert(*id, gp);
+                self.store.ground.insert(*id, node_ground(*id, gp));
                 self.canopy_built.0 += 1;
                 self.canopy_built.1 += ms;
                 self.ground_built.0 += 1;
@@ -787,14 +805,22 @@ impl TerrainWorld {
 
     /// The provider to register on the renderer (`Renderer::set_terrain`).
     pub fn provider(&self, dev: &dyn ed_gpu::Device) -> Result<TerrainProvider, ed_gpu::Error> {
-        // `EW_TERRAIN_POOL=<slots>`: GPU page pool size (396 KB per slot with canopy pages). The
+        // `EW_TERRAIN_POOL=<slots>`: GPU page pool size (396 KB per slot with canopy pages, 660 KB with ground pages too). The
         // 1024 default saturated at 1440p near the ground (drawn nodes + their parents came to
         // about 1160), which dropped pages and left holes.
         let pool_slots = std::env::var("EW_TERRAIN_POOL").ok().and_then(|v| v.parse().ok()).unwrap_or(1536);
-        let mut t = TerrainProvider::new(dev, TerrainConfig { select: self.config, trees_far: self.trees_far, pool_slots, ..Default::default() })?;
+        // `EW_GROUND_PAGES=0`: no ground pages on the GPU, the grass carpet colour from the old
+        // camera-centred tint map (grass G4). Ground pages are built with the canopy pages.
+        let ground_pages = self.trees_far.on() && std::env::var("EW_GROUND_PAGES").map_or(true, |v| v != "0");
+        let mut t = TerrainProvider::new(dev, TerrainConfig { select: self.config, trees_far: self.trees_far, pool_slots, ground_pages, ..Default::default() })?;
         // Scanned surface layers (P-slice S7): only when a local library is present.
         if let Some(m) = crate::terrain_mat::load() {
             t.set_materials(dev, &m)?;
+            if ground_pages {
+                // The carpet gains the grass and soil layers, so it needs them (rows: grass 2, soil 5).
+                use crate::terrain_mat::layer_target;
+                t.set_carpet(Some(ed_world::grass::carpet_rows(layer_target(2), layer_target(5))));
+            }
         }
         Ok(t)
     }
@@ -846,7 +872,7 @@ impl TerrainWorld {
                     l.inflight.remove(&id);
                     if self.store.pages.contains_key(&id) {
                         self.store.canopy.insert(id, page);
-                        self.store.ground.insert(id, ground);
+                        self.store.ground.insert(id, node_ground(id, ground));
                         self.canopy_built.0 += 1;
                         self.canopy_built.1 += ms;
                         self.ground_built.0 += 1;

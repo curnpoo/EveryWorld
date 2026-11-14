@@ -34,9 +34,10 @@ static const uint T_EDGE_SHIFT = 10;            // bits 10-21: per edge, 3 bits 
 static const uint T_NOMORPH = 1u << 22;         // no vertex of the node morphs
 static const uint T_TREES = 1u << 23;           // far forest rung on (trees G3): forest from the canopy page
 static const uint T_TREES_DEBUG = 1u << 24;     // EW_TREES_FAR=debug tint
+static const uint T_GROUND = 1u << 25;          // ground page (own or parent, grass G4): carpet from the shares
 static const uint T_PRIM_LOD_SHIFT = 24;        // the visibility primitive carries the LOD here
 
-// One drawn node (176 bytes, `DRAW_WORDS` = 44). World axes, camera-relative.
+// One drawn node (208 bytes, `DRAW_WORDS` = 52). World axes, camera-relative.
 struct TerrainDraw {
     float4 origin;  // xyz: node origin (ellipsoid point of the centre direction) - camera, w: skirt depth (m)
     float4 dir_c;   // xyz: centre direction, w: ellipsoid radius along it (m)
@@ -50,9 +51,11 @@ struct TerrainDraw {
     float4 hq;      // x, y: page scale, offset; z, w: parent page scale, offset
     float4 tex;     // x, y: node centre face angles times the equatorial radius, mod 4096 m;
                     // z, w (bits): own and parent canopy page word offsets in the pool (0: none)
+    uint4 gnd;      // x, y: own and parent ground page word offsets in the pool (0: none)
+    uint4 clim;     // corner climate (NodeId::corner order): aridity low 16 bits, temperature high (terrain.rs clim_word)
 };
 
-// The terrain material record (P-slice S7, `MAT_WORDS` = 44 words, at index
+// The terrain material record (P-slice S7, `MAT_WORDS` = 52 words, at index
 // `ResolveC.t_mat` of the draw table): two RGBA8 texture arrays, a layer per material slot
 // (terrain.rs `MAT_LAYERS`: rock, scree, grass, forest, snow, soil).
 struct TerrainMat {
@@ -62,7 +65,7 @@ struct TerrainMat {
     uint size;
     float tile[8];  // metres per texture repeat, per layer
     float4 gain[6]; // rgb: per-layer albedo calibration (target / texture mean, linear)
-    float4 pad[2];
+    float4 pad[4];
 };
 
 // Raw height of page sample (i, j) in pool slot `slot`.
@@ -446,6 +449,54 @@ float t_sample_spacing(TerrainDraw d, float2 g) {
 // Visibility words of a shell pixel: x = TERRAIN_VIS_BIT | L << 24 | draw, y = prim | lod << 24 |
 // k << 27 | SHELL_BIT (plain terrain pixels keep y under 2^28).
 // ---------------------------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------------------------
+// Ground pages (grass G4): 257 x 257 packed [herb, crop, shrub, wet] land-cover shares (RGBA8 in
+// a u32, ed_geo::GroundPage) per pool slot, after every slot's canopy words.
+// ---------------------------------------------------------------------------------------------
+
+static const float T_CLIM_ARID_MAX = 4.0;     // terrain.rs CLIM_ARID_MAX
+static const float T_CLIM_T0 = -60.0;         // CLIM_T0
+static const float T_CLIM_T_RANGE = 100.0;    // CLIM_T_RANGE
+
+float4 t_ground_raw(uint pool, uint off, uint i, uint j) {
+    uint c = ed_buf<uint>(pool)[off + j * T_PAGE_N + i];
+    return float4(float(c & 0xFFu), float((c >> 8) & 0xFFu), float((c >> 16) & 0xFFu), float(c >> 24)) / 255.0;
+}
+
+// Bilinear shares at page-sample coordinates `s` of the page at `off`.
+float4 t_ground_bilin(uint pool, uint off, float2 s) {
+    s = clamp(s, 0.0, float(T_PAGE_N - 1));
+    int2 s0 = int2(min(floor(s), float2(float(T_PAGE_N - 2))));
+    float2 t = s - float2(s0);
+    uint2 u = uint2(s0);
+    float4 a = lerp(t_ground_raw(pool, off, u.x, u.y), t_ground_raw(pool, off, u.x + 1u, u.y), t.x);
+    float4 b = lerp(t_ground_raw(pool, off, u.x, u.y + 1u), t_ground_raw(pool, off, u.x + 1u, u.y + 1u), t.x);
+    return lerp(a, b, t.y);
+}
+
+// Shares at grid point `g` of a draw: its own page, else its parent's quadrant (a draw whose own
+// page is still building).
+float4 t_ground_shares(uint pool, TerrainDraw d, float2 g) {
+    float2 s = g * float(T_PAGE_STRIDE);
+    if (d.gnd.x != 0u) {
+        return t_ground_bilin(pool, d.gnd.x, s);
+    }
+    float2 q = float2((d.slots.z & T_QX) != 0u ? 128.0 : 0.0, (d.slots.z & T_QY) != 0u ? 128.0 : 0.0);
+    return t_ground_bilin(pool, d.gnd.y, q + 0.5 * s);
+}
+
+// Climate (aridity, sea-level mean temperature C) at grid point `g`: bilinear over the corners.
+float2 t_climate(TerrainDraw d, float2 g) {
+    float2 c[4];
+    [ForceUnroll]
+    for (uint k = 0; k < 4u; k++) {
+        uint w = d.clim[k];
+        c[k] = float2(float(w & 0xFFFFu) / 65535.0 * T_CLIM_ARID_MAX, T_CLIM_T0 + float(w >> 16) / 65535.0 * T_CLIM_T_RANGE);
+    }
+    float2 t = saturate(g / float(T_CELLS));
+    return lerp(lerp(c[0], c[1], t.x), lerp(c[2], c[3], t.x), t.y);
+}
 
 static const uint SHELL_BIT = 0x80000000u;
 static const uint SHELL_K_SHIFT = 27;

@@ -553,6 +553,53 @@ const NICHES: [Niche; 8] = [
     Niche { feed: Feed::Herb, mul: 1.0, arid: ANY, alt: (LAWN_ALT, f32::INFINITY), temp: Temp::Any, kind: LAWN },
 ];
 
+/// Floats per row of the terrain carpet table ([`carpet_rows`], grass G4).
+pub const CARPET_ROW_FLOATS: usize = 16;
+/// Bare ground (what trees and the four shares leave) on dry land: the terrain's soil layer
+/// is gained toward this (linear albedo; tan desert floor and sand), toward its own calibrated
+/// mean where it is humid. Below `BARE_ARID_RAMP.0` aridity fully arid, above `.1` humid.
+pub const BARE_ARID: [f32; 3] = [0.36, 0.26, 0.15];
+pub const BARE_ARID_RAMP: (f32, f32) = (0.08, 0.45);
+
+/// The terrain carpet table (grass G4): the terrain shader mixes the carpet colour of every
+/// [`NICHES`] row by the ground page's shares, the node's climate and the pixel's altitude, so
+/// the ground under and past the blades is what the rule table grows, at every distance.
+/// `grass_ref` and `soil_ref` are the terrain grass and soil layers' calibrated means (the
+/// shader gains those layers by `carpet / grass_ref` and `bare / soil_ref`).
+///
+/// Row 0 (header): (grass ref rgb, rows), (soil ref rgb, 0), (bare arid rgb, ramp lo),
+/// (0, 0, 0, ramp hi). Rows 1..: (feed, mul, tallness 0..1, 0), (aridity lo, hi, altitude lo,
+/// hi), (temperature lo, hi C at altitude, 0, 0), (carpet rgb, 0). `mul` splits the share:
+/// that part is grass, the rest bare (sparse shrubland tufts on soil).
+pub fn carpet_rows(grass_ref: [f32; 3], soil_ref: [f32; 3]) -> Vec<[f32; CARPET_ROW_FLOATS]> {
+    const BIG: f32 = 1e9;
+    let r = |x: (f32, f32)| (x.0.max(-BIG), x.1.min(BIG));
+    let mut out = vec![[
+        grass_ref[0], grass_ref[1], grass_ref[2], NICHES.len() as f32,
+        soil_ref[0], soil_ref[1], soil_ref[2], 0.0,
+        BARE_ARID[0], BARE_ARID[1], BARE_ARID[2], BARE_ARID_RAMP.0,
+        0.0, 0.0, 0.0, BARE_ARID_RAMP.1,
+    ]];
+    for n in &NICHES {
+        let t = &TYPES[n.kind as usize];
+        let (a, al) = (r(n.arid), r(n.alt));
+        let tp = match n.temp {
+            Temp::Any => (-BIG, BIG),
+            Temp::Cold => (-BIG, COLD_C),
+            Temp::Warm => (COLD_C, BIG),
+        };
+        let tall = smoothstep(0.12, 0.5, t.height.1);
+        let c = t.carpet;
+        out.push([
+            n.feed as u8 as f32, n.mul, tall, 0.0,
+            a.0, a.1, al.0, al.1,
+            tp.0, tp.1, 0.0, 0.0,
+            c[0], c[1], c[2], 0.0,
+        ]);
+    }
+    out
+}
+
 /// Share of the weighted row choice at direction `d`: 0..1, patches ~22 m (not per clump).
 fn niche_pick(d: DVec3) -> f32 {
     let w = wrap_m(d);
@@ -774,6 +821,31 @@ mod tests {
         assert_eq!(at([0.8, 0.0, 0.0, 0.0], &ARID).unwrap().0, LONG);
         let hi = type_from_ground(&ground(Some([0.8, 0.0, 0.0, 0.0]), 2700.0), &Climate { aridity: 0.8, temp_sl: 25.0 }, dir(0.0));
         assert_eq!(hi.map(|t| t.0), Some(LAWN));
+    }
+
+    #[test]
+    fn carpet_rows_partition_each_share() {
+        let rows = carpet_rows([0.11, 0.155, 0.05], [0.12, 0.10, 0.075]);
+        assert_eq!(rows.len(), NICHES.len() + 1);
+        assert_eq!(rows[0][3] as usize, NICHES.len());
+        // The shader mixes every row of a share by its (softened) ranges: for any climate the
+        // rows of one share must cover it exactly once.
+        let inr = |x: f32, lo: f32, hi: f32| x >= lo && x < hi;
+        for feed in 0..4 {
+            for &arid in &[0.05f32, 0.3, 0.36, 0.9, 2.0] {
+                for &alt in &[-10.0f32, 500.0, 2599.0, 2601.0, 4000.0] {
+                    for &temp in &[-20.0f32, -3.5, -2.5, 15.0] {
+                        let n = rows[1..]
+                            .iter()
+                            .filter(|r| r[0] as usize == feed && inr(arid, r[4], r[5]) && inr(alt, r[6], r[7]) && inr(temp, r[8], r[9]))
+                            .count();
+                        assert_eq!(n, 1, "feed {feed} arid {arid} alt {alt} temp {temp}");
+                    }
+                }
+            }
+        }
+        let crop = rows[1..].iter().find(|r| r[0] == 1.0).unwrap();
+        assert_eq!(&crop[12..15], &TYPES[WHEAT as usize].carpet);
     }
 
     #[test]

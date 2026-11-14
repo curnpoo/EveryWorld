@@ -13,7 +13,7 @@ use crate::cache::DiskCache;
 use crate::canopy_height::{self, CanopyHeight};
 use crate::worldcover::{self, LandCover};
 use super::canopy_coarse::{self, CoarseTile};
-use super::ground::GroundPage;
+use super::ground::{ground_from_raw, GroundPage};
 use super::ground_coarse::{self, GroundCoarseTile};
 use ed_geo::canopy_page::{decode_height, encode_height, pack_under, CanopyPage};
 use std::sync::Arc;
@@ -224,7 +224,7 @@ pub fn node_canopy(src: &dyn CanopySource, id: NodeId, alt: &dyn Fn(usize, usize
 pub fn node_canopy_ground(src: &dyn CanopySource, id: NodeId, alt: &dyn Fn(usize, usize) -> f64) -> (CanopyPage, GroundPage) {
     let geo = geo_of(id);
     let (raw, _) = page_raw(src, id, &geo, true, true);
-    (canopy_from_raw(&geo, &raw, alt), GroundPage::from_raw(&raw))
+    (canopy_from_raw(&geo, &raw, alt), ground_from_raw(&raw))
 }
 
 /// Geodetic position `(lat, lon)` of every lattice sample.

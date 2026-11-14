@@ -84,7 +84,7 @@ struct ShellData {
     int4 off;               // xy: fine map slot offset, zw: coarse
     float4 c;               // xy: map centre face metres (mod 4096, a multiple of 32), z: shell range (m), w: tint strength
     float4 fu;              // xyz: the map face's u axis (render frame), w: top shell height (m)
-    float4 cells;           // x: fine cell (m), y: coarse cell (m), z: cells per side, w: unused
+    float4 cells;           // x: fine cell (m), y: coarse cell (m), z: cells per side, w (bits): carpet table word in the terrain draw table (grass G4; 0: none)
 };
 
 struct HzbLevel { uint offset; uint width; uint height; uint pad; };

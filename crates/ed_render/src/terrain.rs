@@ -77,7 +77,7 @@ pub const INDEX_COUNT: u32 = lod_index_offset(LODS as u32);
 /// The visibility word's primitive carries the node's LOD at this bit (`t_triangle`).
 pub const PRIM_LOD_SHIFT: u32 = 24;
 /// Words per drawn node (`TerrainDraw` in terrain_common.slang).
-pub const DRAW_WORDS: usize = 44;
+pub const DRAW_WORDS: usize = 52;
 /// Period (m) of the per-node texture phase (`TerrainDraw::tex`): every material and macro
 /// noise scale divides it, so the wrap is invisible.
 pub const TEX_PERIOD_M: f64 = 4096.0;
@@ -104,6 +104,26 @@ pub const F_NOMORPH: u32 = 1 << 22;
 pub const F_TREES: u32 = 1 << 23;
 /// `EW_TREES_FAR=debug`: the resolve tints canopy pixels by cover, height and mix.
 pub const F_TREES_DEBUG: u32 = 1 << 24;
+/// The draw has a ground page (own or parent, grass G4): the grass carpet colour comes from it.
+pub const F_GROUND: u32 = 1 << 25;
+
+/// u32 words per ground pool slot: one packed `[herb, crop, shrub, wet]` per page sample
+/// (herb in the low byte; `ed_geo::GroundPage`).
+pub const GROUND_WORDS: usize = PAGE_SAMPLES;
+/// Rows of the terrain carpet table (`ed_world::grass::carpet_rows`, 16 floats each).
+pub const CARPET_MAX_ROWS: usize = 16;
+pub const CARPET_ROW_FLOATS: usize = 16;
+/// Corner climate quantisation (`TerrainDraw::clim`): aridity 0..`CLIM_ARID_MAX`, temperature
+/// `CLIM_T0`..`CLIM_T0 + CLIM_T_RANGE` C, 16 bits each. Mirrored in terrain_common.slang.
+pub const CLIM_ARID_MAX: f32 = 4.0;
+pub const CLIM_T0: f32 = -60.0;
+pub const CLIM_T_RANGE: f32 = 100.0;
+
+/// One corner's climate word: aridity in the low 16 bits, temperature in the high.
+pub fn clim_word(c: [f32; 2]) -> u32 {
+    let q = |x: f32| (x.clamp(0.0, 1.0) * 65535.0).round() as u32;
+    q(c[0] / CLIM_ARID_MAX) | q((c[1] - CLIM_T0) / CLIM_T_RANGE) << 16
+}
 
 /// u32 words per canopy pool slot: one packed `[cover, height, mix, under]` per page sample.
 pub const CANOPY_WORDS: usize = PAGE_SAMPLES;
@@ -172,11 +192,14 @@ pub struct TerrainConfig {
     pub select: SelectConfig,
     /// The far forest rung (trees G3).
     pub trees_far: TreesFar,
+    /// Ground pages on the GPU (grass G4, `EW_GROUND_PAGES`, needs the residency to build them):
+    /// the grass carpet colour from the land-cover shares at every distance.
+    pub ground_pages: bool,
 }
 
 impl Default for TerrainConfig {
     fn default() -> Self {
-        Self { max_draws: 4096, pool_slots: 1024, skirts: true, clear_targets: false, select: SelectConfig::default(), trees_far: TreesFar::Off }
+        Self { max_draws: 4096, pool_slots: 1024, skirts: true, clear_targets: false, select: SelectConfig::default(), trees_far: TreesFar::Off, ground_pages: false }
     }
 }
 
@@ -197,6 +220,10 @@ pub struct TerrainDraw {
     /// x, y: the node centre's face angle coordinates times the equatorial radius, mod
     /// [`TEX_PERIOD_M`] (world-stable texture coordinates without large f32 values).
     pub tex: [f32; 4],
+    /// x, y: own and parent ground page word offsets in the pool (0: none); z, w: unused.
+    pub gnd: [u32; 4],
+    /// Climate at the node's corners ([`clim_word`]; `NodeId::corner` order).
+    pub clim: [u32; 4],
 }
 
 impl TerrainDraw {
@@ -213,6 +240,8 @@ impl TerrainDraw {
             w[36 + c] = x.to_bits();
             w[40 + c] = self.tex[c].to_bits();
         }
+        w[44..48].copy_from_slice(&self.gnd);
+        w[48..52].copy_from_slice(&self.clim);
         w
     }
 }
@@ -286,6 +315,8 @@ pub fn node_draw(id: NodeId, body: &Body, pose: &BodyPose, eye: DVec3, bands: [[
         slots: [page.0, parent.map_or(NO_SLOT, |p| p.0), flags, id.level() as u32],
         hq: [page.1.scale, page.1.offset, parent.map_or(0.0, |p| p.1.scale), parent.map_or(0.0, |p| p.1.offset)],
         tex: [(tu.atan() * a).rem_euclid(TEX_PERIOD_M) as f32, (tv.atan() * a).rem_euclid(TEX_PERIOD_M) as f32, 0.0, 0.0],
+        gnd: [0; 4],
+        clim: [0; 4],
     }
 }
 
@@ -684,6 +715,8 @@ struct PoolEntry {
     page: Arc<HeightPage>,
     /// The canopy page uploaded into this slot's canopy words, and its tallest canopy (m).
     canopy: Option<(Arc<CanopyPage>, f32)>,
+    /// The ground page uploaded into this slot's ground words (grass G4).
+    ground: Option<Arc<ed_geo::GroundPage>>,
 }
 
 /// GPU height page pool bookkeeping: `NodeId -> slot`, least recently used first (ties by id).
@@ -694,11 +727,13 @@ struct Pool {
     pending: Vec<(u64, Vec<u8>)>,
     /// Slots (the canopy words start after the height words of every slot).
     slots: u32,
+    /// Canopy words per slot (0: no canopy pages); the ground words follow the canopy words.
+    canopy_words: u32,
 }
 
 impl Pool {
-    fn new(slots: u32) -> Self {
-        Self { map: BTreeMap::new(), free: (0..slots).rev().collect(), pending: Vec::new(), slots }
+    fn new(slots: u32, canopy: bool) -> Self {
+        Self { map: BTreeMap::new(), free: (0..slots).rev().collect(), pending: Vec::new(), slots, canopy_words: if canopy { CANOPY_WORDS as u32 } else { 0 } }
     }
     /// Slot of `id`'s page, uploading it if needed. `None` when every slot is in use this frame.
     fn ensure(&mut self, id: NodeId, page: &Arc<HeightPage>, stamp: u64) -> Option<u32> {
@@ -721,7 +756,7 @@ impl Pool {
                 self.map.remove(&victim).expect("victim").slot
             }
         };
-        self.map.insert(id, PoolEntry { slot, stamp, page: page.clone(), canopy: None });
+        self.map.insert(id, PoolEntry { slot, stamp, page: page.clone(), canopy: None, ground: None });
         self.pending.push((slot as u64 * PAGE_WORDS as u64 * 4, page_bytes(page)));
         Some(slot)
     }
@@ -729,6 +764,26 @@ impl Pool {
     /// First u32 word of `slot`'s canopy page in the pool buffer.
     fn canopy_word(&self, slot: u32) -> u32 {
         (self.slots as usize * PAGE_WORDS + slot as usize * CANOPY_WORDS) as u32
+    }
+
+    /// First u32 word of `slot`'s ground page in the pool buffer.
+    fn ground_word(&self, slot: u32) -> u32 {
+        (self.slots as usize * (PAGE_WORDS + self.canopy_words as usize) + slot as usize * GROUND_WORDS) as u32
+    }
+
+    /// Ground word offset of `id` (whose height page is already in the pool), uploading `page`
+    /// into the slot's ground words if it is not there yet. 0: no page.
+    fn ensure_ground(&mut self, id: NodeId, page: Option<&Arc<ed_geo::GroundPage>>) -> u32 {
+        let Some(page) = page else { return 0 };
+        let Some(e) = self.map.get_mut(&id) else { return 0 };
+        let slot = e.slot;
+        if e.ground.as_ref().is_some_and(|g| Arc::ptr_eq(g, page)) {
+            return self.ground_word(slot);
+        }
+        e.ground = Some(page.clone());
+        let off = self.ground_word(slot);
+        self.pending.push((off as u64 * 4, page.to_bytes()));
+        off
     }
 
     /// Canopy word offset and tallest canopy (m) of `id` (whose height page is already in the
@@ -843,6 +898,11 @@ pub fn shell_layout(max_draws: u32) -> (u32, u32, u32, usize) {
     (draw_base, (types_word / SHELL_TYPE_FLOATS) as u32, map_word as u32, map_word + 2 * SHELL_MAP_N * SHELL_MAP_N)
 }
 
+/// First word of the carpet table in a view's draw table: after the shell records.
+pub fn carpet_word(max_draws: u32) -> usize {
+    shell_layout(max_draws).3
+}
+
 /// Grass shells and the terrain's grass tint ([`TerrainProvider::set_grass`]): the type rows
 /// and the two type maps of `ed_world::grass` (fine for the shells, coarse for the tint).
 #[derive(Clone, Debug)]
@@ -918,6 +978,8 @@ pub struct TerrainProvider {
     shadow_tile: u32,
     /// Surface material arrays ([`TerrainProvider::set_materials`]); `None`: the flat tint.
     mats: Option<MatTex>,
+    /// The terrain carpet table (grass G4, [`TerrainProvider::set_carpet`]).
+    carpet: Option<Vec<[f32; CARPET_ROW_FLOATS]>>,
 }
 
 const GEN_MSL: &str = include_str!("../shaders/gen/msl/terrain.metal");
@@ -950,10 +1012,11 @@ impl TerrainProvider {
         let index = Tracked::new(dev, "terrain indices", INDEX_COUNT as u64 * 4, upload)?;
         dev.write_buffer(index.id, 0, &gpu::bytes(&indices()))?;
         // Height words of every slot, then (far forest rung on) the canopy words of every slot.
-        let words = PAGE_WORDS as u64 + if config.trees_far.on() { CANOPY_WORDS as u64 } else { 0 };
+        // Then (grass G4) the ground words of every slot.
+        let words = PAGE_WORDS as u64 + if config.trees_far.on() { CANOPY_WORDS as u64 } else { 0 } + if config.ground_pages { GROUND_WORDS as u64 } else { 0 };
         let pool_buf = Tracked::new(dev, "terrain page pool", config.pool_slots as u64 * words * 4, upload)?;
         let view0 = Self::new_view(dev, config.max_draws)?;
-        Ok(Self { config, built, raster, shadow, shell, grass: None, index, pool_buf, pool: Pool::new(config.pool_slots), views: vec![view0], cur: 0, stamp: 0, stats: TerrainStats::default(), eye: DVec3::ZERO, shadow_tile: 2048, mats: None })
+        Ok(Self { config, built, raster, shadow, shell, grass: None, index, pool_buf, pool: Pool::new(config.pool_slots, config.trees_far.on()), views: vec![view0], cur: 0, stamp: 0, stats: TerrainStats::default(), eye: DVec3::ZERO, shadow_tile: 2048, mats: None, carpet: None })
     }
 
     fn new_view(dev: &dyn Device, max_draws: u32) -> Result<TerrainView, ed_gpu::Error> {
@@ -961,7 +1024,8 @@ impl TerrainProvider {
         // Room for the view's draws and up to four cascade lists.
         // One more record at the end: the material record (`material_record`).
         // Then the grass shell records (`shell_layout`).
-        let size = shell_layout(max_draws).3 as u64 * 4;
+        // Then the carpet table (`carpet_word`).
+        let size = (carpet_word(max_draws) + CARPET_MAX_ROWS * CARPET_ROW_FLOATS) as u64 * 4;
         Ok(TerrainView { draws: Tracked::new(dev, "terrain draws", size, per_frame)?, entries: Vec::new(), vis: Vec::new(), bounds: Vec::new(), ranges: [(0, 0); 4], groups: [[(0, 0); LODS]; 5], shells: Vec::new(), imports: Vec::new() })
     }
 
@@ -1032,6 +1096,16 @@ impl TerrainProvider {
                 Err(e)
             }
         }
+    }
+
+    /// The terrain carpet table (grass G4, `ed_world::grass::carpet_rows`): with ground pages
+    /// on, the grass and bare ground colour from the land-cover shares. `None`: no table (the
+    /// draws keep the old tint).
+    pub fn set_carpet(&mut self, rows: Option<Vec<[f32; CARPET_ROW_FLOATS]>>) {
+        self.carpet = rows.map(|mut r| {
+            r.truncate(CARPET_MAX_ROWS);
+            r
+        });
     }
 
     /// Grass shells and the terrain's grass tint (styles C and D); `None` turns both off.
@@ -1222,6 +1296,20 @@ impl TerrainProvider {
             } else {
                 (0, 0, 0.0)
             };
+            // Ground pages (grass G4) ride in the same slots, after the canopy words.
+            let ground = if self.config.ground_pages && self.carpet.is_some() {
+                let own = res.ground(id);
+                let par = parent.as_ref().and(id.parent()).and_then(|p| res.ground(p).map(|g| (p, g)));
+                let o = self.pool.ensure_ground(id, own.as_ref().map(|g| &g.page));
+                let po = par.as_ref().map_or(0, |(p, g)| self.pool.ensure_ground(*p, Some(&g.page)));
+                // Corner climate: the own page's, else the parent's (bilinear at the corners
+                // would be exact on a coarser grid; the parent's corners are close enough for a
+                // draw that is waiting on its own page).
+                let clim = own.as_ref().map(|g| g.climate).or_else(|| par.as_ref().map(|(_, g)| g.climate));
+                (o, po, clim)
+            } else {
+                (0, 0, None)
+            };
             let coarse = coarse_mask(id, &drawn);
             if coarse != 0 {
                 st.stitched += 1;
@@ -1229,6 +1317,13 @@ impl TerrainProvider {
             let cfg = &self.config.select;
             let bands = [morph_band(body, id.level(), cfg, pixels_per_radian), morph_band(body, id.level().saturating_sub(1), cfg, pixels_per_radian)];
             let mut d = node_draw(id, body, pose, eye, bands, self.config.skirts, (slot, &page), parent.as_ref().map(|(s, p)| (*s, &**p)), coarse);
+            if let (o, po, Some(clim)) = ground
+                && (o != 0 || po != 0)
+            {
+                d.slots[2] |= F_GROUND;
+                d.gnd = [o, po, 0, 0];
+                d.clim = clim.map(clim_word);
+            }
             if tf.on() {
                 d.slots[2] |= F_TREES | if tf == TreesFar::Debug { F_TREES_DEBUG } else { 0 };
                 d.tex[2] = f32::from_bits(canopy);
@@ -1412,6 +1507,10 @@ impl GeometryProvider for TerrainProvider {
             ];
             shell_fd = Some(w);
         }
+        // The carpet table's first word (0: none), in the frame's shell block.
+        if let Some(w) = shell_fd.as_mut() {
+            w[19] = if self.config.ground_pages && self.carpet.is_some() { carpet_word(self.config.max_draws) as u32 } else { 0 };
+        }
         let mut words: Vec<u32> = main.iter().flat_map(|e| e.words()).collect();
         let mut next = main.len() as u32;
         let mut ranges = [(0, 0); 4];
@@ -1450,6 +1549,8 @@ impl GeometryProvider for TerrainProvider {
         let grass = self.grass.as_ref();
         let type_bytes = grass.map(|g| gpu::bytes(&g.types.iter().take(SHELL_MAX_TYPES).flat_map(|r| r.iter().map(|x| x.to_bits())).collect::<Vec<u32>>()));
         let maps = grass.and_then(|g| g.maps.clone());
+        let carpet_bytes = self.carpet.as_ref().map(|c| gpu::bytes(&c.iter().flat_map(|r| r.iter().map(|x| x.to_bits())).collect::<Vec<u32>>()));
+        let carpet_at = carpet_word(self.config.max_draws) * 4;
         dev.fill_frame_buffer(v.draws.id, &mut |dst| {
             dst[..bytes.len()].copy_from_slice(&bytes);
             dst[at..at + mat_rec.len()].copy_from_slice(&mat_rec);
@@ -1458,6 +1559,9 @@ impl GeometryProvider for TerrainProvider {
             if let Some(tb) = &type_bytes {
                 let ta = types_at as usize * SHELL_TYPE_FLOATS * 4;
                 dst[ta..ta + tb.len()].copy_from_slice(tb);
+            }
+            if let Some(cb) = &carpet_bytes {
+                dst[carpet_at..carpet_at + cb.len()].copy_from_slice(cb);
             }
             if let Some(m) = &maps {
                 let ma = map_at as usize * 4;

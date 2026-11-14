@@ -24,5 +24,5 @@ pub use body::{Body, BodyPose};
 pub use cull::{Frustum, Horizon};
 pub use page::{FacePos, HeightPage, PAGE_CELLS, PAGE_N};
 pub use quadtree::{Node, Quadtree};
-pub use residency::{ByteLru, ChunkMask, FakeResidency, NodeState, Residency};
+pub use residency::{ByteLru, ChunkMask, FakeResidency, NodeGround, NodeState, Residency};
 pub use select::{DrawNode, Planet, SelectConfig, Selection, View, edge_neighbours};

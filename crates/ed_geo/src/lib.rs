@@ -11,12 +11,14 @@
 //! - **Render (Y-up)**: ENU remapped to Bevy's convention: x=East, y=Up, z=-North.
 
 pub mod canopy_page;
+pub mod ground_page;
 pub mod height_page;
 pub mod node;
 pub mod sun;
 pub mod tile;
 
 pub use canopy_page::{decode_height, encode_height, CanopyPage, CANOPY_BYTES};
+pub use ground_page::GroundPage;
 pub use height_page::{FINE_FROM_LEVEL, HEIGHT_STEP_FINE_M, HEIGHT_STEP_M, height_step_for_level, HeightPage, PAGE_CELLS, PAGE_N, PAGE_SAMPLES};
 pub use node::{BodyId, NodeId, ObjectId};
 

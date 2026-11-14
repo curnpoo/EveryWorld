@@ -32,6 +32,12 @@ const SPECS: [Spec; 6] = [
     Spec { asset: "__soil_dirt", tile_m: 1.0, target: [0.12, 0.10, 0.075] },
 ];
 
+/// The calibrated mean albedo of a layer (`MAT_LAYERS` index): the grass carpet table's
+/// references (grass G4).
+pub fn layer_target(layer: usize) -> [f32; 3] {
+    SPECS[layer].target
+}
+
 /// The library root, if there is one.
 pub fn library_root() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("EW_MEGASCANS") {

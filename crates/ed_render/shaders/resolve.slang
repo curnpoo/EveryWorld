@@ -206,6 +206,7 @@ struct TSurf {
     float3 n;
     float rough;
     float ao;
+    float grass;    // the grass layer's share of the blend (grass G4 near shading)
 };
 
 // One layer at one projection: albedo+height and normal+rough+AO, sampled with gradients.
@@ -243,6 +244,82 @@ float4 t_layer_normal(TerrainMat m, SamplerState smp, uint layer, TProj p) {
     return float4(b.rg * 2.0 - 1.0, b.b, b.a);
 }
 
+// The grass carpet and bare ground of a terrain pixel (grass G4) from the ground page's shares,
+// the node's climate and the pixel's altitude through the carpet table (ed_world::grass
+// `carpet_rows`; first word `FrameData.shell.cells.w`). Data-driven: no per-type branch here.
+struct TCarpet {
+    bool on;
+    float veg;          // grass share of the open (non-forest) ground; the rest is bare
+    float tall;         // tallness of the grass mix (0..1, the floor darkening under blades)
+    float3 grass_gain;  // carpet colour / the terrain grass layer's mean
+    float3 soil_gain;   // bare ground colour / the soil layer's mean
+};
+
+// Smooth membership of `x` in `[lo, hi)` with half-width `s` (bounds past 1e8 are open).
+float t_band(float x, float2 r, float s) {
+    float a = r.x < -1e8 ? 1.0 : smoothstep(0.0, 1.0, (x - r.x) / (2.0 * s) + 0.5);
+    float b = r.y > 1e8 ? 1.0 : 1.0 - smoothstep(0.0, 1.0, (x - r.y) / (2.0 * s) + 0.5);
+    return a * b;
+}
+
+// Blend half-widths of the rule table's hard thresholds (aridity, altitude m, temperature C):
+// the table's edges become soft transitions instead of lines across the land.
+static const float3 T_CARPET_SOFT = float3(0.05, 150.0, 1.5);
+
+TCarpet t_carpet(FrameData* f, uint pool, TerrainDraw d, float2 g, float h, float cover) {
+    TCarpet o;
+    o.on = false;
+    o.veg = 1.0;
+    o.tall = 0.0;
+    o.grass_gain = float3(1.0);
+    o.soil_gain = float3(1.0);
+    uint tw = asuint(f.shell.cells.w);
+    if (tw == 0u || (d.slots.z & T_GROUND) == 0u) {
+        return o;
+    }
+    o.on = true;
+    float4* t = ed_buf<float4>(ed_c.t_draws);
+    uint b = tw >> 2;
+    float4 hd0 = t[b];
+    float4 hd1 = t[b + 1u];
+    float4 hd2 = t[b + 2u];
+    float4 hd3 = t[b + 3u];
+    float4 sh = t_ground_shares(pool, d, g);
+    float2 cl = t_climate(d, g);
+    float temp = cl.y - 0.0065 * max(h, 0.0);
+    float3 cc = float3(0.0);
+    float v = 0.0;
+    float tl = 0.0;
+    uint n = min(uint(hd0.w), 15u);
+    for (uint k = 1u; k <= n; k++) {
+        uint r = b + 4u * k;
+        float4 r0 = t[r];
+        float s = sh[min(uint(r0.x), 3u)];
+        if (s <= 0.0) {
+            continue;
+        }
+        float4 r1 = t[r + 1u];
+        float4 r2 = t[r + 2u];
+        float ok = t_band(cl.x, r1.xy, T_CARPET_SOFT.x) * t_band(h, r1.zw, T_CARPET_SOFT.y) * t_band(temp, r2.xy, T_CARPET_SOFT.z);
+        float w = s * r0.y * ok;
+        cc += w * t[r + 3u].rgb;
+        v += w;
+        tl += w * r0.z;
+    }
+    float s4 = sh.x + sh.y + sh.z + sh.w;
+    float bare = max(1.0 - s4 - cover, 0.0);
+    // Grass over the open ground; a sample that is all forest keeps grass under its trees.
+    o.veg = saturate((v + 0.002) / (s4 + bare + 0.002));
+    float3 grass_ref = max(hd0.rgb, float3(1e-3));
+    float3 carpet = v > 1e-4 ? cc / v : grass_ref;
+    o.tall = v > 1e-4 ? tl / v : 0.0;
+    o.grass_gain = clamp(carpet / grass_ref, float3(0.2), float3(5.0));
+    float3 soil_ref = max(hd1.rgb, float3(1e-3));
+    float arid = 1.0 - smoothstep(hd2.w, hd3.w, cl.x);
+    o.soil_gain = lerp(float3(1.0), hd2.rgb / soil_ref, arid);
+    return o;
+}
+
 // Bilinear height of the own page at page-sample coordinates `s` (clamped to the page).
 float t_page_bilin(uint pool, TerrainDraw d, float2 s) {
     s = clamp(s, 0.0, float(T_PAGE_N - 1));
@@ -257,7 +334,7 @@ float t_page_bilin(uint pool, TerrainDraw d, float2 s) {
 // up; `h`: height (m); `curv`: landform Laplacian (1/m, + hollow); `curv_f`: fine Laplacian;
 // `w`, `dwx`, `dwy`: face metres and their per-pixel steps; `tu`, `tv`: world directions of
 // +u, +v; `dist`: distance from the camera (m).
-TSurf terrain_material(FrameData* f, TerrainMat m, TerrainDraw d, float3 n, float3 nm, float3 up, float h, float curv, float curv_f, float2 w, float2 dwx, float2 dwy, float dhx, float dhy, float3 tu, float3 tv, float dist, bool trees, float4 cv, float spacing) {
+TSurf terrain_material(FrameData* f, TerrainMat m, TerrainDraw d, float3 n, float3 nm, float3 up, float h, float curv, float curv_f, float2 w, float2 dwx, float2 dwy, float dhx, float dhy, float3 tu, float3 tv, float dist, bool trees, float4 cv, float spacing, TCarpet gc) {
     SamplerState smp = ed_smp(ed_c.smp);
     float cs = dot(nm, up);          // landform slope cosine
     float cf = dot(n, up);           // fine slope cosine
@@ -312,6 +389,12 @@ TSurf terrain_material(FrameData* f, TerrainMat m, TerrainDraw d, float3 n, floa
     wt[L_FOREST] = forest * (1.0 - rock) * (1.0 - scree * 0.8);
     wt[L_SOIL] = soil * 0.5 * (1.0 - rock) * (1.0 - snow);
     wt[L_SNOW] = snow * 1.6;
+    if (gc.on) {
+        // Grass G4: the land cover splits the open ground into grass and bare (soil).
+        float gw = wt[L_GRASS];
+        wt[L_GRASS] = gw * gc.veg;
+        wt[L_SOIL] += gw * (1.0 - gc.veg);
+    }
     [ForceUnroll]
     for (uint k = 0; k < T_LAYERS; k++) {
         if (k != L_SNOW) {
@@ -382,6 +465,7 @@ TSurf terrain_material(FrameData* f, TerrainMat m, TerrainDraw d, float3 n, floa
     o.n = float3(0.0);
     o.rough = 0.0;
     o.ao = 0.0;
+    o.grass = 0.0;
     float3 pert = float3(0.0);
     [ForceUnroll]
     for (uint k = 0; k < T_LAYERS; k++) {
@@ -389,7 +473,11 @@ TSurf terrain_material(FrameData* f, TerrainMat m, TerrainDraw d, float3 n, floa
             continue;
         }
         float a = wt[k] / max(total, 1e-5);
-        o.albedo += a * ah[k].rgb * m.gain[k].rgb;
+        float3 cg = k == L_GRASS ? gc.grass_gain : (k == L_SOIL ? gc.soil_gain : float3(1.0));
+        o.albedo += a * ah[k].rgb * m.gain[k].rgb * cg;
+        if (k == L_GRASS) {
+            o.grass = a;
+        }
         float4 nr = float4(0.0, 0.0, T_ROUGH, 1.0);
         float3 nw = float3(0.0);
         if (near > 0.0) {
@@ -860,6 +948,27 @@ float3 shell_tint(FrameData* f, TerrainDraw d, float2 g, float3 albedo, float di
     return lerp(albedo, tgt, saturate(f.shell.c.w * cov * edge));
 }
 
+// Grass G4, near shading of the carpet (the colour itself is in the material): clump- and
+// patch-scale brightness noise filtered by the pixel footprint (`under.y`) and the shaded floor
+// under the blades (`under.x`), as `shell_tint` but world-stable on the face metres `w` and
+// weighted by the grass layer's share `k` of the pixel.
+float3 ground_shade(FrameData* f, float3 albedo, float k, float tall, float2 w, float dist, float px_m) {
+    float m = 1.0;
+    if (f.grass.under.y > 0.0) {
+        float a1 = saturate(1.0 / (3.0 * px_m) - 0.33);
+        float a4 = saturate(4.0 / (3.0 * px_m) - 0.33);
+        float a16 = saturate(16.0 / (3.0 * px_m) - 0.33);
+        float nz = (t_noise(w + 3.0, 1.0) - 0.5) * a1 * 0.7 + (t_noise(w + 17.0, 4.0) - 0.5) * a4 * 0.8 + (t_noise(w + 101.0, 16.0) - 0.5) * a16 * 0.6;
+        m *= 1.0 + f.grass.under.y * nz;
+    }
+    if (f.grass.under.x > 0.0 && (f.grass.bufs.w & 1u) != 0u) {
+        float R = f.grass.lod.y;
+        float in_blades = 1.0 - smoothstep(0.1 * R, 0.6 * R, dist);
+        m *= 1.0 - f.grass.under.x * in_blades * lerp(0.25, 1.0, tall);
+    }
+    return albedo * lerp(1.0, m, k);
+}
+
 // A terrain pixel: the rasterised triangle refetched from the draw record and page pool (exact
 // position on the drawn facet), a smooth normal from the height page, the slope/altitude tint,
 // then the same light as every opaque pixel.
@@ -902,6 +1011,9 @@ float4 terrain_pixel<let TR : int>(FrameData* f, FsOut i, uint2 vis, float3 dir)
     if (trees && asuint(d.tex.z) != 0u) {
         cv = t_canopy_bilin(pool, asuint(d.tex.z), g * float(T_PAGE_STRIDE));
     }
+    // Grass G4: carpet and bare ground from the ground page (every distance).
+    TCarpet gc = t_carpet(f, pool, d, g, h, cv.x);
+    float grass_k = 0.0;
     float rough = T_ROUGH;
     float mat_ao = 1.0;
     if (ed_c.t_mat != 0u) {
@@ -929,8 +1041,9 @@ float4 terrain_pixel<let TR : int>(FrameData* f, FsOut i, uint2 vis, float3 dir)
         }
         float dl = float(rl) * spacing;
         float df = float(rf) * spacing;
-        TSurf s = terrain_material(f, m, d, n, nm, up, h, lap / (dl * dl), lapf / (df * df), w, dwx, dwy, dot(dpx, up), dot(dpy, up), tu, tv, length(p), trees, cv, spacing);
+        TSurf s = terrain_material(f, m, d, n, nm, up, h, lap / (dl * dl), lapf / (df * df), w, dwx, dwy, dot(dpx, up), dot(dpy, up), tu, tv, length(p), trees, cv, spacing, gc);
         albedo = s.albedo;
+        grass_k = s.grass;
         n = s.n;
         rough = s.rough;
         mat_ao = s.ao;
@@ -954,7 +1067,16 @@ float4 terrain_pixel<let TR : int>(FrameData* f, FsOut i, uint2 vis, float3 dir)
         mat_ao *= fo.ao;
         sun_k = fo.sun;
     }
-    if ((f.shell.cfg.x & 2u) != 0u && shell_face(f, d)) {
+    if (gc.on) {
+        // The carpet colour is in the material; near the camera the field's texture and the
+        // shaded floor under the blades (style E) on the grass share of the pixel.
+        if (grass_k > 0.0) {
+            float pa_t = length(view_dir(f, i.pos.xy + float2(1.0, 0.0)) - dir);
+            float px_t = length(p) * pa_t / sqrt(max(abs(dot(dir, n)), 0.03));
+            float2 wg = d.tex.xy + (g - 32.0) * (d.shape.x * d.shape.y);
+            albedo = ground_shade(f, albedo, grass_k, gc.tall, wg, length(p), px_t);
+        }
+    } else if ((f.shell.cfg.x & 2u) != 0u && shell_face(f, d)) {
         float pa_t = length(view_dir(f, i.pos.xy + float2(1.0, 0.0)) - dir);
         float px_t = length(p) * pa_t / sqrt(max(abs(dot(dir, n)), 0.03));
         albedo = shell_tint(f, d, g, albedo, length(p), px_t);

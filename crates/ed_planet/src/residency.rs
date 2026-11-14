@@ -72,9 +72,24 @@ pub trait Residency {
         None
     }
 
+    /// The node's ground page (grass plan G2) and climate (grass G4), when built. Optional: a
+    /// node without one draws the generic terrain material.
+    fn ground(&self, _id: NodeId) -> Option<Arc<NodeGround>> {
+        None
+    }
+
     fn complete(&self, id: NodeId) -> bool {
         self.chunks(id).complete()
     }
+}
+
+/// A node's ground page with the low-frequency climate at its four corners (order as
+/// `NodeId::corner`: (0,0) (1,0) (0,1) (1,1)), `[aridity, mean annual sea-level temperature C]`.
+/// Corners are pure functions of their direction, so neighbours agree on shared corners.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NodeGround {
+    pub page: Arc<ed_geo::GroundPage>,
+    pub climate: [[f32; 2]; 4],
 }
 
 #[derive(Clone, Debug)]

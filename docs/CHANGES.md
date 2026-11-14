@@ -1,3 +1,23 @@
+## 2026-11-14: Grass G4: ground colour from ground pages at every distance
+
+- The grass carpet colour now comes from the per-node ground pages (G2), not the camera-centred ±2 km tint
+  map, so the green node-border grid at 1 km, the edge at 2 km and the lawn green under desert, tundra and
+  wheat are gone. Ground pages ride in the terrain page pool beside canopy (one u32 per sample, parent
+  fallback); `TerrainDraw` 44 -> 52 words (ground offsets + corner climate). `resolve.slang` `t_carpet`
+  weights a carpet table generated from `NICHES` (`ed_world::grass::carpet_rows`) by share x soft
+  aridity/altitude/temperature bands; the bare share keeps the rock/soil layer, warmed toward sand with aridity.
+  Near detail noise is now world-stable. `GroundPage` moved to `ed_geo`; `ed_planet::NodeGround` carries
+  page + corner climate. All-zero pages are kept where land cover was read (pure sand was falling back to green).
+  Off switch: `EW_GROUND_PAGES=0` (old tint map). Test: `carpet_rows_partition_each_share`; 482 pass.
+- gpu_frame mean ms, before -> after (1600x900, noisy run to run): sonoran low 6.47->5.83, 1 km 5.53->5.34,
+  10 km 4.55->4.85; tundra 6.57->6.68, 5.45->5.91, 4.76->5.06; iowa 9.64->10.35, 5.99->6.74, 4.62->5.76;
+  siusi 11.89->12.92, 7.36->9.88, 4.92->5.34; dunes 4.83->4.64, 4.86->5.57, 4.56->5.55. About +0.3-1 ms on
+  aerial views (16-row loop per pixel), flat at eye level; not yet optimised (bake carpet per node). Page pool
+  396 -> 660 KB per slot.
+- Open: bare-heavy ground reads pink-grey at 10 km (soil gain too strong under haze); crop fields in Sonoran
+  are loud straw rectangles; Siusi shows a reddish valley-floor streak (bare share); inland lakes read as pale
+  bare patches (no water yet). G5 imagery is the planned calibration.
+
 ## 2026-11-14: Data cache size cap (`EW_CACHE_GB`, default 20)
 
 - `ed_data::cache::prune`: at `ew` startup a background thread brings `.earthdrop-cache` under `EW_CACHE_GB`
