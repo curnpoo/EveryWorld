@@ -443,6 +443,9 @@ pub struct GroundSample {
     pub canopy: CanopySample,
     /// Landform slope cosine (~16 m).
     pub slope_cos: f32,
+    /// Land-cover shares of the node's ground page, `[herb, crop, shrub, wet]` in 0..1 (`None`:
+    /// no ground page here).
+    pub shares: Option<[f32; 4]>,
 }
 
 /// Terrain material layer weights (CPU mirror of resolve.slang `terrain_material` without its
@@ -906,15 +909,15 @@ mod tests {
     }
 
     fn meadow(_: DVec3) -> Option<GroundSample> {
-        Some(GroundSample { canopy: CanopySample { cover: 0.0, height_m: 0.0, mix: 0.0, under: 0.0, alt_m: 600.0, wet: 0.3 }, slope_cos: 0.99 })
+        Some(GroundSample { canopy: CanopySample { cover: 0.0, height_m: 0.0, mix: 0.0, under: 0.0, alt_m: 600.0, wet: 0.3 }, slope_cos: 0.99, shares: None })
     }
 
     fn forest(_: DVec3) -> Option<GroundSample> {
-        Some(GroundSample { canopy: CanopySample { cover: 0.9, height_m: 25.0, mix: 0.8, under: 0.3, alt_m: 1200.0, wet: 0.3 }, slope_cos: 0.95 })
+        Some(GroundSample { canopy: CanopySample { cover: 0.9, height_m: 25.0, mix: 0.8, under: 0.3, alt_m: 1200.0, wet: 0.3 }, slope_cos: 0.95, shares: None })
     }
 
     fn snow(_: DVec3) -> Option<GroundSample> {
-        Some(GroundSample { canopy: CanopySample { cover: 0.0, height_m: 0.0, mix: 0.0, under: 0.0, alt_m: 3600.0, wet: 0.3 }, slope_cos: 0.99 })
+        Some(GroundSample { canopy: CanopySample { cover: 0.0, height_m: 0.0, mix: 0.0, under: 0.0, alt_m: 3600.0, wet: 0.3 }, slope_cos: 0.99, shares: None })
     }
 
     fn count(v: &[CoverItem], k: &[Kind]) -> usize {

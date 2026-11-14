@@ -228,7 +228,7 @@ fn run_job(j: Job) -> Done {
     } else {
         let sample = crate::ground_cover::sampler(&j.pages);
         let cl = ed_world::ground_cover::Climate::at(j.id.centre().normalize());
-        let at = |d: DVec3| sample(d).and_then(|g| gr::type_from_ground(&g, &cl));
+        let at = |d: DVec3| sample(d).and_then(|g| gr::type_from_ground(&g, &cl, d));
         gr::scatter_node(j.id, &at, j.keep, SEED)
     };
     if j.style == Style::D {
@@ -255,7 +255,7 @@ fn build_maps(j: &MapJob) -> Vec<u32> {
             return lab_at(d);
         }
         let g = sample(d)?;
-        gr::type_from_ground(&g, &cl)
+        gr::type_from_ground(&g, &cl, d)
     };
     let mut m = gr::build_map(j.face, j.centre, gr::MAP_FINE_M, j.a, &at, SEED);
     m.extend(gr::build_map(j.face, j.centre, gr::MAP_COARSE_M, j.a, &at, SEED));

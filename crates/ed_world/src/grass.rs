@@ -23,7 +23,7 @@
 //! hashes only, no maps.
 
 use crate::ground_cover::{Climate, Frame, GroundSample, SUB, candidate, cell_key, cells, layer_weights};
-use crate::noise::{fbm3, smoothstep};
+use crate::noise::{fbm3, smoothstep, value3};
 use ed_geo::NodeId;
 use ed_geo::node::lattice_point;
 use glam::DVec3;
@@ -94,9 +94,12 @@ pub const LAWN: u8 = 0;
 pub const MEADOW: u8 = 1;
 pub const LONG: u8 = 2;
 pub const WHEAT: u8 = 3;
+pub const SEDGE: u8 = 4;
+pub const TUFT: u8 = 5;
+pub const TUNDRA: u8 = 6;
 
 /// The type table (index = `kind`).
-pub const TYPES: [GrassType; 4] = [
+pub const TYPES: [GrassType; 7] = [
     GrassType {
         name: "lawn",
         height: (0.12, 0.18),
@@ -191,6 +194,78 @@ pub const TYPES: [GrassType; 4] = [
         shell_cover: 0.45,
         sheen: 0.8,
         carpet: [0.30, 0.225, 0.085],
+        shell_only: false,
+    },
+    GrassType {
+        name: "sedge",
+        height: (0.6, 1.1),
+        width: 0.012,
+        blades: 40,
+        clump_r: 0.35,
+        aniso: 1.0,
+        lean: 0.35,
+        stiffness: 0.6,
+        curve: 0.25,
+        root: [0.035, 0.05, 0.015],
+        mid: [0.085, 0.11, 0.03],
+        tip: [0.15, 0.15, 0.06],
+        dry: [0.24, 0.2, 0.09],
+        head: 0.12,
+        head_w: 1.6,
+        density: 0.8,
+        shell_h: 0.1,
+        strand_m: 0.0078125,
+        shell_cover: 0.8,
+        sheen: 0.55,
+        carpet: [0.085, 0.105, 0.035],
+        shell_only: false,
+    },
+    GrassType {
+        name: "tuft",
+        height: (0.25, 0.5),
+        width: 0.008,
+        blades: 28,
+        clump_r: 0.22,
+        aniso: 1.0,
+        lean: 0.6,
+        stiffness: 0.7,
+        curve: 0.4,
+        root: [0.1, 0.085, 0.04],
+        mid: [0.2, 0.17, 0.08],
+        tip: [0.3, 0.26, 0.13],
+        dry: [0.3, 0.25, 0.12],
+        head: 0.0,
+        head_w: 1.0,
+        density: 0.12,
+        shell_h: 0.0,
+        strand_m: 0.0078125,
+        shell_cover: 0.0,
+        sheen: 0.55,
+        carpet: [0.22, 0.17, 0.1],
+        shell_only: false,
+    },
+    GrassType {
+        name: "tundra",
+        height: (0.08, 0.2),
+        width: 0.012,
+        blades: 48,
+        clump_r: 0.35,
+        aniso: 1.0,
+        lean: 0.8,
+        stiffness: 0.85,
+        curve: 0.35,
+        root: [0.05, 0.05, 0.02],
+        mid: [0.11, 0.1, 0.04],
+        tip: [0.17, 0.14, 0.06],
+        dry: [0.2, 0.13, 0.06],
+        head: 0.0,
+        head_w: 1.0,
+        density: 0.75,
+        shell_h: 0.05,
+        strand_m: 0.0078125,
+        shell_cover: 0.8,
+        sheen: 0.55,
+        carpet: [0.1, 0.09, 0.04],
         shell_only: false,
     },
 ];
@@ -425,23 +500,121 @@ pub fn scatter_node(id: NodeId, type_at: &dyn Fn(DVec3) -> Option<(u8, f32)>, ke
     out
 }
 
-/// Real ground: grass where the terrain material shows grass (G7's layer mirror), by climate:
-/// long dry grass where it is arid, short turf high up, a meadow mix elsewhere.
-pub fn type_from_ground(g: &GroundSample, cl: &Climate) -> Option<(u8, f32)> {
-    let c = &g.canopy;
-    let w = layer_weights(c.alt_m, g.slope_cos, c.cover);
-    let grassy = (w[2] + w[5]) * (1.0 - smoothstep(0.1, 0.6, c.cover));
-    if grassy < 0.15 {
+/// Which land-cover share a [`Niche`] feeds on.
+#[derive(Clone, Copy)]
+enum Feed {
+    Herb = 0,
+    Crop = 1,
+    Shrub = 2,
+    Wet = 3,
+}
+
+/// Cold or warm ground: the mean annual temperature at the sample's altitude
+/// (`Climate::temp_sl` less a 6.5 K/km lapse) under [`COLD_C`].
+#[derive(Clone, Copy, PartialEq)]
+enum Temp {
+    Any,
+    Cold,
+    Warm,
+}
+
+/// Mean annual temperature (C) under which ground counts as cold (tundra).
+const COLD_C: f32 = -3.0;
+
+/// One rule of the real-ground grass mix: a share, its multiplier, the ranges it applies in
+/// and the grass it grows. Rows are data; a sample sums the rows' weights (0 outside ranges).
+struct Niche {
+    feed: Feed,
+    mul: f32,
+    /// Aridity range (`Climate::aridity`, low = dry), `lo <= a < hi`.
+    arid: (f32, f32),
+    /// Altitude range (m), `lo <= alt < hi`.
+    alt: (f32, f32),
+    temp: Temp,
+    kind: u8,
+}
+
+const ANY: (f32, f32) = (f32::NEG_INFINITY, f32::INFINITY);
+/// Altitude of the alpine turf.
+const LAWN_ALT: f32 = 2600.0;
+/// Aridity under which grassland is long dry grass.
+const DRY_ARID: f32 = 0.35;
+
+const NICHES: [Niche; 8] = [
+    Niche { feed: Feed::Crop, mul: 1.0, arid: ANY, alt: ANY, temp: Temp::Any, kind: WHEAT },
+    Niche { feed: Feed::Wet, mul: 1.0, arid: ANY, alt: ANY, temp: Temp::Warm, kind: SEDGE },
+    Niche { feed: Feed::Wet, mul: 1.0, arid: ANY, alt: ANY, temp: Temp::Cold, kind: TUNDRA },
+    Niche { feed: Feed::Shrub, mul: 0.35, arid: ANY, alt: ANY, temp: Temp::Any, kind: TUFT },
+    Niche { feed: Feed::Herb, mul: 1.0, arid: ANY, alt: (f32::NEG_INFINITY, LAWN_ALT), temp: Temp::Cold, kind: TUNDRA },
+    Niche { feed: Feed::Herb, mul: 1.0, arid: (f32::NEG_INFINITY, DRY_ARID), alt: (f32::NEG_INFINITY, LAWN_ALT), temp: Temp::Warm, kind: LONG },
+    Niche { feed: Feed::Herb, mul: 1.0, arid: (DRY_ARID, f32::INFINITY), alt: (f32::NEG_INFINITY, LAWN_ALT), temp: Temp::Warm, kind: MEADOW },
+    Niche { feed: Feed::Herb, mul: 1.0, arid: ANY, alt: (LAWN_ALT, f32::INFINITY), temp: Temp::Any, kind: LAWN },
+];
+
+/// Share of the weighted row choice at direction `d`: 0..1, patches ~22 m (not per clump).
+fn niche_pick(d: DVec3) -> f32 {
+    let w = wrap_m(d);
+    smoothstep(0.22, 0.78, value3(w[0] / 22.0, w[1] / 22.0, w[2] / 22.0, 0x91C4))
+}
+
+/// The rule table on one sample: total weight and the kind picked at `pick` (0..1).
+fn niche_kind(shares: [f32; 4], alt: f32, aridity: f32, temp_sl: f32, pick: f32) -> Option<(u8, f32)> {
+    let cold = temp_sl - 0.0065 * alt.max(0.0) < COLD_C;
+    let mut wts = [0.0f32; NICHES.len()];
+    for (w, n) in wts.iter_mut().zip(&NICHES) {
+        let ok = aridity >= n.arid.0
+            && aridity < n.arid.1
+            && alt >= n.alt.0
+            && alt < n.alt.1
+            && (n.temp == Temp::Any || (n.temp == Temp::Cold) == cold);
+        if ok {
+            *w = shares[n.feed as usize].clamp(0.0, 1.0) * n.mul;
+        }
+    }
+    let veg: f32 = wts.iter().sum();
+    if veg < 0.08 {
         return None;
     }
-    let kind = if cl.aridity < 0.35 {
-        LONG
-    } else if c.alt_m > 2600.0 {
-        LAWN
-    } else {
-        MEADOW
+    let mut at = pick.clamp(0.0, 0.9999) * veg;
+    for (w, n) in wts.iter().zip(&NICHES) {
+        if at < *w {
+            return Some((n.kind, veg));
+        }
+        at -= w;
+    }
+    // Rounding: the last row that has weight.
+    wts.iter().zip(&NICHES).rev().find(|(w, _)| **w > 0.0).map(|(_, n)| (n.kind, veg))
+}
+
+/// Real ground: grass where the terrain material shows grass (G7's layer mirror). With a ground
+/// page (`g.shares`) the land cover decides the type through [`NICHES`] (crops to wheat, wetland
+/// to sedge, shrubland to sparse tufts, grassland by climate; bare ground gets none); without
+/// one, climate and altitude alone: long dry grass where it is arid, short turf high up, a
+/// meadow mix elsewhere. `d` is the body direction (the patch noise of the pick).
+pub fn type_from_ground(g: &GroundSample, cl: &Climate, d: DVec3) -> Option<(u8, f32)> {
+    let c = &g.canopy;
+    let w = layer_weights(c.alt_m, g.slope_cos, c.cover);
+    let Some(shares) = g.shares else {
+        let grassy = (w[2] + w[5]) * (1.0 - smoothstep(0.1, 0.6, c.cover));
+        if grassy < 0.15 {
+            return None;
+        }
+        let kind = if cl.aridity < 0.35 {
+            LONG
+        } else if c.alt_m > 2600.0 {
+            LAWN
+        } else {
+            MEADOW
+        };
+        return Some((kind, smoothstep(0.15, 0.6, grassy)));
     };
-    Some((kind, smoothstep(0.15, 0.6, grassy)))
+    // Cliffs, scree, snow and closed forest stay bare; altitude alone never vetoes.
+    let open = (1.0 - (w[0] + w[1] + w[4])).clamp(0.0, 1.0) * (1.0 - smoothstep(0.1, 0.6, c.cover));
+    if open < 0.15 {
+        return None;
+    }
+    let (kind, veg) = niche_kind(shares, c.alt_m, cl.aridity, cl.temp_sl, niche_pick(d))?;
+    Some((kind, smoothstep(0.08, 0.5, veg) * smoothstep(0.15, 0.6, open)))
 }
 
 /// The grass lab's type map (place "grasslab"): `(east, north)` metres from the anchor. A lawn
@@ -565,6 +738,65 @@ pub fn build_map(face: u8, centre: [f64; 2], cell_m: f64, a: f64, type_at: &dyn 
 
 #[cfg(test)]
 mod tests {
+    use crate::stand::CanopySample;
+
+    fn ground(shares: Option<[f32; 4]>, alt: f32) -> GroundSample {
+        GroundSample {
+            canopy: CanopySample { cover: 0.0, height_m: 0.0, mix: 0.0, under: 0.0, alt_m: alt, wet: 0.3 },
+            slope_cos: 0.99,
+            shares,
+        }
+    }
+    const TEMPERATE: Climate = Climate { aridity: 0.8, temp_sl: 12.0 };
+    const ARID: Climate = Climate { aridity: 0.1, temp_sl: 22.0 };
+    const POLAR: Climate = Climate { aridity: 0.8, temp_sl: -10.0 };
+
+    fn dir(k: f64) -> DVec3 {
+        DVec3::new(0.3 + k * 1e-6, 0.5, 0.8).normalize()
+    }
+
+    #[test]
+    fn rule_table_picks_by_land_cover() {
+        let at = |sh, cl: &Climate| type_from_ground(&ground(Some(sh), 600.0), cl, dir(0.0));
+        assert_eq!(at([0.0; 4], &TEMPERATE), None);
+        assert_eq!(at([0.03, 0.02, 0.0, 0.0], &TEMPERATE), None);
+        assert_eq!(at([0.0, 0.9, 0.0, 0.0], &TEMPERATE).unwrap().0, WHEAT);
+        let (k, dt) = at([0.0, 0.0, 0.99, 0.0], &ARID).unwrap();
+        assert_eq!(k, TUFT);
+        let (km, dm) = at([0.8, 0.0, 0.0, 0.0], &TEMPERATE).unwrap();
+        assert_eq!(km, MEADOW);
+        assert!(dt < dm - 0.1, "tuft {dt} meadow {dm}");
+        assert_eq!(at([0.0, 0.0, 0.0, 0.9], &TEMPERATE).unwrap().0, SEDGE);
+        assert_eq!(at([0.8, 0.0, 0.0, 0.0], &POLAR).unwrap().0, TUNDRA);
+        assert_eq!(at([0.0, 0.0, 0.0, 0.9], &POLAR).unwrap().0, TUNDRA);
+        assert_eq!(at([0.8, 0.0, 0.0, 0.0], &ARID).unwrap().0, LONG);
+        let hi = type_from_ground(&ground(Some([0.8, 0.0, 0.0, 0.0]), 2700.0), &Climate { aridity: 0.8, temp_sl: 25.0 }, dir(0.0));
+        assert_eq!(hi.map(|t| t.0), Some(LAWN));
+    }
+
+    #[test]
+    fn no_ground_page_keeps_the_old_rule() {
+        let g = ground(None, 600.0);
+        assert_eq!(type_from_ground(&g, &TEMPERATE, dir(0.0)).map(|t| t.0), Some(MEADOW));
+        assert_eq!(type_from_ground(&g, &ARID, dir(0.0)).map(|t| t.0), Some(LONG));
+    }
+
+    #[test]
+    fn rule_table_is_deterministic_and_patchy() {
+        let g = ground(Some([0.4, 0.0, 0.5, 0.0]), 600.0);
+        assert_eq!(type_from_ground(&g, &ARID, dir(1.0)), type_from_ground(&g, &ARID, dir(1.0)));
+        // Mixed shares: both kinds show, in patches (neighbours 1 m apart mostly agree).
+        let (mut seen, mut same) = ([false; 8], 0);
+        for k in 0..400 {
+            let a = type_from_ground(&g, &ARID, dir(k as f64 * 3.0)).unwrap().0;
+            seen[a as usize] = true;
+            let b = type_from_ground(&g, &ARID, dir(k as f64 * 3.0 + 0.15)).unwrap().0;
+            same += (a == b) as u32;
+        }
+        assert!(seen[TUFT as usize] && seen[LONG as usize], "{seen:?}");
+        assert!(same > 380, "{same}");
+    }
+
     use super::*;
     use ed_geo::BodyId;
 
@@ -587,7 +819,7 @@ mod tests {
             assert!(t.blades <= MAX_BLADES && t.height.0 < t.height.1 && t.width > 0.0);
             assert_eq!(r[23], t.density);
         }
-        assert_eq!(gpu_rows().len(), 4);
+        assert_eq!(gpu_rows().len(), TYPES.len());
     }
 
     #[test]
@@ -770,7 +1002,7 @@ mod tests {
         for t in &TYPES {
             let k = (MAP_SNAP_M / t.strand_m as f64).round();
             assert!((k * t.strand_m as f64 - MAP_SNAP_M).abs() < 1e-9 && (k as u64).is_power_of_two(), "{}", t.name);
-            assert!(t.shell_h > 0.0 && t.shell_h <= 0.1 && t.sheen > 0.0 && t.sheen <= 1.0);
+            assert!(t.shell_h >= 0.0 && t.shell_h <= 0.1 && t.sheen > 0.0 && t.sheen <= 1.0);
         }
         assert!((FACE_PERIOD_M / MAP_FINE_M) as usize % MAP_N == 0 && (FACE_PERIOD_M / MAP_COARSE_M) as usize % MAP_N == 0);
     }

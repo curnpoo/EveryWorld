@@ -1,3 +1,22 @@
+## 2026-11-14: Data cache size cap (`EW_CACHE_GB`, default 20)
+
+- `ed_data::cache::prune`: at `ew` startup a background thread brings `.earthdrop-cache` under `EW_CACHE_GB`
+  (default 20 GB, `0` = no cap), deleting the least recently used files first (later of read/write time).
+  `canopy_coarse` and `ground_coarse` are never evicted (whole-world, slow to rebuild). Everything else is
+  re-downloaded or regenerated on demand. Cache today 5.8 GB, so nothing is removed yet. Test: `prune_drops_oldest_and_keeps_protected`.
+
+## 2026-11-14: Grass G3: grass type from real land cover (rule table)
+
+- Three new types in `ed_world::grass::TYPES`: sedge (wetland), tuft (sparse desert bunchgrass), tundra (short
+  olive-russet). `NICHES` rule table: crop -> wheat; wet -> sedge (warm) or tundra (cold); shrub x0.35 -> tuft;
+  herb -> tundra (cold) / long (arid) / meadow / lawn (>= 2600 m). Under 0.08 total cover: no grass. The kind is a
+  weighted pick by ~22 m noise patches. Cold = `temp_sl - 6.5 K/km * alt < -3 C`. No ground page: the old rule.
+- Grass reads the ground page through the tree worker's page map (`ew/src/trees.rs` builds canopy + ground together).
+- Eye-level shots: dunes bare, Sonoran sparse straw tufts with tan far hills, Everglades tall mixed sedge, Iowa
+  wheat rows, prairie long grass with a wheat patch. Tundra (Toolik) now shows no blades: open bug.
+- gpu_frame eye shot (ms, before -> after, before runs used other flags): dunes 7.2 -> 4.7, sonoran 7.9 -> 6.0,
+  everglades 8.9 -> 8.0, iowa 9.1 -> 8.2, tundra 6.9 -> 4.5. Tests 432 pass.
+
 ## 2026-11-14: Grass G2: ground pages (land-cover shares at every level)
 
 - `ed_data::node::ground`: `GroundPage` 257x257 `[herb, crop, shrub, wet]` shares from WorldCover (`LandCover` gains

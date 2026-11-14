@@ -36,7 +36,7 @@ const TIERS: [f32; 8] = [1.0, 0.5, 0.25, 0.12, 0.06, 0.03, 0.015, 0.0];
 const LOD1_PX: f32 = 7.0;
 
 /// Pages snapshot for one job.
-pub(crate) type PageSet = BTreeMap<NodeId, (Arc<HeightPage>, Arc<CanopyPage>)>;
+pub(crate) type PageSet = BTreeMap<NodeId, (Arc<HeightPage>, Arc<CanopyPage>, Option<Arc<ed_data::node::GroundPage>>)>;
 
 struct Job {
     id: NodeId,
@@ -106,11 +106,29 @@ pub fn from_env() -> bool {
     std::env::var("EW_GROUND_COVER").map_or(true, |v| v != "0")
 }
 
+/// Bilinear land-cover shares `[herb, crop, shrub, wet]` (0..1) of a ground page at (u, v).
+fn ground_shares(g: &ed_data::node::GroundPage, u: f64, v: f64) -> [f32; 4] {
+    let s = ed_geo::PAGE_CELLS as f64;
+    let fx = (u.clamp(0.0, 1.0) * s).min(s - 1e-9);
+    let fy = (v.clamp(0.0, 1.0) * s).min(s - 1e-9);
+    let (i, j) = (fx.floor() as usize, fy.floor() as usize);
+    let (tx, ty) = ((fx - i as f64) as f32, (fy - j as f64) as f32);
+    let w = [(1.0 - tx) * (1.0 - ty), tx * (1.0 - ty), (1.0 - tx) * ty, tx * ty];
+    let px = [g.get(i, j), g.get(i + 1, j), g.get(i, j + 1), g.get(i + 1, j + 1)];
+    let mut out = [0.0f32; 4];
+    for k in 0..4 {
+        for c in 0..4 {
+            out[c] += w[k] * px[k][c] as f32 / 255.0;
+        }
+    }
+    out
+}
+
 pub(crate) fn sampler(pages: &PageSet) -> impl Fn(DVec3) -> Option<GroundSample> + '_ {
     move |d: DVec3| {
         let body = pages.keys().next()?.body();
         let id = NodeId::from_unit(body, d, PAGE_LEVEL);
-        let (hp, cp) = pages.get(&id)?;
+        let (hp, cp, gp) = pages.get(&id)?;
         let (u, v) = id.local_uv(d);
         let page_m = (id.corner(1) - id.corner(0)).length() * 6_371_008.8;
         let du = 8.0 / page_m;
@@ -119,7 +137,8 @@ pub(crate) fn sampler(pages: &PageSet) -> impl Fn(DVec3) -> Option<GroundSample>
         let gx = (h(u + du, v) - h(u - du, v)) / 16.0;
         let gy = (h(u, v + du) - h(u, v - du)) / 16.0;
         let slope_cos = (1.0 / (1.0 + gx * gx + gy * gy).sqrt()) as f32;
-        Some(GroundSample { canopy: CanopySample::from_page(cp, u, v, alt as f32, 0.3), slope_cos })
+        let shares = gp.as_ref().map(|g| ground_shares(g, u, v));
+        Some(GroundSample { canopy: CanopySample::from_page(cp, u, v, alt as f32, 0.3), slope_cos, shares })
     }
 }
 
@@ -166,7 +185,7 @@ pub(crate) struct TreeView<'a> {
     /// Applied stand of a level-14 tree node (`None`: not applied yet).
     pub stand: &'a dyn Fn(NodeId) -> Option<Arc<Vec<StandTree>>>,
     /// Resident page of a level-12 node.
-    pub page: &'a dyn Fn(NodeId) -> Option<(Arc<HeightPage>, Arc<CanopyPage>)>,
+    pub page: &'a dyn Fn(NodeId) -> Option<(Arc<HeightPage>, Arc<CanopyPage>, Option<Arc<ed_data::node::GroundPage>>)>,
     pub tree_level: u8,
 }
 

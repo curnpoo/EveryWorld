@@ -21,7 +21,7 @@
 //! Switches: `EW_TREES_NEAR=0` (no near trees: the frame is the trees-off frame), `EW_WIND=0`
 //! (trees hold still).
 
-use crate::terrain::{CacheSource, TerrainWorld, build_canopy};
+use crate::terrain::{CacheSource, TerrainWorld, build_canopy_ground};
 use ed_data::DiskCache;
 use ed_geo::{CanopyPage, HeightPage, NodeId, ObjectId};
 use ed_planet::Anchor;
@@ -49,7 +49,7 @@ const STAND_SEED: u64 = 0xE7E2;
 /// Nodes this near are kept whatever the view direction (turning around never shows a hole).
 const KEEP_ALL_M: f64 = 450.0;
 
-type Page = Option<(Arc<HeightPage>, Arc<CanopyPage>)>;
+type Page = Option<(Arc<HeightPage>, Arc<CanopyPage>, Option<Arc<ed_data::node::GroundPage>>)>;
 type Pages = BTreeMap<NodeId, Page>;
 
 type BankKey = (u8, u32, u8);
@@ -295,8 +295,8 @@ fn build_pages(cap: usize, src: &CacheSource, cache: &DiskCache, pages: &Mutex<P
     let slots: Vec<OnceLock<Page>> = (0..need.len()).map(|_| OnceLock::new()).collect();
     par_for(cap, need.len(), |k| {
         let hp = ed_data::node::node_heights(src, need[k]);
-        let cp = build_canopy(src, cache, need[k], &hp);
-        let _ = slots[k].set(cp.map(|cp| (Arc::new(hp), cp)));
+        let (cp, gp) = build_canopy_ground(src, cache, need[k], &hp);
+        let _ = slots[k].set(cp.map(|cp| (Arc::new(hp), cp, gp)));
     });
     let mut pg = pages.lock().unwrap();
     for (id, s) in need.iter().zip(slots) {
@@ -309,7 +309,7 @@ fn build_pages(cap: usize, src: &CacheSource, cache: &DiskCache, pages: &Mutex<P
 fn stands_for(cap: usize, pages: &Pages, ids: &[NodeId]) -> Vec<Vec<StandTree>> {
     let sample = |d: DVec3| -> Option<CanopySample> {
         let id = NodeId::from_unit(ids[0].body(), d, PAGE_LEVEL);
-        let (hp, cp) = pages.get(&id)?.as_ref()?;
+        let (hp, cp, _) = pages.get(&id)?.as_ref()?;
         let (u, v) = id.local_uv(d);
         Some(CanopySample::from_page(cp, u, v, hp.sample(u, v) as f32, 0.3))
     };
