@@ -2419,7 +2419,7 @@ TForest_0 t_forest_0(FrameData_natural_0 device* f_6, float alt_m_1, uint pool_1
         (&o_1)->sun_1 = mix(_S390, (&o_1)->sun_1, paint_0);
         if(near_on_0)
         {
-            (&o_1)->ao_3 = mix(fl_ao_0, ao_crown_0, paint_0);
+            (&o_1)->ao_3 = mix(max(fl_ao_0, 0.85000002384185791f), ao_crown_0, paint_0);
             (&o_1)->sun_1 = mix(1.0f - 0.5f * page_sh_0, sun_crown_0, paint_0);
         }
         (&o_1)->crown_0 = (&o_1)->crown_0 * paint_0;

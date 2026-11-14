@@ -31,7 +31,9 @@ pub const TREE_REF_M: f32 = 15.0;
 pub const HANDOFF_PX: f32 = 12.0;
 /// LOD 0 -> 1 and 1 -> 2 switch heights (px of the tree's projected height).
 pub const T0_PX: f32 = 250.0;
-pub const T1_PX: f32 = 40.0;
+/// 40 -> 60 in the trees perf pass (2026-11-13): 7-10 ms less at 2560x1440 in the valley and
+/// meadow views, the forest across a valley unchanged once the ground pull covered gullies.
+pub const T1_PX: f32 = 60.0;
 /// Trees G5 (impostors on, `EW_TREES_IMPOSTOR`): the ONE table of tier hand-offs, in px of
 /// projected height. The renderer gets it as `ed_render::impostor::ImpostorBands` (cull, resolve
 /// and the far rung all read it from `FrameData.imp`).
@@ -52,12 +54,16 @@ pub const LIFT_PX: (f32, f32) = (6.0, 3.5);
 pub const MESH_KEEP_PX: f32 = 28.0;
 /// Sun shadow cascades from this one on take every tree's impostor (bank meshes cast only in
 /// the nearer cascades, where their detail shows).
+/// At 1 (tried in the trees perf pass): 8 ms less from 70 m above a stand, but the impostors'
+/// shadows are too light to keep the dark gaps between crowns and the forest reads flat.
 pub const IMP_SHADOW_CASCADE: u32 = 2;
 /// Impostors are drawn this many pixels' worth of distance nearer the viewer (along their own
 /// view ray, so the picture does not move): trees stand on the finest resident ground but the
 /// terrain draws coarser with distance (16 px selection error), and on convex slopes it would
 /// bury them.
-pub const IMP_GROUND_PULL_PX: f32 = 12.0;
+/// 12 -> 40 with `T1_PX` 60: impostors then stand in gullies the coarse terrain bridges, and
+/// at 12 they were buried there (dark streaks down forested valley sides).
+pub const IMP_GROUND_PULL_PX: f32 = 40.0;
 
 /// LOD errors of the impostor chain (no shell): full, simplified, empty at `t1_px` (the
 /// table's [`T1_PX`] unless the caller moves the T1 -> T2 hand-off; the impostor bands and
@@ -567,7 +573,18 @@ fn convert(model: &TreeModel, s: f32, leaf_ref: [f32; 4], bark_ref: [f32; 4], mi
             let uv = if is_bark { atlas_uv(LeafCell::Solid, 0.5, 0.5) } else { m.uvs[i] };
             out.words.push([pack_uv(uv), pack_aux(value, hue, sway * s, flutter, phase, card[i], bark_v[i], groups[i])]);
         }
-        out.indices.extend(m.indices.iter().map(|&i| i + base));
+        if is_bark {
+            out.indices.extend(m.indices.iter().map(|&i| i + base));
+        } else {
+            // Leaf triangles top-down (bark first, above): the cards are alpha-tested, so the
+            // GPU cannot remove hidden ones on its own, but it does reject fragments behind
+            // depth already written. From the sun (the shadow cascades) the top of the crown
+            // is in front; drawing it first lets the lower cards fail the depth test.
+            let mut tris: Vec<[u32; 3]> = m.indices.chunks_exact(3).map(|t| [t[0], t[1], t[2]]).collect();
+            let top = |t: &[u32; 3]| t.iter().map(|&i| m.positions[i as usize][1]).fold(f32::MIN, f32::max);
+            tris.sort_by(|x, y| top(y).total_cmp(&top(x)));
+            out.indices.extend(tris.iter().flatten().map(|&i| i + base));
+        }
         out.branch.extend(if is_bark { model.bark_branch.iter() } else { model.leaf_branch.iter() });
     }
     out

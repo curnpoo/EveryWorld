@@ -1,3 +1,23 @@
+## 2026-11-13: Trees perf pass, step 2 — impostors from 60 px, gullies filled
+
+`ed_world/src/trees/bank.rs`: `T1_PX` 40 -> 60 (mesh trees hand off to impostors earlier),
+`IMP_GROUND_PULL_PX` 12 -> 40. With the earlier hand-off, forested valley sides showed
+near-black streaks: impostors in gullies were buried under the coarser terrain that bridges
+them (at 12 px of pull); 24 px filled them partly, 40 px fully, at no cost. `resolve.slang`:
+in the near band the forest floor's AO no longer assumes crowns hide the sky (floor at least
+0.85; screen-space AO and the trees' real shadows do that), so stand gaps are not black.
+`IMP_SHADOW_CASCADE=1` was tried and rejected: 8 ms less from 70 m up, but the impostors'
+shadows are too light and the canopy loses its dark gaps (stays 2; impostor shadow density is
+open). `convert()` now orders leaf triangles top-down for early depth rejection in the shadow
+cascades; it could not be measured apart from the other changes and is kept for no visible
+change.
+
+gpu_frame ms, M3 Pro, 2560x1440, `tools/trees_bench.sh`, before -> after: a 30.7 -> 28.1,
+b 38.9 -> 28.7, n70 41.9 -> 38.2, n2 27.8 -> 25.0, g2 38.0 -> 30.7, f1k 25.2 -> 23.5. Off
+switch: `EW_IMP_T1_PX=40 EW_IMP_PULL_PX=12`. Tests: 441 passed, 0 failed. Still over budget
+(trees 2 ms): wind 3-4 ms near the ground, impostors 4-5 ms, near-tree apply main-thread p99
+11.5 ms.
+
 ## 2026-11-13: Terrain page pool 1024 -> 1536 slots (trees perf pass, step 1)
 
 `ew/src/terrain.rs` `provider()`: the GPU page pool default rises from 1024 to 1536 slots

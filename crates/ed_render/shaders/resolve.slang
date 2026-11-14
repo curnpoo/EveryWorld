@@ -638,8 +638,11 @@ TForest t_forest(FrameData* f, float alt_m, uint pool, TerrainDraw d, float4 cv,
         o.ao = lerp(max(fl_ao, 0.75), o.ao, paint);
         o.sun = lerp(sun_floor, o.sun, paint);
         if (near_on) {
-            // The near trees' own shadows and the sky they hide light the floor.
-            o.ao = lerp(fl_ao, ao_crown, paint);
+            // The near trees' own shadows light the floor; the sky they hide is left to the
+            // screen-space AO. The page's cover says nothing about the stand's own gaps (stream
+            // beds, rock, `GAP_STRENGTH`), and a cover-darkened floor there showed as black
+            // streaks once impostors replaced the overhanging meshes.
+            o.ao = lerp(max(fl_ao, 0.85), ao_crown, paint);
             o.sun = lerp(1.0 - 0.5 * page_sh, sun_crown, paint);
         }
         o.crown = o.crown * paint;
