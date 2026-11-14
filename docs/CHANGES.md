@@ -1,3 +1,20 @@
+## 2026-11-13: Grass styles C (shells) and D (hybrid), per-type sheen, terrain grass tint
+
+`EW_GRASS_STYLE=c`: up to 16 alpha-tested shells drawn on the terrain's own triangles near the
+camera (`ed_render/src/terrain.rs` `ShellGrass`, `vs_shell`/`fs_shell`, `shell_pixel`), thinning
+with distance, 35 m range; world-stable strands. `EW_GRASS_STYLE=d`: style A blades for meadow,
+long grass and wheat over a shell underlayer, shells alone for lawn; lawn now reads as a
+continuous carpet. Past the near range the terrain takes each grass type's carpet colour
+(coarse type map, about ±512 m), closing the colour gap where grass ends. New `GrassType`
+columns (`shell_h`, `strand_m`, `shell_cover`, `sheen`, `carpet`, `shell_only`); per-type sheen
+fixes the pale lawn tips in A and D.
+
+gpu_frame ms at 2560x1440 (eye / down / o30 / o150): no cover 12.0 / 14.8 / 14.5 / 14.5;
+A 13.5 / 21.0 / 18.9 / 14.9; C 16.1 / 22.3 / 16.2 / 15.5; D 17.6 / 23.0 / 15.1 / 13.7.
+Off switches: `EW_GRASS_SHELLS=0`, `EW_GRASS_TINT=0`; `EW_GRASS_SHELL_RANGE` (35 m). Open:
+faint moiré arcs on lawn shells at 5-15 m, flat untextured wheat tint from the air, shell edge
+not checked in motion, down camera +8 ms over no cover.
+
 ## 2026-11-13: Grass style A — GPU blades in clumps (`EW_GRASS_STYLE=a`, opt-in)
 
 First of the grass styles for the owner to compare in the grass lab. `ed_world/src/grass.rs`

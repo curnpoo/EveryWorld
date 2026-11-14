@@ -75,6 +75,16 @@ struct GrassData {
     float4 look;            // x: shading normal blend to the ground normal (near), yzw: unused
 };
 
+// Grass shells and the terrain's grass tint (styles C and D; src/terrain.rs `ShellGrass`,
+// ed_world::grass map). Maps and type rows live in the terrain draw table (`ResolveC.t_draws`).
+struct ShellData {
+    uint4 cfg;              // x: flags (1 shells, 2 tint, 4 map), y: type rows (GrassType index), z: fine map word (coarse at + n*n), w: shells
+    int4 off;               // xy: fine map slot offset, zw: coarse
+    float4 c;               // xy: map centre face metres (mod 4096, a multiple of 32), z: shell range (m), w: tint strength
+    float4 fu;              // xyz: the map face's u axis (render frame), w: top shell height (m)
+    float4 cells;           // x: fine cell (m), y: coarse cell (m), z: cells per side, w: unused
+};
+
 struct HzbLevel { uint offset; uint width; uint height; uint pad; };
 struct FrameData {
     float4x4 view_proj;     // camera-relative: rotation and projection only (P1-D7)
@@ -97,6 +107,7 @@ struct FrameData {
     ImpData imp;
     SeasonData season;
     GrassData grass;
+    ShellData shell;
 };
 
 // One instance (128 bytes). Transform rows are a 3x4 affine matrix relative to the node origin.
@@ -627,8 +638,9 @@ static const uint GRASS_FIRST[5] = { 0u, 2304u, 3264u, 3648u, 3792u };
 
 struct GrassClump { float px; float py; float pz; uint node_kind; uint up; uint facing; uint seed; uint hw; };
 // Type row (ed_world::grass::gpu_row): a (h min, h max, width, blades), b (clump r, lean,
-// stiffness, curve), root (rgb, aniso), mid (rgb, head share), tip (rgb, head width), dry (rgb, density).
-struct GrassType { float4 a; float4 b; float4 root; float4 mid; float4 tip; float4 dry; };
+// stiffness, curve), root (rgb, aniso), mid (rgb, head share), tip (rgb, head width), dry (rgb, density),
+// shell (shell height, strand cell, shell cover, sheen), carpet (rgb, shells only).
+struct GrassType { float4 a; float4 b; float4 root; float4 mid; float4 tip; float4 dry; float4 shell; float4 carpet; };
 
 uint grass_hash(uint x) {
     uint s = x * 747796405u + 2891336453u;

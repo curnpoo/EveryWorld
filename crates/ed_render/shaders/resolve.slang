@@ -74,7 +74,8 @@ float2 env_brdf(float nov, float rough) {
     return float2(-1.04, 1.04) * a004 + r.zw;
 }
 
-float3 shade_pbr(FrameData* f, float3 sun, float3 albedo, float metal, float rough, float ao, float sv, float sun_vis, float3 n, float3 v) {
+// `spec_k` scales the specular lobe and the sky's specular share (grass sheen; 1: plain PBR).
+float3 shade_pbr_k(FrameData* f, float3 sun, float3 albedo, float metal, float rough, float ao, float sv, float sun_vis, float3 n, float3 v, float spec_k) {
     metal = saturate(metal);
     rough = clamp(rough, 0.04, 1.0);
     float a = rough * rough;
@@ -87,7 +88,7 @@ float3 shade_pbr(FrameData* f, float3 sun, float3 albedo, float metal, float rou
     float3 f0 = lerp(float3(0.04), albedo, metal);
     float3 diff_col = albedo * (1.0 - metal);
     float3 F = f_schlick(f0, voh);
-    float3 spec = d_ggx(noh, a) * v_smith(nov, nol, a) * F;
+    float3 spec = d_ggx(noh, a) * v_smith(nov, nol, a) * F * spec_k;
     float3 direct = (diff_col * (1.0 - F) / PI + spec) * sun * (nol * sun_vis);
     float2 ab = env_brdf(nov, rough);
     float3 r = reflect(-v, n);
@@ -97,8 +98,12 @@ float3 shade_pbr(FrameData* f, float3 sun, float3 albedo, float metal, float rou
     float spec_occ = saturate(pow(nov + ao, exp2(-16.0 * a - 1.0)) - 1.0 + ao);
     // The specular lobe's share of the ambient light does not also reach the diffuse term.
     float3 f_env = f0 * ab.x + ab.y;
-    float3 amb = diff_col * (1.0 - f_env) * occluded_ambient(f, ambient_light(f, n), sv) * ao_multibounce(f, ao, diff_col) + env * f_env * spec_occ;
+    float3 amb = diff_col * (1.0 - f_env) * occluded_ambient(f, ambient_light(f, n), sv) * ao_multibounce(f, ao, diff_col) + env * f_env * spec_occ * spec_k;
     return direct + amb;
+}
+
+float3 shade_pbr(FrameData* f, float3 sun, float3 albedo, float metal, float rough, float ao, float sv, float sun_vis, float3 n, float3 v) {
+    return shade_pbr_k(f, sun, albedo, metal, rough, ao, sv, sun_vis, n, v, 1.0);
 }
 
 float3 shade_toon(FrameData* f, float3 sun, GpuMaterial m, float3 albedo, float3 n, float3 v, float ao, float sv, float sun_vis) {
@@ -650,10 +655,123 @@ TForest t_forest(FrameData* f, float alt_m, uint pool, TerrainDraw d, float4 cv,
     return o;
 }
 
+// ---- Grass shells (styles C and D) --------------------------------------------------------
+// A shell pixel: the shell's triangle (the drawn facet lifted radially by the shell height)
+// refetched as terrain does, the same strand test for its attributes, then shaded like a blade:
+// root -> mid -> tip up the strand, darker low in the turf, the type's sheen.
+float4 shell_pixel(FrameData* f, FsOut i, uint2 vis, float3 dir) {
+    TerrainDraw d = ed_buf<TerrainDraw>(ed_c.t_draws)[vis.x & SHELL_DRAW_MASK];
+    uint pool = ed_c.t_pool;
+    uint buf = ed_c.t_draws;
+    uint L = (vis.x >> SHELL_L_SHIFT) & 7u;
+    uint k = (vis.y >> SHELL_K_SHIFT) & 15u;
+    uint n = max(f.shell.cfg.w, 1u);
+    float hk = f.shell.fu.w * float(k + 1u) / float(n);
+    uint3 tri = t_triangle(vis.y & SHELL_PRIM_MASK);
+    float3 bc = d.origin.xyz - d.dir_c.xyz * d.dir_c.w;
+    float3 a0 = t_vertex<0>(pool, d, tri.x);
+    float3 a1 = t_vertex<0>(pool, d, tri.y);
+    float3 a2 = t_vertex<0>(pool, d, tri.z);
+    a0 += normalize(a0 - bc) * hk;
+    a1 += normalize(a1 - bc) * hk;
+    a2 += normalize(a2 - bc) * hk;
+    float3 e1 = a1 - a0;
+    float3 e2 = a2 - a0;
+    float2 bb = ray_bary(dir, a0, e1, e2);
+    float b1 = saturate(bb.x);
+    float b2 = saturate(bb.y);
+    float bs = b1 + b2;
+    if (bs > 1.0) {
+        b1 /= bs;
+        b2 /= bs;
+    }
+    float b0 = 1.0 - b1 - b2;
+    float3 p = a0 + e1 * b1 + e2 * b2;
+    float2 g = t_vertex_grid(tri.x) * b0 + t_vertex_grid(tri.y) * b1 + t_vertex_grid(tri.z) * b2;
+    float3 up;
+    float h;
+    float3 nt = t_smooth_normal(pool, d, g, 2, up, h);
+    float2 wrel = shell_wrel(f, d, g);
+    float dz = -mul(f.view, float4(p, 1.0)).z;
+    ShellHit s = shell_strand(f, buf, wrel, k, n, L, dz, true);
+    GrassType ty = shell_type(f, buf, s.kind);
+    // Rounded strands: the ground normal bent out from the strand axis (less far away, where a
+    // pixel spans many strands and the turf reads as a surface).
+    float3 tu = normalize(d.fu.xyz - up * dot(d.fu.xyz, up));
+    float3 tv = normalize(d.fv.xyz - up * dot(d.fv.xyz, up));
+    float far = smoothstep(3.0, f.shell.c.z * 0.6, dz);
+    float3 sn = tu * s.side.x + tv * s.side.y;
+    float3 nrm = normalize(nt + sn * (0.9 * (1.0 - 0.5 * s.tt) * (1.0 - far)));
+    float3 v = -dir;
+    if (dot(nrm, v) < 0.0) {
+        nrm = normalize(nrm - 1.01 * dot(nrm, v) * v);
+    }
+    float tt = s.tt;
+    float3 alb = tt < 0.5 ? lerp(ty.root.rgb, ty.mid.rgb, tt * 2.0) : lerp(ty.mid.rgb, ty.tip.rgb, (tt - 0.5) * 2.0);
+    float hue = grass_rand(grass_hash(asuint(s.rnd) + 53u)) - 0.5;
+    alb *= lerp(0.84, 1.12, s.rnd) * float3(1.0 + 0.10 * hue, 1.0, 1.0 - 0.12 * hue);
+    if (s.dry > 0.5) {
+        alb = lerp(alb, ty.dry.rgb * lerp(0.85, 1.1, s.rnd), lerp(0.5, 1.0, tt));
+    }
+    alb = min(alb, float3(0.9, 0.9, 0.9));
+    // Turf self-shadowing: dark at the roots, open at the tips; far turf averages it.
+    float ao_h = lerp(0.4, 1.0, pow(tt, 0.8));
+    ao_h = lerp(ao_h, 0.72, far * 0.6);
+    float sun_vis = sun_shadow(f, ed_c.shadow, p, up, dz, i.pos.xy);
+    float2 occ = ao_upsample(f, ed_c.ao, i.pos.xy, dz);
+    float3 sun = sun_light_at(f, p);
+    float3 col = shade_foliage_k(f, sun, alb, 0.55, occ.x * ao_h, occ.y, sun_vis * lerp(0.75, 1.0, tt), nrm, nrm, v, true, ty.shell.w);
+    col = apply_aerial(f, col, p, i.pos.xy);
+    if (f.light.flags.w == 2u) {
+        col = float3(0.5 * occ.x * ao_h);
+    } else if (f.light.flags.w == 4u) {
+        col = float3(0.5 * occ.y);
+    } else if (f.light.flags.w == 1u) {
+        col = float3(0.04 + 0.5 * sun_vis);
+    }
+    return float4(col, 1.0);
+}
+
+// Terrain under and past the grass (styles C and D): the coarse map's carpet colour (bilinear,
+// density weighted), keeping the ground texture's brightness variation within +-25 %.
+float3 shell_tint(FrameData* f, TerrainDraw d, float2 g, float3 albedo) {
+    float2 wr = shell_wrel(f, d, g);
+    float cm = f.shell.cells.y;
+    float2 q = wr / cm - 0.5;
+    float2 fq = floor(q);
+    float2 t = q - fq;
+    int2 q0 = int2(fq);
+    float3 cc = float3(0.0);
+    float cov = 0.0;
+    for (uint c = 0; c < 4u; c++) {
+        int2 o = int2(int(c & 1u), int(c >> 1));
+        float wb = (o.x != 0 ? t.x : 1.0 - t.x) * (o.y != 0 ? t.y : 1.0 - t.y);
+        uint w = shell_map(f, ed_c.t_draws, 1u, q0 + o);
+        if ((w & 0xFFu) != 0u) {
+            float dens = float((w >> 8) & 0xFFu) / 255.0;
+            GrassType ty = shell_type(f, ed_c.t_draws, (w & 0xFFu) - 1u);
+            cc += ty.carpet.rgb * (wb * dens);
+            cov += wb * dens;
+        }
+    }
+    if (cov <= 0.0) {
+        return albedo;
+    }
+    float3 tgt = cc / cov;
+    float half_m = cm * f.shell.cells.z * 0.5;
+    float edge = 1.0 - smoothstep(0.8, 0.97, max(abs(wr.x), abs(wr.y)) / half_m);
+    const float3 LUM = float3(0.2126, 0.7152, 0.0722);
+    tgt *= clamp(dot(albedo, LUM) / max(dot(tgt, LUM), 1e-4), 0.75, 1.25);
+    return lerp(albedo, tgt, saturate(f.shell.c.w * cov * edge));
+}
+
 // A terrain pixel: the rasterised triangle refetched from the draw record and page pool (exact
 // position on the drawn facet), a smooth normal from the height page, the slope/altitude tint,
 // then the same light as every opaque pixel.
 float4 terrain_pixel<let TR : int>(FrameData* f, FsOut i, uint2 vis, float3 dir) {
+    if ((vis.y & SHELL_BIT) != 0u) {
+        return shell_pixel(f, i, vis, dir);
+    }
     bool trees_on = TR != 0;
     TerrainDraw d = ed_buf<TerrainDraw>(ed_c.t_draws)[vis.x & ~TERRAIN_VIS_BIT];
     uint pool = ed_c.t_pool;
@@ -740,6 +858,9 @@ float4 terrain_pixel<let TR : int>(FrameData* f, FsOut i, uint2 vis, float3 dir)
         rough = lerp(rough, T_CROWN_ROUGH, fo.crown);
         mat_ao *= fo.ao;
         sun_k = fo.sun;
+    }
+    if ((f.shell.cfg.x & 2u) != 0u && shell_face(f, d)) {
+        albedo = shell_tint(f, d, g, albedo);
     }
     float3 v = -dir;
     if (dot(n, v) < 0.0) {
@@ -844,7 +965,11 @@ TreeSurf tree_surface(FrameData* f, GpuInstance inst, GpuMaterial m, uint2 w0, u
 // Foliage: diffuse-dominant GGX plus light through the leaves (thin translucent cards: the
 // sun from behind a leaf comes through yellow-green, strongest looking towards the sun).
 float3 shade_foliage(FrameData* f, float3 sun, float3 albedo, float rough, float ao, float sv, float sun_vis, float3 n, float3 ng, float3 v, bool leaf) {
-    float3 col = shade_pbr(f, sun, albedo, 0.0, rough, ao, sv, sun_vis, n, v);
+    return shade_foliage_k(f, sun, albedo, rough, ao, sv, sun_vis, n, ng, v, leaf, 1.0);
+}
+
+float3 shade_foliage_k(FrameData* f, float3 sun, float3 albedo, float rough, float ao, float sv, float sun_vis, float3 n, float3 ng, float3 v, bool leaf, float spec_k) {
+    float3 col = shade_pbr_k(f, sun, albedo, 0.0, rough, ao, sv, sun_vis, n, v, spec_k);
     if (leaf) {
         float3 l = f.sun_dir.xyz;
         float back = saturate(-dot(n, l));
@@ -981,7 +1106,7 @@ float4 grass_pixel(FrameData* f, FsOut i, uint2 vis, float3 dir) {
     float sun_vis = sun_shadow(f, ed_c.shadow, p, b.up, zlin, i.pos.xy);
     float2 occ = ao_upsample(f, ed_c.ao, i.pos.xy, zlin);
     float3 sun = sun_light_at(f, p);
-    float3 col = shade_foliage(f, sun, alb, 0.5, occ.x * ao_b, occ.y, sun_vis, n, n, v, true);
+    float3 col = shade_foliage_k(f, sun, alb, 0.5, occ.x * ao_b, occ.y, sun_vis, n, n, v, true, ty.shell.w);
     col = apply_aerial(f, col, p, i.pos.xy);
     if (f.light.flags.w == 2u) {
         col = float3(0.5 * occ.x * ao_b);

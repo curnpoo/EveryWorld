@@ -10,6 +10,8 @@ struct GrassType_natural_0
     packed_float4 mid_0;
     packed_float4 tip_0;
     packed_float4 dry_0;
+    packed_float4 shell_0;
+    packed_float4 carpet_0;
 };
 
 struct CullC_0
@@ -237,6 +239,15 @@ struct GrassData_natural_0
     packed_float4 look_0;
 };
 
+struct ShellData_natural_0
+{
+    packed_uint4 cfg_5;
+    packed_int4 off_0;
+    packed_float4 c_0;
+    packed_float4 fu_0;
+    packed_float4 cells_0;
+};
+
 struct FrameData_natural_0
 {
     _MatrixStorage_float4x4_ColMajornatural_0 view_proj_0;
@@ -259,6 +270,7 @@ struct FrameData_natural_0
     ImpData_natural_0 imp_0;
     SeasonData_natural_0 season_1;
     GrassData_natural_0 grass_0;
+    ShellData_natural_0 shell_1;
 };
 
 FrameData_natural_0 device* ed_buf_8(uint i_8, KernelContext_0 thread* kernelContext_8)
@@ -331,7 +343,7 @@ float3 xform_point_0(const GpuInstance_natural_0 thread* i_12, float3 p_0)
 
 struct Bounds_0
 {
-    float3 c_0;
+    float3 c_1;
     float r_0;
     float scale_1;
 };
@@ -344,12 +356,12 @@ Bounds_0 bounds_0(const GpuInstance_natural_0 thread* inst_0, GpuMesh_natural_0 
     (&b_1)->scale_1 = _S13;
     float3 _S14 = (float4(*(_S12 + ((inst_0->node_flags_0) & 65535U))) ).xyz;
     float3 _S15 = xform_point_0(inst_0, (float4(m_1->sphere_0) ).xyz);
-    (&b_1)->c_0 = _S14 + _S15;
+    (&b_1)->c_1 = _S14 + _S15;
     (&b_1)->r_0 = (float4(m_1->sphere_0) ).w * _S13;
     return b_1;
 }
 
-bool in_frustum_0(FrameData_natural_0 device* f_0, float3 c_1, float r_1)
+bool in_frustum_0(FrameData_natural_0 device* f_0, float3 c_2, float r_1)
 {
     int k_0 = int(0);
     for(;;)
@@ -362,7 +374,7 @@ bool in_frustum_0(FrameData_natural_0 device* f_0, float3 c_1, float r_1)
             break;
         }
         float4 _S16 = float4((&f_0->planes_0)->data_2[k_0]) ;
-        if((dot(_S16.xyz, c_1) + _S16.w) < (- r_1))
+        if((dot(_S16.xyz, c_2) + _S16.w) < (- r_1))
         {
             return false;
         }
@@ -516,7 +528,7 @@ void stat_add_0(atomic<uint> device* stats_1, uint idx_0, uint v_1)
             GpuMesh_natural_0 device* _S37 = ed_buf_6((&kernelContext_13)->ed_c_0->meshes_0, &kernelContext_13);
             GpuMesh_natural_0 device* _S38 = _S37 + (&_S36)->mesh_0;
             Bounds_0 _S39 = bounds_0(&_S36, _S38, &kernelContext_13);
-            bool _S40 = in_frustum_0(_S31, _S39.c_0, _S39.r_0);
+            bool _S40 = in_frustum_0(_S31, _S39.c_1, _S39.r_0);
             uint device* _S41 = _S34 + i_13;
             uint st_1 = *_S41;
             bool init_1 = ((*_S41) & 2048U) != 0U;
@@ -526,7 +538,7 @@ void stat_add_0(atomic<uint> device* stats_1, uint idx_0, uint v_1)
             uint n_0 = (uint4(_S31->cull_0) ).y;
             float4 _S43 = float4(_S31->params_0) ;
             float4 _S44 = float4(_S31->proj_0) ;
-            uint _S45 = select_lod_0(_S38, _S39.scale_1 * _S44.w * 0.5f * _S44.y / max(length(_S39.c_0) - _S39.r_0, _S43.z), cur_2, init_1, _S43.y, _S43.w);
+            uint _S45 = select_lod_0(_S38, _S39.scale_1 * _S44.w * 0.5f * _S44.y / max(length(_S39.c_1) - _S39.r_0, _S43.z), cur_2, init_1, _S43.y, _S43.w);
             uint fade_2;
             if(fade_1 > 0U)
             {
@@ -644,23 +656,23 @@ void stat_add_0(atomic<uint> device* stats_1, uint idx_0, uint v_1)
     return;
 }
 
-bool project_sphere_0(float3 c_2, float r_2, float znear_0, float p00_0, float p11_0, float4 thread* aabb_0)
+bool project_sphere_0(float3 c_3, float r_2, float znear_0, float p00_0, float p11_0, float4 thread* aabb_0)
 {
     *aabb_0 = float4(0.0f) ;
-    float _S47 = c_2.z;
+    float _S47 = c_3.z;
     if(_S47 < (r_2 + znear_0))
     {
         return false;
     }
-    float3 cr_0 = c_2 * float3(r_2) ;
+    float3 cr_0 = c_3 * float3(r_2) ;
     float czr2_0 = _S47 * _S47 - r_2 * r_2;
-    float _S48 = c_2.x;
+    float _S48 = c_3.x;
     float vx_0 = sqrt(_S48 * _S48 + czr2_0);
     float _S49 = vx_0 * _S48;
     float _S50 = cr_0.z;
     float _S51 = vx_0 * _S47;
     float _S52 = cr_0.x;
-    float _S53 = c_2.y;
+    float _S53 = c_3.y;
     float vy_0 = sqrt(_S53 * _S53 + czr2_0);
     float _S54 = vy_0 * _S53;
     float _S55 = vy_0 * _S47;
@@ -742,7 +754,7 @@ bool occluded_0(FrameData_natural_0 device* f_1, float device* hzb_2, float3 c_r
             Bounds_0 _S76 = bounds_0(&_S72, _S75, &kernelContext_14);
             uint device* _S77 = _S73 + i_14;
             uint st_3 = *_S77;
-            bool _S78 = in_frustum_0(_S68, _S76.c_0, _S76.r_0);
+            bool _S78 = in_frustum_0(_S68, _S76.c_1, _S76.r_0);
             bool vis_0;
             if(_S78)
             {
@@ -755,7 +767,7 @@ bool occluded_0(FrameData_natural_0 device* f_1, float device* hzb_2, float3 c_r
             if(vis_0)
             {
                 float device* _S79 = ed_buf_4((&kernelContext_14)->ed_c_0->hzb_0, &kernelContext_14);
-                bool _S80 = occluded_0(_S68, _S79, _S76.c_0, _S76.r_0);
+                bool _S80 = occluded_0(_S68, _S79, _S76.c_1, _S76.r_0);
                 vis_0 = !_S80;
             }
             else
@@ -947,7 +959,7 @@ bool occluded_0(FrameData_natural_0 device* f_1, float device* hzb_2, float3 c_r
             if(((_S104->flags_0) & 1U) != 0U)
             {
                 float4 _S109 = float4(_S94->proj_0) ;
-                uint _S110 = select_lod_0(_S104, _S105.scale_1 * _S109.w * 0.5f * _S109.y / max(length(_S105.c_0) - _S105.r_0, (float4(_S94->params_0) ).z), 0U, false, (float4(_S94->params_0) ).y, 1.0f);
+                uint _S110 = select_lod_0(_S104, _S105.scale_1 * _S109.w * 0.5f * _S109.y / max(length(_S105.c_1) - _S105.r_0, (float4(_S94->params_0) ).z), 0U, false, (float4(_S94->params_0) ).y, 1.0f);
                 if((_S104->index_count_0[_S110]) == 0U)
                 {
                     _S108 = true;
@@ -1000,22 +1012,22 @@ bool occluded_0(FrameData_natural_0 device* f_1, float device* hzb_2, float3 c_r
                     }
                 }
             }
-            uint c_3 = 0U;
+            uint c_4 = 0U;
             cnt0_0 = 0U;
             cnt1_0 = 0U;
             cnt2_0 = 0U;
             cnt3_0 = 0U;
             for(;;)
             {
-                if(c_3 < nc_0)
+                if(c_4 < nc_0)
                 {
                 }
                 else
                 {
                     break;
                 }
-                float4 _S112 = float4((&(&_S94->light_0)->cascade_0)->data_4[c_3]) ;
-                float4 s_1 = (((float4(_S105.c_0, 1.0f)) * (matrix<float,int(4),int(4)> ((&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(0)][int(0)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(1)][int(0)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(2)][int(0)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(3)][int(0)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(0)][int(1)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(1)][int(1)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(2)][int(1)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(3)][int(1)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(0)][int(2)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(1)][int(2)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(2)][int(2)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(3)][int(2)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(0)][int(3)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(1)][int(3)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(2)][int(3)], (&(&_S94->light_0)->shadow_0)->data_3[c_3].data_1[int(3)][int(3)]))));
+                float4 _S112 = float4((&(&_S94->light_0)->cascade_0)->data_4[c_4]) ;
+                float4 s_1 = (((float4(_S105.c_1, 1.0f)) * (matrix<float,int(4),int(4)> ((&(&_S94->light_0)->shadow_0)->data_3[c_4].data_1[int(0)][int(0)], (&(&_S94->light_0)->shadow_0)->data_3[c_4].data_1[int(1)][int(0)], (&(&_S94->light_0)->shadow_0)->data_3[c_4].data_1[int(2)][int(0)], (&(&_S94->light_0)->shadow_0)->data_3[c_4].data_1[int(3)][int(0)], (&(&_S94->light_0)->shadow_0)->data_3[c_4].data_1[int(0)][int(1)], (&(&_S94->light_0)->shadow_0)->data_3[c_4].data_1[int(1)][int(1)], (&(&_S94->light_0)->shadow_0)->data_3[c_4].data_1[int(2)][int(1)], (&(&_S94->light_0)->shadow_0)->data_3[c_4].data_1[int(3)][int(1)], (&(&_S94->light_0)->shadow_0)->data_3[c_4].data_1[int(0)][int(2)], (&(&_S94->light_0)->shadow_0)->data_3[c_4].data_1[int(1)][int(2)], (&(&_S94->light_0)->shadow_0)->data_3[c_4].data_1[int(2)][int(2)], (&(&_S94->light_0)->shadow_0)->data_3[c_4].data_1[int(3)][int(2)], (&(&_S94->light_0)->shadow_0)->data_3[c_4].data_1[int(0)][int(3)], (&(&_S94->light_0)->shadow_0)->data_3[c_4].data_1[int(1)][int(3)], (&(&_S94->light_0)->shadow_0)->data_3[c_4].data_1[int(2)][int(3)], (&(&_S94->light_0)->shadow_0)->data_3[c_4].data_1[int(3)][int(3)]))));
                 float _S113 = _S112.x;
                 float rz_0 = _S105.r_0 / _S112.y;
                 float _S114 = 1.0f + _S105.r_0 / (_S113 * _S107 * 0.5f);
@@ -1047,14 +1059,14 @@ bool occluded_0(FrameData_natural_0 device* f_1, float device* hzb_2, float3 c_r
                 }
                 if(_S116)
                 {
-                    c_3 = c_3 + 1U;
+                    c_4 = c_4 + 1U;
                     continue;
                 }
-                uint _S117 = select_lod_0(_S104, _S105.scale_1 / _S113, 0U, false, (float4(_S94->params_0) ).y * SHADOW_LOD_BIAS_0[c_3], 1.0f);
+                uint _S117 = select_lod_0(_S104, _S105.scale_1 / _S113, 0U, false, (float4(_S94->params_0) ).y * SHADOW_LOD_BIAS_0[c_4], 1.0f);
                 uint lod_1 = clamp(_S117, lod_min_0, lod_max_0);
-                push_0(_S101, _S100, _S102, c_3 * (&kernelContext_16)->ed_c_0->bins_kind_0 + _S104->bin_base_0 + lod_1, i_16 | (lod_1 << 20U), _S104->capacity_0, _S104->index_count_0[lod_1] / 3U, &e_4);
+                push_0(_S101, _S100, _S102, c_4 * (&kernelContext_16)->ed_c_0->bins_kind_0 + _S104->bin_base_0 + lod_1, i_16 | (lod_1 << 20U), _S104->capacity_0, _S104->index_count_0[lod_1] / 3U, &e_4);
                 uint _S118;
-                if(c_3 == 0U)
+                if(c_4 == 0U)
                 {
                     _S118 = 1U;
                 }
@@ -1064,7 +1076,7 @@ bool occluded_0(FrameData_natural_0 device* f_1, float device* hzb_2, float3 c_r
                 }
                 uint cnt0_1 = cnt0_0 + _S118;
                 uint _S119;
-                if(c_3 == 1U)
+                if(c_4 == 1U)
                 {
                     _S119 = 1U;
                 }
@@ -1074,7 +1086,7 @@ bool occluded_0(FrameData_natural_0 device* f_1, float device* hzb_2, float3 c_r
                 }
                 uint cnt1_1 = cnt1_0 + _S119;
                 uint _S120;
-                if(c_3 == 2U)
+                if(c_4 == 2U)
                 {
                     _S120 = 1U;
                 }
@@ -1084,7 +1096,7 @@ bool occluded_0(FrameData_natural_0 device* f_1, float device* hzb_2, float3 c_r
                 }
                 uint cnt2_1 = cnt2_0 + _S120;
                 uint _S121;
-                if(c_3 == 3U)
+                if(c_4 == 3U)
                 {
                     _S121 = 1U;
                 }
@@ -1097,7 +1109,7 @@ bool occluded_0(FrameData_natural_0 device* f_1, float device* hzb_2, float3 c_r
                 cnt1_0 = cnt1_1;
                 cnt2_0 = cnt2_1;
                 cnt3_0 = cnt3_1;
-                c_3 = c_3 + 1U;
+                c_4 = c_4 + 1U;
             }
         }
         else
@@ -1218,9 +1230,9 @@ float imp_hash01_0(uint h_1)
             GpuImpKind_natural_0 k_1 = *(_S134 + (((g_0.node_kind_1) >> 12U) & 4095U));
             packed_float4 device* _S135 = ed_buf_5((&kernelContext_18)->ed_c_0->nodes_0, &kernelContext_18);
             float4 _S136 = float4(k_1.geo_0) ;
-            float3 c_4 = (float4(*(_S135 + ((g_0.node_kind_1) & 4095U))) ).xyz + float3(g_0.px_1, g_0.py_1, g_0.pz_1) + oct_decode_0(g_0.up_1) * float3((_S136.x * g_0.scale_0)) ;
+            float3 c_5 = (float4(*(_S135 + ((g_0.node_kind_1) & 4095U))) ).xyz + float3(g_0.px_1, g_0.py_1, g_0.pz_1) + oct_decode_0(g_0.up_1) * float3((_S136.x * g_0.scale_0)) ;
             float r_4 = _S136.y * g_0.scale_0 * max(0.5f + float((g_0.yaw_widen_0) >> 16U) / 65535.0f, 1.0f);
-            float _S137 = max(length(c_4), (float4(_S129->params_0) ).z);
+            float _S137 = max(length(c_5), (float4(_S129->params_0) ).z);
             float ppr_0 = (float4(_S129->proj_0) ).w * 0.5f * (float4(_S129->proj_0) ).y;
             float4 _S138 = float4((&_S129->imp_0)->band_0) ;
             float _S139 = _S138.y;
@@ -1235,7 +1247,7 @@ float imp_hash01_0(uint h_1)
                 bool vis_1;
                 if(cov_0 > 0U)
                 {
-                    bool _S143 = in_frustum_0(_S129, c_4, r_4);
+                    bool _S143 = in_frustum_0(_S129, c_5, r_4);
                     vis_1 = _S143;
                 }
                 else
@@ -1254,7 +1266,7 @@ float imp_hash01_0(uint h_1)
                 if(_S144)
                 {
                     float device* _S145 = ed_buf_4((&kernelContext_18)->ed_c_0->hzb_0, &kernelContext_18);
-                    bool _S146 = occluded_0(_S129, _S145, c_4, r_4);
+                    bool _S146 = occluded_0(_S129, _S145, c_5, r_4);
                     vis_1 = !_S146;
                 }
                 if(vis_1)
@@ -1316,7 +1328,7 @@ float imp_hash01_0(uint h_1)
                             continue;
                         }
                         float4 _S153 = float4((&(&_S129->light_0)->cascade_0)->data_4[cc_0]) ;
-                        float4 sp_0 = (((float4(c_4, 1.0f)) * (matrix<float,int(4),int(4)> ((&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(0)][int(0)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(1)][int(0)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(2)][int(0)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(3)][int(0)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(0)][int(1)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(1)][int(1)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(2)][int(1)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(3)][int(1)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(0)][int(2)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(1)][int(2)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(2)][int(2)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(3)][int(2)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(0)][int(3)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(1)][int(3)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(2)][int(3)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(3)][int(3)]))));
+                        float4 sp_0 = (((float4(c_5, 1.0f)) * (matrix<float,int(4),int(4)> ((&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(0)][int(0)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(1)][int(0)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(2)][int(0)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(3)][int(0)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(0)][int(1)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(1)][int(1)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(2)][int(1)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(3)][int(1)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(0)][int(2)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(1)][int(2)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(2)][int(2)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(3)][int(2)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(0)][int(3)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(1)][int(3)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(2)][int(3)], (&(&_S129->light_0)->shadow_0)->data_3[cc_0].data_1[int(3)][int(3)]))));
                         float _S154 = _S153.x;
                         float rz_1 = r_4 / _S153.y;
                         float _S155 = 1.0f + r_4 / (_S154 * _S150 * 0.5f);
@@ -1501,7 +1513,7 @@ void grass_emit_0(uint list_2, uint i_20, KernelContext_0 thread* kernelContext_
             float4 _S172 = float4(ty_0.a_0) ;
             float h_2 = _S172.y * float(_S169) / 65535.0f * 4.0f;
             float3 base_0 = (float4(*(_S171 + ((g_1.node_kind_0) & 4095U))) ).xyz + float3(g_1.px_0, g_1.py_0, g_1.pz_0);
-            float3 c_5 = base_0 + oct_decode_0(g_1.up_0) * float3((0.5f * h_2)) ;
+            float3 c_6 = base_0 + oct_decode_0(g_1.up_0) * float3((0.5f * h_2)) ;
             float r_5 = (float4(ty_0.b_0) ).x * 1.1499999761581421f + 0.60000002384185791f * h_2 + 0.05000000074505806f;
             float d_1 = length(base_0);
             float2 _S173 = grass_lod_0(_S164, d_1, _S172.w);
@@ -1518,7 +1530,7 @@ void grass_emit_0(uint list_2, uint i_20, KernelContext_0 thread* kernelContext_
             if(vis_2)
             {
                 uint b_4 = grass_bucket_0(_S173.x);
-                bool _S174 = in_frustum_0(_S164, c_5, r_5);
+                bool _S174 = in_frustum_0(_S164, c_6, r_5);
                 if(_S174)
                 {
                     vis_2 = ((uint4(_S164->cull_0) ).x) > 0U;
@@ -1530,7 +1542,7 @@ void grass_emit_0(uint list_2, uint i_20, KernelContext_0 thread* kernelContext_
                 if(vis_2)
                 {
                     float device* _S175 = ed_buf_4((&kernelContext_21)->ed_c_0->hzb_0, &kernelContext_21);
-                    bool _S176 = occluded_0(_S164, _S175, c_5, r_5);
+                    bool _S176 = occluded_0(_S164, _S175, c_6, r_5);
                     vis_2 = !_S176;
                 }
                 else
@@ -1565,7 +1577,7 @@ void grass_emit_0(uint list_2, uint i_20, KernelContext_0 thread* kernelContext_
                 if(vis_2)
                 {
                     float4 _S177 = float4((&(&_S164->light_0)->cascade_0)->data_4[int(0)]) ;
-                    float4 sp_1 = (((float4(c_5, 1.0f)) * (matrix<float,int(4),int(4)> ((&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(0)][int(0)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(1)][int(0)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(2)][int(0)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(3)][int(0)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(0)][int(1)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(1)][int(1)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(2)][int(1)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(3)][int(1)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(0)][int(2)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(1)][int(2)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(2)][int(2)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(3)][int(2)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(0)][int(3)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(1)][int(3)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(2)][int(3)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(3)][int(3)]))));
+                    float4 sp_1 = (((float4(c_6, 1.0f)) * (matrix<float,int(4),int(4)> ((&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(0)][int(0)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(1)][int(0)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(2)][int(0)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(3)][int(0)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(0)][int(1)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(1)][int(1)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(2)][int(1)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(3)][int(1)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(0)][int(2)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(1)][int(2)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(2)][int(2)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(3)][int(2)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(0)][int(3)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(1)][int(3)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(2)][int(3)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(3)][int(3)]))));
                     float rz_2 = r_5 / _S177.y;
                     float _S178 = 1.0f + r_5 / (_S177.x * (float4((&_S164->light_0)->cfg_0) ).y * 0.5f);
                     if((abs(sp_1.x)) > _S178)

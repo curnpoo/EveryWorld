@@ -70,6 +70,21 @@ pub struct GrassType {
     pub head_w: f32,
     /// Share of lattice cells holding a clump (0..1).
     pub density: f32,
+    /// Shell grass (styles C and D): turf height (m) at height scale 1. Tall types use it as
+    /// the short underlayer between their clumps.
+    pub shell_h: f32,
+    /// Strand cell (m) of the shells: a power of two (`2^-k`), so the strand lattice is
+    /// world-stable under the 32 m map snap ([`MAP_SNAP_M`]).
+    pub strand_m: f32,
+    /// Share of strand cells holding a strand, and of the shell floor that is grass (0..1).
+    pub shell_cover: f32,
+    /// Specular and sky-sheen scale on the blades and strands (0..1; 1 the plain leaf model).
+    pub sheen: f32,
+    /// What a field of it reads as from afar (linear albedo): the terrain under and past the
+    /// grass takes this colour so the grass edge blends.
+    pub carpet: [f32; 3],
+    /// Shells only (style D draws no blades of it).
+    pub shell_only: bool,
 }
 
 pub const LAWN: u8 = 0;
@@ -89,13 +104,19 @@ pub const TYPES: [GrassType; 4] = [
         lean: 0.5,
         stiffness: 0.85,
         curve: 0.35,
-        root: [0.040, 0.060, 0.016],
-        mid: [0.085, 0.130, 0.032],
-        tip: [0.115, 0.160, 0.045],
-        dry: [0.22, 0.20, 0.09],
+        root: [0.030, 0.050, 0.012],
+        mid: [0.065, 0.110, 0.022],
+        tip: [0.085, 0.135, 0.030],
+        dry: [0.20, 0.18, 0.08],
         head: 0.0,
         head_w: 1.0,
         density: 0.85,
+        shell_h: 0.075,
+        strand_m: 0.0078125,
+        shell_cover: 0.92,
+        sheen: 0.25,
+        carpet: [0.058, 0.098, 0.020],
+        shell_only: true,
     },
     GrassType {
         name: "meadow",
@@ -114,6 +135,12 @@ pub const TYPES: [GrassType; 4] = [
         head: 0.0,
         head_w: 1.0,
         density: 0.8,
+        shell_h: 0.06,
+        strand_m: 0.0078125,
+        shell_cover: 0.8,
+        sheen: 0.55,
+        carpet: [0.068, 0.110, 0.026],
+        shell_only: false,
     },
     GrassType {
         name: "long grass",
@@ -132,6 +159,12 @@ pub const TYPES: [GrassType; 4] = [
         head: 0.0,
         head_w: 1.0,
         density: 0.78,
+        shell_h: 0.06,
+        strand_m: 0.015625,
+        shell_cover: 0.75,
+        sheen: 0.6,
+        carpet: [0.085, 0.112, 0.036],
+        shell_only: false,
     },
     GrassType {
         name: "wheat",
@@ -150,17 +183,23 @@ pub const TYPES: [GrassType; 4] = [
         head: 0.13,
         head_w: 2.2,
         density: 1.0,
+        shell_h: 0.035,
+        strand_m: 0.015625,
+        shell_cover: 0.45,
+        sheen: 0.8,
+        carpet: [0.30, 0.225, 0.085],
+        shell_only: false,
     },
 ];
 
-/// Words per GPU row (six float4).
-pub const ROW_FLOATS: usize = 24;
+/// Words per GPU row (eight float4).
+pub const ROW_FLOATS: usize = 32;
 
 /// The GPU row of `t` (common.slang `GrassType`): (h min, h max, width, blades),
 /// (clump r, lean, stiffness, curve), (root, aniso), (mid, head), (tip, head width),
-/// (dry, density).
+/// (dry, density), (shell h, strand m, shell cover, sheen), (carpet, shell only).
 pub fn gpu_row(t: &GrassType) -> [f32; ROW_FLOATS] {
-    let [r, m, p, d] = [t.root, t.mid, t.tip, t.dry];
+    let [r, m, p, d, c] = [t.root, t.mid, t.tip, t.dry, t.carpet];
     [
         t.height.0, t.height.1, t.width, t.blades.min(MAX_BLADES) as f32,
         t.clump_r, t.lean, t.stiffness, t.curve,
@@ -168,7 +207,15 @@ pub fn gpu_row(t: &GrassType) -> [f32; ROW_FLOATS] {
         m[0], m[1], m[2], t.head,
         p[0], p[1], p[2], t.head_w,
         d[0], d[1], d[2], t.density,
+        t.shell_h, t.strand_m, t.shell_cover, t.sheen,
+        c[0], c[1], c[2], if t.shell_only { 1.0 } else { 0.0 },
     ]
+}
+
+/// Tallest shell (m): the top shell's height (the patch field scales heights up to
+/// [`HEIGHT_SCALE_MAX`]).
+pub fn shell_h_max() -> f32 {
+    TYPES.iter().map(|t| t.shell_h).fold(0.0, f32::max) * HEIGHT_SCALE_MAX
 }
 
 /// Every type's GPU row, in order.
@@ -228,6 +275,18 @@ fn wrap_m(d: DVec3) -> [f32; 3] {
     [p.x.rem_euclid(4096.0) as f32, p.y.rem_euclid(4096.0) as f32, p.z.rem_euclid(4096.0) as f32]
 }
 
+/// Most patch height scale ([`patch`]).
+pub const HEIGHT_SCALE_MAX: f32 = 1.45;
+
+/// The patch fields at body direction `d`: height scale (0.55..[`HEIGHT_SCALE_MAX`], ~9 m
+/// patches) and dry share (0..1, ~23 m patches). Shared by the clumps and the shell map.
+pub fn patch(d: DVec3, seed: u64) -> (f32, f32) {
+    let w = wrap_m(d);
+    let p = fbm3(w[0] / 9.0, w[1] / 9.0, w[2] / 9.0, seed ^ 0x6A55, 3);
+    let dry = smoothstep(0.58, 0.8, fbm3(w[0] / 23.0, w[1] / 23.0, w[2] / 23.0, seed ^ 0xD27, 3));
+    (0.55 + 0.9 * smoothstep(0.2, 0.8, p), dry)
+}
+
 /// Clumps of node `id` (level 14..=20) whose rank is under `keep_min`. `type_at(d)` is the grass
 /// type and the ground's density (0..1) at body direction `d` (`None`: no grass). Clumps come in
 /// lattice order.
@@ -262,10 +321,8 @@ pub fn scatter_node(id: NodeId, type_at: &dyn Fn(DVec3) -> Option<(u8, f32)>, ke
                 let e = f.e1 * yaw.cos() + f.e2 * yaw.sin();
                 (d, (e - d * e.dot(d)).normalize())
             };
-            let w = wrap_m(dir);
-            let patch = fbm3(w[0] / 9.0, w[1] / 9.0, w[2] / 9.0, seed ^ 0x6A55, 3);
-            let height = (0.55 + 0.9 * smoothstep(0.2, 0.8, patch)) * (0.88 + 0.24 * crate::hash01(key, 5));
-            let dry = smoothstep(0.58, 0.8, fbm3(w[0] / 23.0, w[1] / 23.0, w[2] / 23.0, seed ^ 0xD27, 3));
+            let (hp, dry) = patch(dir, seed);
+            let height = hp * (0.88 + 0.24 * crate::hash01(key, 5));
             out.push(Clump {
                 dir,
                 xy: f.xy(dir),
@@ -312,6 +369,110 @@ pub fn lab_type(east: f64, north: f64) -> Option<(u8, f32)> {
     let az = (east.atan2(north) as f32).to_degrees() + 10.0 + 14.0 * wob * (r / (r + 10.0));
     let sector = (az / 20.0).floor().rem_euclid(3.0) as u8;
     Some(([MEADOW, LONG, WHEAT][sector as usize], 1.0))
+}
+
+// ---------------------------------------------------------------------------------------------
+// The shell map (styles C and D): what grows where around the camera, for the GPU.
+// ---------------------------------------------------------------------------------------------
+
+/// Cells per map side (two maps: fine for the shells, coarse for the terrain tint).
+pub const MAP_N: usize = 256;
+/// Fine map cell (m): +-64 m around its centre.
+pub const MAP_FINE_M: f64 = 0.5;
+/// Coarse map cell (m): +-512 m.
+pub const MAP_COARSE_M: f64 = 4.0;
+/// The map centre snaps to this lattice (m) of face metres: every cell size and strand cell
+/// divides it, so cells and strands keep their place when the map moves.
+pub const MAP_SNAP_M: f64 = 32.0;
+/// The terrain's face-metre period (ed_render `TEX_PERIOD_M`): the shader sees face metres
+/// modulo this.
+pub const FACE_PERIOD_M: f64 = 4096.0;
+
+/// Face axes (normal, u, v) of the cube mapping (`ed_geo::node`, ed_render `face_axes`).
+fn face_axes(face: u8) -> [DVec3; 3] {
+    let (x, y, z) = (DVec3::X, DVec3::Y, DVec3::Z);
+    match face {
+        0 => [x, y, z],
+        1 => [-x, -y, z],
+        2 => [y, -x, z],
+        3 => [-y, x, z],
+        4 => [z, y, -x],
+        _ => [-z, y, x],
+    }
+}
+
+/// Face and face metres (`atan(u) a`, `atan(v) a`; the terrain's `tex` coordinates, unwrapped)
+/// of body direction `d` on a body of equatorial radius `a`.
+pub fn face_metres(d: DVec3, a: f64) -> (u8, f64, f64) {
+    let ab = d.abs();
+    let axis = if ab.x >= ab.y && ab.x >= ab.z { 0 } else if ab.y >= ab.z { 1 } else { 2 };
+    let m = [d.x, d.y, d.z][axis];
+    let face = (axis * 2) as u8 + (m < 0.0) as u8;
+    let [n, u, v] = face_axes(face);
+    let k = d.dot(n);
+    (face, (d.dot(u) / k).atan() * a, (d.dot(v) / k).atan() * a)
+}
+
+/// Inverse of [`face_metres`]: the unit direction of face metres `(x, y)` on `face`.
+pub fn face_dir(face: u8, x: f64, y: f64, a: f64) -> DVec3 {
+    let [n, u, v] = face_axes(face);
+    (n + u * (x / a).tan() + v * (y / a).tan()).normalize()
+}
+
+/// One map cell: kind + 1 (0: no grass), density, height scale (/ 2), dry share; a byte each.
+pub fn map_word(kind: Option<u8>, dens: f32, height: f32, dry: f32) -> u32 {
+    let Some(k) = kind else { return 0 };
+    let b = |x: f32| (x.clamp(0.0, 1.0) * 255.0).round() as u32;
+    (k as u32 + 1).min(255) | b(dens) << 8 | b(height / 2.0) << 16 | b(dry) << 24
+}
+
+/// Decoded [`map_word`]: kind, density, height scale, dry share.
+pub fn map_cell(w: u32) -> Option<(u8, f32, f32, f32)> {
+    let k = w & 0xFF;
+    if k == 0 {
+        return None;
+    }
+    let f = |s: u32| ((w >> s) & 0xFF) as f32 / 255.0;
+    Some((k as u8 - 1, f(8), f(16) * 2.0, f(24)))
+}
+
+/// The snapped map centre (unwrapped face metres) for a camera at face metres `(x, y)`.
+pub fn map_centre(x: f64, y: f64) -> [f64; 2] {
+    [(x / MAP_SNAP_M).round() * MAP_SNAP_M, (y / MAP_SNAP_M).round() * MAP_SNAP_M]
+}
+
+/// Toroidal slot offset of a map: cell `c` (relative to the centre, `-N/2..N/2`) is stored at
+/// `(c + offset) mod N`, so a cell's slot depends on its world index only.
+pub fn map_offset(centre: [f64; 2], cell_m: f64) -> [u32; 2] {
+    let o = |x: f64| ((x / cell_m).round() as i64).rem_euclid(MAP_N as i64) as u32;
+    [o(centre[0]), o(centre[1])]
+}
+
+/// One map (`MAP_N` x `MAP_N` words, row-major by slot) of cell size `cell_m` around `centre`
+/// (snapped, unwrapped face metres on `face`). Cell centres are sampled with `type_at`; the
+/// height and dry share are the clumps' patch fields. Pure: (face, centre, cell, a, type_at, seed).
+pub fn build_map(face: u8, centre: [f64; 2], cell_m: f64, a: f64, type_at: &dyn Fn(DVec3) -> Option<(u8, f32)>, seed: u64) -> Vec<u32> {
+    let n = MAP_N as i64;
+    let off = map_offset(centre, cell_m);
+    let mut out = vec![0u32; MAP_N * MAP_N];
+    for j in -n / 2..n / 2 {
+        for i in -n / 2..n / 2 {
+            let x = centre[0] + (i as f64 + 0.5) * cell_m;
+            let y = centre[1] + (j as f64 + 0.5) * cell_m;
+            let d = face_dir(face, x, y, a);
+            let w = match type_at(d) {
+                Some((k, dens)) if (k as usize) < TYPES.len() && dens > 0.0 => {
+                    let (h, dry) = patch(d, seed);
+                    map_word(Some(k), dens, h, dry)
+                }
+                _ => 0,
+            };
+            let si = (i + off[0] as i64).rem_euclid(n) as usize;
+            let sj = (j + off[1] as i64).rem_euclid(n) as usize;
+            out[sj * MAP_N + si] = w;
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -427,5 +588,65 @@ mod tests {
             assert!(k.dir.is_finite() && k.facing.is_finite(), "{k:?}");
             assert!(k.facing.dot(k.dir).abs() < 1e-6);
         }
+    }
+
+    #[test]
+    fn face_metres_match_the_node_lattice() {
+        let a = 6_378_137.0;
+        for face in 0..6u8 {
+            for (i, j) in [(3u64, 5u64), (512, 100), (1000, 1023)] {
+                let n = 1024;
+                let d = ed_geo::node::lattice_point(face, i, j, n);
+                let (f, x, y) = face_metres(d, a);
+                assert_eq!(f, face);
+                let wu = ed_geo::node::warp(i, n);
+                let wv = ed_geo::node::warp(j, n);
+                assert!((x - wu.atan() * a).abs() < 1e-6 && (y - wv.atan() * a).abs() < 1e-6);
+                assert!(face_dir(face, x, y, a).distance(d) < 1e-12);
+            }
+        }
+    }
+
+    #[test]
+    fn map_words_round_trip_and_maps_are_stable() {
+        assert_eq!(map_word(None, 1.0, 1.0, 0.0), 0);
+        let (k, d, h, y) = map_cell(map_word(Some(WHEAT), 0.5, 1.2, 0.25)).unwrap();
+        assert_eq!(k, WHEAT);
+        assert!((d - 0.5).abs() < 0.01 && (h - 1.2).abs() < 0.01 && (y - 0.25).abs() < 0.01);
+        let a = 6_378_137.0;
+        let (face, x, y) = face_metres(node().centre().normalize(), a);
+        let c0 = map_centre(x, y);
+        assert_eq!(c0[0] % MAP_SNAP_M, 0.0);
+        let ty = |d: DVec3| {
+            let (_, x, y) = face_metres(d, a);
+            Some((((x / 7.0).floor() as i64).rem_euclid(4) as u8, 1.0))
+        };
+        let m0 = build_map(face, c0, MAP_FINE_M, a, &ty, 3);
+        assert_eq!(m0, build_map(face, c0, MAP_FINE_M, a, &ty, 3));
+        // Moved by one snap: the overlapping cells keep their slots and words.
+        let c1 = [c0[0] + MAP_SNAP_M, c0[1]];
+        let m1 = build_map(face, c1, MAP_FINE_M, a, &ty, 3);
+        let mut same = 0;
+        for s in 0..MAP_N * MAP_N {
+            if m0[s] == m1[s] {
+                same += 1;
+            }
+        }
+        assert!(same as f64 > 0.74 * (MAP_N * MAP_N) as f64, "{same}");
+        // Every strand cell divides the snap (world-stable strands).
+        for t in &TYPES {
+            let k = (MAP_SNAP_M / t.strand_m as f64).round();
+            assert!((k * t.strand_m as f64 - MAP_SNAP_M).abs() < 1e-9 && (k as u64).is_power_of_two(), "{}", t.name);
+            assert!(t.shell_h > 0.0 && t.shell_h <= 0.1 && t.sheen > 0.0 && t.sheen <= 1.0);
+        }
+        assert!((FACE_PERIOD_M / MAP_FINE_M) as usize % MAP_N == 0 && (FACE_PERIOD_M / MAP_COARSE_M) as usize % MAP_N == 0);
+    }
+
+    #[test]
+    fn shell_rows() {
+        let r = gpu_row(&TYPES[LAWN as usize]);
+        assert_eq!(r[24], TYPES[0].shell_h);
+        assert_eq!(r[31], 1.0);
+        assert!(shell_h_max() >= TYPES[0].shell_h);
     }
 }

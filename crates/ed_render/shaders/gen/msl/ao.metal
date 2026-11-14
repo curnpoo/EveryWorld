@@ -132,6 +132,15 @@ struct GrassData_natural_0
     packed_float4 look_0;
 };
 
+struct ShellData_natural_0
+{
+    packed_uint4 cfg_5;
+    packed_int4 off_0;
+    packed_float4 c_0;
+    packed_float4 fu_0;
+    packed_float4 cells_0;
+};
+
 struct FrameData_natural_0
 {
     _MatrixStorage_float4x4_ColMajornatural_0 view_proj_0;
@@ -154,6 +163,7 @@ struct FrameData_natural_0
     ImpData_natural_0 imp_0;
     SeasonData_natural_0 season_0;
     GrassData_natural_0 grass_0;
+    ShellData_natural_0 shell_0;
 };
 
 FrameData_natural_0 device* ed_buf_2(uint i_2, KernelContext_0 thread* kernelContext_2)
@@ -233,7 +243,7 @@ float fast_acos_0(float x_0)
     return _S9;
 }
 
-float3 view_at_far_0(FrameData_natural_0 device* f_5, int2 q_5, float off_0, float min_px_0, KernelContext_0 thread* kernelContext_7)
+float3 view_at_far_0(FrameData_natural_0 device* f_5, int2 q_5, float off_1, float min_px_0, KernelContext_0 thread* kernelContext_7)
 {
     int levels_0 = int((uint4(f_5->cull_0) ).x);
     bool _S10;
@@ -250,7 +260,7 @@ float3 view_at_far_0(FrameData_natural_0 device* f_5, int2 q_5, float off_0, flo
         float3 _S11 = view_at_0(f_5, q_5, kernelContext_7);
         return _S11;
     }
-    int l_0 = clamp(max(int(log2(max(off_0, 1.0f))) - int(4), int(ceil(log2(max(min_px_0, 2.0f)))) - int(1)), int(0), levels_0 - int(1));
+    int l_0 = clamp(max(int(log2(max(off_1, 1.0f))) - int(4), int(ceil(log2(max(min_px_0, 2.0f)))) - int(1)), int(0), levels_0 - int(1));
     HzbLevel_0 lv_0 = f_5->hzb_1[l_0];
     float2 _S12 = float2(float(2U << uint(l_0))) ;
     uint2 _S13 = min(uint2(float2(clamp(q_5, int2(int(0)) , int2((float4(f_5->proj_0) ).zw) - int2(int(1)) )) / _S12), uint2(f_5->hzb_1[l_0].width_0 - 1U, f_5->hzb_1[l_0].height_0 - 1U));

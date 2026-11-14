@@ -11,6 +11,8 @@ struct GrassType_natural_0
     packed_float4 mid_0;
     packed_float4 tip_0;
     packed_float4 dry_0;
+    packed_float4 shell_0;
+    packed_float4 carpet_0;
 };
 
 struct VisC_0
@@ -248,6 +250,15 @@ struct GrassData_natural_0
     packed_float4 look_0;
 };
 
+struct ShellData_natural_0
+{
+    packed_uint4 cfg_5;
+    packed_int4 off_0;
+    packed_float4 c_0;
+    packed_float4 fu_0;
+    packed_float4 cells_0;
+};
+
 struct FrameData_natural_0
 {
     _MatrixStorage_float4x4_ColMajornatural_0 view_proj_0;
@@ -270,6 +281,7 @@ struct FrameData_natural_0
     ImpData_natural_0 imp_0;
     SeasonData_natural_0 season_1;
     GrassData_natural_0 grass_0;
+    ShellData_natural_0 shell_1;
 };
 
 FrameData_natural_0 device* ed_buf_10(uint i_10, KernelContext_0 thread* kernelContext_10)
@@ -785,7 +797,7 @@ float3 arc_from_y_0(float3 up_3, float3 v_2)
 
 struct ImpTree_0
 {
-    float3 c_0;
+    float3 c_1;
     float3 ex_0;
     float3 up_4;
     float3 ez_0;
@@ -842,7 +854,7 @@ ImpTree_0 imp_tree_0(const GpuTree_0 thread* g_1, const GpuImpKind_natural_0 thr
     (&t_4)->ez_0 = arc_from_y_0(_S83, float3(_S85, 0.0f, _S84));
     float4 _S86 = float4(k_3->geo_0) ;
     (&t_4)->r_0 = _S86.y;
-    (&t_4)->c_0 = node_2 + float3(g_1->px_1, g_1->py_1, g_1->pz_1) + _S83 * float3((_S86.x * g_1->scale_0)) ;
+    (&t_4)->c_1 = node_2 + float3(g_1->px_1, g_1->py_1, g_1->pz_1) + _S83 * float3((_S86.x * g_1->scale_0)) ;
     ImpTree_0 _S87 = t_4;
     float3 _S88;
     if(sun_1)
@@ -851,7 +863,7 @@ ImpTree_0 imp_tree_0(const GpuTree_0 thread* g_1, const GpuImpKind_natural_0 thr
     }
     else
     {
-        _S88 = - (&t_4)->c_0;
+        _S88 = - (&t_4)->c_1;
     }
     thread ImpTree_0 _S89 = _S87;
     float3 _S90 = imp_to_tree_0(&_S89, _S88);
@@ -968,7 +980,7 @@ ImpOut_0 imp_vertex_0(uint vid_1, uint iid_1, bool shadow_2, KernelContext_0 thr
     }
     else
     {
-        vw_0 = normalize(- _S113.c_0);
+        vw_0 = normalize(- _S113.c_1);
     }
     float3 u0_1 = _S113.up_4 - vw_0 * float3(dot(vw_0, _S113.up_4)) ;
     float3 bu_0;
@@ -1014,14 +1026,14 @@ ImpOut_0 imp_vertex_0(uint vid_1, uint iid_1, bool shadow_2, KernelContext_0 thr
     {
         _S115 = -1.0f;
     }
-    float3 p_5 = _S113.c_0 + br_0 * float3((front_1 * half_x_0))  + bu_0 * float3((_S115 * half_w_0)) ;
-    float3 _S116 = p_5 - _S113.c_0;
+    float3 p_5 = _S113.c_1 + br_0 * float3((front_1 * half_x_0))  + bu_0 * float3((_S115 * half_w_0)) ;
+    float3 _S116 = p_5 - _S113.c_1;
     thread ImpTree_0 _S117 = _S113;
     float3 _S118 = imp_to_tree_0(&_S117, _S116);
     float3 p_6;
     if(!shadow_2)
     {
-        float _S119 = length(_S113.c_0);
+        float _S119 = length(_S113.c_1);
         float _S120 = min(half_w_0, max(_S119 - (float4(_S105->params_1) ).z * 2.0f, 0.0f));
         float3 p_7 = p_5 - vw_0 * float3(_S120) ;
         float lp_0 = length(p_7);
@@ -1411,12 +1423,12 @@ struct GrassBlade_0
     float t_ao_0;
 };
 
-GrassBlade_0 grass_blade_0(FrameData_natural_0 device* f_4, const GrassClump_0 thread* c_1, const GrassType_natural_0 thread* ty_0, float3 node_5, uint k_7, float lod_mul_0)
+GrassBlade_0 grass_blade_0(FrameData_natural_0 device* f_4, const GrassClump_0 thread* c_2, const GrassType_natural_0 thread* ty_0, float3 node_5, uint k_7, float lod_mul_0)
 {
-    float3 up_8 = oct_decode_0(c_1->up_0);
-    float3 rt_0 = normalize(cross(up_8, oct_decode_0(c_1->facing_0)));
+    float3 up_8 = oct_decode_0(c_2->up_0);
+    float3 rt_0 = normalize(cross(up_8, oct_decode_0(c_2->facing_0)));
     float3 fa_0 = cross(rt_0, up_8);
-    float3 base_1 = node_5 + float3(c_1->px_0, c_1->py_0, c_1->pz_0);
+    float3 base_1 = node_5 + float3(c_2->px_0, c_2->py_0, c_2->pz_0);
     float d_9 = length(base_1);
     float4 _S173 = float4(ty_0->a_0) ;
     float blades_1 = _S173.w;
@@ -1424,11 +1436,11 @@ GrassBlade_0 grass_blade_0(FrameData_natural_0 device* f_4, const GrassClump_0 t
     float _S175 = max(_S174.x * lod_mul_0, min((float4((&f_4->grass_0)->lod_0) ).z, blades_1));
     float _S176 = _S174.y;
     float _S177 = min(pow(blades_1 / _S175, 0.80000001192092896f) * rsqrt(max(_S176, 0.20000000298023224f)), (float4((&f_4->grass_0)->lod_0) ).w);
-    float keep_0 = saturate((_S176 - float((c_1->node_kind_0) >> 24U) / 255.0f) / (0.30000001192092896f * _S176 + 0.0010000000474974513f));
+    float keep_0 = saturate((_S176 - float((c_2->node_kind_0) >> 24U) / 255.0f) / (0.30000001192092896f * _S176 + 0.0010000000474974513f));
     float range_0 = (float4((&f_4->grass_0)->lod_0) ).y;
     float fade_1 = 1.0f - smoothstep(0.60000002384185791f * range_0, range_0, d_9);
-    uint _S178 = c_1->seed_0;
-    uint s0_1 = grass_hash_0((c_1->seed_0) ^ (k_7 * 2654435769U + 2135587861U));
+    uint _S178 = c_2->seed_0;
+    uint s0_1 = grass_hash_0((c_2->seed_0) ^ (k_7 * 2654435769U + 2135587861U));
     uint s1_1 = grass_hash_0(s0_1);
     uint s2_1 = grass_hash_0(s1_1);
     uint s3_0 = grass_hash_0(s2_1);
@@ -1437,12 +1449,12 @@ GrassBlade_0 grass_blade_0(FrameData_natural_0 device* f_4, const GrassClump_0 t
     float ang_0 = grass_rand_0(s0_1) * 6.2831854820251465f;
     float rad_0 = sqrt(grass_rand_0(s1_1));
     float4 _S179 = float4(ty_0->b_0) ;
-    float3 off_0 = (fa_0 * float3(cos(ang_0))  + rt_0 * float3((sin(ang_0) * (float4(ty_0->root_0) ).w)) ) * float3((rad_0 * _S179.x)) ;
+    float3 off_1 = (fa_0 * float3(cos(ang_0))  + rt_0 * float3((sin(ang_0) * (float4(ty_0->root_0) ).w)) ) * float3((rad_0 * _S179.x)) ;
     thread GrassBlade_0 o_3;
     (&o_3)->up_7 = up_8;
-    uint _S180 = (c_1->hw_0) & 65535U;
-    float hc_0 = mix(_S173.x, _S173.y, grass_rand_0(grass_hash_0(c_1->seed_0 + 17U))) * (float(_S180) / 65535.0f * 4.0f);
-    (&o_3)->p0_0 = base_1 + off_0 - up_8 * float3(min(0.029999999329447746f, 0.10000000149011612f * hc_0)) ;
+    uint _S180 = (c_2->hw_0) & 65535U;
+    float hc_0 = mix(_S173.x, _S173.y, grass_rand_0(grass_hash_0(c_2->seed_0 + 17U))) * (float(_S180) / 65535.0f * 4.0f);
+    (&o_3)->p0_0 = base_1 + off_1 - up_8 * float3(min(0.029999999329447746f, 0.10000000149011612f * hc_0)) ;
     float h_4 = hc_0 * (1.0f - 0.34999999403953552f * rad_0) * mix(0.72000002861022949f, 1.1200000047683716f, grass_rand_0(s2_1));
     float grow_0 = saturate(_S175 - float(k_7)) * keep_0 * fade_1;
     bool _S181;
@@ -1469,7 +1481,7 @@ GrassBlade_0 grass_blade_0(FrameData_natural_0 device* f_4, const GrassClump_0 t
     float3 radial_0;
     if(rad_0 > 0.0010000000474974513f)
     {
-        radial_0 = normalize(off_0);
+        radial_0 = normalize(off_1);
     }
     else
     {
@@ -1617,11 +1629,11 @@ GrassOut_0 grass_vertex_0(uint vid_3, uint iid_3, bool shadow_3, KernelContext_0
     uint device* _S199 = ed_buf_9(kernelContext_23->ed_c_0->visible_0, kernelContext_23);
     uint ci_0 = *(_S199 + iid_3);
     GrassClump_0 device* _S200 = ed_buf_1(kernelContext_23->ed_c_0->instances_0, kernelContext_23);
-    GrassClump_0 c_2 = *(_S200 + ci_0);
+    GrassClump_0 c_3 = *(_S200 + ci_0);
     GrassType_natural_0 device* _S201 = ed_buf_0(kernelContext_23->ed_c_0->verts_0, kernelContext_23);
-    thread GrassType_natural_0 _S202 = *(_S201 + (((c_2.node_kind_0) >> 12U) & 255U));
+    thread GrassType_natural_0 _S202 = *(_S201 + (((c_3.node_kind_0) >> 12U) & 255U));
     packed_float4 device* _S203 = ed_buf_6(kernelContext_23->ed_c_0->nodes_0, kernelContext_23);
-    float3 node_6 = (float4(*(_S203 + ((c_2.node_kind_0) & 4095U))) ).xyz;
+    float3 node_6 = (float4(*(_S203 + ((c_3.node_kind_0) & 4095U))) ).xyz;
     uint _S204 = min(kernelContext_23->ed_c_0->cascade_0, 4U);
     uint vpb_0 = 2U * (GRASS_SEGS_0[_S204] + 1U);
     uint k_8 = vid_3 / vpb_0;
@@ -1637,7 +1649,7 @@ GrassOut_0 grass_vertex_0(uint vid_3, uint iid_3, bool shadow_3, KernelContext_0
     {
         _S205 = 1.0f;
     }
-    thread GrassClump_0 _S206 = c_2;
+    thread GrassClump_0 _S206 = c_3;
     GrassBlade_0 _S207 = grass_blade_0(_S198, &_S206, &_S202, node_6, k_8, _S205);
     float t_10 = float(seg_0) / float(GRASS_SEGS_0[_S204]);
     thread GrassBlade_0 _S208 = _S207;

@@ -506,7 +506,7 @@ impl NearTrees {
             handoff_m: 0.0,
             season: std::env::var("EW_SEASON").map_or(true, |v| v != "0").then(|| SeasonCfg { day: ed_world::season::REF_DAY, rate: env_num("EW_SEASON_RATE", 1.0f64) }),
             ground: (near_from_env() && crate::ground_cover::from_env()).then(crate::ground_cover::GroundCover::new),
-            grass: (near_from_env() && crate::grass::style_a()).then(crate::grass::Grass::new),
+            grass: crate::grass::style().filter(|_| near_from_env()).map(crate::grass::Grass::new),
             inst_index: Default::default(),
             removed: BTreeSet::new(),
         }

@@ -127,6 +127,15 @@ struct GrassData_natural_0
     packed_float4 look_0;
 };
 
+struct ShellData_natural_0
+{
+    packed_uint4 cfg_5;
+    packed_int4 off_0;
+    packed_float4 c_0;
+    packed_float4 fu_0;
+    packed_float4 cells_0;
+};
+
 struct FrameData_natural_0
 {
     _MatrixStorage_float4x4_ColMajornatural_0 view_proj_0;
@@ -149,6 +158,7 @@ struct FrameData_natural_0
     ImpData_natural_0 imp_0;
     SeasonData_natural_0 season_0;
     GrassData_natural_0 grass_0;
+    ShellData_natural_0 shell_0;
 };
 
 FrameData_natural_0 device* ed_buf_1(uint i_1, KernelContext_0 thread* kernelContext_1)
@@ -181,12 +191,12 @@ struct pixelInput_0
     thread KernelContext_0 kernelContext_2;
     (&kernelContext_2)->ed_c_0 = ed_c_1;
     (&kernelContext_2)->ed_buffers_0 = ed_buffers_1;
-    thread float4 c_0 = _S1.color_1;
+    thread float4 c_1 = _S1.color_1;
     if((ed_c_1->linear_out_0) != 0U)
     {
-        c_0.xyz = overlay_linear_from_gamma_0(c_0.xyz);
+        c_1.xyz = overlay_linear_from_gamma_0(c_1.xyz);
     }
-    pixelOutput_0 _S2 = { c_0 };
+    pixelOutput_0 _S2 = { c_1 };
     return _S2;
 }
 

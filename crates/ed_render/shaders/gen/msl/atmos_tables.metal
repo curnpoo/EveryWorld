@@ -118,6 +118,15 @@ struct GrassData_natural_0
     packed_float4 look_0;
 };
 
+struct ShellData_natural_0
+{
+    packed_uint4 cfg_5;
+    packed_int4 off_0;
+    packed_float4 c_0;
+    packed_float4 fu_0;
+    packed_float4 cells_0;
+};
+
 struct FrameData_natural_0
 {
     _MatrixStorage_float4x4_ColMajornatural_0 view_proj_0;
@@ -140,6 +149,7 @@ struct FrameData_natural_0
     ImpData_natural_0 imp_0;
     SeasonData_natural_0 season_0;
     GrassData_natural_0 grass_0;
+    ShellData_natural_0 shell_0;
 };
 
 FrameData_natural_0 device* ed_buf_1(uint i_1, KernelContext_0 thread* kernelContext_1)
@@ -284,8 +294,8 @@ bool atm_hits_ground_0(float rb_1, float h_3, float mu_1)
 float atm_dist_ground_0(float rb_2, float h_4, float mu_2)
 {
     float a_0 = - (rb_2 + h_4) * mu_2;
-    float c_0 = h_4 * (2.0f * rb_2 + h_4);
-    return c_0 / max(a_0 + sqrt(max(a_0 * a_0 - c_0, 0.0f)), 9.999999960041972e-13f);
+    float c_1 = h_4 * (2.0f * rb_2 + h_4);
+    return c_1 / max(a_0 + sqrt(max(a_0 * a_0 - c_1, 0.0f)), 9.999999960041972e-13f);
 }
 
 float atm_dist_top_0(float rb_3, float rt_0, float h_5, float mu_3)
@@ -710,17 +720,17 @@ float3 atm_sky_ray_0(FrameData_natural_0 device* f_14, float h_17, float mu_11, 
     {
         rows_2 = 0U;
     }
-    float c_1 = float(_S96 - rows_2) / float(half_rows_0 - 1U);
+    float c_2 = float(_S96 - rows_2) / float(half_rows_0 - 1U);
     float _S97 = atm_rb_0(_S93);
     float zha_0 = acos(atm_cos_horizon_0(_S97, h_18));
     float theta_0;
     if(lower_0)
     {
-        theta_0 = max(zha_0 + (3.1415927410125732f - zha_0) * c_1 * c_1, zha_0 + 0.00019999999494757503f);
+        theta_0 = max(zha_0 + (3.1415927410125732f - zha_0) * c_2 * c_2, zha_0 + 0.00019999999494757503f);
     }
     else
     {
-        float _S98 = 1.0f - c_1;
+        float _S98 = 1.0f - c_2;
         theta_0 = min(zha_0 * (1.0f - _S98 * _S98), zha_0 - 0.00019999999494757503f);
     }
     float mu_12 = cos(theta_0);
@@ -855,22 +865,22 @@ float3 atm_sky_view_0(FrameData_natural_0 device* f_17, uint buf_1, uint w_2, ui
     float zha_1 = acos(atm_cos_horizon_0(_S113, h_20));
     float theta_1 = acos(mu_14);
     uint half_rows_1 = rows_3 / 2U;
-    float c_2;
+    float c_3;
     uint row0_1;
     if(theta_1 < zha_1)
     {
         float _S114 = 1.0f - sqrt(saturate(1.0f - theta_1 / zha_1));
         row0_1 = 0U;
-        c_2 = _S114;
+        c_3 = _S114;
     }
     else
     {
         float _S115 = sqrt(saturate((theta_1 - zha_1) / max(3.1415927410125732f - zha_1, 9.99999997475242708e-07f)));
         row0_1 = half_rows_1;
-        c_2 = _S115;
+        c_3 = _S115;
     }
     packed_float4 device* _S116 = ed_buf_0(buf_1, kernelContext_14);
-    float4 _S117 = atm_bilinear_0(_S116, w_2, row0_1, half_rows_1, float2(u_1, c_2));
+    float4 _S117 = atm_bilinear_0(_S116, w_2, row0_1, half_rows_1, float2(u_1, c_3));
     return _S117.xyz;
 }
 

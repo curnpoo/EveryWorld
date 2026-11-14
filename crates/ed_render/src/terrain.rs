@@ -823,6 +823,52 @@ pub struct TerrainMaterials {
 /// Words of the material record the resolve reads (`TerrainMat` in terrain_common.slang).
 pub const MAT_WORDS: usize = DRAW_WORDS;
 
+/// Grass shells (styles C and D): most nodes drawn with shells.
+pub const SHELL_MAX_DRAWS: usize = 64;
+/// Grass type rows the shells and the tint read (`GrassType`, 32 floats each).
+pub const SHELL_MAX_TYPES: usize = 64;
+pub const SHELL_TYPE_FLOATS: usize = 32;
+/// Cells per side of each shell map (ed_world::grass::MAP_N).
+pub const SHELL_MAP_N: usize = 256;
+/// Most shells (the visibility word carries the shell in 4 bits).
+pub const SHELL_MAX: u32 = 16;
+
+/// Where the shell records live in a view's draw table, after the material record: the shell
+/// draws (record index), the type rows (`GrassType` index) and the fine map's first word (the
+/// coarse map follows), and the table's total words.
+pub fn shell_layout(max_draws: u32) -> (u32, u32, u32, usize) {
+    let draw_base = max_draws * 5 + 1;
+    let types_word = ((draw_base as usize + SHELL_MAX_DRAWS) * DRAW_WORDS).next_multiple_of(SHELL_TYPE_FLOATS);
+    let map_word = types_word + SHELL_MAX_TYPES * SHELL_TYPE_FLOATS;
+    (draw_base, (types_word / SHELL_TYPE_FLOATS) as u32, map_word as u32, map_word + 2 * SHELL_MAP_N * SHELL_MAP_N)
+}
+
+/// Grass shells and the terrain's grass tint ([`TerrainProvider::set_grass`]): the type rows
+/// and the two type maps of `ed_world::grass` (fine for the shells, coarse for the tint).
+#[derive(Clone, Debug)]
+pub struct ShellGrass {
+    /// `ed_world::grass::gpu_rows`.
+    pub types: Vec<[f32; SHELL_TYPE_FLOATS]>,
+    /// The fine map, then the coarse one (`SHELL_MAP_N`^2 words each); `None`: not built yet.
+    pub maps: Option<Arc<Vec<u32>>>,
+    /// The maps' cube face.
+    pub face: u8,
+    /// Map centre in face metres modulo [`TEX_PERIOD_M`] (a multiple of the 32 m snap).
+    pub centre: [f32; 2],
+    /// Toroidal slot offsets: fine x, y, coarse x, y (`ed_world::grass::map_offset`).
+    pub offsets: [u32; 4],
+    /// Fine and coarse cell (m).
+    pub cells: [f32; 2],
+    /// Shells near the camera (0: no shells; at most [`SHELL_MAX`]).
+    pub shells: u32,
+    /// Shell range (m).
+    pub range: f32,
+    /// Terrain tint strength towards the grass carpet colour (0: off).
+    pub tint: f32,
+    /// Top shell height (m).
+    pub h_max: f32,
+}
+
 struct MatTex {
     albedo: (ed_gpu::TextureId, ed_gpu::BindlessTexture),
     normal: (ed_gpu::TextureId, ed_gpu::BindlessTexture),
@@ -845,6 +891,8 @@ struct TerrainView {
     ranges: [(u32, u32); 4],
     /// Per list (0: the view, 1-4: cascades), per index LOD: first draw and count.
     groups: [[(u32, u32); LODS]; 5],
+    /// Shell draws (index LOD per draw; draw `shell_layout().0 + i`).
+    shells: Vec<u8>,
     imports: Vec<(Res, u8)>,
 }
 
@@ -854,6 +902,9 @@ pub struct TerrainProvider {
     built: Vec<ShaderId>,
     raster: RenderPipelineId,
     shadow: RenderPipelineId,
+    shell: RenderPipelineId,
+    /// Grass shells and tint ([`TerrainProvider::set_grass`]).
+    grass: Option<ShellGrass>,
     index: Tracked,
     pool_buf: Tracked,
     pool: Pool,
@@ -875,6 +926,8 @@ const GEN_FS: &[u8] = include_bytes!("../shaders/gen/spv/terrain.fs_terrain.spv"
 const GEN_VS_SHADOW: &[u8] = include_bytes!("../shaders/gen/spv/terrain.vs_terrain_shadow.spv");
 const GEN_VS_TREES: &[u8] = include_bytes!("../shaders/gen/spv/terrain.vs_terrain_trees.spv");
 const GEN_VS_SHADOW_TREES: &[u8] = include_bytes!("../shaders/gen/spv/terrain.vs_terrain_shadow_trees.spv");
+const GEN_VS_SHELL: &[u8] = include_bytes!("../shaders/gen/spv/terrain.vs_shell.spv");
+const GEN_FS_SHELL: &[u8] = include_bytes!("../shaders/gen/spv/terrain.fs_shell.spv");
 
 fn spv_words(b: &[u8]) -> Vec<u32> {
     b.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect()
@@ -884,7 +937,7 @@ impl TerrainProvider {
     pub fn new(dev: &dyn Device, config: TerrainConfig) -> Result<Self, ed_gpu::Error> {
         let mut built = Vec::new();
         let r = Self::pipelines(dev, &mut built, config.trees_far.lift());
-        let (raster, shadow) = match r {
+        let (raster, shadow, shell) = match r {
             Ok(p) => p,
             Err(e) => {
                 for s in built {
@@ -900,19 +953,20 @@ impl TerrainProvider {
         let words = PAGE_WORDS as u64 + if config.trees_far.on() { CANOPY_WORDS as u64 } else { 0 };
         let pool_buf = Tracked::new(dev, "terrain page pool", config.pool_slots as u64 * words * 4, upload)?;
         let view0 = Self::new_view(dev, config.max_draws)?;
-        Ok(Self { config, built, raster, shadow, index, pool_buf, pool: Pool::new(config.pool_slots), views: vec![view0], cur: 0, stamp: 0, stats: TerrainStats::default(), eye: DVec3::ZERO, shadow_tile: 2048, mats: None })
+        Ok(Self { config, built, raster, shadow, shell, grass: None, index, pool_buf, pool: Pool::new(config.pool_slots), views: vec![view0], cur: 0, stamp: 0, stats: TerrainStats::default(), eye: DVec3::ZERO, shadow_tile: 2048, mats: None })
     }
 
     fn new_view(dev: &dyn Device, max_draws: u32) -> Result<TerrainView, ed_gpu::Error> {
         let per_frame = Usage { shader_read: true, cpu_write: true, ..Default::default() };
         // Room for the view's draws and up to four cascade lists.
         // One more record at the end: the material record (`material_record`).
-        let size = (max_draws as u64 * 5 + 1) * DRAW_WORDS as u64 * 4;
-        Ok(TerrainView { draws: Tracked::new(dev, "terrain draws", size, per_frame)?, entries: Vec::new(), vis: Vec::new(), bounds: Vec::new(), ranges: [(0, 0); 4], groups: [[(0, 0); LODS]; 5], imports: Vec::new() })
+        // Then the grass shell records (`shell_layout`).
+        let size = shell_layout(max_draws).3 as u64 * 4;
+        Ok(TerrainView { draws: Tracked::new(dev, "terrain draws", size, per_frame)?, entries: Vec::new(), vis: Vec::new(), bounds: Vec::new(), ranges: [(0, 0); 4], groups: [[(0, 0); LODS]; 5], shells: Vec::new(), imports: Vec::new() })
     }
 
     /// `lift`: the vertex entries with the canopy lift (trees G3), else the exact unlifted ones.
-    fn pipelines(dev: &dyn Device, built: &mut Vec<ShaderId>, lift: bool) -> Result<(RenderPipelineId, RenderPipelineId), ed_gpu::Error> {
+    fn pipelines(dev: &dyn Device, built: &mut Vec<ShaderId>, lift: bool) -> Result<(RenderPipelineId, RenderPipelineId, RenderPipelineId), ed_gpu::Error> {
         let vk = dev.caps().backend == Backend::Vulkan;
         let (vs_e, vss_e) = if lift { ("vs_terrain_trees", "vs_terrain_shadow_trees") } else { ("vs_terrain", "vs_terrain_shadow") };
         let (vs_b, vss_b) = if lift { (GEN_VS_TREES, GEN_VS_SHADOW_TREES) } else { (GEN_VS, GEN_VS_SHADOW) };
@@ -926,6 +980,8 @@ impl TerrainProvider {
         let vs = shader(vs_e, ShaderStage::Vertex, &vs_w)?;
         let fs = shader("fs_terrain", ShaderStage::Fragment, &fs_w)?;
         let vss = shader(vss_e, ShaderStage::Vertex, &vss_w)?;
+        let vsh = shader("vs_shell", ShaderStage::Vertex, &spv_words(GEN_VS_SHELL))?;
+        let fsh = shader("fs_shell", ShaderStage::Fragment, &spv_words(GEN_FS_SHELL))?;
         let raster = dev.create_render_pipeline(&RenderPipelineDesc {
             label: "terrain",
             vertex: vs,
@@ -948,13 +1004,50 @@ impl TerrainProvider {
             topology: Topology::Triangles,
             samples: 1,
         });
-        match shadow {
-            Ok(s) => Ok((raster, s)),
+        let shadow = match shadow {
+            Ok(s) => s,
             Err(e) => {
                 dev.destroy_render_pipeline(raster);
+                return Err(e);
+            }
+        };
+        // Grass shells: strictly in front of the ground (a shell flattened onto it, where no
+        // grass grows, never wins), no back faces (shells face up like the ground).
+        let shell = dev.create_render_pipeline(&RenderPipelineDesc {
+            label: "terrain shells",
+            vertex: vsh,
+            fragment: Some(fsh),
+            color_formats: &[VIS_FORMAT],
+            blend: ed_gpu::Blend::Opaque,
+            depth: Some(DepthDesc { format: DEPTH_FORMAT, write: true, compare: Compare::Greater, bias: 0.0, slope_bias: 0.0, clamp: false }),
+            cull: Cull::Back,
+            topology: Topology::Triangles,
+            samples: 1,
+        });
+        match shell {
+            Ok(sh) => Ok((raster, shadow, sh)),
+            Err(e) => {
+                dev.destroy_render_pipeline(raster);
+                dev.destroy_render_pipeline(shadow);
                 Err(e)
             }
         }
+    }
+
+    /// Grass shells and the terrain's grass tint (styles C and D); `None` turns both off.
+    pub fn set_grass(&mut self, g: Option<ShellGrass>) {
+        self.grass = g;
+    }
+    pub fn grass(&self) -> Option<&ShellGrass> {
+        self.grass.as_ref()
+    }
+
+    /// Nearest distance (m) from the camera to a drawn node: its centre at its own page height,
+    /// less the node's half diagonal.
+    fn draw_near_m(&self, d: &TerrainDraw) -> f32 {
+        let h = self.draw_pages(d).map_or(0.0, |pg| own_h(d, &pg, CELLS / 2, CELLS / 2));
+        let c = v3(d.origin) + cpu_lattice(d, CELLS / 2, CELLS / 2, h);
+        (c.length() - 0.75 * CELLS as f32 * cell_m(d)).max(0.0)
     }
 
     pub fn stats(&self) -> TerrainStats {
@@ -1262,6 +1355,7 @@ impl GeometryProvider for TerrainProvider {
             self.views[cur].ranges = [(0, 0); 4];
             self.views[cur].vis.clear();
             self.views[cur].groups = [[(0, 0); LODS]; 5];
+            self.views[cur].shells.clear();
             return Ok(());
         }
         let mat = |at: usize| glam::Mat4::from_cols_array(&std::array::from_fn(|k| f32::from_bits(fd.get(at + k).copied().unwrap_or(0))));
@@ -1289,6 +1383,35 @@ impl GeometryProvider for TerrainProvider {
         let lods = assign_lods(&mut main, &want);
         let mut groups = [[(0u32, 0u32); LODS]; 5];
         groups[0] = sort_by_lod(&lods, &mut main);
+        // Grass shells: the view's nodes on the map's face inside the shell range, at the
+        // view's index LOD (the shells follow exactly the drawn ground).
+        let mut shell_draws: Vec<(u8, TerrainDraw)> = Vec::new();
+        let mut face_u = [0.0f32; 3];
+        let mut shell_fd: Option<[u32; gpu::SHELL_WORDS]> = Some([0; gpu::SHELL_WORDS]);
+        if let Some(sg) = &self.grass {
+            for (l, g) in groups[0].iter().enumerate() {
+                for d in &main[g.0 as usize..(g.0 + g.1) as usize] {
+                    if d.id.map(|i| i.face()) != Some(sg.face) {
+                        continue;
+                    }
+                    face_u = [d.fu[0], d.fu[1], d.fu[2]];
+                    if sg.shells > 0 && sg.maps.is_some() && shell_draws.len() < SHELL_MAX_DRAWS && self.draw_near_m(d) < sg.range {
+                        shell_draws.push((l as u8, *d));
+                    }
+                }
+            }
+            let (_, types_at, map_at, _) = shell_layout(self.config.max_draws);
+            let flags = if shell_draws.is_empty() { 0 } else { 1 } | if sg.tint > 0.0 && sg.maps.is_some() { 2 } else { 0 } | if sg.maps.is_some() { 4 } else { 0 };
+            let f = |x: f32| x.to_bits();
+            let w: [u32; gpu::SHELL_WORDS] = [
+                flags, types_at, map_at, sg.shells.min(SHELL_MAX),
+                sg.offsets[0], sg.offsets[1], sg.offsets[2], sg.offsets[3],
+                f(sg.centre[0]), f(sg.centre[1]), f(sg.range), f(sg.tint),
+                f(face_u[0]), f(face_u[1]), f(face_u[2]), f(sg.h_max),
+                f(sg.cells[0]), f(sg.cells[1]), f(SHELL_MAP_N as f32), 0,
+            ];
+            shell_fd = Some(w);
+        }
         let mut words: Vec<u32> = main.iter().flat_map(|e| e.words()).collect();
         let mut next = main.len() as u32;
         let mut ranges = [(0, 0); 4];
@@ -1315,12 +1438,34 @@ impl GeometryProvider for TerrainProvider {
         v.bounds = bounds;
         v.vis = main;
         v.ranges = ranges;
+        if let Some(w) = shell_fd {
+            fd[gpu::FD_SHELL..gpu::FD_SHELL + gpu::SHELL_WORDS].copy_from_slice(&w);
+        }
         v.groups = groups;
+        v.shells = shell_draws.iter().map(|(l, _)| *l).collect();
         let bytes = gpu::bytes(&words);
         let at = self.config.max_draws as usize * 5 * DRAW_WORDS * 4;
+        let (draw_base, types_at, map_at, _) = shell_layout(self.config.max_draws);
+        let shell_bytes = gpu::bytes(&shell_draws.iter().flat_map(|(_, d)| d.words()).collect::<Vec<u32>>());
+        let grass = self.grass.as_ref();
+        let type_bytes = grass.map(|g| gpu::bytes(&g.types.iter().take(SHELL_MAX_TYPES).flat_map(|r| r.iter().map(|x| x.to_bits())).collect::<Vec<u32>>()));
+        let maps = grass.and_then(|g| g.maps.clone());
         dev.fill_frame_buffer(v.draws.id, &mut |dst| {
             dst[..bytes.len()].copy_from_slice(&bytes);
             dst[at..at + mat_rec.len()].copy_from_slice(&mat_rec);
+            let sa = draw_base as usize * DRAW_WORDS * 4;
+            dst[sa..sa + shell_bytes.len()].copy_from_slice(&shell_bytes);
+            if let Some(tb) = &type_bytes {
+                let ta = types_at as usize * SHELL_TYPE_FLOATS * 4;
+                dst[ta..ta + tb.len()].copy_from_slice(tb);
+            }
+            if let Some(m) = &maps {
+                let ma = map_at as usize * 4;
+                let n = m.len().min(2 * SHELL_MAP_N * SHELL_MAP_N);
+                for (i, w) in m[..n].iter().enumerate() {
+                    dst[ma + i * 4..ma + i * 4 + 4].copy_from_slice(&w.to_ne_bytes());
+                }
+            }
         })
     }
 
@@ -1378,6 +1523,27 @@ impl GeometryProvider for TerrainProvider {
                     ctx.enc.draw_indexed(*first..*first + *count, 0, 0..*inst);
                 }
             });
+        // Grass shells over the drawn ground (styles C and D): one draw per node, shells as
+        // instances, no index buffer (a triangle culls itself whole in `vs_shell`).
+        let shells_n = self.grass.as_ref().map_or(0, |g| g.shells.min(SHELL_MAX));
+        if shells_n > 0 && !v.shells.is_empty() {
+            let base = shell_layout(self.config.max_draws).0;
+            let sdraws: Vec<(Consts, u32)> = v.shells.iter().enumerate().map(|(i, l)| (consts(*l as u32, base + i as u32), lod_grid_tris(*l as u32) * 3)).collect();
+            let shp = self.shell;
+            g.add_pass("terrain_shells", PassKind::Raster)
+                .read(inp.frame.0, read)
+                .read(draws, read)
+                .read(pool, read)
+                .color(out.vis, LoadOp::Load, StoreOp::Store)
+                .depth(out.depth, LoadOp::Load, StoreOp::Store, true)
+                .exec(move |ctx| {
+                    ctx.enc.set_render_pipeline(shp);
+                    for (cv, verts) in &sdraws {
+                        ctx.enc.set_draw_constants(cv);
+                        ctx.enc.draw(0..*verts, 0..shells_n);
+                    }
+                });
+        }
         // No caster in any cascade: no pass (unless it has to clear the atlas).
         let casters = v.ranges.iter().any(|r| r.1 > 0);
         if let Some(sh) = out.shadow.filter(|_| casters || clear) {
@@ -1441,13 +1607,14 @@ impl GeometryProvider for TerrainProvider {
     }
 
     fn pass_names(&self) -> &'static [&'static str] {
-        &["terrain", "terrain_shadow"]
+        &["terrain", "terrain_shells", "terrain_shadow"]
     }
 
     fn destroy(mut self: Box<Self>, dev: &dyn Device) {
         self.clear_materials(dev);
         dev.destroy_render_pipeline(self.raster);
         dev.destroy_render_pipeline(self.shadow);
+        dev.destroy_render_pipeline(self.shell);
         for s in self.built {
             dev.destroy_shader(s);
         }

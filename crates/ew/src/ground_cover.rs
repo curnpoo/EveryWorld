@@ -189,7 +189,7 @@ impl GroundCover {
             free_slots: Vec::new(),
             apply_ms: std::env::var("EW_GC_APPLY_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0),
             band,
-            no_grass: crate::grass::style_a(),
+            no_grass: crate::grass::style().is_some(),
             stats: GroundStats::default(),
         }
     }

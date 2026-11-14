@@ -20,7 +20,7 @@ pub const MAX_GRASS_CLUMPS: u32 = 1 << 20;
 /// Most grass types (8 bits of the record).
 pub const MAX_GRASS_TYPES: u32 = 64;
 /// Floats per type row (`ed_world::grass::ROW_FLOATS`).
-pub const GRASS_TYPE_FLOATS: usize = 24;
+pub const GRASS_TYPE_FLOATS: usize = 32;
 const CLUMP_WORDS: usize = 8;
 /// Blade slots and segments per bucket (common.slang `GRASS_SLOTS`, `GRASS_SEGS`).
 pub const BUCKETS: [(u32, u32); 5] = [(64, 6), (32, 5), (16, 4), (8, 3), (4, 2)];

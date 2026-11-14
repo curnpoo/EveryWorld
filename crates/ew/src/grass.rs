@@ -12,6 +12,10 @@
 //! Knobs: `EW_GRASS_R0` (full-density radius, m), `EW_GRASS_RANGE` (m), `EW_GRASS_BMIN`
 //! (fewest blades per clump), `EW_GRASS_WIDTH` (most widening), `EW_GRASS_UP` (shading normal
 //! blend to the ground), `EW_GRASS_SHADOWS=0`, `EW_GRASS_WIND=0`.
+//!
+//! Styles C and D (`EW_GRASS_STYLE=c|d`, [`Style`]): shell grass over the near ground and a
+//! carpet tint on the terrain past it, from two type maps around the camera ([`Shells`]); D
+//! keeps the blades for the tall types. Knobs: [`shell_config_from_env`].
 
 use crate::ground_cover::{PageSet, TreeView};
 use crate::terrain::TerrainWorld;
@@ -36,9 +40,54 @@ const TIERS: [f32; 7] = [1.0, 0.5, 0.25, 0.12, 0.06, 0.03, 0.015];
 /// Height grid step (m).
 const GRID_M: f32 = 2.0;
 
-/// `EW_GRASS_STYLE=a`: style A on (and the ground cover's grass tufts off).
-pub fn style_a() -> bool {
-    std::env::var("EW_GRASS_STYLE").is_ok_and(|v| v.eq_ignore_ascii_case("a"))
+/// Grass styles (`EW_GRASS_STYLE`): A blades in clumps; C shells only; D blades for the tall
+/// types over a shell underlayer, shells alone for lawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Style {
+    A,
+    C,
+    D,
+}
+
+impl Style {
+    pub fn parse(v: &str) -> Option<Style> {
+        match v.to_ascii_lowercase().as_str() {
+            "a" => Some(Style::A),
+            "c" => Some(Style::C),
+            "d" => Some(Style::D),
+            _ => None,
+        }
+    }
+    /// Draws blades (A, D).
+    pub fn blades(self) -> bool {
+        self != Style::C
+    }
+    /// Draws shells and the terrain tint (C, D).
+    pub fn shells(self) -> bool {
+        self != Style::A
+    }
+}
+
+/// `EW_GRASS_STYLE`: a procedural grass style (and the ground cover's grass tufts off).
+pub fn style() -> Option<Style> {
+    std::env::var("EW_GRASS_STYLE").ok().and_then(|v| Style::parse(&v))
+}
+
+/// Shell knobs: `EW_GRASS_SHELLS` (shell count, 0: none), `EW_GRASS_SHELL_RANGE` (m),
+/// `EW_GRASS_TINT` (terrain carpet tint strength, 0: off).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShellConfig {
+    pub shells: u32,
+    pub range: f32,
+    pub tint: f32,
+}
+
+pub fn shell_config_from_env() -> ShellConfig {
+    ShellConfig {
+        shells: std::env::var("EW_GRASS_SHELLS").ok().and_then(|v| v.parse().ok()).unwrap_or(16u32).min(ed_render::terrain::SHELL_MAX),
+        range: env_f32("EW_GRASS_SHELL_RANGE", 35.0).clamp(2.0, 60.0),
+        tint: env_f32("EW_GRASS_TINT", 1.0).clamp(0.0, 1.0),
+    }
 }
 
 fn env_f32(k: &str, d: f32) -> f32 {
@@ -63,6 +112,7 @@ struct Job {
     id: NodeId,
     keep: f32,
     lab: bool,
+    style: Style,
     pages: PageSet,
 }
 
@@ -101,6 +151,8 @@ pub struct Grass {
     config: GrassConfig,
     uploaded: bool,
     apply_ms: f64,
+    style: Style,
+    shells: Option<Shells>,
     pub stats: GrassStats,
 }
 
@@ -117,7 +169,7 @@ fn lab_at(d: DVec3) -> Option<(u8, f32)> {
 
 fn run_job(j: Job) -> Done {
     let t = Instant::now();
-    let clumps = if j.lab {
+    let mut clumps = if j.lab {
         gr::scatter_node(j.id, &lab_at, j.keep, SEED)
     } else {
         let sample = crate::ground_cover::sampler(&j.pages);
@@ -125,7 +177,107 @@ fn run_job(j: Job) -> Done {
         let at = |d: DVec3| sample(d).and_then(|g| gr::type_from_ground(&g, &cl));
         gr::scatter_node(j.id, &at, j.keep, SEED)
     };
+    if j.style == Style::D {
+        // Style D: shell-only types (lawn) are carpet, not blades.
+        clumps.retain(|c| gr::TYPES.get(c.kind as usize).is_none_or(|t| !t.shell_only));
+    }
     Done { id: j.id, keep: j.keep, clumps, ms: t.elapsed().as_secs_f64() * 1e3 }
+}
+
+/// A shell map build: both maps (fine, then coarse) around a snapped centre.
+struct MapJob {
+    face: u8,
+    centre: [f64; 2],
+    a: f64,
+    lab: bool,
+    pages: PageSet,
+}
+
+fn build_maps(j: &MapJob) -> Vec<u32> {
+    let sample = crate::ground_cover::sampler(&j.pages);
+    let cl = ed_world::ground_cover::Climate::at(gr::face_dir(j.face, j.centre[0], j.centre[1], j.a));
+    let at = |d: DVec3| -> Option<(u8, f32)> {
+        if j.lab {
+            return lab_at(d);
+        }
+        let g = sample(d)?;
+        gr::type_from_ground(&g, &cl)
+    };
+    let mut m = gr::build_map(j.face, j.centre, gr::MAP_FINE_M, j.a, &at, SEED);
+    m.extend(gr::build_map(j.face, j.centre, gr::MAP_COARSE_M, j.a, &at, SEED));
+    m
+}
+
+/// The shell maps around the camera: rebuilt off-thread when the snapped centre moves; the
+/// renderer keeps the last complete pair (maps, centre and offsets always agree).
+struct Shells {
+    config: ShellConfig,
+    have: Option<(u8, [f64; 2])>,
+    building: Option<((u8, [f64; 2]), Receiver<Vec<u32>>)>,
+}
+
+impl Shells {
+    fn grass(&self, face: u8, centre: [f64; 2], maps: Arc<Vec<u32>>) -> ed_render::terrain::ShellGrass {
+        let fo = gr::map_offset(centre, gr::MAP_FINE_M);
+        let co = gr::map_offset(centre, gr::MAP_COARSE_M);
+        let wrap = |x: f64| x.rem_euclid(gr::FACE_PERIOD_M) as f32;
+        ed_render::terrain::ShellGrass {
+            types: gr::gpu_rows(),
+            maps: Some(maps),
+            face,
+            centre: [wrap(centre[0]), wrap(centre[1])],
+            offsets: [fo[0], fo[1], co[0], co[1]],
+            cells: [gr::MAP_FINE_M as f32, gr::MAP_COARSE_M as f32],
+            shells: self.config.shells,
+            range: self.config.range,
+            tint: self.config.tint,
+            h_max: gr::shell_h_max(),
+        }
+    }
+
+    fn update(&mut self, wd: &TerrainWorld, r: &mut Renderer, camera: &Camera, settle: bool, tv: &TreeView) {
+        let body = &wd.anchor.body;
+        let a = body.equatorial_m;
+        let cd = wd.anchor.render_to_body(camera.position).normalize();
+        let (face, x, y) = gr::face_metres(cd, a);
+        let key = (face, gr::map_centre(x, y));
+        if self.have != Some(key) && self.building.as_ref().is_none_or(|b| b.0 != key) {
+            let mut pages = PageSet::new();
+            if !wd.grass_lab {
+                let pn = NodeId::from_unit(body.id, cd, PAGE_LEVEL);
+                for dy in -1..=1 {
+                    for dx in -1..=1 {
+                        let p = pn.neighbour(dx, dy);
+                        if let Some(pg) = (tv.page)(p) {
+                            pages.insert(p, pg);
+                        }
+                    }
+                }
+            }
+            // Without the centre page yet, wait (a map of nothing would flash bare ground).
+            if wd.grass_lab || !pages.is_empty() {
+                let job = MapJob { face, centre: key.1, a, lab: wd.grass_lab, pages };
+                let (tx, rx) = channel();
+                std::thread::spawn(move || {
+                    let _ = tx.send(build_maps(&job));
+                });
+                self.building = Some((key, rx));
+            }
+        }
+        let got = match &self.building {
+            Some((_, rx)) if settle => rx.recv().ok(),
+            Some((_, rx)) => rx.try_recv().ok(),
+            None => None,
+        };
+        if let Some(maps) = got {
+            let (k, _) = self.building.take().expect("building");
+            self.have = Some(k);
+            let g = self.grass(k.0, k.1, Arc::new(maps));
+            if let Some(t) = r.terrain_mut() {
+                t.set_grass(Some(g));
+            }
+        }
+    }
 }
 
 fn spawn_workers(n: usize) -> (Sender<Job>, Receiver<Done>) {
@@ -148,7 +300,7 @@ fn spawn_workers(n: usize) -> (Sender<Job>, Receiver<Done>) {
 }
 
 impl Grass {
-    pub fn new() -> Grass {
+    pub fn new(style: Style) -> Grass {
         let threads = std::env::var("EW_GRASS_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or((std::thread::available_parallelism().map_or(8, |t| t.get()) / 4).max(1));
         let (jobs, done) = spawn_workers(threads);
         Grass {
@@ -161,6 +313,8 @@ impl Grass {
             config: config_from_env(),
             uploaded: false,
             apply_ms: std::env::var("EW_GRASS_APPLY_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1.5),
+            style,
+            shells: style.shells().then(|| Shells { config: shell_config_from_env(), have: None, building: None }),
             stats: GrassStats::default(),
         }
     }
@@ -217,6 +371,13 @@ impl Grass {
 
     pub(crate) fn update(&mut self, wd: &TerrainWorld, r: &mut Renderer, dev: &dyn ed_gpu::Device, camera: &Camera, viewport: [u32; 2], settle: bool, tv: &TreeView) -> Result<(), String> {
         let t0 = Instant::now();
+        if let Some(sh) = &mut self.shells {
+            sh.update(wd, r, camera, settle, tv);
+        }
+        if !self.style.blades() {
+            self.stats.last_ms = t0.elapsed().as_secs_f64() * 1e3;
+            return Ok(());
+        }
         if !self.uploaded {
             r.set_grass_types(dev, &gr::gpu_rows()).map_err(|e| e.to_string())?;
             r.set_grass_config(Some(self.config));
@@ -258,7 +419,7 @@ impl Grass {
                 }
             }
             self.requested.insert(id, keep);
-            self.jobs.send(Job { id, keep, lab: wd.grass_lab, pages }).map_err(|_| "grass worker stopped".to_string())?;
+            self.jobs.send(Job { id, keep, lab: wd.grass_lab, style: self.style, pages }).map_err(|_| "grass worker stopped".to_string())?;
         }
         // Collect.
         loop {
@@ -378,12 +539,54 @@ impl Grass {
         }
         self.requested.clear();
         self.ready.clear();
+        if let Some(sh) = &mut self.shells {
+            sh.have = None;
+            sh.building = None;
+            if let Some(t) = r.terrain_mut() {
+                t.set_grass(None);
+            }
+        }
         Ok(())
     }
 }
 
 impl Default for Grass {
     fn default() -> Self {
-        Self::new()
+        Self::new(Style::A)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn styles_parse() {
+        assert_eq!(Style::parse("A"), Some(Style::A));
+        assert_eq!(Style::parse("c"), Some(Style::C));
+        assert_eq!(Style::parse("d"), Some(Style::D));
+        assert_eq!(Style::parse("b"), None);
+        assert!(Style::A.blades() && !Style::A.shells());
+        assert!(!Style::C.blades() && Style::C.shells());
+        assert!(Style::D.blades() && Style::D.shells());
+    }
+
+    #[test]
+    fn shell_maps_match_the_renderer() {
+        use ed_render::terrain as t;
+        assert_eq!(gr::MAP_N, t::SHELL_MAP_N);
+        assert_eq!(gr::ROW_FLOATS, t::SHELL_TYPE_FLOATS);
+        assert!(gr::TYPES.len() <= t::SHELL_MAX_TYPES);
+        assert_eq!(gr::FACE_PERIOD_M, t::TEX_PERIOD_M);
+        // Every strand cell and map cell divides the snap, so the lattices are world-stable.
+        for ty in &gr::TYPES {
+            let k = gr::MAP_SNAP_M / ty.strand_m as f64;
+            assert_eq!(k, k.round(), "{}", ty.name);
+            assert_eq!(ty.strand_m.log2(), ty.strand_m.log2().round(), "{}", ty.name);
+        }
+        assert_eq!(gr::MAP_SNAP_M % gr::MAP_COARSE_M, 0.0);
+        let (_, types, map, total) = t::shell_layout(512);
+        assert!(map as usize >= (types as usize + gr::TYPES.len()) * t::SHELL_TYPE_FLOATS);
+        assert_eq!(total, map as usize + 2 * t::SHELL_MAP_N * t::SHELL_MAP_N);
     }
 }

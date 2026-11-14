@@ -438,3 +438,138 @@ float t_sample_spacing(TerrainDraw d, float2 g) {
     float3 dir;
     return length(t_lattice_f(d, g + float2(0.5, 0.0), 0.0, dir) - t_lattice_f(d, g - float2(0.5, 0.0), 0.0, dir)) / float(T_PAGE_STRIDE);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Grass shells (styles C and D, ew grass.rs): stacked offsets of the drawn ground with an
+// alpha-tested strand lattice, the type from a toroidal map of face-metre cells around the
+// camera (ed_world grass.rs `build_map`; layout in terrain.rs `shell_layout`).
+// Visibility words of a shell pixel: x = TERRAIN_VIS_BIT | L << 24 | draw, y = prim | lod << 24 |
+// k << 27 | SHELL_BIT (plain terrain pixels keep y under 2^28).
+// ---------------------------------------------------------------------------------------------
+
+static const uint SHELL_BIT = 0x80000000u;
+static const uint SHELL_K_SHIFT = 27;
+static const uint SHELL_PRIM_MASK = 0x03FFFFFFu;
+static const uint SHELL_L_SHIFT = 24;
+static const uint SHELL_DRAW_MASK = 0x00FFFFFFu;
+
+// Face metres of grid point `g` relative to the map centre (wrapped to +-2048 m).
+float2 shell_wrel(FrameData* f, TerrainDraw d, float2 g) {
+    float2 c = d.tex.xy - f.shell.c.xy;
+    c -= 4096.0 * round(c / 4096.0);
+    return c + (g - 32.0) * (d.shape.x * d.shape.y);
+}
+
+// The draw is on the map's face (the maps are keyed in that face's metres).
+bool shell_face(FrameData* f, TerrainDraw d) {
+    return (f.shell.cfg.x & 4u) != 0u && dot(d.fu.xyz, f.shell.fu.xyz) > 0.999;
+}
+
+// Map word of cell `cell` (relative to the centre) of the fine (0) or coarse (1) map; 0 outside.
+uint shell_map(FrameData* f, uint buf, uint coarse, int2 cell) {
+    int n = int(f.shell.cells.z);
+    if (any(cell < -n / 2) || any(cell >= n / 2)) {
+        return 0u;
+    }
+    int2 off = coarse != 0u ? f.shell.off.zw : f.shell.off.xy;
+    uint2 s = uint2((cell + off) & (n - 1));
+    uint base = f.shell.cfg.z + coarse * uint(n * n);
+    return ed_buf<uint>(buf)[base + s.y * uint(n) + s.x];
+}
+
+GrassType shell_type(FrameData* f, uint buf, uint kind) {
+    return ed_buf<GrassType>(buf)[f.shell.cfg.y + kind];
+}
+
+struct ShellHit {
+    bool hit;
+    float tt;       // height up the strand (0 root, 1 tip)
+    float rnd;      // per-strand random
+    uint kind;
+    float dry;      // this strand is dry (0/1)
+    float2 side;    // pixel offset from the strand axis (cell units / radius), for the normal
+};
+
+uint shell_hash2(int2 q, uint salt) {
+    return grass_hash(uint(q.x) * 0x9E3779B1u ^ grass_hash(uint(q.y) ^ salt));
+}
+
+// Strand LOD: strand cells grow by 2^L so a strand stays at least ~1.5 pixels across
+// (`px_m`: the pixel footprint on the ground, `dith`: 0..1 to dither the step).
+uint shell_lod(FrameData* f, float sm, float px_m, float dith) {
+    float l = log2(max(px_m * 2.0 / sm, 1.0)) + dith - 0.5;
+    return uint(clamp(floor(l + 0.5), 0.0, 7.0));
+}
+
+// The strand test of shell `k` (of `n`) at `wrel` (face metres from the map centre), view depth
+// `dz`, strand LOD `L`. Deterministic in (world position, k, n, L): the raster and the resolve
+// agree. `force`: the resolve, which only wants the attributes.
+ShellHit shell_strand(FrameData* f, uint buf, float2 wrel, uint k, uint n, uint L, float dz, bool force) {
+    ShellHit o;
+    o.hit = false;
+    o.tt = 0.0;
+    o.rnd = 0.0;
+    o.kind = 0u;
+    o.dry = 0.0;
+    o.side = float2(0.0);
+    // The type cell, jittered by half a cell per 1/8 m so type edges interlock.
+    float fine = f.shell.cells.x;
+    int2 jq = int2(floor(wrel * 8.0));
+    uint jh = shell_hash2(jq, 0x51u);
+    float2 jit = (float2(grass_rand(jh), grass_rand(grass_hash(jh + 7u))) - 0.5) * fine;
+    uint w = shell_map(f, buf, 0u, int2(floor((wrel + jit) / fine)));
+    if ((w & 0xFFu) == 0u) {
+        return o;
+    }
+    uint kind = (w & 0xFFu) - 1u;
+    float dens = float((w >> 8) & 0xFFu) / 255.0;
+    float hsc = float((w >> 16) & 0xFFu) / 255.0 * 2.0;
+    float dry = float((w >> 24) & 0xFFu) / 255.0;
+    GrassType ty = shell_type(f, buf, kind);
+    float hk = f.shell.fu.w * float(k + 1u) / float(n);
+    float H = ty.shell.x * hsc;
+    o.kind = kind;
+    // Strand lattice: 2^-m metres, offset by the (32 m snapped) centre so it is world-stable.
+    float sc = ty.shell.y * float(1u << L);
+    float2 q = wrel / sc;
+    int2 qi = int2(floor(q)) + int2(round(f.shell.c.xy / sc));
+    float2 lq = frac(q);
+    uint h = shell_hash2(qi, 0xA3u + L);
+    float r0 = grass_rand(h);
+    float r1 = grass_rand(grass_hash(h + 1u));
+    float r2 = grass_rand(grass_hash(h + 2u));
+    float r3 = grass_rand(grass_hash(h + 3u));
+    o.rnd = r1;
+    o.dry = r3 < dry ? 1.0 : 0.0;
+    // Range fade: strands thin out (speckle) over the last quarter of the range.
+    float fade = smoothstep(f.shell.c.z * 0.72, f.shell.c.z, dz);
+    if (!force && grass_rand(grass_hash(h + 5u)) < fade) {
+        return o;
+    }
+    if (k == 0u) {
+        // The floor: a near-solid carpet under the strands.
+        o.tt = 0.08;
+        o.side = lq - 0.5;
+        o.hit = force || r2 < ty.shell.z * dens * 1.15 + 0.05;
+        return o;
+    }
+    if (!force && r0 >= ty.shell.z * dens) {
+        return o;
+    }
+    float hs = H * lerp(0.5, 1.0, r1);
+    float tt = hk / max(hs, 1e-4);
+    if (!force && tt > 1.0) {
+        return o;
+    }
+    tt = saturate(tt);
+    // Tapered strand, leaning with height (direction per strand).
+    float a = r2 * 6.2831853;
+    // Strand positions jittered across most of the cell (a regular lattice beats into moire).
+    float2 c = float2(0.5) + (float2(grass_rand(grass_hash(h + 9u)), grass_rand(grass_hash(h + 11u))) - 0.5) * 0.5 + float2(cos(a), sin(a)) * (0.2 * tt * tt);
+    float rad = 0.42 * (1.0 - pow(tt, 1.6)) + 0.04;
+    float2 dl = lq - c;
+    o.side = dl / rad;
+    o.tt = tt;
+    o.hit = force || dot(dl, dl) < rad * rad;
+    return o;
+}
