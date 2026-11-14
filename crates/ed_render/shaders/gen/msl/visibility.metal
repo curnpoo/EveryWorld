@@ -2,7 +2,7 @@
 #include <metal_math>
 #include <metal_texture>
 using namespace metal;
-constant array<uint, int(5)> GRASS_SEGS_0 = { { 6U, 5U, 4U, 3U, 2U } };
+constant array<uint, int(6)> GRASS_SEGS_0 = { { 6U, 5U, 4U, 3U, 2U, 2U } };
 struct GrassType_natural_0
 {
     packed_float4 a_0;
@@ -248,6 +248,8 @@ struct GrassData_natural_0
     packed_uint4 bufs_2;
     packed_float4 lod_0;
     packed_float4 look_0;
+    packed_float4 far_1;
+    packed_float4 under_0;
 };
 
 struct ShellData_natural_0
@@ -1388,12 +1390,42 @@ struct pixelInput_6
     return;
 }
 
-float2 grass_lod_0(FrameData_natural_0 device* f_3, float d_8, float blades_0)
+float grass_floor_0(FrameData_natural_0 device* f_3, float d_8, float blades_0)
 {
-    float q_3 = (float4((&f_3->grass_0)->lod_0) ).x / max(d_8, 0.0010000000474974513f);
-    float raw_0 = blades_0 * min(q_3 * q_3, 1.0f);
-    float _S172 = min((float4((&f_3->grass_0)->lod_0) ).z, blades_0);
-    return float2(max(raw_0, _S172), min(raw_0 / max(_S172, 0.0010000000474974513f), 1.0f));
+    float bm_0 = (float4((&f_3->grass_0)->lod_0) ).z;
+    float bm_1;
+    if(((float4((&f_3->grass_0)->look_0) ).z) > 0.0f)
+    {
+        bm_1 = clamp(bm_0 * (float4((&f_3->grass_0)->look_0) ).z / max(d_8, 0.0010000000474974513f), min((float4((&f_3->grass_0)->look_0) ).y, bm_0), bm_0);
+    }
+    else
+    {
+        bm_1 = bm_0;
+    }
+    return max(min(bm_1, blades_0), 0.0010000000474974513f);
+}
+
+float2 grass_lod_0(FrameData_natural_0 device* f_4, float d_9, float blades_1)
+{
+    float q_3 = (float4((&f_4->grass_0)->lod_0) ).x / max(d_9, 0.0010000000474974513f);
+    float raw_0 = blades_1 * min(q_3 * q_3, 1.0f);
+    float _S172 = grass_floor_0(f_4, d_9, blades_1);
+    return float2(max(raw_0, _S172), min(raw_0 / _S172, 1.0f));
+}
+
+float grass_rank_0(uint node_kind_2)
+{
+    uint q_4 = node_kind_2 >> 24U;
+    float _S173;
+    if(q_4 == 0U)
+    {
+        _S173 = 0.0f;
+    }
+    else
+    {
+        _S173 = exp2((float(q_4) / 255.0f - 1.0f) * 14.0f);
+    }
+    return _S173;
 }
 
 uint grass_hash_0(uint x_2)
@@ -1406,6 +1438,16 @@ uint grass_hash_0(uint x_2)
 float grass_rand_0(uint h_2)
 {
     return float(h_2 >> 8U) * 5.9604644775390625e-08f;
+}
+
+float grass_radius_0(FrameData_natural_0 device* f_5, const GrassType_natural_0 thread* ty_0, float keep_0)
+{
+    return max((float4(ty_0->b_0) ).x, (float4((&f_5->grass_0)->far_1) ).x * 0.34000000357627869f * rsqrt(max(keep_0, 9.9999997473787516e-05f)));
+}
+
+float grass_grow_0(FrameData_natural_0 device* f_6, float d_10)
+{
+    return 1.0f + (float4((&f_6->grass_0)->far_1) ).y * smoothstep(2.0f * (float4((&f_6->grass_0)->lod_0) ).x, 0.5f * (float4((&f_6->grass_0)->lod_0) ).y, d_10);
 }
 
 struct GrassBlade_0
@@ -1423,23 +1465,24 @@ struct GrassBlade_0
     float t_ao_0;
 };
 
-GrassBlade_0 grass_blade_0(FrameData_natural_0 device* f_4, const GrassClump_0 thread* c_2, const GrassType_natural_0 thread* ty_0, float3 node_5, uint k_7, float lod_mul_0)
+GrassBlade_0 grass_blade_0(FrameData_natural_0 device* f_7, const GrassClump_0 thread* c_2, const GrassType_natural_0 thread* ty_1, float3 node_5, uint k_7, float lod_mul_0)
 {
     float3 up_8 = oct_decode_0(c_2->up_0);
     float3 rt_0 = normalize(cross(up_8, oct_decode_0(c_2->facing_0)));
     float3 fa_0 = cross(rt_0, up_8);
     float3 base_1 = node_5 + float3(c_2->px_0, c_2->py_0, c_2->pz_0);
-    float d_9 = length(base_1);
-    float4 _S173 = float4(ty_0->a_0) ;
-    float blades_1 = _S173.w;
-    float2 _S174 = grass_lod_0(f_4, d_9, blades_1);
-    float _S175 = max(_S174.x * lod_mul_0, min((float4((&f_4->grass_0)->lod_0) ).z, blades_1));
-    float _S176 = _S174.y;
-    float _S177 = min(pow(blades_1 / _S175, 0.80000001192092896f) * rsqrt(max(_S176, 0.20000000298023224f)), (float4((&f_4->grass_0)->lod_0) ).w);
-    float keep_0 = saturate((_S176 - float((c_2->node_kind_0) >> 24U) / 255.0f) / (0.30000001192092896f * _S176 + 0.0010000000474974513f));
-    float range_0 = (float4((&f_4->grass_0)->lod_0) ).y;
-    float fade_1 = 1.0f - smoothstep(0.60000002384185791f * range_0, range_0, d_9);
-    uint _S178 = c_2->seed_0;
+    float d_11 = length(base_1);
+    float4 _S174 = float4(ty_1->a_0) ;
+    float blades_2 = _S174.w;
+    float2 _S175 = grass_lod_0(f_7, d_11, blades_2);
+    float _S176 = grass_floor_0(f_7, d_11, blades_2);
+    float _S177 = max(_S175.x * lod_mul_0, _S176);
+    float _S178 = _S175.y;
+    float _S179 = min(pow(blades_2 / _S177, 0.80000001192092896f) * rsqrt(max(_S178, 0.20000000298023224f)), (float4((&f_7->grass_0)->lod_0) ).w);
+    float keep_1 = saturate((_S178 - grass_rank_0(c_2->node_kind_0)) / (0.30000001192092896f * _S178 + 0.0010000000474974513f));
+    float range_0 = (float4((&f_7->grass_0)->lod_0) ).y;
+    float fade_1 = 1.0f - smoothstep(0.60000002384185791f * range_0, range_0, d_11);
+    uint _S180 = c_2->seed_0;
     uint s0_1 = grass_hash_0((c_2->seed_0) ^ (k_7 * 2654435769U + 2135587861U));
     uint s1_1 = grass_hash_0(s0_1);
     uint s2_1 = grass_hash_0(s1_1);
@@ -1448,35 +1491,37 @@ GrassBlade_0 grass_blade_0(FrameData_natural_0 device* f_4, const GrassClump_0 t
     uint s5_0 = grass_hash_0(s4_0);
     float ang_0 = grass_rand_0(s0_1) * 6.2831854820251465f;
     float rad_0 = sqrt(grass_rand_0(s1_1));
-    float4 _S179 = float4(ty_0->b_0) ;
-    float3 off_1 = (fa_0 * float3(cos(ang_0))  + rt_0 * float3((sin(ang_0) * (float4(ty_0->root_0) ).w)) ) * float3((rad_0 * _S179.x)) ;
+    float _S181 = grass_radius_0(f_7, ty_1, _S178);
+    float3 off_1 = (fa_0 * float3(cos(ang_0))  + rt_0 * float3((sin(ang_0) * (float4(ty_1->root_0) ).w)) ) * float3((rad_0 * _S181)) ;
     thread GrassBlade_0 o_3;
     (&o_3)->up_7 = up_8;
-    uint _S180 = (c_2->hw_0) & 65535U;
-    float hc_0 = mix(_S173.x, _S173.y, grass_rand_0(grass_hash_0(c_2->seed_0 + 17U))) * (float(_S180) / 65535.0f * 4.0f);
+    uint _S182 = (c_2->hw_0) & 65535U;
+    float hc_0 = mix(_S174.x, _S174.y, grass_rand_0(grass_hash_0(_S180 + 17U))) * (float(_S182) / 65535.0f * 4.0f);
     (&o_3)->p0_0 = base_1 + off_1 - up_8 * float3(min(0.029999999329447746f, 0.10000000149011612f * hc_0)) ;
-    float h_4 = hc_0 * (1.0f - 0.34999999403953552f * rad_0) * mix(0.72000002861022949f, 1.1200000047683716f, grass_rand_0(s2_1));
-    float grow_0 = saturate(_S175 - float(k_7)) * keep_0 * fade_1;
-    bool _S181;
-    if(k_7 < uint(blades_1))
+    float _S183 = hc_0 * (1.0f - 0.34999999403953552f * rad_0) * mix(0.72000002861022949f, 1.1200000047683716f, grass_rand_0(s2_1));
+    float _S184 = grass_grow_0(f_7, d_11);
+    float h_4 = _S183 * _S184;
+    float grow_0 = saturate(_S177 - float(k_7)) * keep_1 * fade_1;
+    bool _S185;
+    if(k_7 < uint(blades_2))
     {
-        _S181 = _S180 != 0U;
+        _S185 = _S182 != 0U;
     }
     else
     {
-        _S181 = false;
+        _S185 = false;
     }
-    float _S182;
-    if(_S181)
+    float _S186;
+    if(_S185)
     {
-        _S182 = h_4 * grow_0;
+        _S186 = h_4 * grow_0;
     }
     else
     {
-        _S182 = 0.0f;
+        _S186 = 0.0f;
     }
-    (&o_3)->h_3 = _S182;
-    float ca_0 = grass_rand_0(grass_hash_0(_S178 + 29U)) * 6.2831854820251465f;
+    (&o_3)->h_3 = _S186;
+    float ca_0 = grass_rand_0(grass_hash_0(_S180 + 29U)) * 6.2831854820251465f;
     float3 cdir_0 = fa_0 * float3(cos(ca_0))  + rt_0 * float3(sin(ca_0)) ;
     float3 radial_0;
     if(rad_0 > 0.0010000000474974513f)
@@ -1498,53 +1543,54 @@ GrassBlade_0 grass_blade_0(FrameData_natural_0 device* f_4, const GrassClump_0 t
     {
         ld_1 = fa_0;
     }
-    float lean_0 = _S179.y * mix(0.30000001192092896f, 1.0f, grass_rand_0(s4_0));
+    float4 _S187 = float4(ty_1->b_0) ;
+    float lean_0 = _S187.y * mix(0.30000001192092896f, 1.0f, grass_rand_0(s4_0));
     float3 tipv_0 = up_8 * float3(cos(lean_0))  + ld_1 * float3(sin(lean_0)) ;
-    WindData_natural_0 wn_0 = f_4->wind_1;
-    if((((uint4((&f_4->grass_0)->bufs_2) ).w) & 4U) != 0U)
+    WindData_natural_0 wn_0 = f_7->wind_1;
+    if((((uint4((&f_7->grass_0)->bufs_2) ).w) & 4U) != 0U)
     {
-        _S181 = ((float4(wn_0.cfg_2) ).x) > 0.5f;
+        _S185 = ((float4(wn_0.cfg_2) ).x) > 0.5f;
     }
     else
     {
-        _S181 = false;
+        _S185 = false;
     }
     float3 tipv_1;
-    if(_S181)
+    if(_S185)
     {
-        float4 _S183 = float4(wn_0.wind_0) ;
-        float2 _S184 = _S183.xz;
-        float speed_1 = length(_S184);
+        float4 _S188 = float4(wn_0.wind_0) ;
+        float2 _S189 = _S188.xz;
+        float speed_1 = length(_S189);
         float2 wd_2;
         if(speed_1 > 0.0010000000474974513f)
         {
-            wd_2 = _S184 / float2(speed_1) ;
+            wd_2 = _S189 / float2(speed_1) ;
         }
         else
         {
             wd_2 = float2(0.0f, 0.0f);
         }
-        float4 _S185 = float4(wn_0.gust_0) ;
-        float2 _S186 = base_1.xz;
-        float _S187 = dot(_S186, wd_2);
-        float g_4 = 0.5f + 0.5f * sin((_S185.x + _S187 / max(_S185.y, 1.0f)) * 6.2831854820251465f);
-        float tw_0 = _S183.w;
-        float _S188 = wd_2.y;
-        float _S189 = wd_2.x;
-        float _S190 = grass_rand_0(s5_0);
-        float _S191 = 1.0f - _S179.z;
-        float3 wv_0 = float3(_S189, 0.0f, _S188);
-        tipv_1 = normalize(tipv_0 + (wv_0 - up_8 * float3(dot(wv_0, up_8)) ) * float3(clamp(speed_1 * 0.059999998658895493f * _S191 * (0.34999999403953552f + 0.89999997615814209f * (g_4 * g_4 * g_4 * _S185.z) + 0.69999998807907104f * (0.5f + 0.5f * sin(_S187 * 0.89999997615814209f - tw_0 * (1.2000000476837158f + 0.25f * speed_1) + 0.60000002384185791f * sin(dot(_S186, float2(- _S188, _S189)) * 0.34999999403953552f)))) + 0.039999999105930328f * _S191 * sin(tw_0 * (5.0f + 3.0f * _S190) + _S190 * 40.0f) * min(speed_1 * 0.20000000298023224f, 1.0f), -0.30000001192092896f, 1.3999999761581421f)) );
+        float4 _S190 = float4(wn_0.gust_0) ;
+        float2 _S191 = base_1.xz;
+        float _S192 = dot(_S191, wd_2);
+        float g_4 = 0.5f + 0.5f * sin((_S190.x + _S192 / max(_S190.y, 1.0f)) * 6.2831854820251465f);
+        float tw_0 = _S188.w;
+        float _S193 = wd_2.y;
+        float _S194 = wd_2.x;
+        float _S195 = grass_rand_0(s5_0);
+        float _S196 = 1.0f - _S187.z;
+        float3 wv_0 = float3(_S194, 0.0f, _S193);
+        tipv_1 = normalize(tipv_0 + (wv_0 - up_8 * float3(dot(wv_0, up_8)) ) * float3(clamp(speed_1 * 0.059999998658895493f * _S196 * (0.34999999403953552f + 0.89999997615814209f * (g_4 * g_4 * g_4 * _S190.z) + 0.69999998807907104f * (0.5f + 0.5f * sin(_S192 * 0.89999997615814209f - tw_0 * (1.2000000476837158f + 0.25f * speed_1) + 0.60000002384185791f * sin(dot(_S191, float2(- _S193, _S194)) * 0.34999999403953552f)))) + 0.039999999105930328f * _S196 * sin(tw_0 * (5.0f + 3.0f * _S195) + _S195 * 40.0f) * min(speed_1 * 0.20000000298023224f, 1.0f), -0.30000001192092896f, 1.3999999761581421f)) );
     }
     else
     {
         tipv_1 = tipv_0;
     }
-    float3 _S192 = (&o_3)->p0_0 + tipv_1 * float3(((&o_3)->h_3 * (1.0f - 0.18000000715255737f * saturate(1.0f - dot(tipv_1, up_8))))) ;
-    (&o_3)->p2_0 = _S192;
-    float3 across_0 = _S192 - (&o_3)->p0_0 - up_8 * float3(dot(_S192 - (&o_3)->p0_0, up_8)) ;
-    float curve_0 = _S179.w;
-    (&o_3)->p1_0 = (&o_3)->p0_0 + up_8 * float3((max(dot(_S192 - (&o_3)->p0_0, up_8), 0.25f * (&o_3)->h_3) * mix(0.60000002384185791f, 1.0499999523162842f, curve_0)))  + across_0 * float3(mix(0.5f, 0.05000000074505806f, curve_0)) ;
+    float3 _S197 = (&o_3)->p0_0 + tipv_1 * float3(((&o_3)->h_3 * (1.0f - 0.18000000715255737f * saturate(1.0f - dot(tipv_1, up_8))))) ;
+    (&o_3)->p2_0 = _S197;
+    float3 across_0 = _S197 - (&o_3)->p0_0 - up_8 * float3(dot(_S197 - (&o_3)->p0_0, up_8)) ;
+    float curve_0 = _S187.w;
+    (&o_3)->p1_0 = (&o_3)->p0_0 + up_8 * float3((max(dot(_S197 - (&o_3)->p0_0, up_8), 0.25f * (&o_3)->h_3) * mix(0.60000002384185791f, 1.0499999523162842f, curve_0)))  + across_0 * float3(mix(0.5f, 0.05000000074505806f, curve_0)) ;
     float3 lh_0;
     if((dot(across_0, across_0)) > 9.99999993922529029e-09f)
     {
@@ -1556,9 +1602,9 @@ GrassBlade_0 grass_blade_0(FrameData_natural_0 device* f_4, const GrassClump_0 t
     }
     float tw2_0 = (grass_rand_0(s5_0) - 0.5f) * 1.1000000238418579f;
     (&o_3)->side_0 = normalize(cross(up_8, lh_0) * float3(cos(tw2_0))  + lh_0 * float3(sin(tw2_0)) );
-    (&o_3)->w_8 = _S173.z * _S177 * mix(0.80000001192092896f, 1.2000000476837158f, grass_rand_0(s1_1 ^ 85U));
-    (&o_3)->head_0 = (float4(ty_0->mid_0) ).w;
-    (&o_3)->head_w_0 = (float4(ty_0->tip_0) ).w;
+    (&o_3)->w_8 = max(_S174.z * _S179 * mix(0.80000001192092896f, 1.2000000476837158f, grass_rand_0(s1_1 ^ 85U)), (float4((&f_7->grass_0)->look_0) ).w * d_11 * 2.0f / max((float4(f_7->proj_0) ).y * (float4(f_7->proj_0) ).w, 1.0f));
+    (&o_3)->head_0 = (float4(ty_1->mid_0) ).w;
+    (&o_3)->head_w_0 = (float4(ty_1->tip_0) ).w;
     (&o_3)->shade_1 = mix(0.81999999284744263f, 1.1499999761581421f, grass_rand_0(s4_0 ^ 51U));
     (&o_3)->t_ao_0 = saturate(hc_0 / 0.80000001192092896f);
     return o_3;
@@ -1577,14 +1623,14 @@ float3 grass_tangent_0(const GrassBlade_0 thread* b_2, float t_7)
 
 float3 grass_view_side_0(const GrassBlade_0 thread* b_3, float t_8, float3 p_11)
 {
-    float3 _S193 = grass_tangent_0(b_3, t_8);
-    float3 vs_0 = cross(normalize(_S193 + b_3->up_7 * float3(9.9999997473787516e-05f) ), normalize(p_11));
+    float3 _S198 = grass_tangent_0(b_3, t_8);
+    float3 vs_0 = cross(normalize(_S198 + b_3->up_7 * float3(9.9999997473787516e-05f) ), normalize(p_11));
     if((dot(vs_0, vs_0)) < 9.99999993922529029e-09f)
     {
         return b_3->side_0;
     }
     float3 vs_1 = normalize(vs_0);
-    float3 _S194 = b_3->side_0;
+    float3 _S199 = b_3->side_0;
     float3 vs_2;
     if((dot(vs_1, b_3->side_0)) < 0.0f)
     {
@@ -1594,19 +1640,19 @@ float3 grass_view_side_0(const GrassBlade_0 thread* b_3, float t_8, float3 p_11)
     {
         vs_2 = vs_1;
     }
-    return normalize(mix(_S194, vs_2, float3(0.55000001192092896f) ));
+    return normalize(mix(_S199, vs_2, float3(0.55000001192092896f) ));
 }
 
 float grass_width_0(const GrassBlade_0 thread* b_4, float t_9)
 {
-    float _S195 = b_4->w_8;
+    float _S200 = b_4->w_8;
     float w_9 = b_4->w_8 * (1.0f - t_9 * t_9 * t_9) * (1.0f - 0.20000000298023224f * t_9);
-    float _S196 = b_4->head_0;
+    float _S201 = b_4->head_0;
     float w_10;
     if((b_4->head_0) > 0.0f)
     {
-        float _S197 = 1.0f - _S196;
-        w_10 = mix(w_9, _S195 * b_4->head_w_0 * (1.0f - 0.25f * t_9), smoothstep(_S197 - 0.039999999105930328f, _S197, t_9) * (1.0f - smoothstep(0.93000000715255737f, 1.0f, t_9)));
+        float _S202 = 1.0f - _S201;
+        w_10 = mix(w_9, _S200 * b_4->head_w_0 * (1.0f - 0.25f * t_9), smoothstep(_S202 - 0.039999999105930328f, _S202, t_9) * (1.0f - smoothstep(0.93000000715255737f, 1.0f, t_9)));
     }
     else
     {
@@ -1625,69 +1671,69 @@ struct GrassOut_0
 
 GrassOut_0 grass_vertex_0(uint vid_3, uint iid_3, bool shadow_3, KernelContext_0 thread* kernelContext_23)
 {
-    FrameData_natural_0 device* _S198 = ed_buf_10(kernelContext_23->ed_c_0->frame_0, kernelContext_23);
-    uint device* _S199 = ed_buf_9(kernelContext_23->ed_c_0->visible_0, kernelContext_23);
-    uint ci_0 = *(_S199 + iid_3);
-    GrassClump_0 device* _S200 = ed_buf_1(kernelContext_23->ed_c_0->instances_0, kernelContext_23);
-    GrassClump_0 c_3 = *(_S200 + ci_0);
-    GrassType_natural_0 device* _S201 = ed_buf_0(kernelContext_23->ed_c_0->verts_0, kernelContext_23);
-    thread GrassType_natural_0 _S202 = *(_S201 + (((c_3.node_kind_0) >> 12U) & 255U));
-    packed_float4 device* _S203 = ed_buf_6(kernelContext_23->ed_c_0->nodes_0, kernelContext_23);
-    float3 node_6 = (float4(*(_S203 + ((c_3.node_kind_0) & 4095U))) ).xyz;
-    uint _S204 = min(kernelContext_23->ed_c_0->cascade_0, 4U);
-    uint vpb_0 = 2U * (GRASS_SEGS_0[_S204] + 1U);
+    FrameData_natural_0 device* _S203 = ed_buf_10(kernelContext_23->ed_c_0->frame_0, kernelContext_23);
+    uint device* _S204 = ed_buf_9(kernelContext_23->ed_c_0->visible_0, kernelContext_23);
+    uint ci_0 = *(_S204 + iid_3);
+    GrassClump_0 device* _S205 = ed_buf_1(kernelContext_23->ed_c_0->instances_0, kernelContext_23);
+    GrassClump_0 c_3 = *(_S205 + ci_0);
+    GrassType_natural_0 device* _S206 = ed_buf_0(kernelContext_23->ed_c_0->verts_0, kernelContext_23);
+    thread GrassType_natural_0 _S207 = *(_S206 + (((c_3.node_kind_0) >> 12U) & 255U));
+    packed_float4 device* _S208 = ed_buf_6(kernelContext_23->ed_c_0->nodes_0, kernelContext_23);
+    float3 node_6 = (float4(*(_S208 + ((c_3.node_kind_0) & 4095U))) ).xyz;
+    uint _S209 = min(kernelContext_23->ed_c_0->cascade_0, 5U);
+    uint vpb_0 = 2U * (GRASS_SEGS_0[_S209] + 1U);
     uint k_8 = vid_3 / vpb_0;
     uint r_2 = vid_3 - k_8 * vpb_0;
     uint seg_0 = r_2 >> 1U;
     float side_1 = float(r_2 & 1U);
-    float _S205;
+    float _S210;
     if(shadow_3)
     {
-        _S205 = 0.5f;
+        _S210 = 0.5f;
     }
     else
     {
-        _S205 = 1.0f;
+        _S210 = 1.0f;
     }
-    thread GrassClump_0 _S206 = c_3;
-    GrassBlade_0 _S207 = grass_blade_0(_S198, &_S206, &_S202, node_6, k_8, _S205);
-    float t_10 = float(seg_0) / float(GRASS_SEGS_0[_S204]);
-    thread GrassBlade_0 _S208 = _S207;
-    float3 _S209 = grass_point_0(&_S208, t_10);
+    thread GrassClump_0 _S211 = c_3;
+    GrassBlade_0 _S212 = grass_blade_0(_S203, &_S211, &_S207, node_6, k_8, _S210);
+    float t_10 = float(seg_0) / float(GRASS_SEGS_0[_S209]);
+    thread GrassBlade_0 _S213 = _S212;
+    float3 _S214 = grass_point_0(&_S213, t_10);
     float3 sd_4;
     if(shadow_3)
     {
-        sd_4 = _S207.side_0;
+        sd_4 = _S212.side_0;
     }
     else
     {
-        thread GrassBlade_0 _S210 = _S207;
-        float3 _S211 = grass_view_side_0(&_S210, t_10, _S209);
-        sd_4 = _S211;
+        thread GrassBlade_0 _S215 = _S212;
+        float3 _S216 = grass_view_side_0(&_S215, t_10, _S214);
+        sd_4 = _S216;
     }
-    thread GrassBlade_0 _S212 = _S207;
-    float _S213 = grass_width_0(&_S212, t_10);
-    float3 p_12 = _S209 + sd_4 * float3(((side_1 - 0.5f) * _S213)) ;
+    thread GrassBlade_0 _S217 = _S212;
+    float _S218 = grass_width_0(&_S217, t_10);
+    float3 p_12 = _S214 + sd_4 * float3(((side_1 - 0.5f) * _S218)) ;
     thread GrassOut_0 o_4;
-    float4 _S214;
-    if((_S207.h_3) > 0.0f)
+    float4 _S219;
+    if((_S212.h_3) > 0.0f)
     {
-        matrix<float,int(4),int(4)>  _S215;
+        matrix<float,int(4),int(4)>  _S220;
         if(shadow_3)
         {
-            _S215 = matrix<float,int(4),int(4)> ((&(&_S198->light_0)->shadow_0)->data_3[int(0)].data_1[int(0)][int(0)], (&(&_S198->light_0)->shadow_0)->data_3[int(0)].data_1[int(1)][int(0)], (&(&_S198->light_0)->shadow_0)->data_3[int(0)].data_1[int(2)][int(0)], (&(&_S198->light_0)->shadow_0)->data_3[int(0)].data_1[int(3)][int(0)], (&(&_S198->light_0)->shadow_0)->data_3[int(0)].data_1[int(0)][int(1)], (&(&_S198->light_0)->shadow_0)->data_3[int(0)].data_1[int(1)][int(1)], (&(&_S198->light_0)->shadow_0)->data_3[int(0)].data_1[int(2)][int(1)], (&(&_S198->light_0)->shadow_0)->data_3[int(0)].data_1[int(3)][int(1)], (&(&_S198->light_0)->shadow_0)->data_3[int(0)].data_1[int(0)][int(2)], (&(&_S198->light_0)->shadow_0)->data_3[int(0)].data_1[int(1)][int(2)], (&(&_S198->light_0)->shadow_0)->data_3[int(0)].data_1[int(2)][int(2)], (&(&_S198->light_0)->shadow_0)->data_3[int(0)].data_1[int(3)][int(2)], (&(&_S198->light_0)->shadow_0)->data_3[int(0)].data_1[int(0)][int(3)], (&(&_S198->light_0)->shadow_0)->data_3[int(0)].data_1[int(1)][int(3)], (&(&_S198->light_0)->shadow_0)->data_3[int(0)].data_1[int(2)][int(3)], (&(&_S198->light_0)->shadow_0)->data_3[int(0)].data_1[int(3)][int(3)]);
+            _S220 = matrix<float,int(4),int(4)> ((&(&_S203->light_0)->shadow_0)->data_3[int(0)].data_1[int(0)][int(0)], (&(&_S203->light_0)->shadow_0)->data_3[int(0)].data_1[int(1)][int(0)], (&(&_S203->light_0)->shadow_0)->data_3[int(0)].data_1[int(2)][int(0)], (&(&_S203->light_0)->shadow_0)->data_3[int(0)].data_1[int(3)][int(0)], (&(&_S203->light_0)->shadow_0)->data_3[int(0)].data_1[int(0)][int(1)], (&(&_S203->light_0)->shadow_0)->data_3[int(0)].data_1[int(1)][int(1)], (&(&_S203->light_0)->shadow_0)->data_3[int(0)].data_1[int(2)][int(1)], (&(&_S203->light_0)->shadow_0)->data_3[int(0)].data_1[int(3)][int(1)], (&(&_S203->light_0)->shadow_0)->data_3[int(0)].data_1[int(0)][int(2)], (&(&_S203->light_0)->shadow_0)->data_3[int(0)].data_1[int(1)][int(2)], (&(&_S203->light_0)->shadow_0)->data_3[int(0)].data_1[int(2)][int(2)], (&(&_S203->light_0)->shadow_0)->data_3[int(0)].data_1[int(3)][int(2)], (&(&_S203->light_0)->shadow_0)->data_3[int(0)].data_1[int(0)][int(3)], (&(&_S203->light_0)->shadow_0)->data_3[int(0)].data_1[int(1)][int(3)], (&(&_S203->light_0)->shadow_0)->data_3[int(0)].data_1[int(2)][int(3)], (&(&_S203->light_0)->shadow_0)->data_3[int(0)].data_1[int(3)][int(3)]);
         }
         else
         {
-            _S215 = matrix<float,int(4),int(4)> (_S198->view_proj_0.data_1[int(0)][int(0)], _S198->view_proj_0.data_1[int(1)][int(0)], _S198->view_proj_0.data_1[int(2)][int(0)], _S198->view_proj_0.data_1[int(3)][int(0)], _S198->view_proj_0.data_1[int(0)][int(1)], _S198->view_proj_0.data_1[int(1)][int(1)], _S198->view_proj_0.data_1[int(2)][int(1)], _S198->view_proj_0.data_1[int(3)][int(1)], _S198->view_proj_0.data_1[int(0)][int(2)], _S198->view_proj_0.data_1[int(1)][int(2)], _S198->view_proj_0.data_1[int(2)][int(2)], _S198->view_proj_0.data_1[int(3)][int(2)], _S198->view_proj_0.data_1[int(0)][int(3)], _S198->view_proj_0.data_1[int(1)][int(3)], _S198->view_proj_0.data_1[int(2)][int(3)], _S198->view_proj_0.data_1[int(3)][int(3)]);
+            _S220 = matrix<float,int(4),int(4)> (_S203->view_proj_0.data_1[int(0)][int(0)], _S203->view_proj_0.data_1[int(1)][int(0)], _S203->view_proj_0.data_1[int(2)][int(0)], _S203->view_proj_0.data_1[int(3)][int(0)], _S203->view_proj_0.data_1[int(0)][int(1)], _S203->view_proj_0.data_1[int(1)][int(1)], _S203->view_proj_0.data_1[int(2)][int(1)], _S203->view_proj_0.data_1[int(3)][int(1)], _S203->view_proj_0.data_1[int(0)][int(2)], _S203->view_proj_0.data_1[int(1)][int(2)], _S203->view_proj_0.data_1[int(2)][int(2)], _S203->view_proj_0.data_1[int(3)][int(2)], _S203->view_proj_0.data_1[int(0)][int(3)], _S203->view_proj_0.data_1[int(1)][int(3)], _S203->view_proj_0.data_1[int(2)][int(3)], _S203->view_proj_0.data_1[int(3)][int(3)]);
         }
-        _S214 = (((float4(p_12, 1.0f)) * (_S215)));
+        _S219 = (((float4(p_12, 1.0f)) * (_S220)));
     }
     else
     {
-        _S214 = float4(0.0f, 0.0f, -1.0f, 1.0f);
+        _S219 = float4(0.0f, 0.0f, -1.0f, 1.0f);
     }
-    (&o_4)->pos_9 = _S214;
+    (&o_4)->pos_9 = _S219;
     (&o_4)->tu_0 = float2(t_10, side_1);
     (&o_4)->clump_0 = ci_0;
     (&o_4)->blade_0 = k_8;
@@ -1706,9 +1752,9 @@ struct vertexOutput_1
     (&kernelContext_24)->ed_buffers_0 = ed_buffers_9;
     (&kernelContext_24)->ed_textures_0 = ed_textures_9;
     (&kernelContext_24)->ed_samplers_0 = ed_samplers_9;
-    GrassOut_0 _S216 = grass_vertex_0(vid_4, iid_4, true, &kernelContext_24);
-    vertexOutput_1 _S217 = { _S216.pos_9 };
-    return _S217;
+    GrassOut_0 _S221 = grass_vertex_0(vid_4, iid_4, true, &kernelContext_24);
+    vertexOutput_1 _S222 = { _S221.pos_9 };
+    return _S222;
 }
 
 struct pixelOutput_4
@@ -1723,15 +1769,15 @@ struct pixelInput_7
     [[flat]] uint blade_1 [[user(BLADE)]];
 };
 
-[[fragment]] pixelOutput_4 fs_grass(pixelInput_7 _S218 [[stage_in]], float4 pos_10 [[position]], VisC_0 constant* ed_c_10 [[buffer(0)]], ulong device* ed_buffers_10 [[buffer(2)]], ulong device* ed_textures_10 [[buffer(1)]], ulong device* ed_samplers_10 [[buffer(3)]])
+[[fragment]] pixelOutput_4 fs_grass(pixelInput_7 _S223 [[stage_in]], float4 pos_10 [[position]], VisC_0 constant* ed_c_10 [[buffer(0)]], ulong device* ed_buffers_10 [[buffer(2)]], ulong device* ed_textures_10 [[buffer(1)]], ulong device* ed_samplers_10 [[buffer(3)]])
 {
     thread KernelContext_0 kernelContext_25;
     (&kernelContext_25)->ed_c_0 = ed_c_10;
     (&kernelContext_25)->ed_buffers_0 = ed_buffers_10;
     (&kernelContext_25)->ed_textures_0 = ed_textures_10;
     (&kernelContext_25)->ed_samplers_0 = ed_samplers_10;
-    pixelOutput_4 _S219 = { uint4(536870912U | ((_S218.clump_1) & 536870911U), (((_S218.blade_1) & 127U) | (uint(saturate(_S218.tu_1.x) * 4095.0f + 0.5f) << 7U)) | (uint(saturate(_S218.tu_1.y) * 255.0f + 0.5f) << 19U), 0U, 0U) };
-    return _S219;
+    pixelOutput_4 _S224 = { uint4(536870912U | ((_S223.clump_1) & 536870911U), (((_S223.blade_1) & 127U) | (uint(saturate(_S223.tu_1.x) * 4095.0f + 0.5f) << 7U)) | (uint(saturate(_S223.tu_1.y) * 255.0f + 0.5f) << 19U), 0U, 0U) };
+    return _S224;
 }
 
 struct vs_vis_Result_0
@@ -1753,27 +1799,27 @@ struct VisOut_0
     (&kernelContext_26)->ed_buffers_0 = ed_buffers_11;
     (&kernelContext_26)->ed_textures_0 = ed_textures_11;
     (&kernelContext_26)->ed_samplers_0 = ed_samplers_11;
-    FrameData_natural_0 device* _S220 = ed_buf_10(ed_c_11->frame_0, &kernelContext_26);
-    uint device* _S221 = ed_buf_9((&kernelContext_26)->ed_c_0->visible_0, &kernelContext_26);
-    uint entry_15 = *(_S221 + iid_5);
-    GpuInstance_natural_0 device* _S222 = ed_buf_8((&kernelContext_26)->ed_c_0->instances_0, &kernelContext_26);
-    GpuInstance_natural_0 device* _S223 = _S222 + (entry_15 & 1048575U);
-    GpuInstance_natural_0 inst_3 = *_S223;
-    thread GpuInstance_natural_0 _S224 = *_S223;
-    Vtx_0 device* _S225 = ed_buf_7((&kernelContext_26)->ed_c_0->verts_0, &kernelContext_26);
-    Vtx_0 v_5 = *(_S225 + vid_5);
-    packed_float4 device* _S226 = ed_buf_6((&kernelContext_26)->ed_c_0->nodes_0, &kernelContext_26);
-    float3 node_7 = (float4(*(_S226 + (((&_S224)->node_flags_0) & 65535U))) ).xyz;
-    float3 _S227 = float3(v_5.px_2, v_5.py_2, v_5.pz_2);
-    _S224 = inst_3;
-    float3 _S228 = xform_point_0(&_S224, _S227);
+    FrameData_natural_0 device* _S225 = ed_buf_10(ed_c_11->frame_0, &kernelContext_26);
+    uint device* _S226 = ed_buf_9((&kernelContext_26)->ed_c_0->visible_0, &kernelContext_26);
+    uint entry_15 = *(_S226 + iid_5);
+    GpuInstance_natural_0 device* _S227 = ed_buf_8((&kernelContext_26)->ed_c_0->instances_0, &kernelContext_26);
+    GpuInstance_natural_0 device* _S228 = _S227 + (entry_15 & 1048575U);
+    GpuInstance_natural_0 inst_3 = *_S228;
+    thread GpuInstance_natural_0 _S229 = *_S228;
+    Vtx_0 device* _S230 = ed_buf_7((&kernelContext_26)->ed_c_0->verts_0, &kernelContext_26);
+    Vtx_0 v_5 = *(_S230 + vid_5);
+    packed_float4 device* _S231 = ed_buf_6((&kernelContext_26)->ed_c_0->nodes_0, &kernelContext_26);
+    float3 node_7 = (float4(*(_S231 + (((&_S229)->node_flags_0) & 65535U))) ).xyz;
+    float3 _S232 = float3(v_5.px_2, v_5.py_2, v_5.pz_2);
+    _S229 = inst_3;
+    float3 _S233 = xform_point_0(&_S229, _S232);
     thread VisOut_0 o_5;
-    (&o_5)->pos_12 = (((float4(node_7 + _S228, 1.0f)) * (matrix<float,int(4),int(4)> (_S220->view_proj_0.data_1[int(0)][int(0)], _S220->view_proj_0.data_1[int(1)][int(0)], _S220->view_proj_0.data_1[int(2)][int(0)], _S220->view_proj_0.data_1[int(3)][int(0)], _S220->view_proj_0.data_1[int(0)][int(1)], _S220->view_proj_0.data_1[int(1)][int(1)], _S220->view_proj_0.data_1[int(2)][int(1)], _S220->view_proj_0.data_1[int(3)][int(1)], _S220->view_proj_0.data_1[int(0)][int(2)], _S220->view_proj_0.data_1[int(1)][int(2)], _S220->view_proj_0.data_1[int(2)][int(2)], _S220->view_proj_0.data_1[int(3)][int(2)], _S220->view_proj_0.data_1[int(0)][int(3)], _S220->view_proj_0.data_1[int(1)][int(3)], _S220->view_proj_0.data_1[int(2)][int(3)], _S220->view_proj_0.data_1[int(3)][int(3)]))));
+    (&o_5)->pos_12 = (((float4(node_7 + _S233, 1.0f)) * (matrix<float,int(4),int(4)> (_S225->view_proj_0.data_1[int(0)][int(0)], _S225->view_proj_0.data_1[int(1)][int(0)], _S225->view_proj_0.data_1[int(2)][int(0)], _S225->view_proj_0.data_1[int(3)][int(0)], _S225->view_proj_0.data_1[int(0)][int(1)], _S225->view_proj_0.data_1[int(1)][int(1)], _S225->view_proj_0.data_1[int(2)][int(1)], _S225->view_proj_0.data_1[int(3)][int(1)], _S225->view_proj_0.data_1[int(0)][int(2)], _S225->view_proj_0.data_1[int(1)][int(2)], _S225->view_proj_0.data_1[int(2)][int(2)], _S225->view_proj_0.data_1[int(3)][int(2)], _S225->view_proj_0.data_1[int(0)][int(3)], _S225->view_proj_0.data_1[int(1)][int(3)], _S225->view_proj_0.data_1[int(2)][int(3)], _S225->view_proj_0.data_1[int(3)][int(3)]))));
     (&o_5)->entry_14 = entry_15;
-    thread vs_vis_Result_0 _S229;
-    (&_S229)->pos_11 = o_5.pos_12;
-    (&_S229)->entry_13 = o_5.entry_14;
-    return _S229;
+    thread vs_vis_Result_0 _S234;
+    (&_S234)->pos_11 = o_5.pos_12;
+    (&_S234)->entry_13 = o_5.entry_14;
+    return _S234;
 }
 
 struct vs_shadow_Result_0
@@ -1793,25 +1839,25 @@ struct ShadowOut_0
     (&kernelContext_27)->ed_buffers_0 = ed_buffers_12;
     (&kernelContext_27)->ed_textures_0 = ed_textures_12;
     (&kernelContext_27)->ed_samplers_0 = ed_samplers_12;
-    FrameData_natural_0 device* _S230 = ed_buf_10(ed_c_12->frame_0, &kernelContext_27);
-    uint device* _S231 = ed_buf_9((&kernelContext_27)->ed_c_0->visible_0, &kernelContext_27);
-    uint entry_16 = *(_S231 + iid_6);
-    GpuInstance_natural_0 device* _S232 = ed_buf_8((&kernelContext_27)->ed_c_0->instances_0, &kernelContext_27);
-    GpuInstance_natural_0 device* _S233 = _S232 + (entry_16 & 1048575U);
-    GpuInstance_natural_0 inst_4 = *_S233;
-    thread GpuInstance_natural_0 _S234 = *_S233;
-    Vtx_0 device* _S235 = ed_buf_7((&kernelContext_27)->ed_c_0->verts_0, &kernelContext_27);
-    Vtx_0 v_6 = *(_S235 + vid_6);
-    packed_float4 device* _S236 = ed_buf_6((&kernelContext_27)->ed_c_0->nodes_0, &kernelContext_27);
-    float3 node_8 = (float4(*(_S236 + (((&_S234)->node_flags_0) & 65535U))) ).xyz;
-    float3 _S237 = float3(v_6.px_2, v_6.py_2, v_6.pz_2);
-    _S234 = inst_4;
-    float3 _S238 = xform_point_0(&_S234, _S237);
+    FrameData_natural_0 device* _S235 = ed_buf_10(ed_c_12->frame_0, &kernelContext_27);
+    uint device* _S236 = ed_buf_9((&kernelContext_27)->ed_c_0->visible_0, &kernelContext_27);
+    uint entry_16 = *(_S236 + iid_6);
+    GpuInstance_natural_0 device* _S237 = ed_buf_8((&kernelContext_27)->ed_c_0->instances_0, &kernelContext_27);
+    GpuInstance_natural_0 device* _S238 = _S237 + (entry_16 & 1048575U);
+    GpuInstance_natural_0 inst_4 = *_S238;
+    thread GpuInstance_natural_0 _S239 = *_S238;
+    Vtx_0 device* _S240 = ed_buf_7((&kernelContext_27)->ed_c_0->verts_0, &kernelContext_27);
+    Vtx_0 v_6 = *(_S240 + vid_6);
+    packed_float4 device* _S241 = ed_buf_6((&kernelContext_27)->ed_c_0->nodes_0, &kernelContext_27);
+    float3 node_8 = (float4(*(_S241 + (((&_S239)->node_flags_0) & 65535U))) ).xyz;
+    float3 _S242 = float3(v_6.px_2, v_6.py_2, v_6.pz_2);
+    _S239 = inst_4;
+    float3 _S243 = xform_point_0(&_S239, _S242);
     thread ShadowOut_0 o_6;
-    (&o_6)->pos_14 = (((float4(node_8 + _S238, 1.0f)) * (matrix<float,int(4),int(4)> ((&(&_S230->light_0)->shadow_0)->data_3[(&kernelContext_27)->ed_c_0->cascade_0].data_1[int(0)][int(0)], (&(&_S230->light_0)->shadow_0)->data_3[(&kernelContext_27)->ed_c_0->cascade_0].data_1[int(1)][int(0)], (&(&_S230->light_0)->shadow_0)->data_3[(&kernelContext_27)->ed_c_0->cascade_0].data_1[int(2)][int(0)], (&(&_S230->light_0)->shadow_0)->data_3[(&kernelContext_27)->ed_c_0->cascade_0].data_1[int(3)][int(0)], (&(&_S230->light_0)->shadow_0)->data_3[(&kernelContext_27)->ed_c_0->cascade_0].data_1[int(0)][int(1)], (&(&_S230->light_0)->shadow_0)->data_3[(&kernelContext_27)->ed_c_0->cascade_0].data_1[int(1)][int(1)], (&(&_S230->light_0)->shadow_0)->data_3[(&kernelContext_27)->ed_c_0->cascade_0].data_1[int(2)][int(1)], (&(&_S230->light_0)->shadow_0)->data_3[(&kernelContext_27)->ed_c_0->cascade_0].data_1[int(3)][int(1)], (&(&_S230->light_0)->shadow_0)->data_3[(&kernelContext_27)->ed_c_0->cascade_0].data_1[int(0)][int(2)], (&(&_S230->light_0)->shadow_0)->data_3[(&kernelContext_27)->ed_c_0->cascade_0].data_1[int(1)][int(2)], (&(&_S230->light_0)->shadow_0)->data_3[(&kernelContext_27)->ed_c_0->cascade_0].data_1[int(2)][int(2)], (&(&_S230->light_0)->shadow_0)->data_3[(&kernelContext_27)->ed_c_0->cascade_0].data_1[int(3)][int(2)], (&(&_S230->light_0)->shadow_0)->data_3[(&kernelContext_27)->ed_c_0->cascade_0].data_1[int(0)][int(3)], (&(&_S230->light_0)->shadow_0)->data_3[(&kernelContext_27)->ed_c_0->cascade_0].data_1[int(1)][int(3)], (&(&_S230->light_0)->shadow_0)->data_3[(&kernelContext_27)->ed_c_0->cascade_0].data_1[int(2)][int(3)], (&(&_S230->light_0)->shadow_0)->data_3[(&kernelContext_27)->ed_c_0->cascade_0].data_1[int(3)][int(3)]))));
-    thread vs_shadow_Result_0 _S239;
-    (&_S239)->pos_13 = o_6.pos_14;
-    return _S239;
+    (&o_6)->pos_14 = (((float4(node_8 + _S243, 1.0f)) * (matrix<float,int(4),int(4)> ((&(&_S235->light_0)->shadow_0)->data_3[(&kernelContext_27)->ed_c_0->cascade_0].data_1[int(0)][int(0)], (&(&_S235->light_0)->shadow_0)->data_3[(&kernelContext_27)->ed_c_0->cascade_0].data_1[int(1)][int(0)], (&(&_S235->light_0)->shadow_0)->data_3[(&kernelContext_27)->ed_c_0->cascade_0].data_1[int(2)][int(0)], (&(&_S235->light_0)->shadow_0)->data_3[(&kernelContext_27)->ed_c_0->cascade_0].data_1[int(3)][int(0)], (&(&_S235->light_0)->shadow_0)->data_3[(&kernelContext_27)->ed_c_0->cascade_0].data_1[int(0)][int(1)], (&(&_S235->light_0)->shadow_0)->data_3[(&kernelContext_27)->ed_c_0->cascade_0].data_1[int(1)][int(1)], (&(&_S235->light_0)->shadow_0)->data_3[(&kernelContext_27)->ed_c_0->cascade_0].data_1[int(2)][int(1)], (&(&_S235->light_0)->shadow_0)->data_3[(&kernelContext_27)->ed_c_0->cascade_0].data_1[int(3)][int(1)], (&(&_S235->light_0)->shadow_0)->data_3[(&kernelContext_27)->ed_c_0->cascade_0].data_1[int(0)][int(2)], (&(&_S235->light_0)->shadow_0)->data_3[(&kernelContext_27)->ed_c_0->cascade_0].data_1[int(1)][int(2)], (&(&_S235->light_0)->shadow_0)->data_3[(&kernelContext_27)->ed_c_0->cascade_0].data_1[int(2)][int(2)], (&(&_S235->light_0)->shadow_0)->data_3[(&kernelContext_27)->ed_c_0->cascade_0].data_1[int(3)][int(2)], (&(&_S235->light_0)->shadow_0)->data_3[(&kernelContext_27)->ed_c_0->cascade_0].data_1[int(0)][int(3)], (&(&_S235->light_0)->shadow_0)->data_3[(&kernelContext_27)->ed_c_0->cascade_0].data_1[int(1)][int(3)], (&(&_S235->light_0)->shadow_0)->data_3[(&kernelContext_27)->ed_c_0->cascade_0].data_1[int(2)][int(3)], (&(&_S235->light_0)->shadow_0)->data_3[(&kernelContext_27)->ed_c_0->cascade_0].data_1[int(3)][int(3)]))));
+    thread vs_shadow_Result_0 _S244;
+    (&_S244)->pos_13 = o_6.pos_14;
+    return _S244;
 }
 
 struct vs_foliage_Result_0
@@ -1830,14 +1876,14 @@ struct vs_foliage_Result_0
     (&kernelContext_28)->ed_buffers_0 = ed_buffers_13;
     (&kernelContext_28)->ed_textures_0 = ed_textures_13;
     (&kernelContext_28)->ed_samplers_0 = ed_samplers_13;
-    FoliageOut_0 _S240 = foliage_vertex_0(vid_7, iid_7, false, &kernelContext_28);
-    thread vs_foliage_Result_0 _S241;
-    (&_S241)->pos_15 = _S240.pos_2;
-    (&_S241)->uv_9 = _S240.uv_1;
-    (&_S241)->entry_17 = _S240.entry_3;
-    (&_S241)->tex_6 = _S240.tex_2;
-    (&_S241)->sd_5 = _S240.sd_0;
-    return _S241;
+    FoliageOut_0 _S245 = foliage_vertex_0(vid_7, iid_7, false, &kernelContext_28);
+    thread vs_foliage_Result_0 _S246;
+    (&_S246)->pos_15 = _S245.pos_2;
+    (&_S246)->uv_9 = _S245.uv_1;
+    (&_S246)->entry_17 = _S245.entry_3;
+    (&_S246)->tex_6 = _S245.tex_2;
+    (&_S246)->sd_5 = _S245.sd_0;
+    return _S246;
 }
 
 struct vs_shadow_foliage_Result_0
@@ -1856,14 +1902,14 @@ struct vs_shadow_foliage_Result_0
     (&kernelContext_29)->ed_buffers_0 = ed_buffers_14;
     (&kernelContext_29)->ed_textures_0 = ed_textures_14;
     (&kernelContext_29)->ed_samplers_0 = ed_samplers_14;
-    FoliageOut_0 _S242 = foliage_vertex_0(vid_8, iid_8, true, &kernelContext_29);
-    thread vs_shadow_foliage_Result_0 _S243;
-    (&_S243)->pos_16 = _S242.pos_2;
-    (&_S243)->uv_10 = _S242.uv_1;
-    (&_S243)->entry_18 = _S242.entry_3;
-    (&_S243)->tex_7 = _S242.tex_2;
-    (&_S243)->sd_6 = _S242.sd_0;
-    return _S243;
+    FoliageOut_0 _S247 = foliage_vertex_0(vid_8, iid_8, true, &kernelContext_29);
+    thread vs_shadow_foliage_Result_0 _S248;
+    (&_S248)->pos_16 = _S247.pos_2;
+    (&_S248)->uv_10 = _S247.uv_1;
+    (&_S248)->entry_18 = _S247.entry_3;
+    (&_S248)->tex_7 = _S247.tex_2;
+    (&_S248)->sd_6 = _S247.sd_0;
+    return _S248;
 }
 
 struct vs_imp_Result_0
@@ -1888,20 +1934,20 @@ struct vs_imp_Result_0
     (&kernelContext_30)->ed_buffers_0 = ed_buffers_15;
     (&kernelContext_30)->ed_textures_0 = ed_textures_15;
     (&kernelContext_30)->ed_samplers_0 = ed_samplers_15;
-    ImpOut_0 _S244 = imp_vertex_0(vid_9, iid_9, false, &kernelContext_30);
-    thread vs_imp_Result_0 _S245;
-    (&_S245)->pos_17 = _S244.pos_6;
-    (&_S245)->uv0_3 = _S244.uv0_0;
-    (&_S245)->uv1_3 = _S244.uv1_0;
-    (&_S245)->uv2_3 = _S244.uv2_0;
-    (&_S245)->zv_3 = _S244.zv_0;
-    (&_S245)->entry_19 = _S244.entry_8;
-    (&_S245)->fi_5 = _S244.fi_1;
-    (&_S245)->w_11 = _S244.w_4;
-    (&_S245)->geo_4 = _S244.geo_1;
-    (&_S245)->front_4 = _S244.front_0;
-    (&_S245)->lv_3 = _S244.lv_0;
-    return _S245;
+    ImpOut_0 _S249 = imp_vertex_0(vid_9, iid_9, false, &kernelContext_30);
+    thread vs_imp_Result_0 _S250;
+    (&_S250)->pos_17 = _S249.pos_6;
+    (&_S250)->uv0_3 = _S249.uv0_0;
+    (&_S250)->uv1_3 = _S249.uv1_0;
+    (&_S250)->uv2_3 = _S249.uv2_0;
+    (&_S250)->zv_3 = _S249.zv_0;
+    (&_S250)->entry_19 = _S249.entry_8;
+    (&_S250)->fi_5 = _S249.fi_1;
+    (&_S250)->w_11 = _S249.w_4;
+    (&_S250)->geo_4 = _S249.geo_1;
+    (&_S250)->front_4 = _S249.front_0;
+    (&_S250)->lv_3 = _S249.lv_0;
+    return _S250;
 }
 
 struct vs_imp_shadow_Result_0
@@ -1926,20 +1972,20 @@ struct vs_imp_shadow_Result_0
     (&kernelContext_31)->ed_buffers_0 = ed_buffers_16;
     (&kernelContext_31)->ed_textures_0 = ed_textures_16;
     (&kernelContext_31)->ed_samplers_0 = ed_samplers_16;
-    ImpOut_0 _S246 = imp_vertex_0(vid_10, iid_10, true, &kernelContext_31);
-    thread vs_imp_shadow_Result_0 _S247;
-    (&_S247)->pos_18 = _S246.pos_6;
-    (&_S247)->uv0_4 = _S246.uv0_0;
-    (&_S247)->uv1_4 = _S246.uv1_0;
-    (&_S247)->uv2_4 = _S246.uv2_0;
-    (&_S247)->zv_4 = _S246.zv_0;
-    (&_S247)->entry_20 = _S246.entry_8;
-    (&_S247)->fi_6 = _S246.fi_1;
-    (&_S247)->w_12 = _S246.w_4;
-    (&_S247)->geo_5 = _S246.geo_1;
-    (&_S247)->front_5 = _S246.front_0;
-    (&_S247)->lv_4 = _S246.lv_0;
-    return _S247;
+    ImpOut_0 _S251 = imp_vertex_0(vid_10, iid_10, true, &kernelContext_31);
+    thread vs_imp_shadow_Result_0 _S252;
+    (&_S252)->pos_18 = _S251.pos_6;
+    (&_S252)->uv0_4 = _S251.uv0_0;
+    (&_S252)->uv1_4 = _S251.uv1_0;
+    (&_S252)->uv2_4 = _S251.uv2_0;
+    (&_S252)->zv_4 = _S251.zv_0;
+    (&_S252)->entry_20 = _S251.entry_8;
+    (&_S252)->fi_6 = _S251.fi_1;
+    (&_S252)->w_12 = _S251.w_4;
+    (&_S252)->geo_5 = _S251.geo_1;
+    (&_S252)->front_5 = _S251.front_0;
+    (&_S252)->lv_4 = _S251.lv_0;
+    return _S252;
 }
 
 struct vs_grass_Result_0
@@ -1957,12 +2003,12 @@ struct vs_grass_Result_0
     (&kernelContext_32)->ed_buffers_0 = ed_buffers_17;
     (&kernelContext_32)->ed_textures_0 = ed_textures_17;
     (&kernelContext_32)->ed_samplers_0 = ed_samplers_17;
-    GrassOut_0 _S248 = grass_vertex_0(vid_11, iid_11, false, &kernelContext_32);
-    thread vs_grass_Result_0 _S249;
-    (&_S249)->pos_19 = _S248.pos_9;
-    (&_S249)->tu_2 = _S248.tu_0;
-    (&_S249)->clump_2 = _S248.clump_0;
-    (&_S249)->blade_2 = _S248.blade_0;
-    return _S249;
+    GrassOut_0 _S253 = grass_vertex_0(vid_11, iid_11, false, &kernelContext_32);
+    thread vs_grass_Result_0 _S254;
+    (&_S254)->pos_19 = _S253.pos_9;
+    (&_S254)->tu_2 = _S253.tu_0;
+    (&_S254)->clump_2 = _S253.clump_0;
+    (&_S254)->blade_2 = _S253.blade_0;
+    return _S254;
 }
 

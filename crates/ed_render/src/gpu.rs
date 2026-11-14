@@ -59,9 +59,9 @@ pub(crate) const IMP_WORDS: usize = 16;
 pub(crate) const FD_SEASON: usize = FD_IMP + IMP_WORDS;
 pub(crate) const SEASON_ROWS: usize = 32;
 pub(crate) const SEASON_WORDS: usize = 4 + SEASON_ROWS * 8;
-/// `FrameData.grass` (`GrassData`, grass style A): bufs, lod, look.
+/// `FrameData.grass` (`GrassData`, grass styles A and E): bufs, lod, look, far, under.
 pub(crate) const FD_GRASS: usize = FD_SEASON + SEASON_WORDS;
-pub(crate) const GRASS_WORDS: usize = 12;
+pub(crate) const GRASS_WORDS: usize = 20;
 /// `FrameData.shell` (`ShellData`, grass shells and terrain tint; written by the terrain
 /// provider, `terrain::TerrainProvider::set_grass`).
 pub(crate) const FD_SHELL: usize = FD_GRASS + GRASS_WORDS;

@@ -624,6 +624,7 @@ fn m2_lines(m: &M2Inputs<'_>) -> String {
     let _ = writeln!(s, "  impostor casters: {}", mm(&|c| c.impostor_casters));
     let _ = writeln!(s, "  grass clumps:    {}", mm(&|c| c.grass));
     let _ = writeln!(s, "  grass casters:   {}", mm(&|c| c.grass_casters));
+    let _ = writeln!(s, "  grass blades:    {}", mm(&|c| c.grass_blades));
     let _ = writeln!(
         s,
         "draw calls per frame: {} ({} indirect = {} mesh x LOD bins x solid/dither x early/late; + resolve + tonemap)",

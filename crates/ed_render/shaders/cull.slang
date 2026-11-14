@@ -45,6 +45,7 @@ static const uint STAT_TRIANGLES = 8;
 static const uint STAT_CHANGED = 9;
 static const uint STAT_SHADOW = 10;          // 10..13: shadow casters per cascade
 static const uint STAT_SHADOW_TRIANGLES = 14;
+static const uint STAT_GRASS_BLADES = 15;     // grass blades drawn (clumps x their blade count)
 static const uint STAT_IMPOSTORS = 16;        // impostors drawn (trees G5)
 static const uint STAT_IMP_CASTERS = 17;      // impostor shadow casters, all cascades
 static const uint STAT_GRASS = 18;            // grass clumps drawn (style A)
@@ -561,6 +562,7 @@ void grass_cull(uint3 tid: SV_DispatchThreadID) {
     Atomic<uint>* stats = (Atomic<uint>*)ed_buf<uint>(ed_c.stats);
     uint drawn = 0;
     uint casters = 0;
+    uint blades = 0;
     if (i < ed_c.count) {
         GrassClump g = ed_buf<GrassClump>(ed_c.instances)[i];
         if ((g.hw & 0xFFFFu) != 0u) {
@@ -569,11 +571,12 @@ void grass_cull(uint3 tid: SV_DispatchThreadID) {
             float3 up = oct_decode(g.up);
             float h = ty.a.y * float(g.hw & 0xFFFFu) / 65535.0 * 4.0;
             float3 base = node + float3(g.px, g.py, g.pz);
-            float3 c = base + up * (0.5 * h);
-            float r = ty.b.x * 1.15 + 0.6 * h + 0.05;
             float d = length(base);
             float2 lod = grass_lod(f, d, ty.a.w);
-            float rank = float(g.node_kind >> 24) / 255.0;
+            h *= grass_grow(f, d);
+            float3 c = base + up * (0.5 * h);
+            float r = grass_radius(f, ty, lod.y) * 1.15 + 0.6 * h + 0.05;
+            float rank = grass_rank(g.node_kind);
             if (d < f.grass.lod.y && rank < lod.y) {
                 uint b = grass_bucket(lod.x);
                 bool vis = in_frustum(f, c, r);
@@ -583,9 +586,10 @@ void grass_cull(uint3 tid: SV_DispatchThreadID) {
                 if (vis) {
                     grass_emit(b, i);
                     drawn = 1;
+                    blades = uint(ceil(lod.x));
                 }
                 // Nearest cascade only: one bucket coarser (half the blades, wider).
-                if ((f.grass.bufs.w & 2u) != 0u && f.light.cfg.x > 0.0 && d < f.light.split.x) {
+                if ((f.grass.bufs.w & 2u) != 0u && f.light.cfg.x > 0.0 && d < (f.grass.far.w > 0.0 ? min(f.light.split.x, f.grass.far.w) : f.light.split.x)) {
                     float tile = f.light.cfg.y;
                     float4 cs = f.light.cascade[0];
                     float4 sp = mul(f.light.shadow[0], float4(c, 1.0));
@@ -601,4 +605,5 @@ void grass_cull(uint3 tid: SV_DispatchThreadID) {
     }
     stat_add(stats, STAT_GRASS, drawn);
     stat_add(stats, STAT_GRASS_CASTERS, casters);
+    stat_add(stats, STAT_GRASS_BLADES, blades);
 }

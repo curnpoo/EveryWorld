@@ -125,6 +125,8 @@ struct GrassData_natural_0
     packed_uint4 bufs_2;
     packed_float4 lod_0;
     packed_float4 look_0;
+    packed_float4 far_1;
+    packed_float4 under_0;
 };
 
 struct ShellData_natural_0

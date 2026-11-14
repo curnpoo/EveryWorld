@@ -1,3 +1,21 @@
+## 2026-11-13: Grass style E — blades for every type, out to 500 m (`EW_GRASS_STYLE=e`)
+
+Owner verdict on A/C/D: the shell carpet reads flat, the tall blades win, and they must reach
+much further. Style E draws blades for every type (lawn as short dense blades; shells off by
+default, `EW_GRASS_SHELLS` brings back the underlayer, +6 ms). Blades reach 500 m in the
+GoT way: blades per clump fall with distance and the survivors widen and grow; far clumps keep
+1-3 wide blades; clumps thin on a stratified rank lattice (`ed_world/src/grass.rs`
+`clump_rank`/`rank_step`) so the far field stays even on few records; far blades take the
+clump's mean colour and normal and stop casting shadows past 40 m. The far grass tint now
+multiplies the textured ground (`EW_GRASS_TINT_MOD=1`) instead of replacing it with a flat
+colour. Lab eye: 150k blades from 34k drawn clumps of 193k records, no visible range edge.
+
+gpu_frame ms at 2560x1440 (eye / down / o30 / o150): no cover 12.2 / 15.1 / 15.4 / 15.3;
+A 14.6 / 19.0 / 17.6 / 13.8; E 16.2 / 19.9 / 23.5 / 18.2. Zermatt meadow view: no cover 27.4,
+A 29.2, E 33.5 (resolve 10.5 ms, grass raster 0.48 ms). Open: o30 +8 ms (about 3 ms is the
+tint's per-pixel cost in resolve); Zermatt valley meadow still reads flat light green (real
+land cover maps to lawn only); lawn in the down view is sparse over the carpet.
+
 ## 2026-11-13: Grass styles C (shells) and D (hybrid), per-type sheen, terrain grass tint
 
 `EW_GRASS_STYLE=c`: up to 16 alpha-tested shells drawn on the terrain's own triangles near the

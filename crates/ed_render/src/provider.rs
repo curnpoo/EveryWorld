@@ -177,6 +177,8 @@ pub struct CullStats {
     /// Grass clumps drawn (style A) and clumps cast into the nearest cascade.
     pub grass: u32,
     pub grass_casters: u32,
+    /// Grass blades drawn (each drawn clump's blade count, rounded up).
+    pub grass_blades: u32,
 }
 
 impl CullStats {
@@ -202,6 +204,7 @@ impl CullStats {
             impostor_casters: w[17],
             grass: w[18],
             grass_casters: w[19],
+            grass_blades: w[15],
         }
     }
 }

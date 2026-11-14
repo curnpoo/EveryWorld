@@ -130,6 +130,8 @@ struct GrassData_natural_0
     packed_uint4 bufs_2;
     packed_float4 lod_0;
     packed_float4 look_0;
+    packed_float4 far_1;
+    packed_float4 under_0;
 };
 
 struct ShellData_natural_0
@@ -281,7 +283,7 @@ float3 view_at_far_0(FrameData_natural_0 device* f_5, int2 q_5, float off_1, flo
     return _S17;
 }
 
-float2 slice_horizons_0(FrameData_natural_0 device* f_6, int2 q_6, float3 p_1, float2 omega_0, float2 low_0, float r0_px_0, float r_px_0, float radius_1, float thin_0, uint steps_0, float jitter_0, float pw_0, bool far_1, float min_px_1, KernelContext_0 thread* kernelContext_8)
+float2 slice_horizons_0(FrameData_natural_0 device* f_6, int2 q_6, float3 p_1, float2 omega_0, float2 low_0, float r0_px_0, float r_px_0, float radius_1, float thin_0, uint steps_0, float jitter_0, float pw_0, bool far_2, float min_px_1, KernelContext_0 thread* kernelContext_8)
 {
     float range_0 = 0.60000002384185791f * radius_1;
     float _S18 = -1.0f / range_0;
@@ -312,7 +314,7 @@ float2 slice_horizons_0(FrameData_natural_0 device* f_6, int2 q_6, float3 p_1, f
         float _S23 = max(r0_px_0 + _S22 * (r_px_0 - r0_px_0), 1.0f + _S21);
         float2 d_1 = omega_0 * float2(_S23) ;
         float3 _S24;
-        if(far_1)
+        if(far_2)
         {
             float3 _S25 = view_at_far_0(f_6, q_6 + int2(round(d_1)), _S23, min_px_1, kernelContext_8);
             _S24 = _S25;
@@ -324,7 +326,7 @@ float2 slice_horizons_0(FrameData_natural_0 device* f_6, int2 q_6, float3 p_1, f
         }
         float3 d0_0 = _S24 - p_1;
         float3 _S27;
-        if(far_1)
+        if(far_2)
         {
             float3 _S28 = view_at_far_0(f_6, q_6 - int2(round(d_1)), _S23, min_px_1, kernelContext_8);
             _S27 = _S28;

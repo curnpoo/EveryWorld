@@ -23,7 +23,7 @@ pub const MAX_GRASS_TYPES: u32 = 64;
 pub const GRASS_TYPE_FLOATS: usize = 32;
 const CLUMP_WORDS: usize = 8;
 /// Blade slots and segments per bucket (common.slang `GRASS_SLOTS`, `GRASS_SEGS`).
-pub const BUCKETS: [(u32, u32); 5] = [(64, 6), (32, 5), (16, 4), (8, 3), (4, 2)];
+pub const BUCKETS: [(u32, u32); 6] = [(64, 6), (32, 5), (16, 4), (8, 3), (4, 2), (2, 2)];
 pub(crate) const GRASS_BUCKETS: u32 = BUCKETS.len() as u32;
 /// Draw lists: the view's buckets, then the nearest cascade's.
 pub(crate) const GRASS_LISTS: u32 = 2 * GRASS_BUCKETS;
@@ -65,11 +65,32 @@ pub struct GrassConfig {
     pub up_blend: f32,
     /// Wind moves the blades.
     pub wind: bool,
+    /// Fewest blades per clump far (style E; `bmin` keeps the near rule everywhere) and the
+    /// distance (m) past which the floor falls as `bmin * dfar / d` (0: off).
+    /// `ed_world::grass::LodParams`.
+    pub bfar: f32,
+    pub dfar: f32,
+    /// Narrowest blade (pixels; 0: off): far blades never go sub-pixel.
+    pub px_min: f32,
+    /// Far clumps spread over the cell their keep leaves them (0: off, 1: the whole cell).
+    pub spread: f32,
+    /// Most height growth of far blades (0.25: +25 %).
+    pub grow: f32,
+    /// Far blades take their clump's mean colour and the ground normal (0..1).
+    pub mean: f32,
+    /// Blades cast shadows only inside this distance (m; 0: the nearest cascade's).
+    pub shadow_m: f32,
+    /// The terrain tint under the blades darkens by this (the field's shaded floor; 0: off) and
+    /// takes this much clump/patch-scale brightness noise (0: off). Need the terrain tint.
+    pub under: f32,
+    pub noise: f32,
+    /// The terrain tint is a gain on the textured ground (style E), not a lerp to the carpet.
+    pub modulate: bool,
 }
 
 impl Default for GrassConfig {
     fn default() -> Self {
-        Self { r0: 14.0, range: 110.0, bmin: 5.0, width_max: 5.0, shadows: true, up_blend: 0.3, wind: true }
+        Self { r0: 14.0, range: 110.0, bmin: 5.0, width_max: 5.0, shadows: true, up_blend: 0.3, wind: true, bfar: 5.0, dfar: 0.0, px_min: 0.0, spread: 0.0, grow: 0.0, mean: 0.0, shadow_m: 0.0, under: 0.0, noise: 0.0, modulate: false }
     }
 }
 
@@ -97,6 +118,21 @@ pub fn bucket_indices() -> (Vec<u32>, [u32; BUCKETS.len()]) {
         }
     }
     (idx, first)
+}
+
+/// A clump rank as a log-encoded byte (common.slang `grass_rank`): 0 below `2^-14`, else
+/// `255 (1 + log2(rank) / 14)`, steps of ~4 % (far keeps are small: a linear byte would thin
+/// them in coarse batches).
+pub fn rank_byte(rank: f32) -> u32 {
+    if rank < 2f32.powi(-14) {
+        return 0;
+    }
+    (255.0 * (1.0 + rank.min(1.0).log2() / 14.0)).round().clamp(1.0, 255.0) as u32
+}
+
+/// Decoded [`rank_byte`].
+pub fn rank_of_byte(q: u32) -> f32 {
+    if q == 0 { 0.0 } else { ((q as f32 / 255.0 - 1.0) * 14.0).exp2() }
 }
 
 pub(crate) struct GrassStore {
@@ -156,7 +192,7 @@ impl GrassStore {
         let Some(start) = self.alloc.alloc(n) else { return Ok(None) };
         let mut w = Vec::with_capacity(clumps.len() * CLUMP_WORDS);
         for c in clumps {
-            let rank = (c.rank.clamp(0.0, 1.0) * 255.0).round() as u32;
+            let rank = rank_byte(c.rank);
             let h = ((c.height / 4.0).clamp(1.0 / 65535.0, 1.0) * 65535.0).round() as u32;
             let dry = (c.dry.clamp(0.0, 1.0) * 255.0).round() as u32;
             w.extend_from_slice(&[
@@ -204,7 +240,7 @@ impl GrassStore {
         }
         w[2] = self.slots();
         w[3] = if w[2] > 0 { 1 | if c.shadows { 2 } else { 0 } | if c.wind { 4 } else { 0 } } else { 0 };
-        let f = [c.r0, c.range, c.bmin, c.width_max, c.up_blend, 0.0, 0.0, 0.0];
+        let f = [c.r0, c.range, c.bmin, c.width_max, c.up_blend, c.bfar, c.dfar, c.px_min, c.spread, c.grow, c.mean, c.shadow_m, c.under, c.noise, if c.modulate { 1.0 } else { 0.0 }, 0.0];
         for (i, x) in f.iter().enumerate() {
             w[4 + i] = x.to_bits();
         }
@@ -223,11 +259,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn ranks_round_trip_within_a_few_percent() {
+        assert_eq!(rank_byte(0.0), 0);
+        assert_eq!(rank_byte(1.0), 255);
+        for r in [0.9f32, 0.25, 0.05, 0.01, 0.002, 0.0003] {
+            let back = rank_of_byte(rank_byte(r));
+            assert!((back / r - 1.0).abs() < 0.03, "{r} -> {back}");
+        }
+        // Monotonic: a keep test on the byte keeps the same order.
+        assert!(rank_byte(0.011) >= rank_byte(0.010));
+    }
+
+    #[test]
     fn bucket_offsets_match_the_shader_table() {
         let (idx, first) = bucket_indices();
         // common.slang GRASS_FIRST mirrors these.
-        assert_eq!(first, [0, 2304, 3264, 3648, 3792]);
-        assert_eq!(idx.len(), 3792 + 4 * 2 * 6);
+        assert_eq!(first, [0, 2304, 3264, 3648, 3792, 3840]);
+        assert_eq!(idx.len(), 3840 + 2 * 2 * 6);
         // Every bucket's strip stays inside its vertex count.
         for (b, &(slots, segs)) in BUCKETS.iter().enumerate() {
             let end = if b + 1 < BUCKETS.len() { first[b + 1] } else { idx.len() as u32 } as usize;

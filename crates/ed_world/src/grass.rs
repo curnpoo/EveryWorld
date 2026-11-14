@@ -12,8 +12,11 @@
 //! makes some patches drier (straw-tinted).
 //!
 //! **Distance** ([`lod`], mirrored by common.slang `grass_lod`): blades per clump fall as
-//! `(r0 / d)^2` past `r0` (constant on-screen density), down to `bmin`; past that the clumps
-//! themselves thin by rank. The generator emits only ranks under the node's keep (a tier of
+//! `(r0 / d)^2` past `r0` (constant on-screen density), down to a floor (`bmin`; style E lowers
+//! it with distance to 1-3 wide blades, [`LodParams`]); past that the clumps themselves thin by
+//! rank. Ranks are stratified ([`clump_rank`]): a keep of `4^-m` leaves an even lattice of
+//! clumps `2^m` cells apart, each jittered over its block, so far grass is fewer, bigger clumps
+//! with no holes. The generator emits only ranks under the node's keep (a tier of
 //! [`clump_keep`] at its nearest point), so far nodes carry few clumps.
 //!
 //! Deterministic: a pure function of (node, seed, type function); fixed lattice order, seeded
@@ -97,11 +100,11 @@ pub const TYPES: [GrassType; 4] = [
     GrassType {
         name: "lawn",
         height: (0.12, 0.18),
-        width: 0.02,
+        width: 0.022,
         blades: 64,
-        clump_r: 0.5,
+        clump_r: 0.42,
         aniso: 1.0,
-        lean: 0.5,
+        lean: 0.75,
         stiffness: 0.85,
         curve: 0.35,
         root: [0.030, 0.050, 0.012],
@@ -223,19 +226,84 @@ pub fn gpu_rows() -> Vec<[f32; ROW_FLOATS]> {
     TYPES.iter().map(gpu_row).collect()
 }
 
+/// Distance rules shared by the node tiers (here) and the GPU (common.slang `grass_lod`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LodParams {
+    /// Full-density radius (m).
+    pub r0: f32,
+    /// Fewest blades per clump near (before clumps thin).
+    pub bmin: f32,
+    /// Fewest blades per clump far (style E: far clumps carry 1-3 wide blades). `bfar = bmin`
+    /// keeps the near rule everywhere (style A).
+    pub bfar: f32,
+    /// The fewest-blades floor falls as `bmin * dfar / d` past `dfar` (m), down to `bfar`
+    /// (0: off).
+    pub dfar: f32,
+}
+
+impl LodParams {
+    /// Style A's rule: `bmin` everywhere.
+    pub const fn near(r0: f32, bmin: f32) -> LodParams {
+        LodParams { r0, bmin, bfar: bmin, dfar: 0.0 }
+    }
+}
+
 /// Continuous blades per clump and the clump keep at distance `d` (m) for a type of `blades`
-/// blades: `blades * min(1, (r0/d)^2)` down to `bmin`, then clumps keep `rank < keep` with
-/// `keep = blades * (r0/d)^2 / bmin`. Mirrored by common.slang `grass_lod`.
-pub fn lod(d: f32, blades: f32, r0: f32, bmin: f32) -> (f32, f32) {
-    let k = (r0 / d.max(1e-3)).powi(2).min(1.0);
+/// blades: `blades * min(1, (r0/d)^2)` down to the floor `bm(d)`, then clumps keep
+/// `rank < keep` with `keep = blades * (r0/d)^2 / bm(d)` (the on-screen blade density holds,
+/// spread over more, fewer-bladed clumps far). Mirrored by common.slang `grass_lod`.
+pub fn lod_p(d: f32, blades: f32, p: &LodParams) -> (f32, f32) {
+    let d = d.max(1e-3);
+    let k = (p.r0 / d).powi(2).min(1.0);
     let raw = blades * k;
-    (raw.max(bmin.min(blades)), (raw / bmin.min(blades)).min(1.0))
+    let floor = if p.dfar > 0.0 { (p.bmin * p.dfar / d).clamp(p.bfar.min(p.bmin), p.bmin) } else { p.bmin };
+    let bm = floor.min(blades).max(1e-3);
+    (raw.max(bm), (raw / bm).min(1.0))
+}
+
+/// [`lod_p`] with style A's rule.
+pub fn lod(d: f32, blades: f32, r0: f32, bmin: f32) -> (f32, f32) {
+    lod_p(d, blades, &LodParams::near(r0, bmin))
 }
 
 /// The keep a node needs for clumps up to `d` m away (the type with most blades thins last).
 pub fn clump_keep(d: f32, r0: f32) -> f32 {
+    clump_keep_p(d, &LodParams::near(r0, BMIN))
+}
+
+/// [`clump_keep`] under any rule.
+pub fn clump_keep_p(d: f32, p: &LodParams) -> f32 {
     let most = TYPES.iter().map(|t| t.blades).max().unwrap_or(1) as f32;
-    lod(d, most, r0, BMIN).1
+    lod_p(d, most, p).1
+}
+
+/// Rank levels of the stratified lattice ([`clump_rank`]).
+pub const RANK_LEVELS: u32 = 5;
+
+/// Coarseness of lattice cell `(i, j)`: how many times both indices halve evenly (capped at
+/// [`RANK_LEVELS`] - 1). Cells of level `>= m` form a regular lattice `2^m` cells apart.
+pub fn cell_level(i: i64, j: i64) -> u32 {
+    let tz = |x: i64| if x == 0 { 63 } else { x.trailing_zeros() };
+    tz(i).min(tz(j)).min(RANK_LEVELS - 1)
+}
+
+/// Stratified rank of a cell of level `l` (0..1) from a uniform roll `h`: level `l` cells take
+/// ranks in `[4^-(l+1), 4^-l)` (the coarsest level `[0, 4^-l)`), so the clumps under a keep
+/// of `4^-m` are exactly the level `>= m` cells: an even lattice, not a random thinning (far
+/// grass keeps no holes and no clusters). The share under any keep stays the keep.
+pub fn clump_rank(l: u32, h: f32) -> f32 {
+    let hi = 0.25f32.powi(l as i32);
+    let lo = if l + 1 >= RANK_LEVELS { 0.0 } else { hi * 0.25 };
+    lo + (hi - lo) * h
+}
+
+/// The coarsest lattice step (cells) holding every rank under `keep`.
+fn rank_step(keep: f32) -> i64 {
+    let mut m = 0;
+    while m + 1 < RANK_LEVELS && keep <= 0.25f32.powi(m as i32 + 1) {
+        m += 1;
+    }
+    1 << m
 }
 
 /// One clump.
@@ -294,15 +362,23 @@ pub fn scatter_node(id: NodeId, type_at: &dyn Fn(DVec3) -> Option<(u8, f32)>, ke
     let f = Frame::new(id);
     let face = id.face();
     let (a0, a1, b0, b1, n) = cells(id, CLUMP_LEVEL, 0);
+    // Under a small keep only the coarse lattice levels can pass: walk just those cells.
+    let step = rank_step(keep_min);
+    let up = |x: i64| (x + step - 1).div_euclid(step) * step;
     let mut out = Vec::new();
-    for j in b0..b1 {
-        for i in a0..a1 {
-            let key = cell_key(face, CLUMP_LEVEL, i as u64, j as u64) ^ seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
-            let rank = crate::hash01(key, 7);
+    let mut j = up(b0);
+    while j < b1 {
+        let mut i = up(a0);
+        while i < a1 {
+            let (ci, cj) = (i, j);
+            i += step;
+            let key = cell_key(face, CLUMP_LEVEL, ci as u64, cj as u64) ^ seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            let lvl = cell_level(ci, cj);
+            let rank = clump_rank(lvl, crate::hash01(key, 7));
             if rank >= keep_min {
                 continue;
             }
-            let (d, key) = candidate(face, CLUMP_LEVEL, i, j, n, seed);
+            let (d, key) = candidate(face, CLUMP_LEVEL, ci, cj, n, seed);
             let Some((kind, dens)) = type_at(d) else { continue };
             let Some(t) = TYPES.get(kind as usize) else { continue };
             if crate::hash01(key, 3) >= t.density * dens.clamp(0.0, 1.0) {
@@ -310,13 +386,23 @@ pub fn scatter_node(id: NodeId, type_at: &dyn Fn(DVec3) -> Option<(u8, f32)>, ke
             }
             // Row crops: on the cell centre, facing along the lattice j axis.
             let (dir, facing) = if t.aniso < 0.999 {
-                let (i_, j_, n_) = (i as u64 * SUB + SUB / 2, j as u64 * SUB + SUB / 2, n as u64 * SUB);
+                let (i_, j_, n_) = (ci as u64 * SUB + SUB / 2, cj as u64 * SUB + SUB / 2, n as u64 * SUB);
                 let c = lattice_point(face, i_, j_, n_);
                 let c1 = lattice_point(face, i_, (j_ + SUB).min(n_), n_);
                 let c0 = lattice_point(face, i_, j_.saturating_sub(SUB), n_);
                 let a = c1 - c0;
                 (c, (a - c * a.dot(c)).normalize())
             } else {
+                // Coarse-level clumps jitter over their whole block (2^l cells a side), so the
+                // even far lattice does not show as a grid.
+                let d = if lvl > 0 {
+                    let b = (SUB << lvl) - 2;
+                    let ju = 1 + (crate::hash01(key, 10) * b as f32) as u64 % b;
+                    let jv = 1 + (crate::hash01(key, 11) * b as f32) as u64 % b;
+                    lattice_point(face, ci as u64 * SUB + ju, cj as u64 * SUB + jv, n as u64 * SUB)
+                } else {
+                    d
+                };
                 let yaw = crate::hash01(key, 6) as f64 * TAU as f64;
                 let e = f.e1 * yaw.cos() + f.e2 * yaw.sin();
                 (d, (e - d * e.dot(d)).normalize())
@@ -334,6 +420,7 @@ pub fn scatter_node(id: NodeId, type_at: &dyn Fn(DVec3) -> Option<(u8, f32)>, ke
                 dry,
             });
         }
+        j += step;
     }
     out
 }
@@ -379,8 +466,8 @@ pub fn lab_type(east: f64, north: f64) -> Option<(u8, f32)> {
 pub const MAP_N: usize = 256;
 /// Fine map cell (m): +-64 m around its centre.
 pub const MAP_FINE_M: f64 = 0.5;
-/// Coarse map cell (m): +-512 m.
-pub const MAP_COARSE_M: f64 = 4.0;
+/// Coarse map cell (m): +-1024 m (the tint carries the grass past the blades).
+pub const MAP_COARSE_M: f64 = 8.0;
 /// The map centre snaps to this lattice (m) of face metres: every cell size and strand cell
 /// divides it, so cells and strands keep their place when the map moves.
 pub const MAP_SNAP_M: f64 = 32.0;
@@ -562,6 +649,51 @@ mod tests {
         assert_eq!(c, BMIN);
         assert!(k < 1.0 && k > 0.2);
         assert!(clump_keep(10.0, R0_M) == 1.0 && clump_keep(200.0, R0_M) < 0.2);
+        // Style A's rule is the far rule with the floor held.
+        let a = LodParams::near(14.0, BMIN);
+        assert_eq!(lod_p(100.0, 64.0, &a), lod(100.0, 64.0, 14.0, BMIN));
+        // Far rule: the floor falls to bfar, the on-screen blade density (count x keep) holds.
+        let e = LodParams { r0: 14.0, bmin: 5.0, bfar: 2.0, dfar: 50.0 };
+        let (c, k) = lod_p(400.0, 64.0, &e);
+        assert_eq!(c, 2.0);
+        assert!((c * k - 64.0 * (14.0f32 / 400.0).powi(2)).abs() < 1e-4);
+        assert!(clump_keep_p(400.0, &e) > clump_keep_p(400.0, &a));
+        let (c, _) = lod_p(60.0, 64.0, &e);
+        assert!(c > 4.0 && c < 5.0, "{c}");
+    }
+
+    #[test]
+    fn stratified_ranks_thin_to_an_even_lattice() {
+        let id = node();
+        let ty = |_: DVec3| Some((MEADOW, 1.0));
+        let full = scatter_node(id, &ty, 1.0, 4);
+        // A small keep walks only the coarse cells but keeps exactly the same clumps.
+        for keep in [0.3f32, 0.2, 0.0625, 0.03, 0.01, 0.002] {
+            let thin = scatter_node(id, &ty, keep, 4);
+            let want: Vec<Clump> = full.iter().filter(|c| c.rank < keep).copied().collect();
+            assert_eq!(thin.len(), want.len(), "{keep}");
+            let mut a: Vec<u32> = thin.iter().map(|c| c.seed).collect();
+            let mut b: Vec<u32> = want.iter().map(|c| c.seed).collect();
+            a.sort();
+            b.sort();
+            assert_eq!(a, b, "{keep}");
+            let r = thin.len() as f32 / full.len() as f32;
+            assert!((r / keep - 1.0).abs() < 0.25, "{keep}: {r}");
+        }
+        // Even: at keep 1/16 every 4x4-cell block (2.4 m) of the node holds about one clump.
+        let thin = scatter_node(id, &ty, 0.0625, 4);
+        let mut occ = std::collections::BTreeMap::new();
+        for c in &thin {
+            let k = ((c.xy[0] / 2.4).floor() as i32, (c.xy[1] / 2.4).floor() as i32);
+            *occ.entry(k).or_insert(0) += 1;
+        }
+        let most = occ.values().copied().max().unwrap();
+        assert!(most <= 4, "{most}");
+        assert_eq!(cell_level(0, 8), 3);
+        assert_eq!(cell_level(4, 8), 2);
+        assert_eq!(cell_level(3, 0), 0);
+        assert_eq!(clump_rank(RANK_LEVELS - 1, 0.0), 0.0);
+        assert!(clump_rank(0, 0.0) == 0.25 && clump_rank(1, 0.999) < 0.25);
     }
 
     #[test]

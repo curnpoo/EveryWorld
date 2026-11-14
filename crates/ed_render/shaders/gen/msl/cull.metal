@@ -59,9 +59,9 @@ GrassClump_0 device* ed_buf_1(uint i_1, KernelContext_0 thread* kernelContext_1)
     return (GrassClump_0 device*)kernelContext_1->ed_buffers_0[i_1];
 }
 
-constant array<uint, int(5)> GRASS_FIRST_0 = { { 0U, 2304U, 3264U, 3648U, 3792U } };
-constant array<uint, int(5)> GRASS_SEGS_0 = { { 6U, 5U, 4U, 3U, 2U } };
-constant array<uint, int(5)> GRASS_SLOTS_0 = { { 64U, 32U, 16U, 8U, 4U } };
+constant array<uint, int(6)> GRASS_FIRST_0 = { { 0U, 2304U, 3264U, 3648U, 3792U, 3840U } };
+constant array<uint, int(6)> GRASS_SEGS_0 = { { 6U, 5U, 4U, 3U, 2U, 2U } };
+constant array<uint, int(6)> GRASS_SLOTS_0 = { { 64U, 32U, 16U, 8U, 4U, 2U } };
 struct GpuImpKind_natural_0
 {
     packed_uint4 tex_0;
@@ -237,6 +237,8 @@ struct GrassData_natural_0
     packed_uint4 bufs_2;
     packed_float4 lod_0;
     packed_float4 look_0;
+    packed_float4 far_1;
+    packed_float4 under_0;
 };
 
 struct ShellData_natural_0
@@ -1412,11 +1414,11 @@ float imp_hash01_0(uint h_1)
     (&kernelContext_19)->ed_c_0 = ed_c_8;
     (&kernelContext_19)->ed_buffers_0 = ed_buffers_8;
     uint i_19 = tid_7.x;
-    if(i_19 < 50U)
+    if(i_19 < 60U)
     {
         uint w_3 = i_19 % 5U;
         uint list_1 = i_19 / 5U;
-        uint b_2 = list_1 % 5U;
+        uint b_2 = list_1 % 6U;
         uint v_3;
         if(w_3 == 0U)
         {
@@ -1446,18 +1448,58 @@ float imp_hash01_0(uint h_1)
     return;
 }
 
-float2 grass_lod_0(FrameData_natural_0 device* f_2, float d_0, float blades_0)
+float grass_floor_0(FrameData_natural_0 device* f_2, float d_0, float blades_0)
 {
-    float q_0 = (float4((&f_2->grass_0)->lod_0) ).x / max(d_0, 0.0010000000474974513f);
-    float raw_0 = blades_0 * min(q_0 * q_0, 1.0f);
-    float _S160 = min((float4((&f_2->grass_0)->lod_0) ).z, blades_0);
-    return float2(max(raw_0, _S160), min(raw_0 / max(_S160, 0.0010000000474974513f), 1.0f));
+    float bm_0 = (float4((&f_2->grass_0)->lod_0) ).z;
+    float bm_1;
+    if(((float4((&f_2->grass_0)->look_0) ).z) > 0.0f)
+    {
+        bm_1 = clamp(bm_0 * (float4((&f_2->grass_0)->look_0) ).z / max(d_0, 0.0010000000474974513f), min((float4((&f_2->grass_0)->look_0) ).y, bm_0), bm_0);
+    }
+    else
+    {
+        bm_1 = bm_0;
+    }
+    return max(min(bm_1, blades_0), 0.0010000000474974513f);
+}
+
+float2 grass_lod_0(FrameData_natural_0 device* f_3, float d_1, float blades_1)
+{
+    float q_0 = (float4((&f_3->grass_0)->lod_0) ).x / max(d_1, 0.0010000000474974513f);
+    float raw_0 = blades_1 * min(q_0 * q_0, 1.0f);
+    float _S160 = grass_floor_0(f_3, d_1, blades_1);
+    return float2(max(raw_0, _S160), min(raw_0 / _S160, 1.0f));
+}
+
+float grass_grow_0(FrameData_natural_0 device* f_4, float d_2)
+{
+    return 1.0f + (float4((&f_4->grass_0)->far_1) ).y * smoothstep(2.0f * (float4((&f_4->grass_0)->lod_0) ).x, 0.5f * (float4((&f_4->grass_0)->lod_0) ).y, d_2);
+}
+
+float grass_radius_0(FrameData_natural_0 device* f_5, const GrassType_natural_0 thread* ty_0, float keep_0)
+{
+    return max((float4(ty_0->b_0) ).x, (float4((&f_5->grass_0)->far_1) ).x * 0.34000000357627869f * rsqrt(max(keep_0, 9.9999997473787516e-05f)));
+}
+
+float grass_rank_0(uint node_kind_2)
+{
+    uint q_1 = node_kind_2 >> 24U;
+    float _S161;
+    if(q_1 == 0U)
+    {
+        _S161 = 0.0f;
+    }
+    else
+    {
+        _S161 = exp2((float(q_1) / 255.0f - 1.0f) * 14.0f);
+    }
+    return _S161;
 }
 
 uint grass_bucket_0(float cnt_0)
 {
-    uint _S161 = uint(ceil(cnt_0));
-    int b_3 = int(4);
+    uint _S162 = uint(ceil(cnt_0));
+    int b_3 = int(5);
     for(;;)
     {
         if(b_3 > int(0))
@@ -1467,7 +1509,7 @@ uint grass_bucket_0(float cnt_0)
         {
             break;
         }
-        if((GRASS_SLOTS_0[b_3]) >= _S161)
+        if((GRASS_SLOTS_0[b_3]) >= _S162)
         {
             return uint(b_3);
         }
@@ -1478,12 +1520,12 @@ uint grass_bucket_0(float cnt_0)
 
 void grass_emit_0(uint list_2, uint i_20, KernelContext_0 thread* kernelContext_20)
 {
-    uint device* _S162 = ed_buf_9(kernelContext_20->ed_c_0->args_0, kernelContext_20);
-    uint slot_3 = atomic_fetch_add_explicit((atomic<uint> device*)((ulong)(_S162)) + (list_2 * 5U + 1U), 1U, memory_order_relaxed);
+    uint device* _S163 = ed_buf_9(kernelContext_20->ed_c_0->args_0, kernelContext_20);
+    uint slot_3 = atomic_fetch_add_explicit((atomic<uint> device*)((ulong)(_S163)) + (list_2 * 5U + 1U), 1U, memory_order_relaxed);
     if(slot_3 < (kernelContext_20->ed_c_0->bins_kind_0))
     {
-        uint device* _S163 = ed_buf_9(kernelContext_20->ed_c_0->visible_0, kernelContext_20);
-        *(_S163 + (list_2 * kernelContext_20->ed_c_0->bins_kind_0 + slot_3)) = i_20;
+        uint device* _S164 = ed_buf_9(kernelContext_20->ed_c_0->visible_0, kernelContext_20);
+        *(_S164 + (list_2 * kernelContext_20->ed_c_0->bins_kind_0 + slot_3)) = i_20;
     }
     return;
 }
@@ -1494,34 +1536,40 @@ void grass_emit_0(uint list_2, uint i_20, KernelContext_0 thread* kernelContext_
     (&kernelContext_21)->ed_c_0 = ed_c_9;
     (&kernelContext_21)->ed_buffers_0 = ed_buffers_9;
     uint i_21 = tid_8.x;
-    FrameData_natural_0 device* _S164 = ed_buf_8(ed_c_9->frame_0, &kernelContext_21);
-    uint device* _S165 = ed_buf_9((&kernelContext_21)->ed_c_0->stats_0, &kernelContext_21);
-    atomic<uint> device* _S166 = (atomic<uint> device*)((ulong)(_S165));
+    FrameData_natural_0 device* _S165 = ed_buf_8(ed_c_9->frame_0, &kernelContext_21);
+    uint device* _S166 = ed_buf_9((&kernelContext_21)->ed_c_0->stats_0, &kernelContext_21);
+    atomic<uint> device* _S167 = (atomic<uint> device*)((ulong)(_S166));
     uint drawn_3;
+    uint blades_2;
     uint casters_2;
     if(i_21 < ((&kernelContext_21)->ed_c_0->count_0))
     {
-        GrassClump_0 device* _S167 = ed_buf_1((&kernelContext_21)->ed_c_0->instances_0, &kernelContext_21);
-        GrassClump_0 device* _S168 = _S167 + i_21;
-        GrassClump_0 g_1 = *_S168;
-        uint _S169 = ((*_S168).hw_0) & 65535U;
-        if(_S169 != 0U)
+        GrassClump_0 device* _S168 = ed_buf_1((&kernelContext_21)->ed_c_0->instances_0, &kernelContext_21);
+        GrassClump_0 device* _S169 = _S168 + i_21;
+        GrassClump_0 g_1 = *_S169;
+        uint _S170 = ((*_S169).hw_0) & 65535U;
+        if(_S170 != 0U)
         {
-            GrassType_natural_0 device* _S170 = ed_buf_0((&kernelContext_21)->ed_c_0->meshes_0, &kernelContext_21);
-            GrassType_natural_0 ty_0 = *(_S170 + (((g_1.node_kind_0) >> 12U) & 255U));
-            packed_float4 device* _S171 = ed_buf_5((&kernelContext_21)->ed_c_0->nodes_0, &kernelContext_21);
-            float4 _S172 = float4(ty_0.a_0) ;
-            float h_2 = _S172.y * float(_S169) / 65535.0f * 4.0f;
-            float3 base_0 = (float4(*(_S171 + ((g_1.node_kind_0) & 4095U))) ).xyz + float3(g_1.px_0, g_1.py_0, g_1.pz_0);
-            float3 c_6 = base_0 + oct_decode_0(g_1.up_0) * float3((0.5f * h_2)) ;
-            float r_5 = (float4(ty_0.b_0) ).x * 1.1499999761581421f + 0.60000002384185791f * h_2 + 0.05000000074505806f;
-            float d_1 = length(base_0);
-            float2 _S173 = grass_lod_0(_S164, d_1, _S172.w);
-            float rank_0 = float((g_1.node_kind_0) >> 24U) / 255.0f;
+            GrassType_natural_0 device* _S171 = ed_buf_0((&kernelContext_21)->ed_c_0->meshes_0, &kernelContext_21);
+            thread GrassType_natural_0 _S172 = *(_S171 + (((g_1.node_kind_0) >> 12U) & 255U));
+            packed_float4 device* _S173 = ed_buf_5((&kernelContext_21)->ed_c_0->nodes_0, &kernelContext_21);
+            float3 up_3 = oct_decode_0(g_1.up_0);
+            float4 _S174 = float4((&_S172)->a_0) ;
+            float h_2 = _S174.y * float(_S170) / 65535.0f * 4.0f;
+            float3 base_0 = (float4(*(_S173 + ((g_1.node_kind_0) & 4095U))) ).xyz + float3(g_1.px_0, g_1.py_0, g_1.pz_0);
+            float d_3 = length(base_0);
+            float2 _S175 = grass_lod_0(_S165, d_3, _S174.w);
+            float _S176 = grass_grow_0(_S165, d_3);
+            float h_3 = h_2 * _S176;
+            float3 c_6 = base_0 + up_3 * float3((0.5f * h_3)) ;
+            float _S177 = _S175.y;
+            float _S178 = grass_radius_0(_S165, &_S172, _S177);
+            float r_5 = _S178 * 1.1499999761581421f + 0.60000002384185791f * h_3 + 0.05000000074505806f;
+            float rank_0 = grass_rank_0(g_1.node_kind_0);
             bool vis_2;
-            if(d_1 < ((float4((&_S164->grass_0)->lod_0) ).y))
+            if(d_3 < ((float4((&_S165->grass_0)->lod_0) ).y))
             {
-                vis_2 = rank_0 < (_S173.y);
+                vis_2 = rank_0 < _S177;
             }
             else
             {
@@ -1529,11 +1577,12 @@ void grass_emit_0(uint list_2, uint i_20, KernelContext_0 thread* kernelContext_
             }
             if(vis_2)
             {
-                uint b_4 = grass_bucket_0(_S173.x);
-                bool _S174 = in_frustum_0(_S164, c_6, r_5);
-                if(_S174)
+                float _S179 = _S175.x;
+                uint b_4 = grass_bucket_0(_S179);
+                bool _S180 = in_frustum_0(_S165, c_6, r_5);
+                if(_S180)
                 {
-                    vis_2 = ((uint4(_S164->cull_0) ).x) > 0U;
+                    vis_2 = ((uint4(_S165->cull_0) ).x) > 0U;
                 }
                 else
                 {
@@ -1541,34 +1590,29 @@ void grass_emit_0(uint list_2, uint i_20, KernelContext_0 thread* kernelContext_
                 }
                 if(vis_2)
                 {
-                    float device* _S175 = ed_buf_4((&kernelContext_21)->ed_c_0->hzb_0, &kernelContext_21);
-                    bool _S176 = occluded_0(_S164, _S175, c_6, r_5);
-                    vis_2 = !_S176;
+                    float device* _S181 = ed_buf_4((&kernelContext_21)->ed_c_0->hzb_0, &kernelContext_21);
+                    bool _S182 = occluded_0(_S165, _S181, c_6, r_5);
+                    vis_2 = !_S182;
                 }
                 else
                 {
-                    vis_2 = _S174;
+                    vis_2 = _S180;
                 }
                 if(vis_2)
                 {
                     grass_emit_0(b_4, i_21, &kernelContext_21);
+                    uint _S183 = uint(ceil(_S179));
                     drawn_3 = 1U;
+                    blades_2 = _S183;
                 }
                 else
                 {
                     drawn_3 = 0U;
+                    blades_2 = 0U;
                 }
-                if((((uint4((&_S164->grass_0)->bufs_2) ).w) & 2U) != 0U)
+                if((((uint4((&_S165->grass_0)->bufs_2) ).w) & 2U) != 0U)
                 {
-                    vis_2 = ((float4((&_S164->light_0)->cfg_0) ).x) > 0.0f;
-                }
-                else
-                {
-                    vis_2 = false;
-                }
-                if(vis_2)
-                {
-                    vis_2 = d_1 < ((float4((&_S164->light_0)->split_0) ).x);
+                    vis_2 = ((float4((&_S165->light_0)->cfg_0) ).x) > 0.0f;
                 }
                 else
                 {
@@ -1576,17 +1620,34 @@ void grass_emit_0(uint list_2, uint i_20, KernelContext_0 thread* kernelContext_
                 }
                 if(vis_2)
                 {
-                    float4 _S177 = float4((&(&_S164->light_0)->cascade_0)->data_4[int(0)]) ;
-                    float4 sp_1 = (((float4(c_6, 1.0f)) * (matrix<float,int(4),int(4)> ((&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(0)][int(0)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(1)][int(0)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(2)][int(0)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(3)][int(0)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(0)][int(1)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(1)][int(1)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(2)][int(1)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(3)][int(1)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(0)][int(2)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(1)][int(2)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(2)][int(2)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(3)][int(2)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(0)][int(3)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(1)][int(3)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(2)][int(3)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(3)][int(3)]))));
-                    float rz_2 = r_5 / _S177.y;
-                    float _S178 = 1.0f + r_5 / (_S177.x * (float4((&_S164->light_0)->cfg_0) ).y * 0.5f);
-                    if((abs(sp_1.x)) > _S178)
+                    float _S184;
+                    if(((float4((&_S165->grass_0)->far_1) ).w) > 0.0f)
+                    {
+                        _S184 = min((float4((&_S165->light_0)->split_0) ).x, (float4((&_S165->grass_0)->far_1) ).w);
+                    }
+                    else
+                    {
+                        _S184 = (float4((&_S165->light_0)->split_0) ).x;
+                    }
+                    vis_2 = d_3 < _S184;
+                }
+                else
+                {
+                    vis_2 = false;
+                }
+                if(vis_2)
+                {
+                    float4 _S185 = float4((&(&_S165->light_0)->cascade_0)->data_4[int(0)]) ;
+                    float4 sp_1 = (((float4(c_6, 1.0f)) * (matrix<float,int(4),int(4)> ((&(&_S165->light_0)->shadow_0)->data_3[int(0)].data_1[int(0)][int(0)], (&(&_S165->light_0)->shadow_0)->data_3[int(0)].data_1[int(1)][int(0)], (&(&_S165->light_0)->shadow_0)->data_3[int(0)].data_1[int(2)][int(0)], (&(&_S165->light_0)->shadow_0)->data_3[int(0)].data_1[int(3)][int(0)], (&(&_S165->light_0)->shadow_0)->data_3[int(0)].data_1[int(0)][int(1)], (&(&_S165->light_0)->shadow_0)->data_3[int(0)].data_1[int(1)][int(1)], (&(&_S165->light_0)->shadow_0)->data_3[int(0)].data_1[int(2)][int(1)], (&(&_S165->light_0)->shadow_0)->data_3[int(0)].data_1[int(3)][int(1)], (&(&_S165->light_0)->shadow_0)->data_3[int(0)].data_1[int(0)][int(2)], (&(&_S165->light_0)->shadow_0)->data_3[int(0)].data_1[int(1)][int(2)], (&(&_S165->light_0)->shadow_0)->data_3[int(0)].data_1[int(2)][int(2)], (&(&_S165->light_0)->shadow_0)->data_3[int(0)].data_1[int(3)][int(2)], (&(&_S165->light_0)->shadow_0)->data_3[int(0)].data_1[int(0)][int(3)], (&(&_S165->light_0)->shadow_0)->data_3[int(0)].data_1[int(1)][int(3)], (&(&_S165->light_0)->shadow_0)->data_3[int(0)].data_1[int(2)][int(3)], (&(&_S165->light_0)->shadow_0)->data_3[int(0)].data_1[int(3)][int(3)]))));
+                    float rz_2 = r_5 / _S185.y;
+                    float _S186 = 1.0f + r_5 / (_S185.x * (float4((&_S165->light_0)->cfg_0) ).y * 0.5f);
+                    if((abs(sp_1.x)) > _S186)
                     {
                         vis_2 = true;
                     }
                     else
                     {
-                        vis_2 = (abs(sp_1.y)) > _S178;
+                        vis_2 = (abs(sp_1.y)) > _S186;
                     }
                     if(vis_2)
                     {
@@ -1598,7 +1659,7 @@ void grass_emit_0(uint list_2, uint i_20, KernelContext_0 thread* kernelContext_
                     }
                     if(!vis_2)
                     {
-                        grass_emit_0(5U + min(b_4 + 1U, 4U), i_21, &kernelContext_21);
+                        grass_emit_0(6U + min(b_4 + 1U, 5U), i_21, &kernelContext_21);
                         casters_2 = 1U;
                     }
                     else
@@ -1615,21 +1676,25 @@ void grass_emit_0(uint list_2, uint i_20, KernelContext_0 thread* kernelContext_
             {
                 drawn_3 = 0U;
                 casters_2 = 0U;
+                blades_2 = 0U;
             }
         }
         else
         {
             drawn_3 = 0U;
             casters_2 = 0U;
+            blades_2 = 0U;
         }
     }
     else
     {
         drawn_3 = 0U;
         casters_2 = 0U;
+        blades_2 = 0U;
     }
-    stat_add_0(_S166, 18U, drawn_3);
-    stat_add_0(_S166, 19U, casters_2);
+    stat_add_0(_S167, 18U, drawn_3);
+    stat_add_0(_S167, 19U, casters_2);
+    stat_add_0(_S167, 15U, blades_2);
     return;
 }
 

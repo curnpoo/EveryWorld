@@ -68,11 +68,13 @@ struct SeasonData {
     float4 rows[64];
 };
 
-// Grass style A (src/grass.rs `GrassStore::words`, ed_world::grass).
+// Grass styles A and E (src/grass.rs `GrassStore::words`, ed_world::grass).
 struct GrassData {
     uint4 bufs;             // bindless: x clump buffer, y type table; z clump slots, w flags (1 on, 2 shadows, 4 wind)
     float4 lod;             // x: full-density radius r0 (m), y: range (m), z: fewest blades, w: most widening
-    float4 look;            // x: shading normal blend to the ground normal (near), yzw: unused
+    float4 look;            // x: shading normal blend to the ground normal (near), y: fewest blades far, z: floor fall start (m, 0 off), w: narrowest blade (px, 0 off)
+    float4 far;             // x: far clump spread (0..1), y: most far height growth, z: far mean colour (0..1), w: shadow distance (m, 0: cascade 0)
+    float4 under;           // x: terrain tint darkening under the blades (0..1), y: tint brightness noise (0..1), z: 1 the tint modulates the ground (a gain, style E), w: unused
 };
 
 // Grass shells and the terrain's grass tint (styles C and D; src/terrain.rs `ShellGrass`,
@@ -631,10 +633,10 @@ bool imp_inside(float2 uv) {
 static const uint GRASS_VIS_BIT = 0x20000000u;   // vis.x: clump index (TERRAIN and IMP bits clear)
 static const uint GRASS_INDEX_MASK = 0x1FFFFFFFu;
 // Buckets: blade slots, segments and first index (src/grass.rs `BUCKETS`, `bucket_indices`).
-static const uint GRASS_BUCKETS = 5u;
-static const uint GRASS_SLOTS[5] = { 64u, 32u, 16u, 8u, 4u };
-static const uint GRASS_SEGS[5] = { 6u, 5u, 4u, 3u, 2u };
-static const uint GRASS_FIRST[5] = { 0u, 2304u, 3264u, 3648u, 3792u };
+static const uint GRASS_BUCKETS = 6u;
+static const uint GRASS_SLOTS[6] = { 64u, 32u, 16u, 8u, 4u, 2u };
+static const uint GRASS_SEGS[6] = { 6u, 5u, 4u, 3u, 2u, 2u };
+static const uint GRASS_FIRST[6] = { 0u, 2304u, 3264u, 3648u, 3792u, 3840u };
 
 struct GrassClump { float px; float py; float pz; uint node_kind; uint up; uint facing; uint seed; uint hw; };
 // Type row (ed_world::grass::gpu_row): a (h min, h max, width, blades), b (clump r, lean,
@@ -651,18 +653,45 @@ float grass_rand(uint h) {
     return float(h >> 8) * (1.0 / 16777216.0);
 }
 
-// Continuous blades per clump and the clump keep at distance `d` (ed_world::grass::lod).
+// The fewest blades a clump draws at distance `d` (ed_world::grass::lod_p): `bmin`, falling as
+// `bmin * dfar / d` past `dfar` down to the far floor.
+float grass_floor(FrameData* f, float d, float blades) {
+    float bm = f.grass.lod.z;
+    if (f.grass.look.z > 0.0) {
+        bm = clamp(bm * f.grass.look.z / max(d, 1e-3), min(f.grass.look.y, bm), bm);
+    }
+    return max(min(bm, blades), 1e-3);
+}
+
+// Continuous blades per clump and the clump keep at distance `d` (ed_world::grass::lod_p).
 float2 grass_lod(FrameData* f, float d, float blades) {
     float q = f.grass.lod.x / max(d, 1e-3);
     float raw = blades * min(q * q, 1.0);
-    float bm = min(f.grass.lod.z, blades);
-    return float2(max(raw, bm), min(raw / max(bm, 1e-3), 1.0));
+    float bm = grass_floor(f, d, blades);
+    return float2(max(raw, bm), min(raw / bm, 1.0));
+}
+
+// A clump's rank (log-encoded byte, src/grass.rs `rank_byte`).
+float grass_rank(uint node_kind) {
+    uint q = node_kind >> 24;
+    return q == 0u ? 0.0 : exp2((float(q) / 255.0 - 1.0) * 14.0);
+}
+
+// Clump radius at keep `keep`: far clumps spread over the cell their keep leaves them (cells
+// ~0.6 m, the kept ones ~0.6 / sqrt(keep) apart).
+float grass_radius(FrameData* f, GrassType ty, float keep) {
+    return max(ty.b.x, f.grass.far.x * 0.34 * rsqrt(max(keep, 1e-4)));
+}
+
+// Far height growth at distance `d` (survivors grow a little to keep coverage).
+float grass_grow(FrameData* f, float d) {
+    return 1.0 + f.grass.far.y * smoothstep(2.0 * f.grass.lod.x, 0.5 * f.grass.lod.y, d);
 }
 
 // The smallest bucket holding `cnt` blades.
 uint grass_bucket(float cnt) {
     uint need = uint(ceil(cnt));
-    for (int b = 4; b > 0; b--) {
+    for (int b = int(GRASS_BUCKETS) - 1; b > 0; b--) {
         if (GRASS_SLOTS[b] >= need) {
             return uint(b);
         }
@@ -712,11 +741,11 @@ GrassBlade grass_blade(FrameData* f, GrassClump c, GrassType ty, float3 node, ui
     float d = length(base);
     float blades = ty.a.w;
     float2 lod = grass_lod(f, d, blades);
-    float bm = min(f.grass.lod.z, blades);
+    float bm = grass_floor(f, d, blades);
     float cnt = max(lod.x * lod_mul, bm);
     // Widen as blades thin (coverage holds), and survivors of clump thinning a little more.
     float wscale = min(pow(blades / cnt, 0.8) * rsqrt(max(lod.y, 0.2)), f.grass.lod.w);
-    float rank = float(c.node_kind >> 24) / 255.0;
+    float rank = grass_rank(c.node_kind);
     float keep = saturate((lod.y - rank) / (0.3 * lod.y + 1e-3));
     float range = f.grass.lod.y;
     float fade = 1.0 - smoothstep(0.6 * range, range, d);
@@ -730,7 +759,7 @@ GrassBlade grass_blade(FrameData* f, GrassClump c, GrassType ty, float3 node, ui
     // Root: uniform in the clump's (anisotropic) disc, a little under the ground.
     float ang = grass_rand(s0) * 6.2831853;
     float rad = sqrt(grass_rand(s1));
-    float cr = ty.b.x;
+    float cr = grass_radius(f, ty, lod.y);
     float3 off = (fa * cos(ang) + rt * (sin(ang) * ty.root.w)) * (rad * cr);
     o.up = up;
     // Height: the clump's, lower towards its edge, jittered; blades past the count shrink away.
@@ -738,7 +767,7 @@ GrassBlade grass_blade(FrameData* f, GrassClump c, GrassType ty, float3 node, ui
     float hc = lerp(ty.a.x, ty.a.y, grass_rand(grass_hash(cs + 17u))) * hs;
     // Roots a little under the ground (short grass less, or it never shows).
     o.p0 = base + off - up * min(0.03, 0.1 * hc);
-    float h = hc * (1.0 - 0.35 * rad) * lerp(0.72, 1.12, grass_rand(s2));
+    float h = hc * (1.0 - 0.35 * rad) * lerp(0.72, 1.12, grass_rand(s2)) * grass_grow(f, d);
     float grow = saturate(cnt - float(k)) * keep * fade;
     o.h = (k < uint(blades) && (c.hw & 0xFFFFu) != 0u) ? h * grow : 0.0;
     // Lean: the clump's shared direction, outwards from its centre, and a little of its own.
@@ -779,6 +808,8 @@ GrassBlade grass_blade(FrameData* f, GrassClump c, GrassType ty, float3 node, ui
     float3 sd = cross(up, lh);
     o.side = normalize(sd * cos(tw2) + lh * sin(tw2));
     o.w = ty.a.z * wscale * lerp(0.8, 1.2, grass_rand(s1 ^ 0x55u));
+    // Never narrower than `px_min` pixels of the view (far blades stay solid, not sub-pixel).
+    o.w = max(o.w, f.grass.look.w * d * 2.0 / max(f.proj.y * f.proj.w, 1.0));
     o.head = ty.mid.w;
     o.head_w = ty.tip.w;
     o.shade = lerp(0.82, 1.15, grass_rand(s4 ^ 0x33u));

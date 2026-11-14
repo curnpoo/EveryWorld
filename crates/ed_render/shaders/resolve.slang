@@ -734,7 +734,30 @@ float4 shell_pixel(FrameData* f, FsOut i, uint2 vis, float3 dir) {
 
 // Terrain under and past the grass (styles C and D): the coarse map's carpet colour (bilinear,
 // density weighted), keeping the ground texture's brightness variation within +-25 %.
-float3 shell_tint(FrameData* f, TerrainDraw d, float2 g, float3 albedo) {
+// The terrain grass layer's mean albedo (ew terrain_mat `__grass_lawn` target): the style E tint
+// gain maps it to the carpet colour.
+static const float3 TINT_REF = float3(0.11, 0.155, 0.05);
+
+// Bilinear value noise on the lattice of `s` m cells (world-stable: `base` is the map centre's
+// cell index, the map centre snaps to 32 m and `s` divides it).
+float tint_noise(float2 wr, float s, int2 base, uint salt) {
+    float2 q = wr / s;
+    float2 fq = floor(q);
+    float2 t = q - fq;
+    t = t * t * (3.0 - 2.0 * t);
+    int2 c = int2(fq) + base;
+    float v00 = grass_rand(grass_hash(uint(c.x) * 0x8DA6B343u ^ uint(c.y) * 0xD8163841u ^ salt));
+    float v10 = grass_rand(grass_hash(uint(c.x + 1) * 0x8DA6B343u ^ uint(c.y) * 0xD8163841u ^ salt));
+    float v01 = grass_rand(grass_hash(uint(c.x) * 0x8DA6B343u ^ uint(c.y + 1) * 0xD8163841u ^ salt));
+    float v11 = grass_rand(grass_hash(uint(c.x + 1) * 0x8DA6B343u ^ uint(c.y + 1) * 0xD8163841u ^ salt));
+    return lerp(lerp(v00, v10, t.x), lerp(v01, v11, t.x), t.y);
+}
+
+// `dist`: the pixel's distance (m), `px_m`: its ground footprint (m). Style E: under the blades
+// the ground is the shaded floor of the field (`f.grass.under.x`), lifting to the carpet as the
+// blades shrink away at the range; past the blades clump- and patch-scale brightness noise
+// (`under.y`, filtered by the footprint) keeps the field's texture.
+float3 shell_tint(FrameData* f, TerrainDraw d, float2 g, float3 albedo, float dist, float px_m) {
     float2 wr = shell_wrel(f, d, g);
     float cm = f.shell.cells.y;
     float2 q = wr / cm - 0.5;
@@ -743,15 +766,39 @@ float3 shell_tint(FrameData* f, TerrainDraw d, float2 g, float3 albedo) {
     int2 q0 = int2(fq);
     float3 cc = float3(0.0);
     float cov = 0.0;
+    float tall = 0.0;
+    // Only the carpet and the height of a type row (two float4 of its eight); one row fetch when
+    // the four cells share a type (most pixels).
+    float4* rows = ed_buf<float4>(ed_c.t_draws);
+    uint ws[4];
+    for (uint c = 0; c < 4u; c++) {
+        ws[c] = shell_map(f, ed_c.t_draws, 1u, q0 + int2(int(c & 1u), int(c >> 1)));
+    }
+    uint k0 = ws[0] & 0xFFu;
+    float3 carpet0 = float3(0.0);
+    float tall0 = 0.0;
+    if (k0 != 0u) {
+        uint r = (f.shell.cfg.y + k0 - 1u) * 8u;
+        carpet0 = rows[r + 7u].rgb;
+        tall0 = smoothstep(0.12, 0.5, rows[r].y);
+    }
     for (uint c = 0; c < 4u; c++) {
         int2 o = int2(int(c & 1u), int(c >> 1));
         float wb = (o.x != 0 ? t.x : 1.0 - t.x) * (o.y != 0 ? t.y : 1.0 - t.y);
-        uint w = shell_map(f, ed_c.t_draws, 1u, q0 + o);
-        if ((w & 0xFFu) != 0u) {
+        uint w = ws[c];
+        uint kk = w & 0xFFu;
+        if (kk != 0u) {
             float dens = float((w >> 8) & 0xFFu) / 255.0;
-            GrassType ty = shell_type(f, ed_c.t_draws, (w & 0xFFu) - 1u);
-            cc += ty.carpet.rgb * (wb * dens);
+            float3 carpet = carpet0;
+            float tl = tall0;
+            if (kk != k0) {
+                uint r = (f.shell.cfg.y + kk - 1u) * 8u;
+                carpet = rows[r + 7u].rgb;
+                tl = smoothstep(0.12, 0.5, rows[r].y);
+            }
+            cc += carpet * (wb * dens);
             cov += wb * dens;
+            tall += tl * (wb * dens);
         }
     }
     if (cov <= 0.0) {
@@ -761,7 +808,35 @@ float3 shell_tint(FrameData* f, TerrainDraw d, float2 g, float3 albedo) {
     float half_m = cm * f.shell.cells.z * 0.5;
     float edge = 1.0 - smoothstep(0.8, 0.97, max(abs(wr.x), abs(wr.y)) / half_m);
     const float3 LUM = float3(0.2126, 0.7152, 0.0722);
-    tgt *= clamp(dot(albedo, LUM) / max(dot(tgt, LUM), 1e-4), 0.75, 1.25);
+    bool modulate = f.grass.under.z > 0.5;
+    if (!modulate) {
+        tgt *= clamp(dot(albedo, LUM) / max(dot(tgt, LUM), 1e-4), 0.75, 1.25);
+    }
+    if (f.grass.under.y > 0.0) {
+        int2 cb1 = int2(round(f.shell.c.xy));
+        int2 cb4 = int2(round(f.shell.c.xy / 4.0));
+        int2 cb16 = int2(round(f.shell.c.xy / 16.0));
+        float a1 = saturate(1.0 / (3.0 * px_m) - 0.33);
+        float a4 = saturate(4.0 / (3.0 * px_m) - 0.33);
+        float a16 = saturate(16.0 / (3.0 * px_m) - 0.33);
+        float nz = (tint_noise(wr, 1.0, cb1, 0x51u) - 0.5) * a1 * 0.7 + (tint_noise(wr, 4.0, cb4, 0x93u) - 0.5) * a4 * 0.8 + (tint_noise(wr, 16.0, cb16, 0x2Du) - 0.5) * a16 * 0.6;
+        tgt *= 1.0 + f.grass.under.y * nz;
+    }
+    if (f.grass.under.x > 0.0 && (f.grass.bufs.w & 1u) != 0u) {
+        float R = f.grass.lod.y;
+        // Near, the floor shows only in the gaps; far, the blades thin and the floor lifts to
+        // the carpet (the field's mean). Short turf covers its floor: little darkening.
+        float in_blades = 1.0 - smoothstep(0.1 * R, 0.6 * R, dist);
+        tgt *= 1.0 - f.grass.under.x * in_blades * lerp(0.25, 1.0, tall / cov);
+    }
+    if (modulate) {
+        // Style E: a gain on the textured ground (its layer texture, warm/cool tint and hollows
+        // stay), moving the grass layer's mean (TINT_REF) to the carpet; full strength past the
+        // near ground so near and far share one albedo.
+        float k = saturate(f.shell.c.w * cov * edge) * lerp(0.6, 1.0, smoothstep(5.0, 60.0, dist));
+        float3 gain = clamp(tgt / TINT_REF, float3(0.3, 0.3, 0.3), float3(4.0, 4.0, 4.0));
+        return albedo * lerp(float3(1.0, 1.0, 1.0), gain, k);
+    }
     return lerp(albedo, tgt, saturate(f.shell.c.w * cov * edge));
 }
 
@@ -860,7 +935,9 @@ float4 terrain_pixel<let TR : int>(FrameData* f, FsOut i, uint2 vis, float3 dir)
         sun_k = fo.sun;
     }
     if ((f.shell.cfg.x & 2u) != 0u && shell_face(f, d)) {
-        albedo = shell_tint(f, d, g, albedo);
+        float pa_t = length(view_dir(f, i.pos.xy + float2(1.0, 0.0)) - dir);
+        float px_t = length(p) * pa_t / sqrt(max(abs(dot(dir, n)), 0.03));
+        albedo = shell_tint(f, d, g, albedo, length(p), px_t);
     }
     float3 v = -dir;
     if (dot(n, v) < 0.0) {
@@ -1080,28 +1157,33 @@ float4 grass_pixel(FrameData* f, FsOut i, uint2 vis, float3 dir) {
     float3 p = dir * clamp(hit, lp - 0.05, lp + 0.05);
     float d = length(p);
     // Rounded across the blade, bent towards the ground normal (far: mostly the ground).
-    float far = smoothstep(f.grass.lod.x * 0.5, f.grass.lod.y, d);
+    float far = smoothstep(f.grass.lod.x * 0.5, min(f.grass.lod.y, 150.0), d);
+    // Far blades (style E) average towards their clump: its mean colour, the ground normal and
+    // the clump's mean shade, so a far field is a textured surface of clumps, not noise.
+    float avg = f.grass.far.z * smoothstep(2.0 * f.grass.lod.x, 0.4 * f.grass.lod.y, d);
     float3 nr = normalize(n0 + sd * ((u - 0.5) * 1.1));
-    float3 n = normalize(lerp(nr, b.up, lerp(f.grass.look.x, 0.8, far)));
+    float3 n = normalize(lerp(nr, b.up, lerp(lerp(f.grass.look.x, 0.8, far), 0.85, avg)));
     // Colour: root -> mid -> tip, seed heads in the tip colour, clump and blade variation, dry blades.
     float3 alb = t < 0.5 ? lerp(ty.root.rgb, ty.mid.rgb, t * 2.0) : lerp(ty.mid.rgb, ty.tip.rgb, (t - 0.5) * 2.0);
     if (b.head > 0.0) {
         alb = lerp(alb, ty.tip.rgb * 1.1, smoothstep(1.0 - b.head - 0.04, 1.0 - b.head, t));
     }
+    float3 mean_alb = ty.root.rgb * 0.22 + ty.mid.rgb * 0.46 + ty.tip.rgb * 0.32;
+    alb = lerp(alb, mean_alb, 0.6 * avg);
     uint cs = c.seed;
     float cv = lerp(0.86, 1.12, grass_rand(grass_hash(cs + 41u)));
     float hue = grass_rand(grass_hash(cs + 53u)) - 0.5;
-    alb *= cv * b.shade * float3(1.0 + 0.10 * hue, 1.0, 1.0 - 0.12 * hue);
+    alb *= cv * lerp(b.shade, 1.0, avg) * float3(1.0 + 0.10 * hue, 1.0, 1.0 - 0.12 * hue);
     float dry = float((c.hw >> 16) & 255u) / 255.0;
     float bd = grass_rand(grass_hash(cs ^ (k * 0x85EBCA6Bu + 0x1234567u)));
     if (bd < dry) {
-        alb = lerp(alb, ty.dry.rgb * lerp(0.85, 1.1, bd / max(dry, 1e-3)), lerp(0.55, 1.0, t));
+        alb = lerp(alb, ty.dry.rgb * lerp(0.85, 1.1, bd / max(dry, 1e-3)), lerp(lerp(0.55, 1.0, t), 0.8, avg));
     }
     alb = min(alb, float3(0.9, 0.9, 0.9));
     // Inside the clump the roots are in shade (deeper for tall grass); far grass averages it.
     float ao_r = lerp(0.55, 0.28, b.t_ao);
     float ao_b = lerp(ao_r, 1.0, smoothstep(0.0, 0.75, t));
-    ao_b = lerp(ao_b, lerp(ao_r, 1.0, 0.7), far);
+    ao_b = lerp(ao_b, lerp(ao_r, 1.0, 0.7), max(far, avg));
     float zlin = -mul(f.view, float4(p, 1.0)).z;
     float sun_vis = sun_shadow(f, ed_c.shadow, p, b.up, zlin, i.pos.xy);
     float2 occ = ao_upsample(f, ed_c.ao, i.pos.xy, zlin);
