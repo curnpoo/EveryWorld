@@ -466,8 +466,9 @@ pub fn lab_type(east: f64, north: f64) -> Option<(u8, f32)> {
 pub const MAP_N: usize = 256;
 /// Fine map cell (m): +-64 m around its centre.
 pub const MAP_FINE_M: f64 = 0.5;
-/// Coarse map cell (m): +-1024 m (the tint carries the grass past the blades).
-pub const MAP_COARSE_M: f64 = 8.0;
+/// Coarse map cell (m): +-2048 m (the tint carries the grass past the blades; 8 m / +-1024 m
+/// showed as a colour cut-off from the air). 16 is the largest that divides `FACE_PERIOD_M` by `MAP_N`.
+pub const MAP_COARSE_M: f64 = 16.0;
 /// The map centre snaps to this lattice (m) of face metres: every cell size and strand cell
 /// divides it, so cells and strands keep their place when the map moves.
 pub const MAP_SNAP_M: f64 = 32.0;

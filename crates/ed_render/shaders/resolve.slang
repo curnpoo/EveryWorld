@@ -324,10 +324,10 @@ TSurf terrain_material(FrameData* f, TerrainMat m, TerrainDraw d, float3 n, floa
     // Detail fades by pixel footprint on the ground (m, geometric mean of the two axes), not by
     // distance: a fixed 400 m cut drew a flat-vs-textured line across views from the air.
     // `near` (normals, height-blend edges): gone by ~2.5 m pixels (~400 m at eye height).
-    // `dc` (albedo contrast): eases once a 2 m tile is under ~10 px, floor 0.4.
+    // `dc` (albedo contrast): eases once a 2 m tile is under ~10 px, floor 0.7 (0.4 flattened it).
     float fp = sqrt(max(length(dwx) * length(dwy), 1e-8));
     float near = 1.0 - smoothstep(0.3, 2.5, fp);
-    float dc = lerp(1.0, 0.4, smoothstep(0.04, 0.4, fp));
+    float dc = lerp(1.0, 0.7, smoothstep(0.04, 0.4, fp));
     float3 ax = abs(float3(dot(n, tu), dot(n, tv), dot(n, up)));
     // Biplanar: the top plane and the dominant vertical one (two fetches instead of three).
     // The vertical weight is the major axis minus the minor one, so it fades to zero where

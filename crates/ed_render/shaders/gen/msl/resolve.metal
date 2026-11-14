@@ -2611,7 +2611,7 @@ TSurf_0 terrain_material_0(FrameData_natural_0 device* f_37, const TerrainMat_na
     wt_0[5U] = wt_0[5U] * _S410;
     float fp_0 = sqrt(max(length(dwx_0) * length(dwy_0), 9.99999993922529029e-09f));
     float near_1 = 1.0f - smoothstep(0.30000001192092896f, 2.5f, fp_0);
-    float _S411 = mix(1.0f, 0.40000000596046448f, smoothstep(0.039999999105930328f, 0.40000000596046448f, fp_0));
+    float _S411 = mix(1.0f, 0.69999998807907104f, smoothstep(0.039999999105930328f, 0.40000000596046448f, fp_0));
     float3 _S412 = pow(abs(float3(dot(n_11, tu_3), dot(n_11, tv_4), cf_0)), float3(4.0f) );
     thread float3 tw_0 = _S412;
     float _S413 = _S412.x;

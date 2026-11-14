@@ -1,3 +1,13 @@
+## 2026-11-13: Grass colour reaches 2 km; terrain contrast floor 0.7
+
+Owner: the colour-patch change flattened contrast, and the terrain colours still cut off with
+distance. The cut-off was the grass tint's coarse map ending at +-1024 m (`ed_world/src/grass.rs`
+`MAP_COARSE_M` 8 -> 16 m: +-2048 m, same 256x256 map, the largest cell that divides
+`FACE_PERIOD_M`); past it the ground lost its grass-type colour. The terrain albedo-contrast
+floor goes 0.4 -> 0.7. gpu_frame (style E, lab o30 / o150 / o500, Zermatt valley): 23.3 / 18.7 /
+15.0 / 32.9 ms. Open: beyond 2 km the tint still ends; the long-term fix is the base terrain
+colour coming from real land cover, so the tint is only a near refinement.
+
 ## 2026-11-13: Terrain detail fades by pixel footprint; brightness blobs become colour patches
 
 Owner: from the air the ground showed a flat-colour band above a noisy textured band, and smooth
