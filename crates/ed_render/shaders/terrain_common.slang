@@ -37,7 +37,7 @@ static const uint T_TREES_DEBUG = 1u << 24;     // EW_TREES_FAR=debug tint
 static const uint T_GROUND = 1u << 25;          // ground page (own or parent, grass G4): carpet from the shares
 static const uint T_PRIM_LOD_SHIFT = 24;        // the visibility primitive carries the LOD here
 
-// One drawn node (208 bytes, `DRAW_WORDS` = 52). World axes, camera-relative.
+// One drawn node (224 bytes, `DRAW_WORDS` = 56). World axes, camera-relative.
 struct TerrainDraw {
     float4 origin;  // xyz: node origin (ellipsoid point of the centre direction) - camera, w: skirt depth (m)
     float4 dir_c;   // xyz: centre direction, w: ellipsoid radius along it (m)
@@ -53,9 +53,11 @@ struct TerrainDraw {
                     // z, w (bits): own and parent canopy page word offsets in the pool (0: none)
     uint4 gnd;      // x, y: own and parent ground page word offsets in the pool (0: none)
     uint4 clim;     // corner climate (NodeId::corner order): aridity low 16 bits, temperature high (terrain.rs clim_word)
+    uint4 anc;      // land-cover pages (grass G4b, terrain.rs LANDCOVER_LEVEL): x, y: ground, canopy word offsets
+                    // (0: none); z: page-sample origin there (x low 16, y high, 1/128 sample); w (bits): scale
 };
 
-// The terrain material record (P-slice S7, `MAT_WORDS` = 52 words, at index
+// The terrain material record (P-slice S7, `MAT_WORDS` = 56 words, at index
 // `ResolveC.t_mat` of the draw table): two RGBA8 texture arrays, a layer per material slot
 // (terrain.rs `MAT_LAYERS`: rock, scree, grass, forest, snow, soil).
 struct TerrainMat {
@@ -65,7 +67,7 @@ struct TerrainMat {
     uint size;
     float tile[8];  // metres per texture repeat, per layer
     float4 gain[6]; // rgb: per-layer albedo calibration (target / texture mean, linear)
-    float4 pad[4];
+    float4 pad[5];
 };
 
 // Raw height of page sample (i, j) in pool slot `slot`.
@@ -459,6 +461,88 @@ static const float T_CLIM_ARID_MAX = 4.0;     // terrain.rs CLIM_ARID_MAX
 static const float T_CLIM_T0 = -60.0;         // CLIM_T0
 static const float T_CLIM_T_RANGE = 100.0;    // CLIM_T_RANGE
 
+// Page-sample coordinates of the draw's grid point `g` in its land-cover page (`anc`).
+float2 t_lc_sample(TerrainDraw d, float2 g) {
+    float2 o = float2(float(d.anc.z & 0xFFFFu), float(d.anc.z >> 16)) / 128.0;
+    return o + g * float(T_PAGE_STRIDE) * asfloat(d.anc.w);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The ground field (grass G4b): mirrors ed_world::grass `gf_*` bit for bit, so the terrain
+// carpet and the CPU blades share one footprint. Inputs are face metres (period 4096 m).
+// ---------------------------------------------------------------------------------------------
+
+float2 gf_hash2(int2 c, uint salt) {
+    uint h = uint(c.x) * 0x8da6b343u ^ uint(c.y) * 0xd8163841u ^ salt * 0x9E3779B1u;
+    h ^= h >> 13;
+    h *= 0x85ebca6bu;
+    h ^= h >> 16;
+    return float2(float(h & 0xFFFFu), float(h >> 16)) / 65535.0;
+}
+// Two channels of periodic value noise on one lattice (one hash per corner feeds both).
+float2 gf_noise2(float2 w, float cell, uint salt) {
+    float2 q = w / cell;
+    float2 i = floor(q);
+    float2 f = q - i;
+    f = f * f * (3.0 - 2.0 * f);
+    int per = int(4096.0 / cell + 0.5);
+    int2 c = int2(i);
+    int2 c0 = int2(((c.x % per) + per) % per, ((c.y % per) + per) % per);
+    int2 c1 = int2((c0.x + 1) % per, (c0.y + 1) % per);
+    float2 a = gf_hash2(c0, salt);
+    float2 b = gf_hash2(int2(c1.x, c0.y), salt);
+    float2 cc = gf_hash2(int2(c0.x, c1.y), salt);
+    float2 e = gf_hash2(c1, salt);
+    return lerp(lerp(a, b, f.x), lerp(cc, e, f.x), f.y);
+}
+float gf_noise(float2 w, float cell, uint salt) {
+    return gf_noise2(w, cell, salt).x;
+}
+// Domain warp (m) of the land-cover lookups (~9, ~3.5, ~1.2 m over 64, 16, 4 m). `fine`: false
+// keeps only the 64 m octave (pixels of metres: the finer ones only shift the lookup inside
+// a pixel).
+float2 gf_warp_f(float2 w, bool fine) {
+    float2 o = 18.0 * (gf_noise2(w, 64.0, 11u) - 0.5);
+    if (fine) {
+        o += 7.0 * (gf_noise2(w, 16.0, 12u) - 0.5) + 2.4 * (gf_noise2(w, 4.0, 13u) - 0.5);
+    }
+    return o;
+}
+float2 gf_warp(float2 w) {
+    return gf_warp_f(w, true);
+}
+// The patch field at face metres `w`: x: threshold dither 0.2..0.8 (partial grass as
+// patches), y: the rule-table pick 0..1 (patches at ~80, ~20, ~5 m), z: density 0.5..1.
+// Lattices shared between the terms (ed_world grass `gf_dither`, `gf_pick`, `gf_dens`).
+float3 gf_field(float2 w) {
+    float2 a8 = gf_noise2(w, 8.0, 31u);
+    float2 a32 = gf_noise2(w, 32.0, 32u);
+    float nd = 0.65 * a8.x + 0.35 * a32.x;
+    float np = 0.5 * gf_noise(w, 128.0, 41u) + 0.33 * a32.y + 0.17 * a8.y;
+    float nn = 0.6 * gf_noise(w, 64.0, 51u) + 0.4 * a8.x;
+    return float3(0.2 + 0.6 * smoothstep(0.2, 0.8, nd), smoothstep(0.24, 0.76, np), 0.5 + 0.5 * smoothstep(0.25, 0.7, nn));
+}
+// Where grass grows (0..1): the rule table's grass weight `v` of the treeless ground, feathered
+// out under the canopy edge, as patches through the dither (edge half-width `e`; 0.18 on CPU).
+float gf_grass_e(float v, float cover, float dither, float e) {
+    float treeless = max(1.0 - cover, 0.2);
+    float t = smoothstep(0.08, 0.5, saturate(v / treeless)) * (1.0 - smoothstep(0.3, 0.85, cover));
+    return smoothstep(dither - e, dither + e, t);
+}
+float gf_grass(float v, float cover, float dither) {
+    return gf_grass_e(v, cover, dither, 0.18);
+}
+// Shares with a sparse canopy's gaps as grassland (ed_world grass `gf_understorey`).
+float4 gf_understorey(float4 s, float cover) {
+    float gap = max(1.0 - (s.x + s.y + s.z + s.w) - cover, 0.0);
+    s.x += gap * smoothstep(0.03, 0.15, cover);
+    return s;
+}
+// Share of the non-grass ground that is forest floor (litter); the rest is bare soil.
+float gf_litter(float cover) {
+    return smoothstep(0.05, 0.35, cover);
+}
+
 float4 t_ground_raw(uint pool, uint off, uint i, uint j) {
     uint c = ed_buf<uint>(pool)[off + j * T_PAGE_N + i];
     return float4(float(c & 0xFFu), float((c >> 8) & 0xFFu), float((c >> 16) & 0xFFu), float(c >> 24)) / 255.0;
@@ -484,6 +568,16 @@ float4 t_ground_shares(uint pool, TerrainDraw d, float2 g) {
     }
     float2 q = float2((d.slots.z & T_QX) != 0u ? 128.0 : 0.0, (d.slots.z & T_QY) != 0u ? 128.0 : 0.0);
     return t_ground_bilin(pool, d.gnd.y, q + 0.5 * s);
+}
+
+// Shares at grid point `g` (may lie off the node by a few metres: the warp) from the land-cover
+// page (`anc`: the level-12 ancestor's, smooth bilinear over ~10 m samples), else the draw's own
+// or parent page.
+float4 t_ground_lc(uint pool, TerrainDraw d, float2 g) {
+    if (d.anc.x != 0u) {
+        return t_ground_bilin(pool, d.anc.x, t_lc_sample(d, g));
+    }
+    return t_ground_shares(pool, d, g);
 }
 
 // Climate (aridity, sea-level mean temperature C) at grid point `g`: bilinear over the corners.

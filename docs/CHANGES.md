@@ -1,3 +1,21 @@
+## 2026-11-14: Grass: natural land-cover edges, blades wherever ground is green, mixed meadows
+
+- Owner after G4: square forest edges, green ground with no grass (Blue Ridge), grass in straight rows and
+  uniform types. Causes: below L12 the shader read nearest-10 m-cell pages and sharpened them into squares;
+  carpet and blades used different grass formulas from different page levels; wheat clumps sat on lattice
+  centres; one type per land-cover class.
+- One shared ground field, same hash and maths on CPU (`ed_world::grass` `gf_*`) and GPU
+  (`terrain_common.slang` `gf_*`): ~9/3.5/1.2 m domain warp on all land-cover lookups, `gf_grass` (canopy
+  edge feather 0.3-0.85, dithered partial grass), `gf_litter`, `gf_understorey` (sparse-canopy gaps are grass).
+  The shader reads the L12 ancestor's ground/canopy pages bilinearly (`TerrainDraw` 52 -> 56 words,
+  `landcover_origin`). Crop rows jittered, facing turns over ~200 m. 14 type rows; each class+climate is a
+  weighted mix picked by ~80/20/5 m patches, height patches 9/35/90 m; near carpet takes the picked type's
+  colour. 485 tests pass (3 new).
+- gpu_frame ms before -> after: blueridge eye 18.95->18.93, 150 m 16.24->16.19; smokies 13.30->13.39,
+  15.91->16.39; iowa 9.09->8.91, 11.12->11.56; siusi 12.50->12.54, 13.59->14.48 (machine loaded, noisy).
+  Resolve carpet ~0.46 -> ~1.2 ms on overhead views. Open: wheat reads tufty with soil gaps; near-meadow bare
+  carpet shows between patches; GPU clamps the warp at L12 node edges (few-m mismatch with CPU every ~2.4 km).
+
 ## 2026-11-14: Grass G4: ground colour from ground pages at every distance
 
 - The grass carpet colour now comes from the per-node ground pages (G2), not the camera-centred ±2 km tint

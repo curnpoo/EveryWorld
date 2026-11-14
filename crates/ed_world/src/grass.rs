@@ -4,12 +4,13 @@
 //! visibility.slang and resolve.slang). No meshes: a clump is 32 bytes.
 //!
 //! **Clumps.** One candidate per cell of a global cube-face lattice (level [`CLUMP_LEVEL`],
-//! ~0.6 m, so ~0.36 m² per clump), jittered inside its cell; row crops (`aniso < 1`) sit on the
-//! cell centres and face along the lattice's `j` axis, so they line up into rows. What grows
+//! ~0.6 m, so ~0.36 m² per clump), jittered inside its cell; row crops (`aniso < 1`) are jittered
+//! too and face a field direction that turns slowly across the land (~200 m), never a grid. What grows
 //! comes from a caller's type function (real ground: [`type_from_ground`]; the grass lab:
 //! [`lab_type`]); a clump exists when its hash is under the type's density times the
 //! ground's. Height varies in patches (a ~9 m noise field) and per clump; a slower field
-//! makes some patches drier (straw-tinted).
+//! makes some patches drier (straw-tinted). Where grass grows and which type it is come from
+//! the shared ground field (`gf_*`), which the terrain carpet mirrors.
 //!
 //! **Distance** ([`lod`], mirrored by common.slang `grass_lod`): blades per clump fall as
 //! `(r0 / d)^2` past `r0` (constant on-screen density), down to a floor (`bmin`; style E lowers
@@ -423,13 +424,119 @@ fn wrap_m(d: DVec3) -> [f32; 3] {
 /// Most patch height scale ([`patch`]).
 pub const HEIGHT_SCALE_MAX: f32 = 1.45;
 
-/// The patch fields at body direction `d`: height scale (0.55..[`HEIGHT_SCALE_MAX`], ~9 m
-/// patches) and dry share (0..1, ~23 m patches). Shared by the clumps and the shell map.
+/// The patch fields at body direction `d`: height scale (0.55..[`HEIGHT_SCALE_MAX`], patches
+/// of ~9, ~35 and ~90 m, so a meadow has tall swales and short knolls at several sizes) and dry
+/// share (0..1, ~23 m patches). Shared by the clumps and the shell map.
 pub fn patch(d: DVec3, seed: u64) -> (f32, f32) {
     let w = wrap_m(d);
-    let p = fbm3(w[0] / 9.0, w[1] / 9.0, w[2] / 9.0, seed ^ 0x6A55, 3);
+    let p = 0.5 * fbm3(w[0] / 9.0, w[1] / 9.0, w[2] / 9.0, seed ^ 0x6A55, 3)
+        + 0.3 * value3(w[0] / 35.0, w[1] / 35.0, w[2] / 35.0, seed ^ 0x6A56)
+        + 0.2 * value3(w[0] / 90.0, w[1] / 90.0, w[2] / 90.0, seed ^ 0x6A57);
     let dry = smoothstep(0.58, 0.8, fbm3(w[0] / 23.0, w[1] / 23.0, w[2] / 23.0, seed ^ 0xD27, 3));
-    (0.55 + 0.9 * smoothstep(0.2, 0.8, p), dry)
+    (0.55 + 0.9 * smoothstep(0.28, 0.72, p), dry)
+}
+
+// ---------------------------------------------------------------------------------------------
+// The ground field (grass G4b): one definition of where grass is, shared bit for bit with the
+// terrain carpet (terrain_common.slang `gf_*`), so green ground and blades share a footprint.
+// Every input is face metres (`face_metres`, wrapped to `FACE_PERIOD_M`), which the shader
+// has as `d.tex.xy + (g - 32) * cell`.
+// ---------------------------------------------------------------------------------------------
+
+/// Hash of a lattice cell and a salt to two values 0..1 (low and high 16 bits;
+/// terrain_common.slang `gf_hash2`).
+fn gf_hash2(cx: i32, cy: i32, salt: u32) -> [f32; 2] {
+    let mut h = (cx as u32).wrapping_mul(0x8da6_b343) ^ (cy as u32).wrapping_mul(0xd816_3841) ^ salt.wrapping_mul(0x9E37_79B1);
+    h ^= h >> 13;
+    h = h.wrapping_mul(0x85eb_ca6b);
+    h ^= h >> 16;
+    [(h & 0xFFFF) as f32 / 65535.0, (h >> 16) as f32 / 65535.0]
+}
+
+/// Two channels of periodic value noise (period 4096 m; `cell` divides it) in 0..1 on one
+/// lattice (`gf_noise2`): one hash per corner feeds both.
+pub fn gf_noise2(x: f32, y: f32, cell: f32, salt: u32) -> [f32; 2] {
+    let (qx, qy) = (x / cell, y / cell);
+    let (ix, iy) = (qx.floor(), qy.floor());
+    let s = |t: f32| t * t * (3.0 - 2.0 * t);
+    let (fx, fy) = (s(qx - ix), s(qy - iy));
+    let per = (4096.0 / cell + 0.5) as i32;
+    let (cx, cy) = ((ix as i32).rem_euclid(per), (iy as i32).rem_euclid(per));
+    let (dx, dy) = ((cx + 1) % per, (cy + 1) % per);
+    let (a, b, c, d) = (gf_hash2(cx, cy, salt), gf_hash2(dx, cy, salt), gf_hash2(cx, dy, salt), gf_hash2(dx, dy, salt));
+    let l = |a: f32, b: f32, t: f32| a + (b - a) * t;
+    std::array::from_fn(|k| l(l(a[k], b[k], fx), l(c[k], d[k], fx), fy))
+}
+
+/// Periodic value noise in 0..1 (the first channel of [`gf_noise2`]).
+pub fn gf_noise(x: f32, y: f32, cell: f32, salt: u32) -> f32 {
+    gf_noise2(x, y, cell, salt)[0]
+}
+
+/// Domain warp (m) of the land-cover lookups: ~9 m over 64 m, ~3.5 m over 16 m and ~1.2 m
+/// over 4 m, so the 10 m land-cover cells and page lattices never show as lines or squares.
+pub fn gf_warp(x: f32, y: f32) -> [f32; 2] {
+    let (a, b, c) = (gf_noise2(x, y, 64.0, 11), gf_noise2(x, y, 16.0, 12), gf_noise2(x, y, 4.0, 13));
+    std::array::from_fn(|k| 18.0 * (a[k] - 0.5) + 7.0 * (b[k] - 0.5) + 2.4 * (c[k] - 0.5))
+}
+
+/// Threshold dither 0.2..0.8 (patches of ~7 and 25 m; the 4 m warp octave rags their edges):
+/// partial grass is patches, not a uniform thin layer.
+pub fn gf_dither(x: f32, y: f32) -> f32 {
+    let n = 0.65 * gf_noise2(x, y, 8.0, 31)[0] + 0.35 * gf_noise2(x, y, 32.0, 32)[0];
+    0.2 + 0.6 * smoothstep(0.2, 0.8, n)
+}
+
+/// The rule-table pick 0..1: patches at ~80, ~20 and ~5 m, spread to about uniform so each
+/// row gets about its weight's share of the ground.
+pub fn gf_pick(x: f32, y: f32) -> f32 {
+    let n = 0.5 * gf_noise(x, y, 128.0, 41) + 0.33 * gf_noise2(x, y, 32.0, 32)[1] + 0.17 * gf_noise2(x, y, 8.0, 31)[1];
+    smoothstep(0.24, 0.76, n)
+}
+
+/// Density patches 0.5..1 (~40 m, and the dither's ~7 m term: grass is thicker where its
+/// patches start): thicker and thinner grass, darker and lighter.
+pub fn gf_dens(x: f32, y: f32) -> f32 {
+    let n = 0.6 * gf_noise(x, y, 64.0, 51) + 0.4 * gf_noise2(x, y, 8.0, 31)[0];
+    0.5 + 0.5 * smoothstep(0.25, 0.7, n)
+}
+
+/// Where grass grows (0..1) from the rule table's grass weight `v` (share of the sample), the
+/// canopy `cover` and the dither: the grass share of the treeless ground, feathered out under
+/// the canopy edge (full to cover 0.3, none past 0.85), as patches.
+pub fn gf_grass(v: f32, cover: f32, dither: f32) -> f32 {
+    let treeless = (1.0 - cover).max(0.2);
+    let t = smoothstep(0.08, 0.5, (v / treeless).clamp(0.0, 1.0)) * (1.0 - smoothstep(0.3, 0.85, cover));
+    smoothstep(dither - 0.18, dither + 0.18, t)
+}
+
+/// Shares with the gaps of a sparse canopy as grassland: a 10 m cell classed as trees whose
+/// canopy covers only part of it has grass between the crowns (wood pasture, larch meadows),
+/// not bare forest floor. Where nothing grows trees (`cover` ~0) the shares stay: rock, sand
+/// and built ground stay bare (terrain_common.slang `gf_understorey`).
+pub fn gf_understorey(mut s: [f32; 4], cover: f32) -> [f32; 4] {
+    let gap = (1.0 - s.iter().sum::<f32>() - cover).max(0.0);
+    s[0] += gap * smoothstep(0.03, 0.15, cover);
+    s
+}
+
+/// Share of the ground that is not grass which is forest floor (litter), the rest bare soil.
+pub fn gf_litter(cover: f32) -> f32 {
+    smoothstep(0.05, 0.35, cover)
+}
+
+/// Face metres of `d` on the Earth, wrapped to the shader's period.
+pub fn gf_xy(d: DVec3) -> (u8, f32, f32) {
+    let (f, x, y) = face_metres(d, ed_geo::WGS84_A);
+    (f, x.rem_euclid(FACE_PERIOD_M) as f32, y.rem_euclid(FACE_PERIOD_M) as f32)
+}
+
+/// The land-cover lookup point of `d`: `d` moved by [`gf_warp`] (the ground pages and the
+/// canopy are read there; the terrain does the same in face metres).
+pub fn gf_lookup(d: DVec3) -> DVec3 {
+    let (f, x, y) = face_metres(d, ed_geo::WGS84_A);
+    let w = gf_warp(x.rem_euclid(FACE_PERIOD_M) as f32, y.rem_euclid(FACE_PERIOD_M) as f32);
+    face_dir(f, x + w[0] as f64, y + w[1] as f64, ed_geo::WGS84_A)
 }
 
 /// Clumps of node `id` (level 14..=20) whose rank is under `keep_min`. `type_at(d)` is the grass
@@ -461,29 +568,28 @@ pub fn scatter_node(id: NodeId, type_at: &dyn Fn(DVec3) -> Option<(u8, f32)>, ke
             if crate::hash01(key, 3) >= t.density * dens.clamp(0.0, 1.0) {
                 continue;
             }
-            // Row crops: on the cell centre, facing along the lattice j axis.
-            let (dir, facing) = if t.aniso < 0.999 {
-                let (i_, j_, n_) = (ci as u64 * SUB + SUB / 2, cj as u64 * SUB + SUB / 2, n as u64 * SUB);
-                let c = lattice_point(face, i_, j_, n_);
-                let c1 = lattice_point(face, i_, (j_ + SUB).min(n_), n_);
-                let c0 = lattice_point(face, i_, j_.saturating_sub(SUB), n_);
-                let a = c1 - c0;
-                (c, (a - c * a.dot(c)).normalize())
+            // Coarse-level clumps jitter over their whole block (2^l cells a side), so the even
+            // far lattice does not show as a grid.
+            let dir = if lvl > 0 {
+                let b = (SUB << lvl) - 2;
+                let ju = 1 + (crate::hash01(key, 10) * b as f32) as u64 % b;
+                let jv = 1 + (crate::hash01(key, 11) * b as f32) as u64 % b;
+                lattice_point(face, ci as u64 * SUB + ju, cj as u64 * SUB + jv, n as u64 * SUB)
             } else {
-                // Coarse-level clumps jitter over their whole block (2^l cells a side), so the
-                // even far lattice does not show as a grid.
-                let d = if lvl > 0 {
-                    let b = (SUB << lvl) - 2;
-                    let ju = 1 + (crate::hash01(key, 10) * b as f32) as u64 % b;
-                    let jv = 1 + (crate::hash01(key, 11) * b as f32) as u64 % b;
-                    lattice_point(face, ci as u64 * SUB + ju, cj as u64 * SUB + jv, n as u64 * SUB)
-                } else {
-                    d
-                };
-                let yaw = crate::hash01(key, 6) as f64 * TAU as f64;
-                let e = f.e1 * yaw.cos() + f.e2 * yaw.sin();
-                (d, (e - d * e.dot(d)).normalize())
+                d
             };
+            // Facing: random, except row crops (`aniso < 1`), which share a field direction
+            // that turns slowly over ~200 m (their narrow clumps read as a field's grain; no
+            // lattice rows, which showed as straight lines on any land).
+            let yaw = if t.aniso < 0.999 {
+                let w = wrap_m(dir);
+                let a = value3(w[0] / 200.0, w[1] / 200.0, w[2] / 200.0, seed ^ 0xF1E1D) * TAU * 1.5;
+                (a + 0.25 * (crate::hash01(key, 6) - 0.5)) as f64
+            } else {
+                crate::hash01(key, 6) as f64 * TAU as f64
+            };
+            let e = f.e1 * yaw.cos() + f.e2 * yaw.sin();
+            let facing = (e - dir * e.dot(dir)).normalize();
             let (hp, dry) = patch(dir, seed);
             let height = hp * (0.88 + 0.24 * crate::hash01(key, 5));
             out.push(Clump {
@@ -542,15 +648,24 @@ const LAWN_ALT: f32 = 2600.0;
 /// Aridity under which grassland is long dry grass.
 const DRY_ARID: f32 = 0.35;
 
-const NICHES: [Niche; 8] = [
+/// Rows of one share and range split it by `mul` (the parts that are grass; summing under 1
+/// leaves bare ground, e.g. sparse shrubland tufts on soil). Rows of one group are in pick
+/// order (short to tall), so neighbouring patches step through the mix rather than jump.
+const NICHES: [Niche; 14] = [
     Niche { feed: Feed::Crop, mul: 1.0, arid: ANY, alt: ANY, temp: Temp::Any, kind: WHEAT },
-    Niche { feed: Feed::Wet, mul: 1.0, arid: ANY, alt: ANY, temp: Temp::Warm, kind: SEDGE },
+    Niche { feed: Feed::Wet, mul: 0.7, arid: ANY, alt: ANY, temp: Temp::Warm, kind: SEDGE },
+    Niche { feed: Feed::Wet, mul: 0.3, arid: ANY, alt: ANY, temp: Temp::Warm, kind: LONG },
     Niche { feed: Feed::Wet, mul: 1.0, arid: ANY, alt: ANY, temp: Temp::Cold, kind: TUNDRA },
     Niche { feed: Feed::Shrub, mul: 0.35, arid: ANY, alt: ANY, temp: Temp::Any, kind: TUFT },
     Niche { feed: Feed::Herb, mul: 1.0, arid: ANY, alt: (f32::NEG_INFINITY, LAWN_ALT), temp: Temp::Cold, kind: TUNDRA },
-    Niche { feed: Feed::Herb, mul: 1.0, arid: (f32::NEG_INFINITY, DRY_ARID), alt: (f32::NEG_INFINITY, LAWN_ALT), temp: Temp::Warm, kind: LONG },
-    Niche { feed: Feed::Herb, mul: 1.0, arid: (DRY_ARID, f32::INFINITY), alt: (f32::NEG_INFINITY, LAWN_ALT), temp: Temp::Warm, kind: MEADOW },
-    Niche { feed: Feed::Herb, mul: 1.0, arid: ANY, alt: (LAWN_ALT, f32::INFINITY), temp: Temp::Any, kind: LAWN },
+    Niche { feed: Feed::Herb, mul: 0.15, arid: (f32::NEG_INFINITY, DRY_ARID), alt: (f32::NEG_INFINITY, LAWN_ALT), temp: Temp::Warm, kind: TUFT },
+    Niche { feed: Feed::Herb, mul: 0.2, arid: (f32::NEG_INFINITY, DRY_ARID), alt: (f32::NEG_INFINITY, LAWN_ALT), temp: Temp::Warm, kind: MEADOW },
+    Niche { feed: Feed::Herb, mul: 0.65, arid: (f32::NEG_INFINITY, DRY_ARID), alt: (f32::NEG_INFINITY, LAWN_ALT), temp: Temp::Warm, kind: LONG },
+    Niche { feed: Feed::Herb, mul: 0.15, arid: (DRY_ARID, f32::INFINITY), alt: (f32::NEG_INFINITY, LAWN_ALT), temp: Temp::Warm, kind: LAWN },
+    Niche { feed: Feed::Herb, mul: 0.55, arid: (DRY_ARID, f32::INFINITY), alt: (f32::NEG_INFINITY, LAWN_ALT), temp: Temp::Warm, kind: MEADOW },
+    Niche { feed: Feed::Herb, mul: 0.3, arid: (DRY_ARID, f32::INFINITY), alt: (f32::NEG_INFINITY, LAWN_ALT), temp: Temp::Warm, kind: LONG },
+    Niche { feed: Feed::Herb, mul: 0.6, arid: ANY, alt: (LAWN_ALT, f32::INFINITY), temp: Temp::Any, kind: LAWN },
+    Niche { feed: Feed::Herb, mul: 0.4, arid: ANY, alt: (LAWN_ALT, f32::INFINITY), temp: Temp::Any, kind: MEADOW },
 ];
 
 /// Floats per row of the terrain carpet table ([`carpet_rows`], grass G4).
@@ -600,44 +715,54 @@ pub fn carpet_rows(grass_ref: [f32; 3], soil_ref: [f32; 3]) -> Vec<[f32; CARPET_
     out
 }
 
-/// Share of the weighted row choice at direction `d`: 0..1, patches ~22 m (not per clump).
-fn niche_pick(d: DVec3) -> f32 {
-    let w = wrap_m(d);
-    smoothstep(0.22, 0.78, value3(w[0] / 22.0, w[1] / 22.0, w[2] / 22.0, 0x91C4))
+/// Blend half-widths of the rule table's ranges (aridity, altitude m, temperature C):
+/// resolve.slang `T_CARPET_SOFT`. The table's edges are soft transitions, not lines.
+const SOFT: [f32; 3] = [0.05, 150.0, 1.5];
+
+/// Smooth membership of `x` in `[lo, hi)` with half-width `s` (resolve.slang `t_band`).
+fn band(x: f32, r: (f32, f32), s: f32) -> f32 {
+    let a = if r.0 < -1e8 { 1.0 } else { smoothstep(0.0, 1.0, (x - r.0) / (2.0 * s) + 0.5) };
+    let b = if r.1 > 1e8 { 1.0 } else { 1.0 - smoothstep(0.0, 1.0, (x - r.1) / (2.0 * s) + 0.5) };
+    a * b
 }
 
-/// The rule table on one sample: total weight and the kind picked at `pick` (0..1).
-fn niche_kind(shares: [f32; 4], alt: f32, aridity: f32, temp_sl: f32, pick: f32) -> Option<(u8, f32)> {
-    let cold = temp_sl - 0.0065 * alt.max(0.0) < COLD_C;
+/// The rule table's row weights on one sample (the carpet's, resolve.slang `t_carpet`).
+fn niche_weights(shares: [f32; 4], alt: f32, aridity: f32, temp_sl: f32) -> [f32; NICHES.len()] {
+    let temp = temp_sl - 0.0065 * alt.max(0.0);
     let mut wts = [0.0f32; NICHES.len()];
     for (w, n) in wts.iter_mut().zip(&NICHES) {
-        let ok = aridity >= n.arid.0
-            && aridity < n.arid.1
-            && alt >= n.alt.0
-            && alt < n.alt.1
-            && (n.temp == Temp::Any || (n.temp == Temp::Cold) == cold);
-        if ok {
-            *w = shares[n.feed as usize].clamp(0.0, 1.0) * n.mul;
-        }
+        let tp = match n.temp {
+            Temp::Any => ANY,
+            Temp::Cold => (f32::NEG_INFINITY, COLD_C),
+            Temp::Warm => (COLD_C, f32::INFINITY),
+        };
+        let ok = band(aridity, n.arid, SOFT[0]) * band(alt, n.alt, SOFT[1]) * band(temp, tp, SOFT[2]);
+        *w = shares[n.feed as usize].clamp(0.0, 1.0) * n.mul * ok;
     }
+    wts
+}
+
+/// The row picked at `pick` (0..1) from `wts` (its kind), `None` when no row has weight.
+fn niche_pick(wts: &[f32; NICHES.len()], pick: f32) -> Option<u8> {
     let veg: f32 = wts.iter().sum();
-    if veg < 0.08 {
+    if veg <= 1e-6 {
         return None;
     }
     let mut at = pick.clamp(0.0, 0.9999) * veg;
     for (w, n) in wts.iter().zip(&NICHES) {
         if at < *w {
-            return Some((n.kind, veg));
+            return Some(n.kind);
         }
         at -= w;
     }
     // Rounding: the last row that has weight.
-    wts.iter().zip(&NICHES).rev().find(|(w, _)| **w > 0.0).map(|(_, n)| (n.kind, veg))
+    wts.iter().zip(&NICHES).rev().find(|(w, _)| **w > 0.0).map(|(_, n)| n.kind)
 }
 
-/// Real ground: grass where the terrain material shows grass (G7's layer mirror). With a ground
-/// page (`g.shares`) the land cover decides the type through [`NICHES`] (crops to wheat, wetland
-/// to sedge, shrubland to sparse tufts, grassland by climate; bare ground gets none); without
+/// Real ground: grass where the terrain carpet shows grass (one footprint: [`gf_grass`]). With
+/// a ground page (`g.shares`, read at the [`gf_lookup`] point) the land cover decides the type
+/// through [`NICHES`] (crops to wheat, wetland to sedge, shrubland to sparse tufts, grassland
+/// by climate as a patchy mix; bare ground gets none) and the canopy feathers it out; without
 /// one, climate and altitude alone: long dry grass where it is arid, short turf high up, a
 /// meadow mix elsewhere. `d` is the body direction (the patch noise of the pick).
 pub fn type_from_ground(g: &GroundSample, cl: &Climate, d: DVec3) -> Option<(u8, f32)> {
@@ -657,13 +782,19 @@ pub fn type_from_ground(g: &GroundSample, cl: &Climate, d: DVec3) -> Option<(u8,
         };
         return Some((kind, smoothstep(0.15, 0.6, grassy)));
     };
-    // Cliffs, scree, snow and closed forest stay bare; altitude alone never vetoes.
-    let open = (1.0 - (w[0] + w[1] + w[4])).clamp(0.0, 1.0) * (1.0 - smoothstep(0.1, 0.6, c.cover));
+    // Cliffs, scree and snow stay bare; altitude alone never vetoes.
+    let open = (1.0 - (w[0] + w[1] + w[4])).clamp(0.0, 1.0);
     if open < 0.15 {
         return None;
     }
-    let (kind, veg) = niche_kind(shares, c.alt_m, cl.aridity, cl.temp_sl, niche_pick(d))?;
-    Some((kind, smoothstep(0.08, 0.5, veg) * smoothstep(0.15, 0.6, open)))
+    let (_, x, y) = gf_xy(d);
+    let wts = niche_weights(gf_understorey(shares, c.cover), c.alt_m, cl.aridity, cl.temp_sl);
+    let gp = gf_grass(wts.iter().sum(), c.cover, gf_dither(x, y));
+    if gp < 0.02 {
+        return None;
+    }
+    let kind = niche_pick(&wts, gf_pick(x, y))?;
+    Some((kind, gp * smoothstep(0.15, 0.6, open) * gf_dens(x, y)))
 }
 
 /// The grass lab's type map (place "grasslab"): `(east, north)` metres from the anchor. A lawn
@@ -813,14 +944,45 @@ mod tests {
         let (k, dt) = at([0.0, 0.0, 0.99, 0.0], &ARID).unwrap();
         assert_eq!(k, TUFT);
         let (km, dm) = at([0.8, 0.0, 0.0, 0.0], &TEMPERATE).unwrap();
-        assert_eq!(km, MEADOW);
+        assert!([LAWN, MEADOW, LONG].contains(&km), "{km}");
         assert!(dt < dm - 0.1, "tuft {dt} meadow {dm}");
-        assert_eq!(at([0.0, 0.0, 0.0, 0.9], &TEMPERATE).unwrap().0, SEDGE);
+        assert!([SEDGE, LONG].contains(&at([0.0, 0.0, 0.0, 0.9], &TEMPERATE).unwrap().0));
         assert_eq!(at([0.8, 0.0, 0.0, 0.0], &POLAR).unwrap().0, TUNDRA);
         assert_eq!(at([0.0, 0.0, 0.0, 0.9], &POLAR).unwrap().0, TUNDRA);
-        assert_eq!(at([0.8, 0.0, 0.0, 0.0], &ARID).unwrap().0, LONG);
+        assert!([TUFT, MEADOW, LONG].contains(&at([0.8, 0.0, 0.0, 0.0], &ARID).unwrap().0));
         let hi = type_from_ground(&ground(Some([0.8, 0.0, 0.0, 0.0]), 2700.0), &Climate { aridity: 0.8, temp_sl: 25.0 }, dir(0.0));
-        assert_eq!(hi.map(|t| t.0), Some(LAWN));
+        assert!([LAWN, MEADOW].contains(&hi.unwrap().0));
+    }
+
+    #[test]
+    fn grassland_is_a_mix_of_types() {
+        // A temperate meadow over ~1 km: every humid herb row shows, about by its weight.
+        let g = ground(Some([0.9, 0.0, 0.0, 0.0]), 600.0);
+        let mut n = [0u32; 8];
+        for k in 0..2000 {
+            let d = DVec3::new(0.3 + k as f64 * 7e-7, 0.5 + (k % 37) as f64 * 3e-6, 0.8).normalize();
+            n[type_from_ground(&g, &TEMPERATE, d).unwrap().0 as usize] += 1;
+        }
+        let f = |k: u8| n[k as usize] as f32 / 2000.0;
+        assert!(f(MEADOW) > 0.3 && f(LONG) > 0.12 && f(LAWN) > 0.04, "{n:?}");
+    }
+
+    #[test]
+    fn grass_follows_the_canopy_edge() {
+        // Open herb: grass; full canopy: none; between: patches. A sparse canopy's gaps are grass.
+        let at = |sh: [f32; 4], cover: f32, k: f64| {
+            let mut g = ground(Some(sh), 600.0);
+            g.canopy.cover = cover;
+            type_from_ground(&g, &TEMPERATE, dir(k * 40.0)).is_some()
+        };
+        let frac = |sh: [f32; 4], cover: f32| (0..400).filter(|k| at(sh, cover, *k as f64)).count() as f32 / 400.0;
+        assert_eq!(frac([0.9, 0.0, 0.0, 0.0], 0.0), 1.0);
+        assert_eq!(frac([0.0; 4], 0.95), 0.0);
+        let edge = frac([0.3, 0.0, 0.0, 0.0], 0.6);
+        assert!(edge > 0.05 && edge < 0.95, "{edge}");
+        assert!(frac([0.0; 4], 0.3) > 0.5, "wood pasture gaps");
+        // Bare ground with no trees stays bare.
+        assert_eq!(frac([0.0; 4], 0.0), 0.0);
     }
 
     #[test]
@@ -829,17 +991,20 @@ mod tests {
         assert_eq!(rows.len(), NICHES.len() + 1);
         assert_eq!(rows[0][3] as usize, NICHES.len());
         // The shader mixes every row of a share by its (softened) ranges: for any climate the
-        // rows of one share must cover it exactly once.
+        // rows of one share must split it once (their weights sum to the share's grass part:
+        // all of it, shrubland a third).
         let inr = |x: f32, lo: f32, hi: f32| x >= lo && x < hi;
         for feed in 0..4 {
             for &arid in &[0.05f32, 0.3, 0.36, 0.9, 2.0] {
                 for &alt in &[-10.0f32, 500.0, 2599.0, 2601.0, 4000.0] {
                     for &temp in &[-20.0f32, -3.5, -2.5, 15.0] {
-                        let n = rows[1..]
+                        let sum: f32 = rows[1..]
                             .iter()
                             .filter(|r| r[0] as usize == feed && inr(arid, r[4], r[5]) && inr(alt, r[6], r[7]) && inr(temp, r[8], r[9]))
-                            .count();
-                        assert_eq!(n, 1, "feed {feed} arid {arid} alt {alt} temp {temp}");
+                            .map(|r| r[1])
+                            .sum();
+                        let want = if feed == 2 { 0.35 } else { 1.0 };
+                        assert!((sum - want).abs() < 1e-5, "feed {feed} arid {arid} alt {alt} temp {temp}: {sum}");
                     }
                 }
             }
@@ -859,7 +1024,8 @@ mod tests {
     fn rule_table_is_deterministic_and_patchy() {
         let g = ground(Some([0.4, 0.0, 0.5, 0.0]), 600.0);
         assert_eq!(type_from_ground(&g, &ARID, dir(1.0)), type_from_ground(&g, &ARID, dir(1.0)));
-        // Mixed shares: both kinds show, in patches (neighbours 1 m apart mostly agree).
+        // Mixed shares: both kinds show, in patches (neighbours 1 m apart mostly agree; the
+        // smallest patches are ~5 m).
         let (mut seen, mut same) = ([false; 8], 0);
         for k in 0..400 {
             let a = type_from_ground(&g, &ARID, dir(k as f64 * 3.0)).unwrap().0;
@@ -868,7 +1034,7 @@ mod tests {
             same += (a == b) as u32;
         }
         assert!(seen[TUFT as usize] && seen[LONG as usize], "{seen:?}");
-        assert!(same > 380, "{same}");
+        assert!(same > 350, "{same}");
     }
 
     use super::*;
@@ -928,22 +1094,20 @@ mod tests {
     }
 
     #[test]
-    fn rows_line_up() {
+    fn crop_faces_its_field_without_a_lattice() {
         let id = node();
         let w = scatter_node(id, &|_| Some((WHEAT, 1.0)), 1.0, 3);
         assert!(w.len() > 100);
-        // Row clumps sit on cell centres and face along j: neighbours along the facing are
-        // ~one cell apart and on the same line.
+        // Neighbouring crop clumps face about the same way (the field direction); the facing
+        // turns slowly across the land, and clumps are jittered, not on cell centres.
         let a = w[w.len() / 2];
-        // The neighbour best aligned with the facing is about one cell away, on the row line.
-        let next = w
-            .iter()
-            .filter(|c| c.dir != a.dir && c.dir.distance(a.dir) * EARTH_R < 1.0)
-            .max_by(|x, y| (x.dir - a.dir).normalize().dot(a.facing).abs().total_cmp(&(y.dir - a.dir).normalize().dot(a.facing).abs()))
-            .unwrap();
-        let step = (next.dir - a.dir) * EARTH_R;
-        assert!(step.length() > 0.35 && step.length() < 0.8, "{}", step.length());
-        assert!(step.normalize().dot(a.facing).abs() > 0.995);
+        let near: Vec<&Clump> = w.iter().filter(|c| c.dir != a.dir && c.dir.distance(a.dir) * EARTH_R < 1.5).collect();
+        assert!(near.len() > 3);
+        let agree = near.iter().filter(|c| c.facing.dot(a.facing).abs() > 0.9).count();
+        assert!(agree * 10 >= near.len() * 8, "{agree}/{}", near.len());
+        let steps: Vec<f64> = near.iter().map(|c| c.dir.distance(a.dir) * EARTH_R).collect();
+        let spread = steps.iter().cloned().fold(0.0f64, f64::max) - steps.iter().cloned().fold(9.0f64, f64::min);
+        assert!(spread > 0.3, "{steps:?}");
     }
 
     #[test]

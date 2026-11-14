@@ -137,6 +137,14 @@ pub(crate) fn sampler(pages: &PageSet) -> impl Fn(DVec3) -> Option<GroundSample>
         let gx = (h(u + du, v) - h(u - du, v)) / 16.0;
         let gy = (h(u, v + du) - h(u, v - du)) / 16.0;
         let slope_cos = (1.0 / (1.0 + gx * gx + gy * gy).sqrt()) as f32;
+        // Land cover and canopy at the warped lookup point (grass G4b: the terrain carpet reads
+        // the same level-12 pages at the same point, so blades and green ground agree).
+        let dw = ed_world::grass::gf_lookup(d);
+        let wid = NodeId::from_unit(body, dw, PAGE_LEVEL);
+        let (cp, gp, (u, v)) = match pages.get(&wid) {
+            Some((_, wcp, wgp)) => (wcp, wgp, wid.local_uv(dw)),
+            None => (cp, gp, (u, v)),
+        };
         let shares = gp.as_ref().map(|g| ground_shares(g, u, v));
         Some(GroundSample { canopy: CanopySample::from_page(cp, u, v, alt as f32, 0.3), slope_cos, shares })
     }

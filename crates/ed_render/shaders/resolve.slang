@@ -249,7 +249,10 @@ float4 t_layer_normal(TerrainMat m, SamplerState smp, uint layer, TProj p) {
 // `carpet_rows`; first word `FrameData.shell.cells.w`). Data-driven: no per-type branch here.
 struct TCarpet {
     bool on;
-    float veg;          // grass share of the open (non-forest) ground; the rest is bare
+    float v;            // the rule table's grass weight (share of the sample, ed_world grass `niche_weights` sum)
+    float dither;       // gf_dither (faded to 0.5 where its patches are under a pixel)
+    float edge;         // gf_grass edge half-width (0.18 near, wider far: no sub-pixel dither)
+    float2 cover;       // smooth (warped land-cover page) canopy cover, its data share
     float tall;         // tallness of the grass mix (0..1, the floor darkening under blades)
     float3 grass_gain;  // carpet colour / the terrain grass layer's mean
     float3 soil_gain;   // bare ground colour / the soil layer's mean
@@ -266,10 +269,16 @@ float t_band(float x, float2 r, float s) {
 // the table's edges become soft transitions instead of lines across the land.
 static const float3 T_CARPET_SOFT = float3(0.05, 150.0, 1.5);
 
-TCarpet t_carpet(FrameData* f, uint pool, TerrainDraw d, float2 g, float h, float cover) {
+// `g`: the pixel's grid point; `gw`: the warped land-cover lookup point (grid); `w`: face metres;
+// `far`: 0 where the field's metre-scale patches are resolved, 1 where they are under a pixel;
+// `cover`: canopy (cover, data share) at the lookup point.
+TCarpet t_carpet(FrameData* f, uint pool, TerrainDraw d, float2 g, float2 gw, float2 w, float far, float h, float2 cover) {
     TCarpet o;
     o.on = false;
-    o.veg = 1.0;
+    o.v = 0.0;
+    o.dither = 0.5;
+    o.edge = 0.18;
+    o.cover = cover;
     o.tall = 0.0;
     o.grass_gain = float3(1.0);
     o.soil_gain = float3(1.0);
@@ -284,13 +293,15 @@ TCarpet t_carpet(FrameData* f, uint pool, TerrainDraw d, float2 g, float h, floa
     float4 hd1 = t[b + 1u];
     float4 hd2 = t[b + 2u];
     float4 hd3 = t[b + 3u];
-    float4 sh = t_ground_shares(pool, d, g);
+    float4 sh = gf_understorey(t_ground_lc(pool, d, gw), cover.x);
     float2 cl = t_climate(d, g);
     float temp = cl.y - 0.0065 * max(h, 0.0);
     float3 cc = float3(0.0);
     float v = 0.0;
     float tl = 0.0;
     uint n = min(uint(hd0.w), 15u);
+    uint k0 = 16u;  // first and last rows with weight (the pick walks only those)
+    uint k1 = 0u;
     for (uint k = 1u; k <= n; k++) {
         uint r = b + 4u * k;
         float4 r0 = t[r];
@@ -301,17 +312,53 @@ TCarpet t_carpet(FrameData* f, uint pool, TerrainDraw d, float2 g, float h, floa
         float4 r1 = t[r + 1u];
         float4 r2 = t[r + 2u];
         float ok = t_band(cl.x, r1.xy, T_CARPET_SOFT.x) * t_band(h, r1.zw, T_CARPET_SOFT.y) * t_band(temp, r2.xy, T_CARPET_SOFT.z);
-        float w = s * r0.y * ok;
-        cc += w * t[r + 3u].rgb;
-        v += w;
-        tl += w * r0.z;
+        float wr = s * r0.y * ok;
+        if (wr > 0.0) {
+            k0 = min(k0, k);
+            k1 = k;
+        }
+        cc += wr * t[r + 3u].rgb;
+        v += wr;
+        tl += wr * r0.z;
     }
-    float s4 = sh.x + sh.y + sh.z + sh.w;
-    float bare = max(1.0 - s4 - cover, 0.0);
-    // Grass over the open ground; a sample that is all forest keeps grass under its trees.
-    o.veg = saturate((v + 0.002) / (s4 + bare + 0.002));
     float3 grass_ref = max(hd0.rgb, float3(1e-3));
     float3 carpet = v > 1e-4 ? cc / v : grass_ref;
+    float3 gfld = far < 1.0 ? gf_field(w) : float3(0.5, 0.5, 0.75);
+    // Near: the picked row's colour (ed_world grass `niche_pick` at gf_pick, the blades' type)
+    // over the mean, so the meadow's type patches show in the ground too; far: the mean.
+    if (v > 1e-4 && far < 1.0 && k1 > k0) {
+        // A second walk of the (uniform, cached) table's weighted span: no indexed per-pixel
+        // array. One weighted row: the mean is its colour already.
+        float at = clamp(gfld.y, 0.0, 0.9999) * v;
+        uint pk = 0u;
+        for (uint k = k0; k <= k1; k++) {
+            uint r = b + 4u * k;
+            float4 r0 = t[r];
+            float s = sh[min(uint(r0.x), 3u)];
+            if (s <= 0.0) {
+                continue;
+            }
+            float4 r1 = t[r + 1u];
+            float4 r2 = t[r + 2u];
+            float wr = s * r0.y * t_band(cl.x, r1.xy, T_CARPET_SOFT.x) * t_band(h, r1.zw, T_CARPET_SOFT.y) * t_band(temp, r2.xy, T_CARPET_SOFT.z);
+            if (wr > 0.0) {
+                pk = k;
+                if (at < wr) {
+                    break;
+                }
+                at -= wr;
+            }
+        }
+        if (pk != 0u) {
+            carpet = lerp(carpet, t[b + 4u * pk + 3u].rgb, 0.6 * (1.0 - far));
+        }
+    }
+    // Density patches: thick grass is darker and greener, thin lighter (the 64 m term far).
+    float dn = lerp(gfld.z, 0.75, far);
+    carpet *= 1.12 - 0.3 * dn;
+    o.v = v;
+    o.dither = lerp(gfld.x, 0.5, far);
+    o.edge = lerp(0.18, 0.45, far);
     o.tall = v > 1e-4 ? tl / v : 0.0;
     o.grass_gain = clamp(carpet / grass_ref, float3(0.2), float3(5.0));
     float3 soil_ref = max(hd1.rgb, float3(1e-3));
@@ -367,6 +414,7 @@ TSurf terrain_material(FrameData* f, TerrainMat m, TerrainDraw d, float3 n, floa
     float veg = 1.0;
     // Forest: most of the slope below the treeline, with clearings; the flat valley floor is meadow.
     float forest = (1.0 - alpine) * smoothstep(0.99, 0.95, cs) * saturate(0.9 + (n3 - 0.5) * 1.4 + (n2 - 0.5) * 0.8);
+    float forest_rule = forest;
     if (trees) {
         // Far forest rung (trees G3): the forest floor is where the canopy page has cover. A
         // steep edge on fine pages; linear in cover on coarse ones (an averaged edge sample
@@ -390,10 +438,16 @@ TSurf terrain_material(FrameData* f, TerrainMat m, TerrainDraw d, float3 n, floa
     wt[L_SOIL] = soil * 0.5 * (1.0 - rock) * (1.0 - snow);
     wt[L_SNOW] = snow * 1.6;
     if (gc.on) {
-        // Grass G4: the land cover splits the open ground into grass and bare (soil).
-        float gw = wt[L_GRASS];
-        wt[L_GRASS] = gw * gc.veg;
-        wt[L_SOIL] += gw * (1.0 - gc.veg);
+        // Grass G4b: one footprint with the blades (gf_grass on the warped, smooth land cover):
+        // the vegetated ground is grass where blades grow, else forest floor under canopy and
+        // bare soil in the open. Where the canopy page has no data the procedural forest rules.
+        float cov = lerp(forest_rule, gc.cover.x, gc.cover.y);
+        float gg = gf_grass_e(gc.v, cov, gc.dither, gc.edge);
+        float lit = gf_litter(cov);
+        float vs = wt[L_GRASS] + wt[L_FOREST];
+        wt[L_GRASS] = vs * gg;
+        wt[L_FOREST] = vs * (1.0 - gg) * lit;
+        wt[L_SOIL] += vs * (1.0 - gg) * (1.0 - lit);
     }
     [ForceUnroll]
     for (uint k = 0; k < T_LAYERS; k++) {
@@ -1011,8 +1065,33 @@ float4 terrain_pixel<let TR : int>(FrameData* f, FsOut i, uint2 vis, float3 dir)
     if (trees && asuint(d.tex.z) != 0u) {
         cv = t_canopy_bilin(pool, asuint(d.tex.z), g * float(T_PAGE_STRIDE));
     }
-    // Grass G4: carpet and bare ground from the ground page (every distance).
-    TCarpet gc = t_carpet(f, pool, d, g, h, cv.x);
+    // Grass G4b: carpet, forest floor and bare ground from the land-cover page at the warped
+    // lookup point (every distance; the blades read the same point).
+    float cell_m0 = d.shape.x * d.shape.y;
+    float2 w0 = d.tex.xy + (g - 32.0) * cell_m0;
+    TCarpet gc;
+    gc.on = false;
+    gc.v = 0.0;
+    gc.dither = 0.5;
+    gc.edge = 0.18;
+    gc.cover = float2(0.0);
+    gc.tall = 0.0;
+    gc.grass_gain = float3(1.0);
+    gc.soil_gain = float3(1.0);
+    if ((d.slots.z & T_GROUND) != 0u) {
+        // Metre-scale patches fade where a pixel spans more than a few metres.
+        float3 vd = view_dir(f, i.pos.xy);
+        float pa = length(view_dir(f, i.pos.xy + float2(1.0, 0.0)) - vd);
+        float far = smoothstep(0.75, 3.0, length(p) * pa / sqrt(max(abs(dot(vd, up)), 0.05)));
+        float2 gw = g + gf_warp_f(w0, far < 1.0) / cell_m0;
+        float2 cov = float2(0.0);
+        if (d.anc.y != 0u) {
+            cov = t_canopy_bilin(pool, d.anc.y, t_lc_sample(d, gw)).xw;
+        } else if (trees && asuint(d.tex.z) != 0u) {
+            cov = t_canopy_bilin(pool, asuint(d.tex.z), gw * float(T_PAGE_STRIDE)).xw;
+        }
+        gc = t_carpet(f, pool, d, g, gw, w0, far, h, cov);
+    }
     float grass_k = 0.0;
     float rough = T_ROUGH;
     float mat_ao = 1.0;

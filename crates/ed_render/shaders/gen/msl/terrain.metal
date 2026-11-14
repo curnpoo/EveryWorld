@@ -17,6 +17,7 @@ struct TerrainDraw_natural_0
     packed_float4 tex_0;
     packed_uint4 gnd_0;
     packed_uint4 clim_0;
+    packed_uint4 anc_0;
 };
 
 struct TerrainC_0

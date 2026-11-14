@@ -77,7 +77,7 @@ pub const INDEX_COUNT: u32 = lod_index_offset(LODS as u32);
 /// The visibility word's primitive carries the node's LOD at this bit (`t_triangle`).
 pub const PRIM_LOD_SHIFT: u32 = 24;
 /// Words per drawn node (`TerrainDraw` in terrain_common.slang).
-pub const DRAW_WORDS: usize = 52;
+pub const DRAW_WORDS: usize = 56;
 /// Period (m) of the per-node texture phase (`TerrainDraw::tex`): every material and macro
 /// noise scale divides it, so the wrap is invisible.
 pub const TEX_PERIOD_M: f64 = 4096.0;
@@ -224,6 +224,28 @@ pub struct TerrainDraw {
     pub gnd: [u32; 4],
     /// Climate at the node's corners ([`clim_word`]; `NodeId::corner` order).
     pub clim: [u32; 4],
+    /// The land-cover lookup pages (grass G4b): x, y: ground and canopy page word offsets of
+    /// the node's [`LANDCOVER_LEVEL`] ancestor (or its own at or above that level; 0: none),
+    /// z: this node's page-sample origin in that page (x low 16 bits, y high, 1/128 sample),
+    /// w (bits): its page-sample scale there. One smooth (bilinear 10 m) land cover under
+    /// every finer level, the same pages the blades read.
+    pub anc: [u32; 4],
+}
+
+/// Level of the land-cover pages the terrain carpet and the blades share (ew `PAGE_LEVEL`):
+/// its ~9.5 m samples are about the 10 m source cells, so bilinear reads are smooth.
+pub const LANDCOVER_LEVEL: u8 = 12;
+
+/// `anc.z`, `anc.w` of a node at `id` in the page of its [`LANDCOVER_LEVEL`] ancestor.
+pub fn landcover_origin(id: NodeId) -> (u32, f32) {
+    let Some(k) = id.level().checked_sub(LANDCOVER_LEVEL).filter(|k| *k > 0) else {
+        return (0, 1.0);
+    };
+    let a = id.ancestor(LANDCOVER_LEVEL);
+    let (rx, ry) = (id.x() - (a.x() << k), id.y() - (a.y() << k));
+    // Origin = rel * 256 / 2^k samples, in 1/128 sample: rel << (15 - k).
+    let q = |r: u32| if k <= 15 { r << (15 - k) } else { r >> (k - 15) };
+    (q(rx) | q(ry) << 16, 1.0 / (1u32 << k) as f32)
 }
 
 impl TerrainDraw {
@@ -242,6 +264,7 @@ impl TerrainDraw {
         }
         w[44..48].copy_from_slice(&self.gnd);
         w[48..52].copy_from_slice(&self.clim);
+        w[52..56].copy_from_slice(&self.anc);
         w
     }
 }
@@ -317,6 +340,7 @@ pub fn node_draw(id: NodeId, body: &Body, pose: &BodyPose, eye: DVec3, bands: [[
         tex: [(tu.atan() * a).rem_euclid(TEX_PERIOD_M) as f32, (tv.atan() * a).rem_euclid(TEX_PERIOD_M) as f32, 0.0, 0.0],
         gnd: [0; 4],
         clim: [0; 4],
+        anc: [0; 4],
     }
 }
 
@@ -1297,6 +1321,23 @@ impl TerrainProvider {
                 (0, 0, 0.0)
             };
             // Ground pages (grass G4) ride in the same slots, after the canopy words.
+            // The land-cover pages (grass G4b): the LANDCOVER_LEVEL ancestor's (own at or above
+            // it). Its height page takes a slot first, so the ground and canopy can ride in it.
+            let landcover = if self.config.ground_pages && self.carpet.is_some() {
+                let a = id.ancestor(LANDCOVER_LEVEL);
+                let slot = if a == id { Some(slot) } else { res.height_page(a).and_then(|pg| self.pool.ensure(a, &pg, stamp)) };
+                match (slot, res.ground(a)) {
+                    (Some(_), Some(g)) => {
+                        let go = self.pool.ensure_ground(a, Some(&g.page));
+                        let co = if tf.on() { self.pool.ensure_canopy(a, res.canopy_page(a)).0 } else { 0 };
+                        let (o, sc) = landcover_origin(id);
+                        [go, co, o, sc.to_bits()]
+                    }
+                    _ => [0; 4],
+                }
+            } else {
+                [0; 4]
+            };
             let ground = if self.config.ground_pages && self.carpet.is_some() {
                 let own = res.ground(id);
                 let par = parent.as_ref().and(id.parent()).and_then(|p| res.ground(p).map(|g| (p, g)));
@@ -1323,6 +1364,7 @@ impl TerrainProvider {
                 d.slots[2] |= F_GROUND;
                 d.gnd = [o, po, 0, 0];
                 d.clim = clim.map(clim_word);
+                d.anc = landcover;
             }
             if tf.on() {
                 d.slots[2] |= F_TREES | if tf == TreesFar::Debug { F_TREES_DEBUG } else { 0 };
@@ -1737,6 +1779,22 @@ mod harness;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn landcover_origin_places_a_node_in_its_level_12_page() {
+        let b = ed_geo::BodyId(0);
+        // At and above level 12 a node reads its own page.
+        assert_eq!(landcover_origin(NodeId::new(b, 2, 12, 5, 9).unwrap()), (0, 1.0));
+        assert_eq!(landcover_origin(NodeId::new(b, 2, 8, 5, 9).unwrap()), (0, 1.0));
+        // Level 13, odd x, even y: the right half of the ancestor's page, half scale.
+        let (o, s) = landcover_origin(NodeId::new(b, 2, 13, 11, 18).unwrap());
+        assert_eq!((o & 0xFFFF, o >> 16, s), (128 * 128, 0, 0.5));
+        // Level 20: the last child is 255/256 of the way across, 1/256 scale.
+        let id = NodeId::new(b, 2, 20, (5 << 8) + 255, (9 << 8) + 3).unwrap();
+        let (o, s) = landcover_origin(id);
+        assert_eq!((o & 0xFFFF, o >> 16), (255 * 128, 3 * 128));
+        assert_eq!(s, 1.0 / 256.0);
+    }
     use ed_geo::BodyId;
     use glam::DQuat;
 
