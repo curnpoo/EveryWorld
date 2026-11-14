@@ -1,3 +1,18 @@
+## 2026-11-13: Terrain detail fades by pixel footprint; brightness blobs become colour patches
+
+Owner: from the air the ground showed a flat-colour band above a noisy textured band, and smooth
+dark blobs. `resolve.slang` `terrain_material`: `near` (normal map, height-blend edges) now fades
+by the pixel's ground footprint (geometric mean of the two axes, 0.3-2.5 m) instead of a fixed
+400 m distance, so there is no line across views from altitude; a new albedo contrast term pulls
+each layer toward its mean once a 2 m tile shrinks under ~10 px (floor 0.4), so the photo's
+blade-scale light/dark stops reading as noise from above. The macro brightness noise
+(0.74-1.24x) is replaced by luminance-kept hue patches (drier/yellower vs lusher, warped
+32/128 m noise) and +-4% brightness; hollow darkening and the n1 warm/cool tint are kept.
+gpu_frame (style E, lab o30 / o150 / o500, Zermatt valley): before 23.1 / 18.2 / 13.9 / 32.3,
+after 23.4 / 17.5 / 16.0 / 33.1 ms (within run-to-run noise except o500, +2 ms: the extra mean
+fetch per layer). Found while checking: the remaining dark streaks from 500 m are the S7 erosion
+gullies (`ed_data/src/node/detail.rs`) lit on the lab's gentle grass hills, not shading noise.
+
 ## 2026-11-13: Grass style E — blades for every type, out to 500 m (`EW_GRASS_STYLE=e`)
 
 Owner verdict on A/C/D: the shell carpet reads flat, the tall blades win, and they must reach

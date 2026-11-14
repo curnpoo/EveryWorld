@@ -219,14 +219,21 @@ struct TProj {
 
 // Albedo (rgb) and displacement (a). Anti-tiling: a second, 4x larger copy with swapped axes
 // (periodic-safe) carries most of the colour from mid distance out.
-float4 t_layer_albedo(TerrainMat m, SamplerState smp, uint layer, TProj p, float near) {
+// `dc`: texture contrast kept (1 near; less once a tile shrinks to a few pixels, where the
+// photo's blade-scale light/dark reads as noise from the air), pulled toward the layer mean.
+float4 t_layer_albedo(TerrainMat m, SamplerState smp, uint layer, TProj p, float near, float dc) {
     float k = 1.0 / m.tile[layer];
     Texture2DArray ta = ed_tex2d_array(m.albedo);
     float4 a = ta.SampleGrad(smp, float3(float2(p.w.x, -p.w.y) * k, float(layer)), float2(p.dx.x, -p.dx.y) * k, float2(p.dy.x, -p.dy.y) * k);
     float k2 = 0.25 * k;
     float4 b = ta.SampleGrad(smp, float3(float2(-p.w.y, -p.w.x) * k2, float(layer)), float2(-p.dx.y, -p.dx.x) * k2, float2(-p.dy.y, -p.dy.x) * k2);
     float mixk = lerp(0.35, 0.75, 1.0 - near);
-    return float4(lerp(a.rgb, b.rgb, mixk), lerp(a.a, b.a, 0.5 * mixk));
+    float4 c = float4(lerp(a.rgb, b.rgb, mixk), lerp(a.a, b.a, 0.5 * mixk));
+    if (dc < 1.0) {
+        float4 mean = ta.SampleLevel(smp, float3(0.5, 0.5, float(layer)), 16.0);
+        c = lerp(mean, c, dc);
+    }
+    return c;
 }
 
 // Normal xy (OpenGL, -1..1), roughness, AO.
@@ -314,7 +321,13 @@ TSurf terrain_material(FrameData* f, TerrainMat m, TerrainDraw d, float3 n, floa
 
     // Projections: top (face u, v) for everything; rock and scree also on the two vertical
     // planes where the fine slope is steep.
-    float near = saturate(1.0 - dist / 400.0);
+    // Detail fades by pixel footprint on the ground (m, geometric mean of the two axes), not by
+    // distance: a fixed 400 m cut drew a flat-vs-textured line across views from the air.
+    // `near` (normals, height-blend edges): gone by ~2.5 m pixels (~400 m at eye height).
+    // `dc` (albedo contrast): eases once a 2 m tile is under ~10 px, floor 0.4.
+    float fp = sqrt(max(length(dwx) * length(dwy), 1e-8));
+    float near = 1.0 - smoothstep(0.3, 2.5, fp);
+    float dc = lerp(1.0, 0.4, smoothstep(0.04, 0.4, fp));
     float3 ax = abs(float3(dot(n, tu), dot(n, tv), dot(n, up)));
     // Biplanar: the top plane and the dominant vertical one (two fetches instead of three).
     // The vertical weight is the major axis minus the minor one, so it fades to zero where
@@ -348,9 +361,9 @@ TSurf terrain_material(FrameData* f, TerrainMat m, TerrainDraw d, float3 n, floa
             continue;
         }
         bool tri = (k == L_ROCK || k == L_SNOW) && ws > 0.0;
-        float4 a = tw.z > 0.0 || !tri ? t_layer_albedo(m, smp, k, top, near) : float4(0.0);
+        float4 a = tw.z > 0.0 || !tri ? t_layer_albedo(m, smp, k, top, near, dc) : float4(0.0);
         if (tri) {
-            a = a * tw.z + t_layer_albedo(m, smp, k, side, near) * ws;
+            a = a * tw.z + t_layer_albedo(m, smp, k, side, near, dc) * ws;
         }
         ah[k] = a;
         // Height blend: displacement lifts a layer's own high points through its neighbours.
@@ -405,8 +418,15 @@ TSurf terrain_material(FrameData* f, TerrainMat m, TerrainDraw d, float3 n, floa
     }
     // Macro variation: brightness and warmth over tens to hundreds of metres (what the eye
     // reads on far slopes), damp darkening in hollows.
-    float macro = lerp(0.82, 1.15, n2) * lerp(0.9, 1.08, n3);
-    o.albedo *= macro * lerp(1.0, 0.8, hollow_f * (1.0 - snow));
+    // Owner (2026-11-13): the old 0.74-1.24x brightness blobs read as dirty smudges, so the
+    // field-scale variation is colour, not brightness: drier/yellower vs lusher patches on a
+    // warped (less round) field, luminance kept; brightness only +-4%.
+    float2 wq = w + 48.0 * float2(n2 - 0.5, n3 - 0.5);
+    float fh = t_noise(wq + 503.0, 128.0) * 0.6 + t_noise(wq * float2(1.0, 0.6) + 71.0, 32.0) * 0.4;
+    float3 hue = lerp(float3(0.93, 1.03, 0.97), float3(1.08, 1.0, 0.82), smoothstep(0.25, 0.75, fh));
+    hue /= dot(hue, float3(0.2126, 0.7152, 0.0722));
+    o.albedo *= lerp(float3(1.0), hue, 1.0 - snow) * lerp(0.96, 1.04, n2);
+    o.albedo *= lerp(1.0, 0.8, hollow_f * (1.0 - snow));
     o.albedo *= lerp(float3(1.0), float3(1.04, 1.0, 0.94), n1 * (1.0 - snow));
     // The forest floor from afar reads as canopy (no trees drawn yet).
     float canopy = wt[L_FOREST] / max(total, 1e-5) * smoothstep(60.0, 600.0, dist) * (trees ? 1.0 - cv.w : 1.0);
