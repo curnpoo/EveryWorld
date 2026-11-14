@@ -45,8 +45,9 @@ fn fifty_reloads_keep_memory_flat() {
         r.replace_mesh(dev, mesh, &asset).unwrap();
         r.reload_shaders(dev, &src).unwrap();
     };
-    // Warm-up past the one-time 1 MiB pool step (around reload 41); then 50 measured reloads.
-    for i in 0..50 {
+    // Warm-up past the one-time 1 MiB pool step (around reload 41 before grass style A's
+    // pipelines, later with them); then 50 measured reloads.
+    for i in 0..80 {
         reload(&mut rig, i);
         for _ in 0..3 {
             rig.frame(cam, SceneMode::Scene, false);
@@ -57,7 +58,7 @@ fn fifty_reloads_keep_memory_flat() {
     rig.settle();
     let base = rig.dev.allocated_bytes();
     let geo = rig.r().geometry_in_use();
-    for i in 50..100 {
+    for i in 80..130 {
         reload(&mut rig, i);
         for _ in 0..3 {
             rig.frame(cam, SceneMode::Scene, false);

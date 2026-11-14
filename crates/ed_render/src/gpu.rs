@@ -34,7 +34,7 @@ pub(crate) const VERTEX_WORDS: usize = 4;
 pub(crate) const ARGS_WORDS: usize = 5;
 
 /// `FrameData`: 3 float4x4, 5 planes, 8 float4, uint4 cull, 16 HzbLevel, `LightData`, `AtmosData`.
-pub(crate) const FRAME_WORDS: usize = 48 + 20 + 32 + 4 + 64 + crate::light::LIGHT_WORDS + crate::atmosphere::ATMOS_WORDS + WIND_WORDS + IMP_WORDS + SEASON_WORDS;
+pub(crate) const FRAME_WORDS: usize = 48 + 20 + 32 + 4 + 64 + crate::light::LIGHT_WORDS + crate::atmosphere::ATMOS_WORDS + WIND_WORDS + IMP_WORDS + SEASON_WORDS + GRASS_WORDS;
 pub(crate) const FD_PLANES: usize = 48;
 pub(crate) const FD_SUN_DIR: usize = 68;
 pub(crate) const FD_VIEWPORT: usize = 88;
@@ -59,6 +59,9 @@ pub(crate) const IMP_WORDS: usize = 16;
 pub(crate) const FD_SEASON: usize = FD_IMP + IMP_WORDS;
 pub(crate) const SEASON_ROWS: usize = 32;
 pub(crate) const SEASON_WORDS: usize = 4 + SEASON_ROWS * 8;
+/// `FrameData.grass` (`GrassData`, grass style A): bufs, lod, look.
+pub(crate) const FD_GRASS: usize = FD_SEASON + SEASON_WORDS;
+pub(crate) const GRASS_WORDS: usize = 12;
 /// `GpuMesh.flags` (word 7): a tree bank mesh (common.slang `MESH_FOLIAGE`).
 pub(crate) const MESH_FOLIAGE: u32 = 1;
 /// `GpuInstance.pad[0]`: free per-instance user word (trees: tint, branch drop, wind phase).
@@ -128,8 +131,8 @@ mod tests {
 
     #[test]
     fn frame_layout_offsets() {
-        assert_eq!(FRAME_WORDS, 388 + SEASON_WORDS);
-        assert_eq!(FD_SEASON + SEASON_WORDS, FRAME_WORDS);
+        assert_eq!(FRAME_WORDS, 388 + SEASON_WORDS + GRASS_WORDS);
+        assert_eq!(FD_GRASS + GRASS_WORDS, FRAME_WORDS);
         assert_eq!(FD_SUN_DIR, FD_PLANES + 20);
         assert_eq!(FD_CULL, FD_SUN_DIR + 32);
         assert_eq!(FD_HZB + MAX_HZB_LEVELS * 4, FD_LIGHT);

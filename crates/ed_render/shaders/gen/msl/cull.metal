@@ -2,12 +2,14 @@
 #include <metal_math>
 #include <metal_texture>
 using namespace metal;
-struct GpuImpKind_natural_0
+struct GrassType_natural_0
 {
-    packed_uint4 tex_0;
-    packed_float4 geo_0;
-    packed_float4 leaf_0;
-    packed_float4 bark_0;
+    packed_float4 a_0;
+    packed_float4 b_0;
+    packed_float4 root_0;
+    packed_float4 mid_0;
+    packed_float4 tip_0;
+    packed_float4 dry_0;
 };
 
 struct CullC_0
@@ -33,38 +35,71 @@ struct KernelContext_0
     ulong device* ed_buffers_0;
 };
 
-GpuImpKind_natural_0 device* ed_buf_0(uint i_0, KernelContext_0 thread* kernelContext_0)
+GrassType_natural_0 device* ed_buf_0(uint i_0, KernelContext_0 thread* kernelContext_0)
 {
-    return (GpuImpKind_natural_0 device*)kernelContext_0->ed_buffers_0[i_0];
+    return (GrassType_natural_0 device*)kernelContext_0->ed_buffers_0[i_0];
 }
 
-struct GpuTree_0
+struct GrassClump_0
 {
     float px_0;
     float py_0;
     float pz_0;
     uint node_kind_0;
-    float scale_0;
     uint up_0;
+    uint facing_0;
+    uint seed_0;
+    uint hw_0;
+};
+
+GrassClump_0 device* ed_buf_1(uint i_1, KernelContext_0 thread* kernelContext_1)
+{
+    return (GrassClump_0 device*)kernelContext_1->ed_buffers_0[i_1];
+}
+
+constant array<uint, int(5)> GRASS_FIRST_0 = { { 0U, 2304U, 3264U, 3648U, 3792U } };
+constant array<uint, int(5)> GRASS_SEGS_0 = { { 6U, 5U, 4U, 3U, 2U } };
+constant array<uint, int(5)> GRASS_SLOTS_0 = { { 64U, 32U, 16U, 8U, 4U } };
+struct GpuImpKind_natural_0
+{
+    packed_uint4 tex_0;
+    packed_float4 geo_0;
+    packed_float4 leaf_0;
+    packed_float4 bark_0;
+};
+
+GpuImpKind_natural_0 device* ed_buf_2(uint i_2, KernelContext_0 thread* kernelContext_2)
+{
+    return (GpuImpKind_natural_0 device*)kernelContext_2->ed_buffers_0[i_2];
+}
+
+struct GpuTree_0
+{
+    float px_1;
+    float py_1;
+    float pz_1;
+    uint node_kind_1;
+    float scale_0;
+    uint up_1;
     uint yaw_widen_0;
     uint user_0;
     uint season_0;
 };
 
-GpuTree_0 device* ed_buf_1(uint i_1, KernelContext_0 thread* kernelContext_1)
+GpuTree_0 device* ed_buf_3(uint i_3, KernelContext_0 thread* kernelContext_3)
 {
-    return (GpuTree_0 device*)kernelContext_1->ed_buffers_0[i_1];
+    return (GpuTree_0 device*)kernelContext_3->ed_buffers_0[i_3];
 }
 
 constant array<float, int(4)> SHADOW_LOD_BIAS_0 = { { 8.0f, 64.0f, 128.0f, 128.0f } };
-float device* ed_buf_2(uint i_2, KernelContext_0 thread* kernelContext_2)
+float device* ed_buf_4(uint i_4, KernelContext_0 thread* kernelContext_4)
 {
-    return (float device*)kernelContext_2->ed_buffers_0[i_2];
+    return (float device*)kernelContext_4->ed_buffers_0[i_4];
 }
 
-packed_float4 device* ed_buf_3(uint i_3, KernelContext_0 thread* kernelContext_3)
+packed_float4 device* ed_buf_5(uint i_5, KernelContext_0 thread* kernelContext_5)
 {
-    return (packed_float4 device*)kernelContext_3->ed_buffers_0[i_3];
+    return (packed_float4 device*)kernelContext_5->ed_buffers_0[i_5];
 }
 
 struct GpuMesh_natural_0
@@ -80,9 +115,9 @@ struct GpuMesh_natural_0
     array<float, int(4)> error_0;
 };
 
-GpuMesh_natural_0 device* ed_buf_4(uint i_4, KernelContext_0 thread* kernelContext_4)
+GpuMesh_natural_0 device* ed_buf_6(uint i_6, KernelContext_0 thread* kernelContext_6)
 {
-    return (GpuMesh_natural_0 device*)kernelContext_4->ed_buffers_0[i_4];
+    return (GpuMesh_natural_0 device*)kernelContext_6->ed_buffers_0[i_6];
 }
 
 struct _Array_natural_vectorx3Cfloatx2C4x3E3_0
@@ -101,9 +136,9 @@ struct GpuInstance_natural_0
     array<uint, int(4)> pad_1;
 };
 
-GpuInstance_natural_0 device* ed_buf_5(uint i_5, KernelContext_0 thread* kernelContext_5)
+GpuInstance_natural_0 device* ed_buf_7(uint i_7, KernelContext_0 thread* kernelContext_7)
 {
-    return (GpuInstance_natural_0 device*)kernelContext_5->ed_buffers_0[i_5];
+    return (GpuInstance_natural_0 device*)kernelContext_7->ed_buffers_0[i_7];
 }
 
 struct _MatrixStorage_float4x4_ColMajornatural_0
@@ -162,7 +197,7 @@ struct AtmosData_natural_0
     packed_float4 ozone_0;
     packed_float4 ground_0;
     packed_float4 sun_0;
-    packed_float4 up_1;
+    packed_float4 up_2;
     packed_float4 ap_0;
     packed_uint4 bufs_0;
     packed_uint4 bufs2_0;
@@ -195,6 +230,13 @@ struct SeasonData_natural_0
     _Array_natural_vectorx3Cfloatx2C4x3E64_0 rows_0;
 };
 
+struct GrassData_natural_0
+{
+    packed_uint4 bufs_2;
+    packed_float4 lod_0;
+    packed_float4 look_0;
+};
+
 struct FrameData_natural_0
 {
     _MatrixStorage_float4x4_ColMajornatural_0 view_proj_0;
@@ -216,35 +258,36 @@ struct FrameData_natural_0
     WindData_natural_0 wind_1;
     ImpData_natural_0 imp_0;
     SeasonData_natural_0 season_1;
+    GrassData_natural_0 grass_0;
 };
 
-FrameData_natural_0 device* ed_buf_6(uint i_6, KernelContext_0 thread* kernelContext_6)
+FrameData_natural_0 device* ed_buf_8(uint i_8, KernelContext_0 thread* kernelContext_8)
 {
-    return (FrameData_natural_0 device*)kernelContext_6->ed_buffers_0[i_6];
+    return (FrameData_natural_0 device*)kernelContext_8->ed_buffers_0[i_8];
 }
 
-uint device* ed_buf_7(uint i_7, KernelContext_0 thread* kernelContext_7)
+uint device* ed_buf_9(uint i_9, KernelContext_0 thread* kernelContext_9)
 {
-    return (uint device*)kernelContext_7->ed_buffers_0[i_7];
+    return (uint device*)kernelContext_9->ed_buffers_0[i_9];
 }
 
 [[kernel]] void cull_reset(uint3 tid_0 [[thread_position_in_grid]], CullC_0 constant* ed_c_1 [[buffer(0)]], ulong device* ed_buffers_1 [[buffer(2)]])
 {
-    thread KernelContext_0 kernelContext_8;
-    (&kernelContext_8)->ed_c_0 = ed_c_1;
-    (&kernelContext_8)->ed_buffers_0 = ed_buffers_1;
-    uint i_8 = tid_0.x;
-    if(i_8 < (ed_c_1->bins_kind_0 * 4U * 5U))
+    thread KernelContext_0 kernelContext_10;
+    (&kernelContext_10)->ed_c_0 = ed_c_1;
+    (&kernelContext_10)->ed_buffers_0 = ed_buffers_1;
+    uint i_10 = tid_0.x;
+    if(i_10 < (ed_c_1->bins_kind_0 * 4U * 5U))
     {
-        uint device* _S1 = ed_buf_7((&kernelContext_8)->ed_c_0->args_0, &kernelContext_8);
-        uint device* _S2 = _S1 + i_8;
-        uint device* _S3 = ed_buf_7((&kernelContext_8)->ed_c_0->templ_0, &kernelContext_8);
-        *_S2 = *(_S3 + i_8);
+        uint device* _S1 = ed_buf_9((&kernelContext_10)->ed_c_0->args_0, &kernelContext_10);
+        uint device* _S2 = _S1 + i_10;
+        uint device* _S3 = ed_buf_9((&kernelContext_10)->ed_c_0->templ_0, &kernelContext_10);
+        *_S2 = *(_S3 + i_10);
     }
-    if(i_8 < 20U)
+    if(i_10 < 20U)
     {
-        uint device* _S4 = ed_buf_7((&kernelContext_8)->ed_c_0->stats_0, &kernelContext_8);
-        *(_S4 + i_8) = 0U;
+        uint device* _S4 = ed_buf_9((&kernelContext_10)->ed_c_0->stats_0, &kernelContext_10);
+        *(_S4 + i_10) = 0U;
     }
     return;
 }
@@ -270,19 +313,19 @@ float length_squared_0(float3 v_0)
     return dot(v_0, v_0);
 }
 
-float max_scale_0(const GpuInstance_natural_0 thread* i_9)
+float max_scale_0(const GpuInstance_natural_0 thread* i_11)
 {
-    float4 _S6 = float4((&i_9->m_0)->data_0[int(0)]) ;
-    float4 _S7 = float4((&i_9->m_0)->data_0[int(1)]) ;
-    float4 _S8 = float4((&i_9->m_0)->data_0[int(2)]) ;
+    float4 _S6 = float4((&i_11->m_0)->data_0[int(0)]) ;
+    float4 _S7 = float4((&i_11->m_0)->data_0[int(1)]) ;
+    float4 _S8 = float4((&i_11->m_0)->data_0[int(2)]) ;
     return sqrt(max(max(length_squared_0(float3(_S6.x, _S7.x, _S8.x)), length_squared_0(float3(_S6.y, _S7.y, _S8.y))), length_squared_0(float3(_S6.z, _S7.z, _S8.z))));
 }
 
-float3 xform_point_0(const GpuInstance_natural_0 thread* i_10, float3 p_0)
+float3 xform_point_0(const GpuInstance_natural_0 thread* i_12, float3 p_0)
 {
-    float4 _S9 = float4((&i_10->m_0)->data_0[int(0)]) ;
-    float4 _S10 = float4((&i_10->m_0)->data_0[int(1)]) ;
-    float4 _S11 = float4((&i_10->m_0)->data_0[int(2)]) ;
+    float4 _S9 = float4((&i_12->m_0)->data_0[int(0)]) ;
+    float4 _S10 = float4((&i_12->m_0)->data_0[int(1)]) ;
+    float4 _S11 = float4((&i_12->m_0)->data_0[int(2)]) ;
     return float3(dot(_S9.xyz, p_0) + _S9.w, dot(_S10.xyz, p_0) + _S10.w, dot(_S11.xyz, p_0) + _S11.w);
 }
 
@@ -293,17 +336,17 @@ struct Bounds_0
     float scale_1;
 };
 
-Bounds_0 bounds_0(const GpuInstance_natural_0 thread* inst_0, GpuMesh_natural_0 device* m_1, KernelContext_0 thread* kernelContext_9)
+Bounds_0 bounds_0(const GpuInstance_natural_0 thread* inst_0, GpuMesh_natural_0 device* m_1, KernelContext_0 thread* kernelContext_11)
 {
-    packed_float4 device* _S12 = ed_buf_3(kernelContext_9->ed_c_0->nodes_0, kernelContext_9);
-    thread Bounds_0 b_0;
+    packed_float4 device* _S12 = ed_buf_5(kernelContext_11->ed_c_0->nodes_0, kernelContext_11);
+    thread Bounds_0 b_1;
     float _S13 = max_scale_0(inst_0);
-    (&b_0)->scale_1 = _S13;
+    (&b_1)->scale_1 = _S13;
     float3 _S14 = (float4(*(_S12 + ((inst_0->node_flags_0) & 65535U))) ).xyz;
     float3 _S15 = xform_point_0(inst_0, (float4(m_1->sphere_0) ).xyz);
-    (&b_0)->c_0 = _S14 + _S15;
-    (&b_0)->r_0 = (float4(m_1->sphere_0) ).w * _S13;
-    return b_0;
+    (&b_1)->c_0 = _S14 + _S15;
+    (&b_1)->r_0 = (float4(m_1->sphere_0) ).w * _S13;
+    return b_1;
 }
 
 bool in_frustum_0(FrameData_natural_0 device* f_0, float3 c_1, float r_1)
@@ -402,15 +445,15 @@ void push_0(atomic<uint> device* args_1, uint device* args_plain_0, uint device*
     return;
 }
 
-void emit_0(GpuMesh_natural_0 device* m_3, uint inst_1, uint st_0, uint phase_0, uint fade_frames_0, Emitted_0 thread* e_1, KernelContext_0 thread* kernelContext_10)
+void emit_0(GpuMesh_natural_0 device* m_3, uint inst_1, uint st_0, uint phase_0, uint fade_frames_0, Emitted_0 thread* e_1, KernelContext_0 thread* kernelContext_12)
 {
-    uint device* _S23 = ed_buf_7(kernelContext_10->ed_c_0->args_0, kernelContext_10);
+    uint device* _S23 = ed_buf_9(kernelContext_12->ed_c_0->args_0, kernelContext_12);
     atomic<uint> device* _S24 = (atomic<uint> device*)((ulong)(_S23));
-    uint device* _S25 = ed_buf_7(kernelContext_10->ed_c_0->visible_0, kernelContext_10);
+    uint device* _S25 = ed_buf_9(kernelContext_12->ed_c_0->visible_0, kernelContext_12);
     uint cur_1 = st_0 & 3U;
     uint prev_1 = (st_0 >> 2U) & 3U;
     uint fade_0 = (st_0 >> 4U) & 63U;
-    uint phase_base_0 = phase_0 * 2U * kernelContext_10->ed_c_0->bins_kind_0 + m_3->bin_base_0;
+    uint phase_base_0 = phase_0 * 2U * kernelContext_12->ed_c_0->bins_kind_0 + m_3->bin_base_0;
     uint cap_1 = m_3->capacity_0;
     if(fade_0 == 0U)
     {
@@ -419,7 +462,7 @@ void emit_0(GpuMesh_natural_0 device* m_3, uint inst_1, uint st_0, uint phase_0,
     else
     {
         uint _S26 = (fade_frames_0 - fade_0 + 1U) * 256U / (fade_frames_0 + 1U);
-        uint dith_0 = phase_base_0 + kernelContext_10->ed_c_0->bins_kind_0;
+        uint dith_0 = phase_base_0 + kernelContext_12->ed_c_0->bins_kind_0;
         uint _S27 = (clamp(_S26, 1U, 255U)) << 22U;
         push_0(_S24, _S23, _S25, dith_0 + cur_1, (inst_1 | (cur_1 << 20U)) | _S27, cap_1, m_3->index_count_0[cur_1] / 3U, e_1);
         push_0(_S24, _S23, _S25, dith_0 + prev_1, ((inst_1 | (prev_1 << 20U)) | _S27) | 1073741824U, cap_1, m_3->index_count_0[prev_1] / 3U, e_1);
@@ -449,32 +492,32 @@ void stat_add_0(atomic<uint> device* stats_1, uint idx_0, uint v_1)
 
 [[kernel]] void cull_early(uint3 tid_1 [[thread_position_in_grid]], CullC_0 constant* ed_c_2 [[buffer(0)]], ulong device* ed_buffers_2 [[buffer(2)]])
 {
-    thread KernelContext_0 kernelContext_11;
-    (&kernelContext_11)->ed_c_0 = ed_c_2;
-    (&kernelContext_11)->ed_buffers_0 = ed_buffers_2;
-    uint i_11 = tid_1.x;
-    FrameData_natural_0 device* _S31 = ed_buf_6(ed_c_2->frame_0, &kernelContext_11);
-    uint device* _S32 = ed_buf_7((&kernelContext_11)->ed_c_0->stats_0, &kernelContext_11);
+    thread KernelContext_0 kernelContext_13;
+    (&kernelContext_13)->ed_c_0 = ed_c_2;
+    (&kernelContext_13)->ed_buffers_0 = ed_buffers_2;
+    uint i_13 = tid_1.x;
+    FrameData_natural_0 device* _S31 = ed_buf_8(ed_c_2->frame_0, &kernelContext_13);
+    uint device* _S32 = ed_buf_9((&kernelContext_13)->ed_c_0->stats_0, &kernelContext_13);
     atomic<uint> device* _S33 = (atomic<uint> device*)((ulong)(_S32));
     thread Emitted_0 e_2 = Emitted_x24init_0(0U, 0U, 0U);
     uint drawn_0;
-    if(i_11 < ((&kernelContext_11)->ed_c_0->count_0))
+    if(i_13 < ((&kernelContext_13)->ed_c_0->count_0))
     {
-        uint device* _S34 = ed_buf_7((&kernelContext_11)->ed_c_0->state_0, &kernelContext_11);
-        GpuInstance_natural_0 device* _S35 = ed_buf_5((&kernelContext_11)->ed_c_0->instances_0, &kernelContext_11);
-        thread GpuInstance_natural_0 _S36 = *(_S35 + i_11);
+        uint device* _S34 = ed_buf_9((&kernelContext_13)->ed_c_0->state_0, &kernelContext_13);
+        GpuInstance_natural_0 device* _S35 = ed_buf_7((&kernelContext_13)->ed_c_0->instances_0, &kernelContext_13);
+        thread GpuInstance_natural_0 _S36 = *(_S35 + i_13);
         if((((&_S36)->node_flags_0) & 65536U) == 0U)
         {
-            *(_S34 + i_11) = 0U;
+            *(_S34 + i_13) = 0U;
             drawn_0 = 0U;
         }
         else
         {
-            GpuMesh_natural_0 device* _S37 = ed_buf_4((&kernelContext_11)->ed_c_0->meshes_0, &kernelContext_11);
+            GpuMesh_natural_0 device* _S37 = ed_buf_6((&kernelContext_13)->ed_c_0->meshes_0, &kernelContext_13);
             GpuMesh_natural_0 device* _S38 = _S37 + (&_S36)->mesh_0;
-            Bounds_0 _S39 = bounds_0(&_S36, _S38, &kernelContext_11);
+            Bounds_0 _S39 = bounds_0(&_S36, _S38, &kernelContext_13);
             bool _S40 = in_frustum_0(_S31, _S39.c_0, _S39.r_0);
-            uint device* _S41 = _S34 + i_11;
+            uint device* _S41 = _S34 + i_13;
             uint st_1 = *_S41;
             bool init_1 = ((*_S41) & 2048U) != 0U;
             uint cur_2 = (*_S41) & 3U;
@@ -581,7 +624,7 @@ void stat_add_0(atomic<uint> device* stats_1, uint idx_0, uint v_1)
             }
             if(changed_0)
             {
-                emit_0(_S38, i_11, st_2, 0U, n_0, &e_2, &kernelContext_11);
+                emit_0(_S38, i_13, st_2, 0U, n_0, &e_2, &kernelContext_13);
                 drawn_0 = 1U;
             }
             else
@@ -673,12 +716,12 @@ bool occluded_0(FrameData_natural_0 device* f_1, float device* hzb_2, float3 c_r
 
 [[kernel]] void cull_late(uint3 tid_2 [[thread_position_in_grid]], CullC_0 constant* ed_c_3 [[buffer(0)]], ulong device* ed_buffers_3 [[buffer(2)]])
 {
-    thread KernelContext_0 kernelContext_12;
-    (&kernelContext_12)->ed_c_0 = ed_c_3;
-    (&kernelContext_12)->ed_buffers_0 = ed_buffers_3;
-    uint i_12 = tid_2.x;
-    FrameData_natural_0 device* _S68 = ed_buf_6(ed_c_3->frame_0, &kernelContext_12);
-    uint device* _S69 = ed_buf_7((&kernelContext_12)->ed_c_0->stats_0, &kernelContext_12);
+    thread KernelContext_0 kernelContext_14;
+    (&kernelContext_14)->ed_c_0 = ed_c_3;
+    (&kernelContext_14)->ed_buffers_0 = ed_buffers_3;
+    uint i_14 = tid_2.x;
+    FrameData_natural_0 device* _S68 = ed_buf_8(ed_c_3->frame_0, &kernelContext_14);
+    uint device* _S69 = ed_buf_9((&kernelContext_14)->ed_c_0->stats_0, &kernelContext_14);
     atomic<uint> device* _S70 = (atomic<uint> device*)((ulong)(_S69));
     thread Emitted_0 e_3 = Emitted_x24init_0(0U, 0U, 0U);
     uint total_0;
@@ -687,17 +730,17 @@ bool occluded_0(FrameData_natural_0 device* f_1, float device* hzb_2, float3 c_r
     uint drawn_1;
     uint fading_0;
     uint changed_1;
-    if(i_12 < ((&kernelContext_12)->ed_c_0->count_0))
+    if(i_14 < ((&kernelContext_14)->ed_c_0->count_0))
     {
-        GpuInstance_natural_0 device* _S71 = ed_buf_5((&kernelContext_12)->ed_c_0->instances_0, &kernelContext_12);
-        thread GpuInstance_natural_0 _S72 = *(_S71 + i_12);
+        GpuInstance_natural_0 device* _S71 = ed_buf_7((&kernelContext_14)->ed_c_0->instances_0, &kernelContext_14);
+        thread GpuInstance_natural_0 _S72 = *(_S71 + i_14);
         if((((&_S72)->node_flags_0) & 65536U) != 0U)
         {
-            uint device* _S73 = ed_buf_7((&kernelContext_12)->ed_c_0->state_0, &kernelContext_12);
-            GpuMesh_natural_0 device* _S74 = ed_buf_4((&kernelContext_12)->ed_c_0->meshes_0, &kernelContext_12);
+            uint device* _S73 = ed_buf_9((&kernelContext_14)->ed_c_0->state_0, &kernelContext_14);
+            GpuMesh_natural_0 device* _S74 = ed_buf_6((&kernelContext_14)->ed_c_0->meshes_0, &kernelContext_14);
             GpuMesh_natural_0 device* _S75 = _S74 + (&_S72)->mesh_0;
-            Bounds_0 _S76 = bounds_0(&_S72, _S75, &kernelContext_12);
-            uint device* _S77 = _S73 + i_12;
+            Bounds_0 _S76 = bounds_0(&_S72, _S75, &kernelContext_14);
+            uint device* _S77 = _S73 + i_14;
             uint st_3 = *_S77;
             bool _S78 = in_frustum_0(_S68, _S76.c_0, _S76.r_0);
             bool vis_0;
@@ -711,7 +754,7 @@ bool occluded_0(FrameData_natural_0 device* f_1, float device* hzb_2, float3 c_r
             }
             if(vis_0)
             {
-                float device* _S79 = ed_buf_2((&kernelContext_12)->ed_c_0->hzb_0, &kernelContext_12);
+                float device* _S79 = ed_buf_4((&kernelContext_14)->ed_c_0->hzb_0, &kernelContext_14);
                 bool _S80 = occluded_0(_S68, _S79, _S76.c_0, _S76.r_0);
                 vis_0 = !_S80;
             }
@@ -758,7 +801,7 @@ bool occluded_0(FrameData_natural_0 device* f_1, float device* hzb_2, float3 c_r
             }
             if(_S84)
             {
-                emit_0(_S75, i_12, st_3, 1U, (uint4(_S68->cull_0) ).y, &e_3, &kernelContext_12);
+                emit_0(_S75, i_14, st_3, 1U, (uint4(_S68->cull_0) ).y, &e_3, &kernelContext_14);
                 total_0 = 1U;
             }
             else
@@ -854,47 +897,47 @@ bool occluded_0(FrameData_natural_0 device* f_1, float device* hzb_2, float3 c_r
 
 [[kernel]] void shadow_reset(uint3 tid_3 [[thread_position_in_grid]], CullC_0 constant* ed_c_4 [[buffer(0)]], ulong device* ed_buffers_4 [[buffer(2)]])
 {
-    thread KernelContext_0 kernelContext_13;
-    (&kernelContext_13)->ed_c_0 = ed_c_4;
-    (&kernelContext_13)->ed_buffers_0 = ed_buffers_4;
-    uint i_13 = tid_3.x;
-    if(i_13 < (ed_c_4->bins_kind_0 * 4U * 5U))
+    thread KernelContext_0 kernelContext_15;
+    (&kernelContext_15)->ed_c_0 = ed_c_4;
+    (&kernelContext_15)->ed_buffers_0 = ed_buffers_4;
+    uint i_15 = tid_3.x;
+    if(i_15 < (ed_c_4->bins_kind_0 * 4U * 5U))
     {
-        uint device* _S91 = ed_buf_7((&kernelContext_13)->ed_c_0->args_0, &kernelContext_13);
-        uint device* _S92 = _S91 + i_13;
-        uint device* _S93 = ed_buf_7((&kernelContext_13)->ed_c_0->templ_0, &kernelContext_13);
-        *_S92 = *(_S93 + i_13);
+        uint device* _S91 = ed_buf_9((&kernelContext_15)->ed_c_0->args_0, &kernelContext_15);
+        uint device* _S92 = _S91 + i_15;
+        uint device* _S93 = ed_buf_9((&kernelContext_15)->ed_c_0->templ_0, &kernelContext_15);
+        *_S92 = *(_S93 + i_15);
     }
     return;
 }
 
 [[kernel]] void shadow_cull(uint3 tid_4 [[thread_position_in_grid]], CullC_0 constant* ed_c_5 [[buffer(0)]], ulong device* ed_buffers_5 [[buffer(2)]])
 {
-    thread KernelContext_0 kernelContext_14;
-    (&kernelContext_14)->ed_c_0 = ed_c_5;
-    (&kernelContext_14)->ed_buffers_0 = ed_buffers_5;
-    uint i_14 = tid_4.x;
-    FrameData_natural_0 device* _S94 = ed_buf_6(ed_c_5->frame_0, &kernelContext_14);
-    uint device* _S95 = ed_buf_7((&kernelContext_14)->ed_c_0->stats_0, &kernelContext_14);
+    thread KernelContext_0 kernelContext_16;
+    (&kernelContext_16)->ed_c_0 = ed_c_5;
+    (&kernelContext_16)->ed_buffers_0 = ed_buffers_5;
+    uint i_16 = tid_4.x;
+    FrameData_natural_0 device* _S94 = ed_buf_8(ed_c_5->frame_0, &kernelContext_16);
+    uint device* _S95 = ed_buf_9((&kernelContext_16)->ed_c_0->stats_0, &kernelContext_16);
     atomic<uint> device* _S96 = (atomic<uint> device*)((ulong)(_S95));
     thread Emitted_0 e_4 = Emitted_x24init_0(0U, 0U, 0U);
     uint cnt0_0;
     uint cnt1_0;
     uint cnt2_0;
     uint cnt3_0;
-    if(i_14 < ((&kernelContext_14)->ed_c_0->count_0))
+    if(i_16 < ((&kernelContext_16)->ed_c_0->count_0))
     {
-        GpuInstance_natural_0 device* _S97 = ed_buf_5((&kernelContext_14)->ed_c_0->instances_0, &kernelContext_14);
-        thread GpuInstance_natural_0 _S98 = *(_S97 + i_14);
+        GpuInstance_natural_0 device* _S97 = ed_buf_7((&kernelContext_16)->ed_c_0->instances_0, &kernelContext_16);
+        thread GpuInstance_natural_0 _S98 = *(_S97 + i_16);
         uint _S99 = (&_S98)->node_flags_0;
         if((((&_S98)->node_flags_0) & 65536U) != 0U)
         {
-            uint device* _S100 = ed_buf_7((&kernelContext_14)->ed_c_0->args_0, &kernelContext_14);
+            uint device* _S100 = ed_buf_9((&kernelContext_16)->ed_c_0->args_0, &kernelContext_16);
             atomic<uint> device* _S101 = (atomic<uint> device*)((ulong)(_S100));
-            uint device* _S102 = ed_buf_7((&kernelContext_14)->ed_c_0->visible_0, &kernelContext_14);
-            GpuMesh_natural_0 device* _S103 = ed_buf_4((&kernelContext_14)->ed_c_0->meshes_0, &kernelContext_14);
+            uint device* _S102 = ed_buf_9((&kernelContext_16)->ed_c_0->visible_0, &kernelContext_16);
+            GpuMesh_natural_0 device* _S103 = ed_buf_6((&kernelContext_16)->ed_c_0->meshes_0, &kernelContext_16);
             GpuMesh_natural_0 device* _S104 = _S103 + (&_S98)->mesh_0;
-            Bounds_0 _S105 = bounds_0(&_S98, _S104, &kernelContext_14);
+            Bounds_0 _S105 = bounds_0(&_S98, _S104, &kernelContext_16);
             uint _S106 = min(uint((float4((&_S94->light_0)->cfg_0) ).x), 4U);
             float _S107 = (float4((&_S94->light_0)->cfg_0) ).y;
             bool _S108;
@@ -1008,8 +1051,8 @@ bool occluded_0(FrameData_natural_0 device* f_1, float device* hzb_2, float3 c_r
                     continue;
                 }
                 uint _S117 = select_lod_0(_S104, _S105.scale_1 / _S113, 0U, false, (float4(_S94->params_0) ).y * SHADOW_LOD_BIAS_0[c_3], 1.0f);
-                uint lod_0 = clamp(_S117, lod_min_0, lod_max_0);
-                push_0(_S101, _S100, _S102, c_3 * (&kernelContext_14)->ed_c_0->bins_kind_0 + _S104->bin_base_0 + lod_0, i_14 | (lod_0 << 20U), _S104->capacity_0, _S104->index_count_0[lod_0] / 3U, &e_4);
+                uint lod_1 = clamp(_S117, lod_min_0, lod_max_0);
+                push_0(_S101, _S100, _S102, c_3 * (&kernelContext_16)->ed_c_0->bins_kind_0 + _S104->bin_base_0 + lod_1, i_16 | (lod_1 << 20U), _S104->capacity_0, _S104->index_count_0[lod_1] / 3U, &e_4);
                 uint _S118;
                 if(c_3 == 0U)
                 {
@@ -1082,16 +1125,16 @@ bool occluded_0(FrameData_natural_0 device* f_1, float device* hzb_2, float3 c_r
 
 [[kernel]] void imp_reset(uint3 tid_5 [[thread_position_in_grid]], CullC_0 constant* ed_c_6 [[buffer(0)]], ulong device* ed_buffers_6 [[buffer(2)]])
 {
-    thread KernelContext_0 kernelContext_15;
-    (&kernelContext_15)->ed_c_0 = ed_c_6;
-    (&kernelContext_15)->ed_buffers_0 = ed_buffers_6;
-    uint i_15 = tid_5.x;
-    if(i_15 < 25U)
+    thread KernelContext_0 kernelContext_17;
+    (&kernelContext_17)->ed_c_0 = ed_c_6;
+    (&kernelContext_17)->ed_buffers_0 = ed_buffers_6;
+    uint i_17 = tid_5.x;
+    if(i_17 < 25U)
     {
-        uint w_2 = i_15 % 5U;
-        uint list_0 = i_15 / 5U;
-        uint device* _S122 = ed_buf_7((&kernelContext_15)->ed_c_0->args_0, &kernelContext_15);
-        uint device* _S123 = _S122 + i_15;
+        uint w_2 = i_17 % 5U;
+        uint list_0 = i_17 / 5U;
+        uint device* _S122 = ed_buf_9((&kernelContext_17)->ed_c_0->args_0, &kernelContext_17);
+        uint device* _S123 = _S122 + i_17;
         uint _S124;
         if(w_2 == 0U)
         {
@@ -1101,7 +1144,7 @@ bool occluded_0(FrameData_natural_0 device* f_1, float device* hzb_2, float3 c_r
         {
             if(w_2 == 4U)
             {
-                _S124 = list_0 * (&kernelContext_15)->ed_c_0->bins_kind_0;
+                _S124 = list_0 * (&kernelContext_17)->ed_c_0->bins_kind_0;
             }
             else
             {
@@ -1155,27 +1198,27 @@ float imp_hash01_0(uint h_1)
 
 [[kernel]] void imp_cull(uint3 tid_6 [[thread_position_in_grid]], CullC_0 constant* ed_c_7 [[buffer(0)]], ulong device* ed_buffers_7 [[buffer(2)]])
 {
-    thread KernelContext_0 kernelContext_16;
-    (&kernelContext_16)->ed_c_0 = ed_c_7;
-    (&kernelContext_16)->ed_buffers_0 = ed_buffers_7;
-    uint i_16 = tid_6.x;
-    FrameData_natural_0 device* _S129 = ed_buf_6(ed_c_7->frame_0, &kernelContext_16);
-    uint device* _S130 = ed_buf_7((&kernelContext_16)->ed_c_0->stats_0, &kernelContext_16);
+    thread KernelContext_0 kernelContext_18;
+    (&kernelContext_18)->ed_c_0 = ed_c_7;
+    (&kernelContext_18)->ed_buffers_0 = ed_buffers_7;
+    uint i_18 = tid_6.x;
+    FrameData_natural_0 device* _S129 = ed_buf_8(ed_c_7->frame_0, &kernelContext_18);
+    uint device* _S130 = ed_buf_9((&kernelContext_18)->ed_c_0->stats_0, &kernelContext_18);
     atomic<uint> device* _S131 = (atomic<uint> device*)((ulong)(_S130));
     uint drawn_2;
     uint casters_0;
-    if(i_16 < ((&kernelContext_16)->ed_c_0->count_0))
+    if(i_18 < ((&kernelContext_18)->ed_c_0->count_0))
     {
-        GpuTree_0 device* _S132 = ed_buf_1((&kernelContext_16)->ed_c_0->instances_0, &kernelContext_16);
-        GpuTree_0 device* _S133 = _S132 + i_16;
+        GpuTree_0 device* _S132 = ed_buf_3((&kernelContext_18)->ed_c_0->instances_0, &kernelContext_18);
+        GpuTree_0 device* _S133 = _S132 + i_18;
         GpuTree_0 g_0 = *_S133;
         if(((*_S133).scale_0) > 0.0f)
         {
-            GpuImpKind_natural_0 device* _S134 = ed_buf_0((&kernelContext_16)->ed_c_0->meshes_0, &kernelContext_16);
-            GpuImpKind_natural_0 k_1 = *(_S134 + (((g_0.node_kind_0) >> 12U) & 4095U));
-            packed_float4 device* _S135 = ed_buf_3((&kernelContext_16)->ed_c_0->nodes_0, &kernelContext_16);
+            GpuImpKind_natural_0 device* _S134 = ed_buf_2((&kernelContext_18)->ed_c_0->meshes_0, &kernelContext_18);
+            GpuImpKind_natural_0 k_1 = *(_S134 + (((g_0.node_kind_1) >> 12U) & 4095U));
+            packed_float4 device* _S135 = ed_buf_5((&kernelContext_18)->ed_c_0->nodes_0, &kernelContext_18);
             float4 _S136 = float4(k_1.geo_0) ;
-            float3 c_4 = (float4(*(_S135 + ((g_0.node_kind_0) & 4095U))) ).xyz + float3(g_0.px_0, g_0.py_0, g_0.pz_0) + oct_decode_0(g_0.up_0) * float3((_S136.x * g_0.scale_0)) ;
+            float3 c_4 = (float4(*(_S135 + ((g_0.node_kind_1) & 4095U))) ).xyz + float3(g_0.px_1, g_0.py_1, g_0.pz_1) + oct_decode_0(g_0.up_1) * float3((_S136.x * g_0.scale_0)) ;
             float r_4 = _S136.y * g_0.scale_0 * max(0.5f + float((g_0.yaw_widen_0) >> 16U) / 65535.0f, 1.0f);
             float _S137 = max(length(c_4), (float4(_S129->params_0) ).z);
             float ppr_0 = (float4(_S129->proj_0) ).w * 0.5f * (float4(_S129->proj_0) ).y;
@@ -1183,7 +1226,7 @@ float imp_hash01_0(uint h_1)
             float _S139 = _S138.y;
             float _S140 = _S138.z;
             float _S141 = _S138.w - _S140;
-            float a_out_0 = saturate(((float4((&_S129->imp_0)->cfg_3) ).x * ppr_0 / _S137 - (_S140 + _S141 * imp_hash01_0((g_0.node_kind_0) >> 24U))) / max(_S141 * 0.15000000596046448f, 0.0010000000474974513f));
+            float a_out_0 = saturate(((float4((&_S129->imp_0)->cfg_3) ).x * ppr_0 / _S137 - (_S140 + _S141 * imp_hash01_0((g_0.node_kind_1) >> 24U))) / max(_S141 * 0.15000000596046448f, 0.0010000000474974513f));
             uint cov_0 = uint(saturate((_S139 - _S136.z * g_0.scale_0 * ppr_0 / _S137) / max(_S139 - _S138.x, 0.0010000000474974513f)) * a_out_0 * 255.0f + 0.5f);
             uint cov_far_0 = uint(a_out_0 * 255.0f + 0.5f);
             uint _S142 = uint((float4((&_S129->imp_0)->cfg_3) ).w);
@@ -1210,18 +1253,18 @@ float imp_hash01_0(uint h_1)
                 }
                 if(_S144)
                 {
-                    float device* _S145 = ed_buf_2((&kernelContext_16)->ed_c_0->hzb_0, &kernelContext_16);
+                    float device* _S145 = ed_buf_4((&kernelContext_18)->ed_c_0->hzb_0, &kernelContext_18);
                     bool _S146 = occluded_0(_S129, _S145, c_4, r_4);
                     vis_1 = !_S146;
                 }
                 if(vis_1)
                 {
-                    uint device* _S147 = ed_buf_7((&kernelContext_16)->ed_c_0->args_0, &kernelContext_16);
+                    uint device* _S147 = ed_buf_9((&kernelContext_18)->ed_c_0->args_0, &kernelContext_18);
                     uint slot_1 = atomic_fetch_add_explicit((atomic<uint> device*)((ulong)(_S147)) + int(1), 1U, memory_order_relaxed);
-                    if(slot_1 < ((&kernelContext_16)->ed_c_0->bins_kind_0))
+                    if(slot_1 < ((&kernelContext_18)->ed_c_0->bins_kind_0))
                     {
-                        uint device* _S148 = ed_buf_7((&kernelContext_16)->ed_c_0->visible_0, &kernelContext_16);
-                        *(_S148 + slot_1) = i_16 | (cov_0 << 24U);
+                        uint device* _S148 = ed_buf_9((&kernelContext_18)->ed_c_0->visible_0, &kernelContext_18);
+                        *(_S148 + slot_1) = i_18 | (cov_0 << 24U);
                         drawn_2 = 1U;
                     }
                     else
@@ -1245,7 +1288,7 @@ float imp_hash01_0(uint h_1)
                 {
                     uint _S149 = min(uint((float4((&_S129->light_0)->cfg_0) ).x), 4U);
                     float _S150 = (float4((&_S129->light_0)->cfg_0) ).y;
-                    uint device* _S151 = ed_buf_7((&kernelContext_16)->ed_c_0->args_0, &kernelContext_16);
+                    uint device* _S151 = ed_buf_9((&kernelContext_18)->ed_c_0->args_0, &kernelContext_18);
                     atomic<uint> device* _S152 = (atomic<uint> device*)((ulong)(_S151));
                     uint cc_0 = 0U;
                     casters_0 = 0U;
@@ -1310,10 +1353,10 @@ float imp_hash01_0(uint h_1)
                         uint _S157 = cc_0 + 1U;
                         uint slot_2 = atomic_fetch_add_explicit(_S152 + (_S157 * 5U + 1U), 1U, memory_order_relaxed);
                         uint casters_1;
-                        if(slot_2 < ((&kernelContext_16)->ed_c_0->bins_kind_0))
+                        if(slot_2 < ((&kernelContext_18)->ed_c_0->bins_kind_0))
                         {
-                            uint device* _S158 = ed_buf_7((&kernelContext_16)->ed_c_0->visible_0, &kernelContext_16);
-                            *(_S158 + (_S157 * (&kernelContext_16)->ed_c_0->bins_kind_0 + slot_2)) = i_16 | (cv_0 << 24U);
+                            uint device* _S158 = ed_buf_9((&kernelContext_18)->ed_c_0->visible_0, &kernelContext_18);
+                            *(_S158 + (_S157 * (&kernelContext_18)->ed_c_0->bins_kind_0 + slot_2)) = i_18 | (cv_0 << 24U);
                             casters_1 = casters_0 + 1U;
                         }
                         else
@@ -1348,6 +1391,233 @@ float imp_hash01_0(uint h_1)
     }
     stat_add_0(_S131, 16U, drawn_2);
     stat_add_0(_S131, 17U, casters_0);
+    return;
+}
+
+[[kernel]] void grass_reset(uint3 tid_7 [[thread_position_in_grid]], CullC_0 constant* ed_c_8 [[buffer(0)]], ulong device* ed_buffers_8 [[buffer(2)]])
+{
+    thread KernelContext_0 kernelContext_19;
+    (&kernelContext_19)->ed_c_0 = ed_c_8;
+    (&kernelContext_19)->ed_buffers_0 = ed_buffers_8;
+    uint i_19 = tid_7.x;
+    if(i_19 < 50U)
+    {
+        uint w_3 = i_19 % 5U;
+        uint list_1 = i_19 / 5U;
+        uint b_2 = list_1 % 5U;
+        uint v_3;
+        if(w_3 == 0U)
+        {
+            v_3 = GRASS_SLOTS_0[b_2] * GRASS_SEGS_0[b_2] * 6U;
+        }
+        else
+        {
+            if(w_3 == 2U)
+            {
+                v_3 = GRASS_FIRST_0[b_2];
+            }
+            else
+            {
+                if(w_3 == 4U)
+                {
+                    v_3 = list_1 * (&kernelContext_19)->ed_c_0->bins_kind_0;
+                }
+                else
+                {
+                    v_3 = 0U;
+                }
+            }
+        }
+        uint device* _S159 = ed_buf_9((&kernelContext_19)->ed_c_0->args_0, &kernelContext_19);
+        *(_S159 + i_19) = v_3;
+    }
+    return;
+}
+
+float2 grass_lod_0(FrameData_natural_0 device* f_2, float d_0, float blades_0)
+{
+    float q_0 = (float4((&f_2->grass_0)->lod_0) ).x / max(d_0, 0.0010000000474974513f);
+    float raw_0 = blades_0 * min(q_0 * q_0, 1.0f);
+    float _S160 = min((float4((&f_2->grass_0)->lod_0) ).z, blades_0);
+    return float2(max(raw_0, _S160), min(raw_0 / max(_S160, 0.0010000000474974513f), 1.0f));
+}
+
+uint grass_bucket_0(float cnt_0)
+{
+    uint _S161 = uint(ceil(cnt_0));
+    int b_3 = int(4);
+    for(;;)
+    {
+        if(b_3 > int(0))
+        {
+        }
+        else
+        {
+            break;
+        }
+        if((GRASS_SLOTS_0[b_3]) >= _S161)
+        {
+            return uint(b_3);
+        }
+        b_3 = b_3 - int(1);
+    }
+    return 0U;
+}
+
+void grass_emit_0(uint list_2, uint i_20, KernelContext_0 thread* kernelContext_20)
+{
+    uint device* _S162 = ed_buf_9(kernelContext_20->ed_c_0->args_0, kernelContext_20);
+    uint slot_3 = atomic_fetch_add_explicit((atomic<uint> device*)((ulong)(_S162)) + (list_2 * 5U + 1U), 1U, memory_order_relaxed);
+    if(slot_3 < (kernelContext_20->ed_c_0->bins_kind_0))
+    {
+        uint device* _S163 = ed_buf_9(kernelContext_20->ed_c_0->visible_0, kernelContext_20);
+        *(_S163 + (list_2 * kernelContext_20->ed_c_0->bins_kind_0 + slot_3)) = i_20;
+    }
+    return;
+}
+
+[[kernel]] void grass_cull(uint3 tid_8 [[thread_position_in_grid]], CullC_0 constant* ed_c_9 [[buffer(0)]], ulong device* ed_buffers_9 [[buffer(2)]])
+{
+    thread KernelContext_0 kernelContext_21;
+    (&kernelContext_21)->ed_c_0 = ed_c_9;
+    (&kernelContext_21)->ed_buffers_0 = ed_buffers_9;
+    uint i_21 = tid_8.x;
+    FrameData_natural_0 device* _S164 = ed_buf_8(ed_c_9->frame_0, &kernelContext_21);
+    uint device* _S165 = ed_buf_9((&kernelContext_21)->ed_c_0->stats_0, &kernelContext_21);
+    atomic<uint> device* _S166 = (atomic<uint> device*)((ulong)(_S165));
+    uint drawn_3;
+    uint casters_2;
+    if(i_21 < ((&kernelContext_21)->ed_c_0->count_0))
+    {
+        GrassClump_0 device* _S167 = ed_buf_1((&kernelContext_21)->ed_c_0->instances_0, &kernelContext_21);
+        GrassClump_0 device* _S168 = _S167 + i_21;
+        GrassClump_0 g_1 = *_S168;
+        uint _S169 = ((*_S168).hw_0) & 65535U;
+        if(_S169 != 0U)
+        {
+            GrassType_natural_0 device* _S170 = ed_buf_0((&kernelContext_21)->ed_c_0->meshes_0, &kernelContext_21);
+            GrassType_natural_0 ty_0 = *(_S170 + (((g_1.node_kind_0) >> 12U) & 255U));
+            packed_float4 device* _S171 = ed_buf_5((&kernelContext_21)->ed_c_0->nodes_0, &kernelContext_21);
+            float4 _S172 = float4(ty_0.a_0) ;
+            float h_2 = _S172.y * float(_S169) / 65535.0f * 4.0f;
+            float3 base_0 = (float4(*(_S171 + ((g_1.node_kind_0) & 4095U))) ).xyz + float3(g_1.px_0, g_1.py_0, g_1.pz_0);
+            float3 c_5 = base_0 + oct_decode_0(g_1.up_0) * float3((0.5f * h_2)) ;
+            float r_5 = (float4(ty_0.b_0) ).x * 1.1499999761581421f + 0.60000002384185791f * h_2 + 0.05000000074505806f;
+            float d_1 = length(base_0);
+            float2 _S173 = grass_lod_0(_S164, d_1, _S172.w);
+            float rank_0 = float((g_1.node_kind_0) >> 24U) / 255.0f;
+            bool vis_2;
+            if(d_1 < ((float4((&_S164->grass_0)->lod_0) ).y))
+            {
+                vis_2 = rank_0 < (_S173.y);
+            }
+            else
+            {
+                vis_2 = false;
+            }
+            if(vis_2)
+            {
+                uint b_4 = grass_bucket_0(_S173.x);
+                bool _S174 = in_frustum_0(_S164, c_5, r_5);
+                if(_S174)
+                {
+                    vis_2 = ((uint4(_S164->cull_0) ).x) > 0U;
+                }
+                else
+                {
+                    vis_2 = false;
+                }
+                if(vis_2)
+                {
+                    float device* _S175 = ed_buf_4((&kernelContext_21)->ed_c_0->hzb_0, &kernelContext_21);
+                    bool _S176 = occluded_0(_S164, _S175, c_5, r_5);
+                    vis_2 = !_S176;
+                }
+                else
+                {
+                    vis_2 = _S174;
+                }
+                if(vis_2)
+                {
+                    grass_emit_0(b_4, i_21, &kernelContext_21);
+                    drawn_3 = 1U;
+                }
+                else
+                {
+                    drawn_3 = 0U;
+                }
+                if((((uint4((&_S164->grass_0)->bufs_2) ).w) & 2U) != 0U)
+                {
+                    vis_2 = ((float4((&_S164->light_0)->cfg_0) ).x) > 0.0f;
+                }
+                else
+                {
+                    vis_2 = false;
+                }
+                if(vis_2)
+                {
+                    vis_2 = d_1 < ((float4((&_S164->light_0)->split_0) ).x);
+                }
+                else
+                {
+                    vis_2 = false;
+                }
+                if(vis_2)
+                {
+                    float4 _S177 = float4((&(&_S164->light_0)->cascade_0)->data_4[int(0)]) ;
+                    float4 sp_1 = (((float4(c_5, 1.0f)) * (matrix<float,int(4),int(4)> ((&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(0)][int(0)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(1)][int(0)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(2)][int(0)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(3)][int(0)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(0)][int(1)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(1)][int(1)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(2)][int(1)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(3)][int(1)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(0)][int(2)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(1)][int(2)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(2)][int(2)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(3)][int(2)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(0)][int(3)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(1)][int(3)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(2)][int(3)], (&(&_S164->light_0)->shadow_0)->data_3[int(0)].data_1[int(3)][int(3)]))));
+                    float rz_2 = r_5 / _S177.y;
+                    float _S178 = 1.0f + r_5 / (_S177.x * (float4((&_S164->light_0)->cfg_0) ).y * 0.5f);
+                    if((abs(sp_1.x)) > _S178)
+                    {
+                        vis_2 = true;
+                    }
+                    else
+                    {
+                        vis_2 = (abs(sp_1.y)) > _S178;
+                    }
+                    if(vis_2)
+                    {
+                        vis_2 = true;
+                    }
+                    else
+                    {
+                        vis_2 = (sp_1.z) < (- rz_2);
+                    }
+                    if(!vis_2)
+                    {
+                        grass_emit_0(5U + min(b_4 + 1U, 4U), i_21, &kernelContext_21);
+                        casters_2 = 1U;
+                    }
+                    else
+                    {
+                        casters_2 = 0U;
+                    }
+                }
+                else
+                {
+                    casters_2 = 0U;
+                }
+            }
+            else
+            {
+                drawn_3 = 0U;
+                casters_2 = 0U;
+            }
+        }
+        else
+        {
+            drawn_3 = 0U;
+            casters_2 = 0U;
+        }
+    }
+    else
+    {
+        drawn_3 = 0U;
+        casters_2 = 0U;
+    }
+    stat_add_0(_S166, 18U, drawn_3);
+    stat_add_0(_S166, 19U, casters_2);
     return;
 }
 

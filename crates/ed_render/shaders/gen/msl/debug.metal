@@ -79,7 +79,7 @@ uint device* ed_buf_2(uint i_2, KernelContext_0 thread* kernelContext_2)
         int3 _S4 = int3(int((&kernelContext_3)->ed_c_0->x_0), int((&kernelContext_3)->ed_c_0->y_0), int(0));
         v_0 = ((_S3).read(vec<uint,2>(((_S4)).xy), uint(((_S4)).z))).xy;
     }
-    if(((v_0.x) & 3221225472U) != 0U)
+    if(((v_0.x) & 3758096384U) != 0U)
     {
         v_0.x = 0U;
     }
@@ -325,7 +325,7 @@ float3 alpha_tonemap_0(uint lut_buf_1, float3 hdr_1, float exposure_1, KernelCon
             bool _S38;
             if(id_0 != 0U)
             {
-                _S38 = (id_0 & 3221225472U) == 0U;
+                _S38 = (id_0 & 3758096384U) == 0U;
             }
             else
             {

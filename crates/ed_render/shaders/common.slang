@@ -68,6 +68,13 @@ struct SeasonData {
     float4 rows[64];
 };
 
+// Grass style A (src/grass.rs `GrassStore::words`, ed_world::grass).
+struct GrassData {
+    uint4 bufs;             // bindless: x clump buffer, y type table; z clump slots, w flags (1 on, 2 shadows, 4 wind)
+    float4 lod;             // x: full-density radius r0 (m), y: range (m), z: fewest blades, w: most widening
+    float4 look;            // x: shading normal blend to the ground normal (near), yzw: unused
+};
+
 struct HzbLevel { uint offset; uint width; uint height; uint pad; };
 struct FrameData {
     float4x4 view_proj;     // camera-relative: rotation and projection only (P1-D7)
@@ -89,6 +96,7 @@ struct FrameData {
     WindData wind;
     ImpData imp;
     SeasonData season;
+    GrassData grass;
 };
 
 // One instance (128 bytes). Transform rows are a 3x4 affine matrix relative to the node origin.
@@ -602,4 +610,180 @@ float2 imp_atlas_uv(uint fi, uint n, float2 uv, float frame_px) {
 }
 bool imp_inside(float2 uv) {
     return all(uv >= 0.0) && all(uv <= 1.0);
+}
+
+// ---- Grass style A (src/grass.rs, ed_world::grass) ----------------------------------------
+// A clump record (32 bytes): centre relative to its node, node (12 bits) | type (8) | rank (8),
+// ground normal and facing (oct_encode), seed, height scale (unorm16 x 4; 0 = dead slot) | dry
+// (unorm8). Blades are built from the seed and the type row, the same in the vertex shader,
+// the shadow pass and the resolve.
+static const uint GRASS_VIS_BIT = 0x20000000u;   // vis.x: clump index (TERRAIN and IMP bits clear)
+static const uint GRASS_INDEX_MASK = 0x1FFFFFFFu;
+// Buckets: blade slots, segments and first index (src/grass.rs `BUCKETS`, `bucket_indices`).
+static const uint GRASS_BUCKETS = 5u;
+static const uint GRASS_SLOTS[5] = { 64u, 32u, 16u, 8u, 4u };
+static const uint GRASS_SEGS[5] = { 6u, 5u, 4u, 3u, 2u };
+static const uint GRASS_FIRST[5] = { 0u, 2304u, 3264u, 3648u, 3792u };
+
+struct GrassClump { float px; float py; float pz; uint node_kind; uint up; uint facing; uint seed; uint hw; };
+// Type row (ed_world::grass::gpu_row): a (h min, h max, width, blades), b (clump r, lean,
+// stiffness, curve), root (rgb, aniso), mid (rgb, head share), tip (rgb, head width), dry (rgb, density).
+struct GrassType { float4 a; float4 b; float4 root; float4 mid; float4 tip; float4 dry; };
+
+uint grass_hash(uint x) {
+    uint s = x * 747796405u + 2891336453u;
+    uint w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
+    return (w >> 22u) ^ w;
+}
+float grass_rand(uint h) {
+    return float(h >> 8) * (1.0 / 16777216.0);
+}
+
+// Continuous blades per clump and the clump keep at distance `d` (ed_world::grass::lod).
+float2 grass_lod(FrameData* f, float d, float blades) {
+    float q = f.grass.lod.x / max(d, 1e-3);
+    float raw = blades * min(q * q, 1.0);
+    float bm = min(f.grass.lod.z, blades);
+    return float2(max(raw, bm), min(raw / max(bm, 1e-3), 1.0));
+}
+
+// The smallest bucket holding `cnt` blades.
+uint grass_bucket(float cnt) {
+    uint need = uint(ceil(cnt));
+    for (int b = 4; b > 0; b--) {
+        if (GRASS_SLOTS[b] >= need) {
+            return uint(b);
+        }
+    }
+    return 0u;
+}
+
+struct GrassBlade {
+    float3 p0;      // camera-relative quadratic Bezier: root, control, tip
+    float3 p1;
+    float3 p2;
+    float3 side;    // width axis (unit)
+    float3 up;      // ground normal
+    float w;        // root width (m)
+    float h;        // height (m); 0: not drawn
+    float head;     // seed head share and width (over the root width)
+    float head_w;
+    float shade;    // per-blade value
+    float t_ao;     // root darkness 0..1 (taller grass is darker inside)
+};
+
+float3 grass_point(GrassBlade b, float t) {
+    float s = 1.0 - t;
+    return b.p0 * (s * s) + b.p1 * (2.0 * s * t) + b.p2 * (t * t);
+}
+float3 grass_tangent(GrassBlade b, float t) {
+    return (b.p1 - b.p0) * (2.0 * (1.0 - t)) + (b.p2 - b.p1) * (2.0 * t);
+}
+float grass_width(GrassBlade b, float t) {
+    float w = b.w * (1.0 - t * t * t) * (1.0 - 0.2 * t);
+    if (b.head > 0.0) {
+        float hs = smoothstep(1.0 - b.head - 0.04, 1.0 - b.head, t) * (1.0 - smoothstep(0.93, 1.0, t));
+        w = lerp(w, b.w * b.head_w * (1.0 - 0.25 * t), hs);
+    }
+    return w;
+}
+
+// Blade `k` of clump `c` (node origin `node`, camera-relative). `lod_mul` scales the blade count
+// (1 view and resolve, 0.5 shadow casters: fewer, wider blades).
+GrassBlade grass_blade(FrameData* f, GrassClump c, GrassType ty, float3 node, uint k, float lod_mul) {
+    GrassBlade o;
+    float3 up = oct_decode(c.up);
+    float3 fa = oct_decode(c.facing);
+    float3 rt = normalize(cross(up, fa));
+    fa = cross(rt, up);
+    float3 base = node + float3(c.px, c.py, c.pz);
+    float d = length(base);
+    float blades = ty.a.w;
+    float2 lod = grass_lod(f, d, blades);
+    float bm = min(f.grass.lod.z, blades);
+    float cnt = max(lod.x * lod_mul, bm);
+    // Widen as blades thin (coverage holds), and survivors of clump thinning a little more.
+    float wscale = min(pow(blades / cnt, 0.8) * rsqrt(max(lod.y, 0.2)), f.grass.lod.w);
+    float rank = float(c.node_kind >> 24) / 255.0;
+    float keep = saturate((lod.y - rank) / (0.3 * lod.y + 1e-3));
+    float range = f.grass.lod.y;
+    float fade = 1.0 - smoothstep(0.6 * range, range, d);
+    uint cs = c.seed;
+    uint s0 = grass_hash(cs ^ (k * 0x9E3779B9u + 0x7F4A7C15u));
+    uint s1 = grass_hash(s0);
+    uint s2 = grass_hash(s1);
+    uint s3 = grass_hash(s2);
+    uint s4 = grass_hash(s3);
+    uint s5 = grass_hash(s4);
+    // Root: uniform in the clump's (anisotropic) disc, a little under the ground.
+    float ang = grass_rand(s0) * 6.2831853;
+    float rad = sqrt(grass_rand(s1));
+    float cr = ty.b.x;
+    float3 off = (fa * cos(ang) + rt * (sin(ang) * ty.root.w)) * (rad * cr);
+    o.up = up;
+    // Height: the clump's, lower towards its edge, jittered; blades past the count shrink away.
+    float hs = float(c.hw & 0xFFFFu) / 65535.0 * 4.0;
+    float hc = lerp(ty.a.x, ty.a.y, grass_rand(grass_hash(cs + 17u))) * hs;
+    // Roots a little under the ground (short grass less, or it never shows).
+    o.p0 = base + off - up * min(0.03, 0.1 * hc);
+    float h = hc * (1.0 - 0.35 * rad) * lerp(0.72, 1.12, grass_rand(s2));
+    float grow = saturate(cnt - float(k)) * keep * fade;
+    o.h = (k < uint(blades) && (c.hw & 0xFFFFu) != 0u) ? h * grow : 0.0;
+    // Lean: the clump's shared direction, outwards from its centre, and a little of its own.
+    float ca = grass_rand(grass_hash(cs + 29u)) * 6.2831853;
+    float3 cdir = fa * cos(ca) + rt * sin(ca);
+    float3 radial = rad > 1e-3 ? normalize(off) : fa;
+    float ba = grass_rand(s3) * 6.2831853;
+    float3 ld = cdir * 0.9 + radial * 0.8 + (fa * cos(ba) + rt * sin(ba)) * 0.6;
+    ld = dot(ld, ld) > 1e-6 ? normalize(ld) : fa;
+    float lean = ty.b.y * lerp(0.3, 1.0, grass_rand(s4));
+    float3 tipv = up * cos(lean) + ld * sin(lean);
+    // Wind: the trees' mean wind and gust band, plus rolling waves along the wind.
+    WindData wn = f.wind;
+    if ((f.grass.bufs.w & 4u) != 0u && wn.cfg.x > 0.5) {
+        float speed = length(wn.wind.xz);
+        float2 wd = speed > 1e-3 ? wn.wind.xz / speed : float2(0.0, 0.0);
+        float band = wn.gust.x + dot(base.xz, wd) / max(wn.gust.y, 1.0);
+        float g = 0.5 + 0.5 * sin(band * 6.2831853);
+        float gust = g * g * g * wn.gust.z;
+        float tw = wn.wind.w;
+        float wave = 0.5 + 0.5 * sin(dot(base.xz, wd) * 0.9 - tw * (1.2 + 0.25 * speed) + 0.6 * sin(dot(base.xz, float2(-wd.y, wd.x)) * 0.35));
+        float flick = sin(tw * (5.0 + 3.0 * grass_rand(s5)) + grass_rand(s5) * 40.0);
+        float amt = speed * 0.06 * (1.0 - ty.b.z) * (0.35 + 0.9 * gust + 0.7 * wave) + 0.04 * (1.0 - ty.b.z) * flick * min(speed * 0.2, 1.0);
+        float3 wv = float3(wd.x, 0.0, wd.y);
+        wv -= up * dot(wv, up);
+        tipv = normalize(tipv + wv * clamp(amt, -0.3, 1.4));
+    }
+    float bend = saturate(1.0 - dot(tipv, up));
+    o.p2 = o.p0 + tipv * (o.h * (1.0 - 0.18 * bend));
+    float rise = max(dot(o.p2 - o.p0, up), 0.25 * o.h);
+    float3 across = (o.p2 - o.p0) - up * dot(o.p2 - o.p0, up);
+    float curve = ty.b.w;
+    o.p1 = o.p0 + up * (rise * lerp(0.6, 1.05, curve)) + across * lerp(0.5, 0.05, curve);
+    // Width across the lean (blades bend over their flat face), twisted a little.
+    float3 lh = across;
+    lh = dot(lh, lh) > 1e-8 ? normalize(lh) : ld;
+    float tw2 = (grass_rand(s5) - 0.5) * 1.1;
+    float3 sd = cross(up, lh);
+    o.side = normalize(sd * cos(tw2) + lh * sin(tw2));
+    o.w = ty.a.z * wscale * lerp(0.8, 1.2, grass_rand(s1 ^ 0x55u));
+    o.head = ty.mid.w;
+    o.head_w = ty.tip.w;
+    o.shade = lerp(0.82, 1.15, grass_rand(s4 ^ 0x33u));
+    o.t_ao = saturate(hc / 0.8);
+    return o;
+}
+
+// The blade's width axis turned part way towards facing the camera (thin blades seen edge-on
+// would vanish): the raster and the resolve use the same axis.
+float3 grass_view_side(GrassBlade b, float t, float3 p) {
+    float3 tg = normalize(grass_tangent(b, t) + b.up * 1e-4);
+    float3 v = normalize(p);
+    float3 vs = cross(tg, v);
+    if (dot(vs, vs) < 1e-8) {
+        return b.side;
+    }
+    vs = normalize(vs);
+    vs = dot(vs, b.side) < 0.0 ? -vs : vs;
+    return normalize(lerp(b.side, vs, 0.55));
 }

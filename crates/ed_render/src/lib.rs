@@ -24,6 +24,7 @@
 //! (`shaders/gen/`, `tools/shaders/build.sh`); see [`shaders`].
 
 mod alloc;
+pub mod grass;
 pub mod impostor;
 pub mod atmosphere;
 pub mod atmosphere_model;
@@ -866,6 +867,33 @@ impl Renderer {
         self.lod.imp.used()
     }
 
+    /// Grass style A: replaces the type table (`ed_world::grass::gpu_rows`, at most 64 rows).
+    pub fn set_grass_types(&mut self, dev: &dyn Device, rows: &[[f32; grass::GRASS_TYPE_FLOATS]]) -> Result<(), ed_gpu::Error> {
+        self.lod.grass.set_types(dev, rows)
+    }
+    /// Adds a block of grass clumps under `node`; `None` when the buffer is full.
+    pub fn add_grass_clumps(&mut self, dev: &dyn Device, node: scene::NodeSlot, clumps: &[grass::GrassClump]) -> Result<Option<grass::GrassRange>, ed_gpu::Error> {
+        self.lod.grass.add_clumps(dev, node, clumps)
+    }
+    /// Removes a block: its clumps stop drawing at once, the slots are reused after frames in flight.
+    pub fn remove_grass_clumps(&mut self, dev: &dyn Device, r: grass::GrassRange) -> Result<(), ed_gpu::Error> {
+        self.lod.grass.kill(dev, r)?;
+        self.deferred.push(self.frames_seen, Release::GrassClumps(r.start, r.len));
+        Ok(())
+    }
+    /// Grass distance rules and switches (`None`: grass off).
+    pub fn set_grass_config(&mut self, c: Option<grass::GrassConfig>) {
+        self.lod.grass.config = c;
+    }
+    /// Draws grass (`false` hides it, the clumps stay).
+    pub fn set_grass_on(&mut self, on: bool) {
+        self.lod.grass.on = on;
+    }
+    /// Grass clump slots in use.
+    pub fn grass_clumps(&self) -> u32 {
+        self.lod.grass.used()
+    }
+
     /// Tree seasons: `phase_day` (year day after the rate scalar, `ed_world::season::phase_day`;
     /// `None` turns seasons off, trees draw as in summer), the autumn gain, the far rung's
     /// broadleaf and conifer rows, and one `ed_world::season::gpu_row` per species (at most 32).
@@ -966,6 +994,7 @@ impl Renderer {
                 Release::SkinSlot(i) => self.free_skin_slots.push(i),
                 Release::TextureSlot(i) => self.free_tex_slots.push(i),
                 Release::ImpTrees(s, n) => self.lod.imp.free(impostor::ImpostorRange { start: s, len: n }),
+                Release::GrassClumps(s, n) => self.lod.grass.free(grass::GrassRange { start: s, len: n }),
             }
         }
     }
@@ -1525,7 +1554,7 @@ impl Renderer {
             if let Some(t) = &to {
                 rp = rp.read(t.meshes.0, ResourceState::ShaderRead).read(t.state.0, ResourceState::ShaderRead);
             }
-            for r in po.imp.iter().flatten() {
+            for r in po.imp.iter().chain(po.grass.iter()).flatten() {
                 rp = rp.read(*r, ResourceState::ShaderRead);
             }
             rp

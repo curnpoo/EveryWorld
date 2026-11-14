@@ -57,7 +57,7 @@ const L1: u8 = 20;
 const L2: u8 = 23;
 const L3: u8 = 24;
 /// Sub-cell jitter resolution.
-const SUB: u64 = 256;
+pub(crate) const SUB: u64 = 256;
 
 /// Share of the instances kept at distance `d` (m) for an item of `reach` (m): 1 inside
 /// `NEAR_FRAC * reach`, then (r0 / d)^2, eased to 0 between `FADE_FRAC * reach` and `reach`.
@@ -591,25 +591,25 @@ impl Trunk {
 }
 
 /// The node's tangent frame (metres).
-struct Frame {
-    c: DVec3,
-    e1: DVec3,
-    e2: DVec3,
+pub(crate) struct Frame {
+    pub(crate) c: DVec3,
+    pub(crate) e1: DVec3,
+    pub(crate) e2: DVec3,
 }
 
 impl Frame {
-    fn new(id: NodeId) -> Frame {
+    pub(crate) fn new(id: NodeId) -> Frame {
         let c = id.centre().normalize();
         let a = (id.corner(1) - id.corner(0)).normalize();
         let e1 = (a - c * a.dot(c)).normalize();
         let e2 = c.cross(e1);
         Frame { c, e1, e2 }
     }
-    fn xy(&self, d: DVec3) -> [f32; 2] {
+    pub(crate) fn xy(&self, d: DVec3) -> [f32; 2] {
         let q = d / d.dot(self.c) - self.c;
         [(q.dot(self.e1) * EARTH_R) as f32, (q.dot(self.e2) * EARTH_R) as f32]
     }
-    fn dir(&self, p: [f32; 2]) -> DVec3 {
+    pub(crate) fn dir(&self, p: [f32; 2]) -> DVec3 {
         (self.c + self.e1 * (p[0] as f64 / EARTH_R) + self.e2 * (p[1] as f64 / EARTH_R)).normalize()
     }
 }
@@ -663,12 +663,12 @@ fn seg_dist(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
     (d[0] * d[0] + d[1] * d[1]).sqrt()
 }
 
-fn cell_key(face: u8, level: u8, i: u64, j: u64) -> u64 {
+pub(crate) fn cell_key(face: u8, level: u8, i: u64, j: u64) -> u64 {
     (face as u64) << 58 | (level as u64) << 52 | i << 26 | j
 }
 
 /// The lattice cells of `level` covering node `id` grown by `halo` cells.
-fn cells(id: NodeId, level: u8, halo: i64) -> (i64, i64, i64, i64, i64) {
+pub(crate) fn cells(id: NodeId, level: u8, halo: i64) -> (i64, i64, i64, i64, i64) {
     let k = 1i64 << (level - id.level());
     let n = (id.side() as i64) << (level - id.level());
     let (i0, j0) = (id.x() as i64 * k - halo, id.y() as i64 * k - halo);
@@ -676,7 +676,7 @@ fn cells(id: NodeId, level: u8, halo: i64) -> (i64, i64, i64, i64, i64) {
 }
 
 /// Candidate of cell `(i, j)` at `level`: its jittered direction and three rolls.
-fn candidate(face: u8, level: u8, i: i64, j: i64, n: i64, seed: u64) -> (DVec3, u64) {
+pub(crate) fn candidate(face: u8, level: u8, i: i64, j: i64, n: i64, seed: u64) -> (DVec3, u64) {
     let key = cell_key(face, level, i as u64, j as u64) ^ seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
     // Off the cell edges (an edge point may round into the neighbour).
     let ju = 1 + (crate::hash01(key, 1) * (SUB - 2) as f32) as u64 % (SUB - 2);

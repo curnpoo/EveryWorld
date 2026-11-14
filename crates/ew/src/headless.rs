@@ -185,6 +185,9 @@ pub fn run(args: &Args) -> Result<Report, String> {
     if near.as_ref().is_some_and(|n| n.on && n.imp) && !all_passes.contains(&"imp_cull") {
         all_passes.extend(["imp_cull", "imp_raster"]);
     }
+    if near.as_ref().is_some_and(|n| n.grass.is_some()) && !all_passes.contains(&"grass_cull") {
+        all_passes.extend(["grass_cull", "grass_raster"]);
+    }
     let mut log = PerfLog::new(&all_passes, frames as usize);
     let mut path = ScriptedPath::with_speed(args.path, args.speed);
     let mut fixed = FixedStep::default();
@@ -280,6 +283,13 @@ pub fn run(args: &Args) -> Result<Report, String> {
                         println!(
                             "ground cover: {} nodes, {} instances (logs/boulders {} / ferns, moss, stones {} / grass, flowers {}), {} meshes; generate {:.0} ms for {} nodes ({:.1} ms/node, workers); place {:.0} ms",
                             g.nodes, g.instances, g.by_pass[0], g.by_pass[1], g.by_pass[2], g.protos, g.gen_ms, g.gen_nodes, g.gen_ms / g.gen_nodes.max(1) as f64, g.place_ms
+                        );
+                    }
+                    if let Some(g) = &nt.grass {
+                        let g = g.stats;
+                        println!(
+                            "grass: {} nodes, {} clumps, {} pending; generate {:.0} ms for {} nodes ({:.1} ms/node, workers); place {:.0} ms",
+                            g.nodes, g.clumps, g.pending, g.gen_ms, g.gen_nodes, g.gen_ms / g.gen_nodes.max(1) as f64, g.place_ms
                         );
                     }
                     if s.imp_kinds > 0 {
@@ -612,6 +622,8 @@ fn m2_lines(m: &M2Inputs<'_>) -> String {
     let _ = writeln!(s, "  shadow triangles: {}", mm(&|c| c.shadow_triangles));
     let _ = writeln!(s, "  impostors:       {}", mm(&|c| c.impostors));
     let _ = writeln!(s, "  impostor casters: {}", mm(&|c| c.impostor_casters));
+    let _ = writeln!(s, "  grass clumps:    {}", mm(&|c| c.grass));
+    let _ = writeln!(s, "  grass casters:   {}", mm(&|c| c.grass_casters));
     let _ = writeln!(
         s,
         "draw calls per frame: {} ({} indirect = {} mesh x LOD bins x solid/dither x early/late; + resolve + tonemap)",

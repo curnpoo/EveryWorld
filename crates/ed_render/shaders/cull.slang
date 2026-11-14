@@ -47,6 +47,8 @@ static const uint STAT_SHADOW = 10;          // 10..13: shadow casters per casca
 static const uint STAT_SHADOW_TRIANGLES = 14;
 static const uint STAT_IMPOSTORS = 16;        // impostors drawn (trees G5)
 static const uint STAT_IMP_CASTERS = 17;      // impostor shadow casters, all cascades
+static const uint STAT_GRASS = 18;            // grass clumps drawn (style A)
+static const uint STAT_GRASS_CASTERS = 19;    // grass clumps cast into the nearest cascade
 static const uint STAT_WORDS = 20;
 
 // One atomic per wave: every thread of the group reaches the stat_add calls (no early return).
@@ -516,4 +518,87 @@ void imp_cull(uint3 tid: SV_DispatchThreadID) {
     }
     stat_add(stats, STAT_IMPOSTORS, drawn);
     stat_add(stats, STAT_IMP_CASTERS, casters);
+}
+
+// ---- Grass style A (src/grass.rs) -----------------------------------------------------------
+// CullC words: instances = clump buffer, meshes = type table, args = 10 DrawIndexedArgs (the
+// view's five buckets, then the nearest cascade's), visible = the lists (list l from
+// l * bins_kind), count = clump slots, bins_kind = slots per list.
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void grass_reset(uint3 tid: SV_DispatchThreadID) {
+    uint i = tid.x;
+    if (i < 2u * GRASS_BUCKETS * ARGS_WORDS) {
+        uint w = i % ARGS_WORDS;
+        uint list = i / ARGS_WORDS;
+        uint b = list % GRASS_BUCKETS;
+        uint v = 0u;
+        if (w == 0u) {
+            v = GRASS_SLOTS[b] * GRASS_SEGS[b] * 6u;
+        } else if (w == 2u) {
+            v = GRASS_FIRST[b];
+        } else if (w == 4u) {
+            v = list * ed_c.bins_kind;
+        }
+        ed_buf<uint>(ed_c.args)[i] = v;
+    }
+}
+
+void grass_emit(uint list, uint i) {
+    Atomic<uint>* args = (Atomic<uint>*)ed_buf<uint>(ed_c.args);
+    uint slot = args[list * ARGS_WORDS + 1u].add(1u, MemoryOrder.Relaxed);
+    if (slot < ed_c.bins_kind) {
+        ed_buf<uint>(ed_c.visible)[list * ed_c.bins_kind + slot] = i;
+    }
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void grass_cull(uint3 tid: SV_DispatchThreadID) {
+    uint i = tid.x;
+    FrameData* f = ed_buf<FrameData>(ed_c.frame);
+    Atomic<uint>* stats = (Atomic<uint>*)ed_buf<uint>(ed_c.stats);
+    uint drawn = 0;
+    uint casters = 0;
+    if (i < ed_c.count) {
+        GrassClump g = ed_buf<GrassClump>(ed_c.instances)[i];
+        if ((g.hw & 0xFFFFu) != 0u) {
+            GrassType ty = ed_buf<GrassType>(ed_c.meshes)[(g.node_kind >> 12) & 0xFFu];
+            float3 node = ed_buf<float4>(ed_c.nodes)[g.node_kind & 0xFFFu].xyz;
+            float3 up = oct_decode(g.up);
+            float h = ty.a.y * float(g.hw & 0xFFFFu) / 65535.0 * 4.0;
+            float3 base = node + float3(g.px, g.py, g.pz);
+            float3 c = base + up * (0.5 * h);
+            float r = ty.b.x * 1.15 + 0.6 * h + 0.05;
+            float d = length(base);
+            float2 lod = grass_lod(f, d, ty.a.w);
+            float rank = float(g.node_kind >> 24) / 255.0;
+            if (d < f.grass.lod.y && rank < lod.y) {
+                uint b = grass_bucket(lod.x);
+                bool vis = in_frustum(f, c, r);
+                if (vis && f.cull.x > 0) {
+                    vis = !occluded(f, ed_buf<float>(ed_c.hzb), c, r);
+                }
+                if (vis) {
+                    grass_emit(b, i);
+                    drawn = 1;
+                }
+                // Nearest cascade only: one bucket coarser (half the blades, wider).
+                if ((f.grass.bufs.w & 2u) != 0u && f.light.cfg.x > 0.0 && d < f.light.split.x) {
+                    float tile = f.light.cfg.y;
+                    float4 cs = f.light.cascade[0];
+                    float4 sp = mul(f.light.shadow[0], float4(c, 1.0));
+                    float rc = r / (cs.x * tile * 0.5);
+                    float rz = r / cs.y;
+                    if (!(abs(sp.x) > 1.0 + rc || abs(sp.y) > 1.0 + rc || sp.z < -rz)) {
+                        grass_emit(GRASS_BUCKETS + min(b + 1u, GRASS_BUCKETS - 1u), i);
+                        casters = 1;
+                    }
+                }
+            }
+        }
+    }
+    stat_add(stats, STAT_GRASS, drawn);
+    stat_add(stats, STAT_GRASS_CASTERS, casters);
 }

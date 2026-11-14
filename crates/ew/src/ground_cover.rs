@@ -96,6 +96,8 @@ pub struct GroundCover {
     free_slots: Vec<NodeSlot>,
     apply_ms: f64,
     band: Option<(f64, f64)>,
+    /// Grass style A draws the grass: the tufts (grass, turf, dry and shade grass) stay out.
+    pub no_grass: bool,
     pub stats: GroundStats,
 }
 
@@ -104,7 +106,7 @@ pub fn from_env() -> bool {
     std::env::var("EW_GROUND_COVER").map_or(true, |v| v != "0")
 }
 
-fn sampler(pages: &PageSet) -> impl Fn(DVec3) -> Option<GroundSample> + '_ {
+pub(crate) fn sampler(pages: &PageSet) -> impl Fn(DVec3) -> Option<GroundSample> + '_ {
     move |d: DVec3| {
         let body = pages.keys().next()?.body();
         let id = NodeId::from_unit(body, d, PAGE_LEVEL);
@@ -187,6 +189,7 @@ impl GroundCover {
             free_slots: Vec::new(),
             apply_ms: std::env::var("EW_GC_APPLY_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0),
             band,
+            no_grass: crate::grass::style_a(),
             stats: GroundStats::default(),
         }
     }
@@ -378,6 +381,9 @@ impl GroundCover {
         for it in &p.items[p.pos..end] {
             let def = gc::def(it.kind);
             if p.prev.is_some_and(|k| def.solid || it.rank < k) {
+                continue;
+            }
+            if self.no_grass && matches!(it.kind, gc::Kind::Grass | gc::Kind::Turf | gc::Kind::DryGrass | gc::Kind::ShadeGrass) {
                 continue;
             }
             let Some(h) = (tv.ground)(it.dir) else { continue };

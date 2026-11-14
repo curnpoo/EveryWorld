@@ -1411,7 +1411,7 @@ impl GeometryProvider for TerrainProvider {
                     }
                 });
         }
-        ProviderOutputs { meshes: (draws, v.draws.bindless.0), state: (pool, self.pool_buf.bindless.0), hzb: None, imp: None }
+        ProviderOutputs { meshes: (draws, v.draws.bindless.0), state: (pool, self.pool_buf.bindless.0), hzb: None, imp: None, grass: None }
     }
 
     fn finish(&mut self, plan: &Plan) {

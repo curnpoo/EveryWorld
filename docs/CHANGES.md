@@ -1,3 +1,23 @@
+## 2026-11-13: Grass style A — GPU blades in clumps (`EW_GRASS_STYLE=a`, opt-in)
+
+First of the grass styles for the owner to compare in the grass lab. `ed_world/src/grass.rs`
+emits deterministic clump records per terrain node near the camera (position, ground normal,
+type, seed) from a `GrassType` table with four rows (lawn, meadow, long grass, wheat); on the
+lab the type comes from position. The renderer (`ed_render/src/grass.rs`, `grass_cull` in
+`cull.slang`, `vs_grass`/`fs_grass` in `visibility.slang`, `grass_pixel` in `resolve.slang`)
+builds each blade from the vertex id alone: curved strip, clump-shared height/lean/facing/colour,
+rounded normal, root AO, tip sheen, wind; blade count falls and width grows with distance, grass
+ends at 110 m with a height fade. Blades cast into the nearest shadow cascade. Default stays the
+G7 tufts; with style A on, G7's grass kinds are skipped. `render_reload` warm-up raised 50 -> 80
+reloads (the extra pipelines move the one-time 1 MiB Metal pool step; memory flat after it).
+
+gpu_frame ms at 2560x1440 (eye / down / o30 / o150): no cover 12.0 / 14.8 / 14.5 / 14.5;
+G7 tufts 17.2 / 22.8 / 16.3 / 13.3; style A 15.1 / 19.0 / 16.3 / 15.0. Off switches:
+`EW_GRASS_STYLE` unset, `EW_GRASS_SHADOWS=0`, `EW_GRASS_WIND=0`; tuning `EW_GRASS_R0`,
+`EW_GRASS_RANGE`, `EW_GRASS_BMIN`, `EW_GRASS_WIDTH`, `EW_GRASS_UP`, `EW_GRASS_APPLY_MS`.
+Wheat and long grass read well up close; open: lawn far too sparse (~150 blades/m2), pale lawn
+tips, no grass-to-terrain colour blend, nothing from the air (terrain must carry it).
+
 ## 2026-11-13: Grass lab — synthetic rolling hills for judging grass
 
 `ew --play grasslab` / `--path grasslab`: a synthetic place on the Swiss plateau (47.05, 7.60).

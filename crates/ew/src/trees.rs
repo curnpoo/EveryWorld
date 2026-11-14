@@ -431,6 +431,8 @@ pub struct NearTrees {
     season: Option<SeasonCfg>,
     /// Ground cover to 150 m (trees G7; `EW_GROUND_COVER=0` off): it reads the pages and stands.
     pub ground: Option<crate::ground_cover::GroundCover>,
+    /// Grass style A (`EW_GRASS_STYLE=a`): procedural blades out to the grass range.
+    pub grass: Option<crate::grass::Grass>,
     /// Mesh instances of trees thick enough to be felled (G10): what a fallen tree's body moves.
     inst_index: std::cell::RefCell<BTreeMap<ObjectId, TreeInst>>,
     /// Trees with a `Removed` override: no instance.
@@ -504,6 +506,7 @@ impl NearTrees {
             handoff_m: 0.0,
             season: std::env::var("EW_SEASON").map_or(true, |v| v != "0").then(|| SeasonCfg { day: ed_world::season::REF_DAY, rate: env_num("EW_SEASON_RATE", 1.0f64) }),
             ground: (near_from_env() && crate::ground_cover::from_env()).then(crate::ground_cover::GroundCover::new),
+            grass: (near_from_env() && crate::grass::style_a()).then(crate::grass::Grass::new),
             inst_index: Default::default(),
             removed: BTreeSet::new(),
         }
@@ -1012,6 +1015,17 @@ impl NearTrees {
                 g.update(wd, r, dev, camera, viewport, settle, &tv)
             };
             self.ground = Some(g);
+            res?;
+        }
+        if let Some(mut g) = self.grass.take() {
+            let res = {
+                let ground = |d: DVec3| self.ground_at(wd, d);
+                let stand = |_: NodeId| None;
+                let page = |id: NodeId| self.pages.lock().unwrap().get(&id).cloned().flatten();
+                let tv = crate::ground_cover::TreeView { ground: &ground, stand: &stand, page: &page, tree_level: NODE_LEVEL };
+                g.update(wd, r, dev, camera, viewport, settle, &tv)
+            };
+            self.grass = Some(g);
             res?;
         }
         Ok(())

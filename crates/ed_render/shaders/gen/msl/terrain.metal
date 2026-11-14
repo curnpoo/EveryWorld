@@ -183,6 +183,13 @@ struct SeasonData_natural_0
     _Array_natural_vectorx3Cfloatx2C4x3E64_0 rows_0;
 };
 
+struct GrassData_natural_0
+{
+    packed_uint4 bufs_2;
+    packed_float4 lod_0;
+    packed_float4 look_0;
+};
+
 struct FrameData_natural_0
 {
     _MatrixStorage_float4x4_ColMajornatural_0 view_proj_0;
@@ -204,6 +211,7 @@ struct FrameData_natural_0
     WindData_natural_0 wind_1;
     ImpData_natural_0 imp_0;
     SeasonData_natural_0 season_0;
+    GrassData_natural_0 grass_0;
 };
 
 FrameData_natural_0 device* ed_buf_1(uint i_4, KernelContext_0 thread* kernelContext_3)
@@ -1048,7 +1056,7 @@ struct TerrainOut_0
 {
     float4 pos_1;
     [[flat]] uint draw_0;
-    [[flat]] uint lod_0;
+    [[flat]] uint lod_1;
 };
 
 TerrainOut_0 terrain_vs_0(uint vid_2, uint iid_2, KernelContext_0 thread* kernelContext_30)
@@ -1061,7 +1069,7 @@ TerrainOut_0 terrain_vs_0(uint vid_2, uint iid_2, KernelContext_0 thread* kernel
     thread TerrainOut_0 o_2;
     (&o_2)->pos_1 = (((float4(_S193, 1.0f)) * (matrix<float,int(4),int(4)> (_S190->view_proj_0.data_0[int(0)][int(0)], _S190->view_proj_0.data_0[int(1)][int(0)], _S190->view_proj_0.data_0[int(2)][int(0)], _S190->view_proj_0.data_0[int(3)][int(0)], _S190->view_proj_0.data_0[int(0)][int(1)], _S190->view_proj_0.data_0[int(1)][int(1)], _S190->view_proj_0.data_0[int(2)][int(1)], _S190->view_proj_0.data_0[int(3)][int(1)], _S190->view_proj_0.data_0[int(0)][int(2)], _S190->view_proj_0.data_0[int(1)][int(2)], _S190->view_proj_0.data_0[int(2)][int(2)], _S190->view_proj_0.data_0[int(3)][int(2)], _S190->view_proj_0.data_0[int(0)][int(3)], _S190->view_proj_0.data_0[int(1)][int(3)], _S190->view_proj_0.data_0[int(2)][int(3)], _S190->view_proj_0.data_0[int(3)][int(3)]))));
     (&o_2)->draw_0 = kernelContext_30->ed_c_0->base_0 + iid_2;
-    (&o_2)->lod_0 = (((uint4(d_12.slots_0) ).z) >> 8U) & 3U;
+    (&o_2)->lod_1 = (((uint4(d_12.slots_0) ).z) >> 8U) & 3U;
     return o_2;
 }
 
@@ -1075,7 +1083,7 @@ TerrainOut_0 terrain_vs_1(uint vid_3, uint iid_3, KernelContext_0 thread* kernel
     thread TerrainOut_0 o_3;
     (&o_3)->pos_1 = (((float4(_S197, 1.0f)) * (matrix<float,int(4),int(4)> (_S194->view_proj_0.data_0[int(0)][int(0)], _S194->view_proj_0.data_0[int(1)][int(0)], _S194->view_proj_0.data_0[int(2)][int(0)], _S194->view_proj_0.data_0[int(3)][int(0)], _S194->view_proj_0.data_0[int(0)][int(1)], _S194->view_proj_0.data_0[int(1)][int(1)], _S194->view_proj_0.data_0[int(2)][int(1)], _S194->view_proj_0.data_0[int(3)][int(1)], _S194->view_proj_0.data_0[int(0)][int(2)], _S194->view_proj_0.data_0[int(1)][int(2)], _S194->view_proj_0.data_0[int(2)][int(2)], _S194->view_proj_0.data_0[int(3)][int(2)], _S194->view_proj_0.data_0[int(0)][int(3)], _S194->view_proj_0.data_0[int(1)][int(3)], _S194->view_proj_0.data_0[int(2)][int(3)], _S194->view_proj_0.data_0[int(3)][int(3)]))));
     (&o_3)->draw_0 = kernelContext_31->ed_c_0->base_0 + iid_3;
-    (&o_3)->lod_0 = (((uint4(d_13.slots_0) ).z) >> 8U) & 3U;
+    (&o_3)->lod_1 = (((uint4(d_13.slots_0) ).z) >> 8U) & 3U;
     return o_3;
 }
 
@@ -1087,7 +1095,7 @@ struct pixelOutput_0
 struct pixelInput_0
 {
     [[flat]] uint draw_1 [[user(DRAW)]];
-    [[flat]] uint lod_1 [[user(LOD)]];
+    [[flat]] uint lod_2 [[user(LOD)]];
 };
 
 [[fragment]] pixelOutput_0 fs_terrain(pixelInput_0 _S198 [[stage_in]], uint prim_0 [[primitive_id]], float4 pos_2 [[position]], ulong device* ed_buffers_1 [[buffer(2)]], TerrainC_0 constant* ed_c_1 [[buffer(0)]])
@@ -1095,7 +1103,7 @@ struct pixelInput_0
     thread KernelContext_0 kernelContext_32;
     (&kernelContext_32)->ed_buffers_0 = ed_buffers_1;
     (&kernelContext_32)->ed_c_0 = ed_c_1;
-    pixelOutput_0 _S199 = { uint4(2147483648U | (_S198.draw_1), (prim_0 | ((_S198.lod_1) << 24U)) & 268435455U, 0U, 0U) };
+    pixelOutput_0 _S199 = { uint4(2147483648U | (_S198.draw_1), (prim_0 | ((_S198.lod_2) << 24U)) & 268435455U, 0U, 0U) };
     return _S199;
 }
 
@@ -1103,7 +1111,7 @@ struct vs_terrain_Result_0
 {
     float4 pos_3 [[position]];
     uint draw_2 [[user(DRAW)]];
-    uint lod_2 [[user(LOD)]];
+    uint lod_3 [[user(LOD)]];
 };
 
 [[vertex]] vs_terrain_Result_0 vs_terrain(uint vid_4 [[vertex_id]], uint iid_4 [[instance_id]], ulong device* ed_buffers_2 [[buffer(2)]], TerrainC_0 constant* ed_c_2 [[buffer(0)]])
@@ -1115,7 +1123,7 @@ struct vs_terrain_Result_0
     thread vs_terrain_Result_0 _S201;
     (&_S201)->pos_3 = _S200.pos_1;
     (&_S201)->draw_2 = _S200.draw_0;
-    (&_S201)->lod_2 = _S200.lod_0;
+    (&_S201)->lod_3 = _S200.lod_1;
     return _S201;
 }
 
@@ -1123,7 +1131,7 @@ struct vs_terrain_trees_Result_0
 {
     float4 pos_4 [[position]];
     uint draw_3 [[user(DRAW)]];
-    uint lod_3 [[user(LOD)]];
+    uint lod_4 [[user(LOD)]];
 };
 
 [[vertex]] vs_terrain_trees_Result_0 vs_terrain_trees(uint vid_5 [[vertex_id]], uint iid_5 [[instance_id]], ulong device* ed_buffers_3 [[buffer(2)]], TerrainC_0 constant* ed_c_3 [[buffer(0)]])
@@ -1135,7 +1143,7 @@ struct vs_terrain_trees_Result_0
     thread vs_terrain_trees_Result_0 _S203;
     (&_S203)->pos_4 = _S202.pos_1;
     (&_S203)->draw_3 = _S202.draw_0;
-    (&_S203)->lod_3 = _S202.lod_0;
+    (&_S203)->lod_4 = _S202.lod_1;
     return _S203;
 }
 

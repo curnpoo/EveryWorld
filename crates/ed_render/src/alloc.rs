@@ -89,6 +89,8 @@ pub(crate) enum Release {
     TextureSlot(u32),
     /// Impostor tree slots (start, len).
     ImpTrees(u32, u32),
+    /// Grass clump slots (start, len).
+    GrassClumps(u32, u32),
 }
 
 /// Releases waiting for frames to finish: `(frames that must complete, release)`.

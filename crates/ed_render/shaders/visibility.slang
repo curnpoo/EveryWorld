@@ -364,3 +364,60 @@ void fs_imp_shadow(ImpOut i) {
         discard;
     }
 }
+
+// ---- Grass style A (src/grass.rs) -----------------------------------------------------------
+// No vertex buffer: the bucket's index buffer strips blade slots; vertex id -> (blade, segment,
+// side). VisC words: instances = clump buffer, verts = type table, visible = the list,
+// cascade = the bucket. vis.x = GRASS_VIS_BIT | clump; vis.y = blade | t (unorm12) << 7 |
+// u (unorm8) << 19.
+struct GrassOut {
+    float4 pos: SV_Position;
+    float2 tu: TEXCOORD0;                   // along the blade, across it
+    nointerpolation uint clump: ENTRY;
+    nointerpolation uint blade: BLADE;
+};
+
+// Vertex `vid` of the bucket's blade strip. `shadow`: the nearest cascade, half the blades.
+GrassOut grass_vertex(uint vid, uint iid, bool shadow) {
+    FrameData* f = ed_buf<FrameData>(ed_c.frame);
+    uint ci = ed_buf<uint>(ed_c.visible)[iid];
+    GrassClump c = ed_buf<GrassClump>(ed_c.instances)[ci];
+    GrassType ty = ed_buf<GrassType>(ed_c.verts)[(c.node_kind >> 12) & 0xFFu];
+    float3 node = ed_buf<float4>(ed_c.nodes)[c.node_kind & 0xFFFu].xyz;
+    uint bkt = min(ed_c.cascade, GRASS_BUCKETS - 1u);
+    uint segs = GRASS_SEGS[bkt];
+    uint vpb = 2u * (segs + 1u);
+    uint k = vid / vpb;
+    uint r = vid - k * vpb;
+    uint seg = r >> 1;
+    float side = float(r & 1u);
+    GrassBlade b = grass_blade(f, c, ty, node, k, shadow ? 0.5 : 1.0);
+    float t = float(seg) / float(segs);
+    float3 p = grass_point(b, t);
+    float3 sd = shadow ? b.side : grass_view_side(b, t, p);
+    float w = grass_width(b, t);
+    p += sd * ((side - 0.5) * w);
+    GrassOut o;
+    o.pos = b.h > 0.0 ? mul(shadow ? f.light.shadow[0] : f.view_proj, float4(p, 1.0)) : float4(0.0, 0.0, -1.0, 1.0);
+    o.tu = float2(t, side);
+    o.clump = ci;
+    o.blade = k;
+    return o;
+}
+
+[shader("vertex")]
+GrassOut vs_grass(uint vid: SV_VulkanVertexID, uint iid: SV_VulkanInstanceID) {
+    return grass_vertex(vid, iid, false);
+}
+
+[shader("vertex")]
+float4 vs_grass_shadow(uint vid: SV_VulkanVertexID, uint iid: SV_VulkanInstanceID) : SV_Position {
+    return grass_vertex(vid, iid, true).pos;
+}
+
+[shader("fragment")]
+uint4 fs_grass(GrassOut i) : SV_Target0 {
+    uint t = uint(saturate(i.tu.x) * 4095.0 + 0.5);
+    uint u = uint(saturate(i.tu.y) * 255.0 + 0.5);
+    return uint4(GRASS_VIS_BIT | (i.clump & GRASS_INDEX_MASK), (i.blade & 127u) | (t << 7) | (u << 19), 0u, 0u);
+}

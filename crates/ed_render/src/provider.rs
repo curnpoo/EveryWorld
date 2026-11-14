@@ -16,8 +16,9 @@
 //! dithered (cross-fading) instances, issued as two multi-draws per phase. Unused bins have
 //! zero instances (Metal ignores the count buffer, `Caps::indirect_count == false`).
 
-use crate::gpu::{self, ARGS_WORDS, FD_CULL, FD_HZB, FD_IMP, IMP_WORDS, MAX_HZB_LEVELS, MESH_WORDS, STAT_WORDS, constants};
+use crate::gpu::{self, ARGS_WORDS, FD_CULL, FD_HZB, FD_GRASS, FD_IMP, GRASS_WORDS, IMP_WORDS, MAX_HZB_LEVELS, MESH_WORDS, STAT_WORDS, constants};
 use crate::graph::{FrameGraph, PassBuilder, PassKind, Plan, Res};
+use crate::grass::{GRASS_BUCKETS, GRASS_LIST_CAP, GRASS_LISTS, GrassStore};
 use crate::impostor::{IMP_LISTS, ImpostorStore, MAX_IMPOSTOR_TREES};
 use crate::scene::{InstancePools, MAX_LODS};
 use crate::shaders::{Built, Module, ShaderSet};
@@ -95,6 +96,8 @@ pub struct ProviderOutputs {
     pub hzb: Option<(Res, u32)>,
     /// Impostor tree buffer and kind table (trees G5), when impostors drew: the resolve reads them.
     pub imp: Option<[Res; 2]>,
+    /// Grass clump buffer and type table (style A), when grass drew: the resolve reads them.
+    pub grass: Option<[Res; 2]>,
 }
 
 /// A source of geometry for the visibility buffer (renderer.md §3). Provider 1 is
@@ -171,6 +174,9 @@ pub struct CullStats {
     /// Tree impostors drawn (trees G5) and their shadow casters over all cascades.
     pub impostors: u32,
     pub impostor_casters: u32,
+    /// Grass clumps drawn (style A) and clumps cast into the nearest cascade.
+    pub grass: u32,
+    pub grass_casters: u32,
 }
 
 impl CullStats {
@@ -194,6 +200,8 @@ impl CullStats {
             shadow_triangles: w[14],
             impostors: w[16],
             impostor_casters: w[17],
+            grass: w[18],
+            grass_casters: w[19],
         }
     }
 }
@@ -321,6 +329,8 @@ pub struct DiscreteLod {
     scratch: Vec<u8>,
     /// Tree impostors (trees G5): their own buffer, cull and quad draw.
     pub(crate) imp: ImpostorStore,
+    /// Grass style A: clump buffer, cull into blade buckets, procedural blades.
+    pub(crate) grass: GrassStore,
 }
 
 /// One view's culling state.
@@ -342,6 +352,8 @@ struct CullView {
     hzb_levels: Vec<(u32, u32, u32)>,
     /// Impostor draw arguments (view + 4 cascades) and visible lists, made on first use.
     imp: Option<(Tracked, Tracked)>,
+    /// Grass draw arguments (view + nearest cascade buckets) and visible lists, made on first use.
+    grass: Option<(Tracked, Tracked)>,
 }
 
 impl CullView {
@@ -370,6 +382,7 @@ impl CullView {
             imports: Vec::new(),
             hzb_levels: Vec::new(),
             imp: None,
+            grass: None,
         })
     }
     fn destroy(self, dev: &dyn Device) {
@@ -379,7 +392,7 @@ impl CullView {
         if let Some((h, _, _)) = self.hzb {
             h.destroy(dev);
         }
-        if let Some((a, b)) = self.imp {
+        for (a, b) in [self.imp, self.grass].into_iter().flatten() {
             a.destroy(dev);
             b.destroy(dev);
         }
@@ -418,6 +431,11 @@ enum Imported {
     ImpQuad,
     ImpArgs,
     ImpVisible,
+    GrassClumps,
+    GrassTypes,
+    GrassIndex,
+    GrassArgs,
+    GrassVisible,
 }
 
 /// The accesses both culling passes declare. `bufs`: mesh table, state, args, visible, stats.
@@ -458,6 +476,11 @@ pub(crate) struct LodPipelines {
     imp_raster: RenderPipelineId,
     imp_shadow: RenderPipelineId,
     imp_shadow_proxy: RenderPipelineId,
+    /// Grass style A.
+    grass_reset: ComputePipelineId,
+    grass_cull: ComputePipelineId,
+    grass_raster: RenderPipelineId,
+    grass_shadow: RenderPipelineId,
 }
 
 impl LodPipelines {
@@ -572,7 +595,27 @@ impl LodPipelines {
                 samples: 1,
             },
         )?;
-        Ok(Self { imp_reset, imp_cull, imp_raster, imp_shadow, imp_shadow_proxy, built: std::mem::take(b), cull_reset, cull_early, cull_late, hzb_first, hzb_down, vis_solid, vis_dither, shadow_reset, shadow_cull, shadow_raster, foliage_solid, foliage_dither, foliage_shadow })
+        let grass_reset = b.compute(dev, src, Module::Cull, "grass_reset", g)?;
+        let grass_cull = b.compute(dev, src, Module::Cull, "grass_cull", g)?;
+        let vsg = b.shader(dev, src, Module::Vis, "vs_grass", ShaderStage::Vertex, "vs_grass")?;
+        let fsg = b.shader(dev, src, Module::Vis, "fs_grass", ShaderStage::Fragment, "fs_grass")?;
+        let grass_raster = b.render(dev, &RenderPipelineDesc { label: "grass raster", vertex: vsg, fragment: Some(fsg), cull: Cull::None, ..rp("", fsg) })?;
+        let vsgs = b.shader(dev, src, Module::Vis, "vs_grass_shadow", ShaderStage::Vertex, "vs_grass_shadow")?;
+        let grass_shadow = b.render(
+            dev,
+            &RenderPipelineDesc {
+                label: "grass shadow",
+                vertex: vsgs,
+                fragment: None,
+                color_formats: &[],
+                blend: ed_gpu::Blend::Opaque,
+                depth: Some(DepthDesc { format: crate::DEPTH_FORMAT, write: true, compare: Compare::GreaterEqual, bias: 0.0, slope_bias: 0.0, clamp: true }),
+                cull: Cull::None,
+                topology: Topology::Triangles,
+                samples: 1,
+            },
+        )?;
+        Ok(Self { grass_reset, grass_cull, grass_raster, grass_shadow, imp_reset, imp_cull, imp_raster, imp_shadow, imp_shadow_proxy, built: std::mem::take(b), cull_reset, cull_early, cull_late, hzb_first, hzb_down, vis_solid, vis_dither, shadow_reset, shadow_cull, shadow_raster, foliage_solid, foliage_dither, foliage_shadow })
     }
     pub(crate) fn destroy(self, dev: &dyn Device) {
         self.built.destroy(dev);
@@ -604,6 +647,7 @@ impl DiscreteLod {
             cur: 0,
             scratch: Vec::new(),
             imp: ImpostorStore::new(),
+            grass: GrassStore::new(),
         })
     }
 
@@ -789,6 +833,13 @@ impl GeometryProvider for DiscreteLod {
             let l = Tracked::new(dev, "impostor visible", IMP_LISTS as u64 * MAX_IMPOSTOR_TREES as u64 * 4, rw)?;
             v.imp = Some((a, l));
         }
+        fd[FD_GRASS..FD_GRASS + GRASS_WORDS].copy_from_slice(&self.grass.words());
+        if self.grass.slots() > 0 && v.grass.is_none() {
+            let rw = Usage { shader_read: true, shader_write: true, ..Default::default() };
+            let a = Tracked::new(dev, "grass draw args", (GRASS_LISTS as usize * ARGS_WORDS * 4) as u64, Usage { indirect_args: true, ..rw })?;
+            let l = Tracked::new(dev, "grass visible", GRASS_LISTS as u64 * GRASS_LIST_CAP as u64 * 4, rw)?;
+            v.grass = Some((a, l));
+        }
         Ok(())
     }
 
@@ -832,6 +883,20 @@ impl GeometryProvider for DiscreteLod {
                 let qr = imp(g, "impostor quad", q, fq, Imported::ImpQuad, &mut list);
                 let ar = imp(g, "impostor draw args", a, fin(ResourceState::IndirectArgs), Imported::ImpArgs, &mut list);
                 let lr = imp(g, "impostor visible", l, fin(ResourceState::ShaderRead), Imported::ImpVisible, &mut list);
+                Some(((tr, t.bindless.0), (kr, k.bindless.0), (qr, q.id), (ar, a.bindless.0, a.id), (lr, l.bindless.0)))
+            }
+            _ => None,
+        };
+        // Grass style A: imported only when it draws.
+        let grass_slots = self.grass.slots();
+        let grassb = match (&self.grass.clumps, &self.grass.types, &self.grass.index, &v.grass) {
+            (Some(t), Some(k), Some(q), Some((a, l))) if grass_slots > 0 => {
+                let fq = fin(ResourceState::CopyDst);
+                let tr = imp(g, "grass clumps", t, fq, Imported::GrassClumps, &mut list);
+                let kr = imp(g, "grass types", k, fq, Imported::GrassTypes, &mut list);
+                let qr = imp(g, "grass indices", q, fq, Imported::GrassIndex, &mut list);
+                let ar = imp(g, "grass draw args", a, fin(ResourceState::IndirectArgs), Imported::GrassArgs, &mut list);
+                let lr = imp(g, "grass visible", l, fin(ResourceState::ShaderRead), Imported::GrassVisible, &mut list);
                 Some(((tr, t.bindless.0), (kr, k.bindless.0), (qr, q.id), (ar, a.bindless.0, a.id), (lr, l.bindless.0)))
             }
             _ => None,
@@ -962,6 +1027,33 @@ impl GeometryProvider for DiscreteLod {
             });
         }
 
+        // Grass cull: after the early pyramid, like the impostors.
+        if let Some(((tr, tbi), (kr, kbi), _, (ar, abi, aid), (lr, lbi))) = grassb {
+            let gcw = [inp.frame.1, tbi, kbi, 0, abi, lbi, v.stats_ring.bufs[slot].bindless.0, hzb_bi, grass_slots, GRASS_LIST_CAP, 0, inp.nodes.1];
+            let gcc = constants(&gcw);
+            let (p_greset, p_gcull) = (pipes.grass_reset, pipes.grass_cull);
+            let ggroups = grass_slots.div_ceil(CULL_GROUP).max(1);
+            let gp = g
+                .add_pass("grass_cull", PassKind::Compute)
+                .read(inp.frame.0, ResourceState::ShaderRead)
+                .read(inp.nodes.0, ResourceState::ShaderRead)
+                .read(tr, ResourceState::ShaderRead)
+                .read(kr, ResourceState::ShaderRead)
+                .write(ar, sw)
+                .write(lr, sw)
+                .write(stats, sw);
+            let gp = if occlusion { gp.read(hzb, ResourceState::ShaderRead) } else { gp };
+            gp.exec(move |ctx| {
+                ctx.enc.set_compute_pipeline(p_greset);
+                ctx.enc.set_compute_constants(&gcc);
+                ctx.enc.dispatch(1, 1, 1);
+                ctx.enc.transition(&[Transition::Buffer { buffer: aid, from: sw, to: sw }]);
+                ctx.enc.set_compute_pipeline(p_gcull);
+                ctx.enc.set_compute_constants(&gcc);
+                ctx.enc.dispatch(ggroups, 1, 1);
+            });
+        }
+
         let late = cull_pass(g, "cull_late", inp, bufs);
         let late = if occlusion { late.read(hzb, ResourceState::ShaderRead) } else { late };
         late.exec(move |ctx| {
@@ -988,6 +1080,28 @@ impl GeometryProvider for DiscreteLod {
                     ctx.enc.set_render_pipeline(p_iras);
                     ctx.enc.set_draw_constants(&ivc);
                     ctx.enc.draw_indexed_indirect_multi(aid, 0, 1, None);
+                });
+        }
+        if let Some(((tr, tbi), (kr, kbi), (qr, qid), (ar, _, aid), (lr, lbi))) = grassb {
+            let p_gras = pipes.grass_raster;
+            let vc_g: Vec<_> = (0..GRASS_BUCKETS).map(|b| constants(&[inp.frame.1, tbi, inp.nodes.1, lbi, kbi, b, inp.materials.1, inp.uvs.1, inp.smp])).collect();
+            g.add_pass("grass_raster", PassKind::Raster)
+                .read(inp.frame.0, ResourceState::ShaderRead)
+                .read(inp.nodes.0, ResourceState::ShaderRead)
+                .read(tr, ResourceState::ShaderRead)
+                .read(kr, ResourceState::ShaderRead)
+                .read(qr, ResourceState::ShaderRead)
+                .read(lr, ResourceState::ShaderRead)
+                .read(ar, ResourceState::IndirectArgs)
+                .color(out.vis, LoadOp::Load, StoreOp::Store)
+                .depth(out.depth, LoadOp::Load, StoreOp::Store, true)
+                .exec(move |ctx| {
+                    ctx.enc.set_index_buffer(qid, 0);
+                    ctx.enc.set_render_pipeline(p_gras);
+                    for (b, c) in vc_g.iter().enumerate() {
+                        ctx.enc.set_draw_constants(c);
+                        ctx.enc.draw_indexed_indirect_multi(aid, (b * ARGS_WORDS * 4) as u64, 1, None);
+                    }
                 });
         }
         if out.final_hzb {
@@ -1037,11 +1151,34 @@ impl GeometryProvider for DiscreteLod {
                     .read(ar, ResourceState::IndirectArgs),
                 None => sp,
             };
+            let sp = match grassb {
+                Some(((tr, _), (kr, _), (qr, _), (ar, _, _), (lr, _))) => sp
+                    .read(tr, ResourceState::ShaderRead)
+                    .read(kr, ResourceState::ShaderRead)
+                    .read(qr, ResourceState::ShaderRead)
+                    .read(lr, ResourceState::ShaderRead)
+                    .read(ar, ResourceState::IndirectArgs),
+                None => sp,
+            };
+            let p_gshadow = pipes.grass_shadow;
             let p_ishadow = pipes.imp_shadow;
             let p_iproxy = pipes.imp_shadow_proxy;
             let proxy_from = self.imp.bands.map_or(u32::MAX, |b| b.shadow_cascade);
             sp.depth(sh.atlas, atlas_load, StoreOp::Store, true)
                 .exec(move |ctx| {
+                    // Grass: the nearest cascade only (its lists follow the view's).
+                    if let Some(((_, tbi), (_, kbi), (_, qid), (_, _, aid), (_, lbi))) = grassb
+                        && n > 0
+                    {
+                        ctx.enc.set_index_buffer(qid, 0);
+                        ctx.enc.set_render_pipeline(p_gshadow);
+                        ctx.enc.set_viewport(0.0, 0.0, tile as f32, tile as f32);
+                        ctx.enc.set_scissor(0, 0, tile, tile);
+                        for b in 0..GRASS_BUCKETS {
+                            ctx.enc.set_draw_constants(&constants(&[svc_base[0], tbi, svc_base[2], lbi, kbi, b, svc_tail[0], svc_tail[1], svc_tail[2]]));
+                            ctx.enc.draw_indexed_indirect_multi(aid, ((GRASS_BUCKETS + b) * ARGS_WORDS as u32 * 4) as u64, 1, None);
+                        }
+                    }
                     if let Some(((_, tbi), (_, kbi), (_, qid), (_, _, aid), (_, lbi))) = impb {
                         ctx.enc.set_index_buffer(qid, 0);
                         for c in 0..n {
@@ -1077,7 +1214,7 @@ impl GeometryProvider for DiscreteLod {
                     }
                 });
         }
-        ProviderOutputs { meshes: (meshes, mesh_table.bindless.0), state: (state, v.state.bindless.0), hzb: out.final_hzb.then_some((hzb, hzb_bi)), imp: impb.map(|i| [i.0.0, i.1.0]) }
+        ProviderOutputs { meshes: (meshes, mesh_table.bindless.0), state: (state, v.state.bindless.0), hzb: out.final_hzb.then_some((hzb, hzb_bi)), imp: impb.map(|i| [i.0.0, i.1.0]), grass: grassb.map(|i| [i.0.0, i.1.0]) }
     }
 
     fn finish(&mut self, plan: &Plan) {
@@ -1103,16 +1240,25 @@ impl GeometryProvider for DiscreteLod {
                 Imported::ImpQuad => self.imp.quad.as_mut().expect("imported").state = s,
                 Imported::ImpArgs => v.imp.as_mut().expect("imported").0.state = s,
                 Imported::ImpVisible => v.imp.as_mut().expect("imported").1.state = s,
+                Imported::GrassClumps => self.grass.clumps.as_mut().expect("imported").state = s,
+                Imported::GrassTypes => self.grass.types.as_mut().expect("imported").state = s,
+                Imported::GrassIndex => self.grass.index.as_mut().expect("imported").state = s,
+                Imported::GrassArgs => v.grass.as_mut().expect("imported").0.state = s,
+                Imported::GrassVisible => v.grass.as_mut().expect("imported").1.state = s,
             }
         }
     }
 
     fn pass_names(&self) -> &'static [&'static str] {
-        match (self.config.occlusion, self.imp.slots() > 0) {
-            (true, false) => &["cull_early", "raster_early", "hzb", "cull_late", "raster_late"],
-            (false, false) => &["cull_early", "raster_early", "cull_late", "raster_late"],
-            (true, true) => &["cull_early", "raster_early", "hzb", "imp_cull", "cull_late", "raster_late", "imp_raster"],
-            (false, true) => &["cull_early", "raster_early", "imp_cull", "cull_late", "raster_late", "imp_raster"],
+        match (self.config.occlusion, self.imp.slots() > 0, self.grass.slots() > 0) {
+            (true, true, true) => &["cull_early", "raster_early", "hzb", "imp_cull", "grass_cull", "cull_late", "raster_late", "imp_raster", "grass_raster"],
+            (true, true, false) => &["cull_early", "raster_early", "hzb", "imp_cull", "cull_late", "raster_late", "imp_raster"],
+            (true, false, true) => &["cull_early", "raster_early", "hzb", "grass_cull", "cull_late", "raster_late", "grass_raster"],
+            (true, false, false) => &["cull_early", "raster_early", "hzb", "cull_late", "raster_late"],
+            (false, true, true) => &["cull_early", "raster_early", "imp_cull", "grass_cull", "cull_late", "raster_late", "imp_raster", "grass_raster"],
+            (false, true, false) => &["cull_early", "raster_early", "imp_cull", "cull_late", "raster_late", "imp_raster"],
+            (false, false, true) => &["cull_early", "raster_early", "grass_cull", "cull_late", "raster_late", "grass_raster"],
+            (false, false, false) => &["cull_early", "raster_early", "cull_late", "raster_late"],
         }
     }
 
@@ -1125,6 +1271,7 @@ impl GeometryProvider for DiscreteLod {
         }
         s.p.destroy(dev);
         s.imp.destroy(dev);
+        s.grass.destroy(dev);
     }
 }
 

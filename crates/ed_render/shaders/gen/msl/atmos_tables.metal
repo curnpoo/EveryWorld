@@ -111,6 +111,13 @@ struct SeasonData_natural_0
     _Array_natural_vectorx3Cfloatx2C4x3E64_0 rows_0;
 };
 
+struct GrassData_natural_0
+{
+    packed_uint4 bufs_2;
+    packed_float4 lod_0;
+    packed_float4 look_0;
+};
+
 struct FrameData_natural_0
 {
     _MatrixStorage_float4x4_ColMajornatural_0 view_proj_0;
@@ -132,6 +139,7 @@ struct FrameData_natural_0
     WindData_natural_0 wind_1;
     ImpData_natural_0 imp_0;
     SeasonData_natural_0 season_0;
+    GrassData_natural_0 grass_0;
 };
 
 FrameData_natural_0 device* ed_buf_1(uint i_1, KernelContext_0 thread* kernelContext_1)

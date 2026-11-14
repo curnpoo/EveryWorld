@@ -931,6 +931,68 @@ float4 impostor_pixel(FrameData* f, FsOut i, uint idx, float3 dir) {
     return float4(col, 1.0);
 }
 
+// ---- Grass style A (src/grass.rs) ---------------------------------------------------------
+// The raster wrote the clump, the blade and (t, u) on it: rebuild the same blade, put the pixel
+// on the blade's face along the view ray, and shade it as a thin translucent leaf with a rounded
+// normal bent towards the ground (more with distance, so far grass reads as a soft carpet).
+float4 grass_pixel(FrameData* f, FsOut i, uint2 vis, float3 dir) {
+    GrassClump c = ed_buf<GrassClump>(f.grass.bufs.x)[vis.x & GRASS_INDEX_MASK];
+    GrassType ty = ed_buf<GrassType>(f.grass.bufs.y)[(c.node_kind >> 12) & 0xFFu];
+    float3 node = ed_buf<float4>(ed_c.nodes)[c.node_kind & 0xFFFu].xyz;
+    uint k = vis.y & 127u;
+    float t = float((vis.y >> 7) & 4095u) / 4095.0;
+    float u = float((vis.y >> 19) & 255u) / 255.0;
+    GrassBlade b = grass_blade(f, c, ty, node, k, 1.0);
+    float3 pt = grass_point(b, t);
+    float3 sd = grass_view_side(b, t, pt);
+    float3 tg = normalize(grass_tangent(b, t) + b.up * 1e-4);
+    float3 v = -dir;
+    float3 n0 = normalize(cross(sd, tg));
+    n0 = dot(n0, v) < 0.0 ? -n0 : n0;
+    float dn = dot(dir, n0);
+    float lp = length(pt);
+    float hit = abs(dn) > 1e-3 ? dot(pt, n0) / dn : lp;
+    float3 p = dir * clamp(hit, lp - 0.05, lp + 0.05);
+    float d = length(p);
+    // Rounded across the blade, bent towards the ground normal (far: mostly the ground).
+    float far = smoothstep(f.grass.lod.x * 0.5, f.grass.lod.y, d);
+    float3 nr = normalize(n0 + sd * ((u - 0.5) * 1.1));
+    float3 n = normalize(lerp(nr, b.up, lerp(f.grass.look.x, 0.8, far)));
+    // Colour: root -> mid -> tip, seed heads in the tip colour, clump and blade variation, dry blades.
+    float3 alb = t < 0.5 ? lerp(ty.root.rgb, ty.mid.rgb, t * 2.0) : lerp(ty.mid.rgb, ty.tip.rgb, (t - 0.5) * 2.0);
+    if (b.head > 0.0) {
+        alb = lerp(alb, ty.tip.rgb * 1.1, smoothstep(1.0 - b.head - 0.04, 1.0 - b.head, t));
+    }
+    uint cs = c.seed;
+    float cv = lerp(0.86, 1.12, grass_rand(grass_hash(cs + 41u)));
+    float hue = grass_rand(grass_hash(cs + 53u)) - 0.5;
+    alb *= cv * b.shade * float3(1.0 + 0.10 * hue, 1.0, 1.0 - 0.12 * hue);
+    float dry = float((c.hw >> 16) & 255u) / 255.0;
+    float bd = grass_rand(grass_hash(cs ^ (k * 0x85EBCA6Bu + 0x1234567u)));
+    if (bd < dry) {
+        alb = lerp(alb, ty.dry.rgb * lerp(0.85, 1.1, bd / max(dry, 1e-3)), lerp(0.55, 1.0, t));
+    }
+    alb = min(alb, float3(0.9, 0.9, 0.9));
+    // Inside the clump the roots are in shade (deeper for tall grass); far grass averages it.
+    float ao_r = lerp(0.55, 0.28, b.t_ao);
+    float ao_b = lerp(ao_r, 1.0, smoothstep(0.0, 0.75, t));
+    ao_b = lerp(ao_b, lerp(ao_r, 1.0, 0.7), far);
+    float zlin = -mul(f.view, float4(p, 1.0)).z;
+    float sun_vis = sun_shadow(f, ed_c.shadow, p, b.up, zlin, i.pos.xy);
+    float2 occ = ao_upsample(f, ed_c.ao, i.pos.xy, zlin);
+    float3 sun = sun_light_at(f, p);
+    float3 col = shade_foliage(f, sun, alb, 0.5, occ.x * ao_b, occ.y, sun_vis, n, n, v, true);
+    col = apply_aerial(f, col, p, i.pos.xy);
+    if (f.light.flags.w == 2u) {
+        col = float3(0.5 * occ.x * ao_b);
+    } else if (f.light.flags.w == 4u) {
+        col = float3(0.5 * occ.y);
+    } else if (f.light.flags.w == 1u) {
+        col = float3(0.04 + 0.5 * sun_vis);
+    }
+    return float4(col, 1.0);
+}
+
 float4 resolve_px<let TR : int>(FsOut i, bool terrain) {
     FrameData* f = ed_buf<FrameData>(ed_c.frame);
     uint2 px = uint2(i.pos.xy);
@@ -941,6 +1003,9 @@ float4 resolve_px<let TR : int>(FsOut i, bool terrain) {
     }
     if (terrain && (vis.x & TERRAIN_VIS_BIT) != 0) {
         return terrain_pixel<TR>(f, i, vis, dir);
+    }
+    if ((vis.x & (GRASS_VIS_BIT | IMP_VIS_BIT | TERRAIN_VIS_BIT)) == GRASS_VIS_BIT) {
+        return grass_pixel(f, i, vis, dir);
     }
     if ((vis.x & (IMP_VIS_BIT | TERRAIN_VIS_BIT)) == IMP_VIS_BIT) {
         return impostor_pixel(f, i, vis.x & ~IMP_VIS_BIT, dir);

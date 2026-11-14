@@ -476,6 +476,8 @@ pub struct TerrainWorld {
     canopy_cache: Option<Arc<ed_data::DiskCache>>,
     /// Canopy page builds: count and total ms (headless report).
     pub canopy_built: (u32, f64),
+    /// The grass lab's synthetic place (grass style A paints its type map there).
+    pub grass_lab: bool,
 }
 
 impl TerrainWorld {
@@ -490,6 +492,7 @@ impl TerrainWorld {
             trees_far,
             canopy_cache: trees_far.on().then(|| Arc::new(ed_data::DiskCache::new(cache))),
             canopy_built: (0, 0.0),
+            grass_lab: place.name == GRASSLAB.name,
             src: Arc::new(if place.name == GRASSLAB.name { CacheSource::hills(cache) } else { CacheSource::new(cache) }),
             sel: Selection::default(),
             loader: None,
