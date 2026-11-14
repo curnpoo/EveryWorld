@@ -553,7 +553,11 @@ impl TerrainWorld {
 
     /// The provider to register on the renderer (`Renderer::set_terrain`).
     pub fn provider(&self, dev: &dyn ed_gpu::Device) -> Result<TerrainProvider, ed_gpu::Error> {
-        let mut t = TerrainProvider::new(dev, TerrainConfig { select: self.config, trees_far: self.trees_far, ..Default::default() })?;
+        // `EW_TERRAIN_POOL=<slots>`: GPU page pool size (396 KB per slot with canopy pages). The
+        // 1024 default saturated at 1440p near the ground (drawn nodes + their parents came to
+        // about 1160), which dropped pages and left holes.
+        let pool_slots = std::env::var("EW_TERRAIN_POOL").ok().and_then(|v| v.parse().ok()).unwrap_or(1536);
+        let mut t = TerrainProvider::new(dev, TerrainConfig { select: self.config, trees_far: self.trees_far, pool_slots, ..Default::default() })?;
         // Scanned surface layers (P-slice S7): only when a local library is present.
         if let Some(m) = crate::terrain_mat::load() {
             t.set_materials(dev, &m)?;

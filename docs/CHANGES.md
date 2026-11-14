@@ -1,3 +1,17 @@
+## 2026-11-13: Terrain page pool 1024 -> 1536 slots (trees perf pass, step 1)
+
+`ew/src/terrain.rs` `provider()`: the GPU page pool default rises from 1024 to 1536 slots
+(396 KB each with canopy pages, about +200 MB); `EW_TERRAIN_POOL=<slots>` overrides. At
+2560x1440 near the ground the drawn nodes plus their parents need about 1130 pages: at 1024
+the forest-floor view (`n2`) dropped 82 pages and showed holes in the ground; at 1536 it uses
+1126 with 0 dropped. Cost, gpu_frame at `n2`: 27.7 ms (1536) vs 31.3 ms (1024, holes), so the
+fix is not slower. The pass's full battery (`tools/trees_bench.sh`, 9 views, N=3, M3 Pro,
+2560x1440): trees cost 5.7-19.5 ms against the 2 ms budget from 1 km inward; impostors
+3.8-5.3 ms, wind 3.1-4.4 ms near the ground; ground cover +6.7 ms looking down the grass;
+play (Zermatt, 20 s walk) frame p50 13.9 / p99 26.9 ms, near-tree update main thread p99
+11.5 ms. Tests: 441 passed, 0 failed. The top-down leaf sort in `bank.rs` is not in this
+commit: these runs could not separate it from the pool change.
+
 ## 2026-11-13: Trees G0–G11 — real-data forests from orbit to the trunk (`../plans/trees.md`)
 
 - **Commits:** `9cae30d` G0–G1, `15cc308` G2, `5666046` G3, `c88e524` G3b, `5b16415` G4/G4b, `7dcceef` G5, `50e6d00` play wiring, `9c530fd` conifer look, `0dd8233` G5 data, `1288c9a` G6, `1294f21` G7, `322b08b` G8, `5fe2442` G10/G11.
