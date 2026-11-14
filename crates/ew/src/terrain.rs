@@ -73,8 +73,9 @@ pub const PLACES: &[PlaceDef] = &[
     PlaceDef { name: "jungle", lat: 10.43, lon: -84.74, agl_m: 2.0, rise_m: 300.0, look: (10.463, -84.703, 50.0) },
     // Everglades (Florida): sawgrass wetland, flat.
     PlaceDef { name: "everglades", lat: 25.75, lon: -80.85, agl_m: 2.0, rise_m: 300.0, look: (25.76, -80.85, 2.0) },
-    // Toolik Lake (Alaska): tundra, the Brooks Range to the south.
-    PlaceDef { name: "tundra", lat: 68.63, lon: -149.60, agl_m: 2.0, rise_m: 300.0, look: (68.58, -149.60, 600.0) },
+    // Tussock tundra 2 km south of Toolik Lake (Alaska), the Brooks Range to the south. Not on the
+    // lake itself: inland lakes are not drawn as water yet, so a lake reads as bare ground.
+    PlaceDef { name: "tundra", lat: 68.612, lon: -149.60, agl_m: 2.0, rise_m: 300.0, look: (68.58, -149.60, 600.0) },
     // Alpe di Siusi (Dolomites): alpine meadow, Sciliar to the north-west.
     PlaceDef { name: "siusi", lat: 46.54, lon: 11.62, agl_m: 2.0, rise_m: 300.0, look: (46.53, 11.60, 200.0) },
     // Flint Hills (Kansas): tallgrass prairie, rolling.

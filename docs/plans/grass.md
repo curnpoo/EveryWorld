@@ -92,7 +92,7 @@ colour, so thinning never shows bare soil.
 |---|---|---|---|
 | G1 | Far blades thicker: coverage kept, blue-noise survivors, pixel-size range, field-colour floor | Opus (look) | Lab and Zermatt eye views: no grid, no visible blade end; gpu_frame no worse than style E today |
 | G2 (done 2026-11-14) | Ground pages from WorldCover, every level, parent means, streamed beside canopy pages | Sonnet (data, plumbing) | Border test: neighbour and parent edges bit-identical over random nodes (as the height-page border test); Zermatt pages show meadow where photos do |
-| G3 (done 2026-11-14, tundra bug open) | Grass type rule table plus scatter from ground pages; the new rows tried in the lab | Sonnet (table, plumbing), Opus (rows, colours) | Zermatt valley meadow shows tall meadow blades; the owner judges each new type in the lab |
+| G3 (done 2026-11-14) | Grass type rule table plus scatter from ground pages; the new rows tried in the lab | Sonnet (table, plumbing), Opus (rows, colours) | Zermatt valley meadow shows tall meadow blades; the owner judges each new type in the lab |
 | G4 | Carpet colour from ground pages at every rung; camera tint map removed | Opus | A 30 m -> 1 km -> 10 km -> orbit sweep shows no colour edge |
 | G5 | Imagery: registry entry, then the owner's OK on source and download size; bake colour pages; far blend; near calibration | Sonnet (bake), Opus (blend) | 10 km and orbit match the composite's colour; ground level keeps its character |
 | G6 | Erosion gullies softened under grass on gentle ground (owner's call) | Opus | Lab and Zermatt from 500 m: no dark streaks on grassy slopes; rock unchanged |

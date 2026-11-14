@@ -13,7 +13,11 @@
   weighted pick by ~22 m noise patches. Cold = `temp_sl - 6.5 K/km * alt < -3 C`. No ground page: the old rule.
 - Grass reads the ground page through the tree worker's page map (`ew/src/trees.rs` builds canopy + ground together).
 - Eye-level shots: dunes bare, Sonoran sparse straw tufts with tan far hills, Everglades tall mixed sedge, Iowa
-  wheat rows, prairie long grass with a wheat patch. Tundra (Toolik) now shows no blades: open bug.
+  wheat rows, prairie long grass with a wheat patch. Tundra first showed no blades: the place stood on Toolik
+  Lake, which WorldCover rightly calls water, but inland lakes are not drawn as water yet, so it read as bare
+  ground. The place moved 2 km south onto tussock tundra (68.612, -149.60), and the tundra row became taller
+  russet-gold tussocks (0.20-0.38 m, was 0.08-0.20 m, too short and too close to the ground colour to see);
+  tundra gpu_frame 6.4 ms.
 - gpu_frame eye shot (ms, before -> after, before runs used other flags): dunes 7.2 -> 4.7, sonoran 7.9 -> 6.0,
   everglades 8.9 -> 8.0, iowa 9.1 -> 8.2, tundra 6.9 -> 4.5. Tests 432 pass.
 
