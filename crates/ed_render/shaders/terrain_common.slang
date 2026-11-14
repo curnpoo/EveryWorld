@@ -535,9 +535,24 @@ float gf_grass(float v, float cover, float dither) {
 // Shares with a sparse canopy's gaps as grassland (ed_world grass `gf_understorey`).
 float4 gf_understorey(float4 s, float cover) {
     float gap = max(1.0 - (s.x + s.y + s.z + s.w) - cover, 0.0);
-    s.x += gap * smoothstep(0.03, 0.15, cover);
+    s.x += gap * smoothstep(0.002, 0.02, cover);
     return s;
 }
+// The understorey fringe's patch threshold 0.15..0.85 (ed_world grass `gf_fringe`).
+float gf_fringe(float2 w) {
+    float n = 0.6 * gf_noise2(w, 4.0, 13u).x + 0.4 * gf_noise(w, 2.0, 15u);
+    return 0.15 + 0.7 * smoothstep(0.25, 0.75, n);
+}
+// Grass of a sparse canopy's gaps thinned over its fringe as a soft, patchy blend; grassland
+// shares are never thinned (ed_world grass `gf_fringe_mask`).
+float gf_fringe_mask(float4 shares, float cover, float fringe) {
+    float u = smoothstep(0.003, 0.1, cover);
+    float m = smoothstep(fringe - 0.2, fringe + 0.2, u);
+    return max(m, smoothstep(0.05, 0.3, shares.x + shares.y + shares.z + shares.w));
+}
+// Canopy-cover tap offsets (face metres) around the lookup point: the carpet's cover is their
+// mean with the centre (ed_world grass `GF_SOFT`).
+static const float2 GF_SOFT[4] = { float2(4.0, 2.0), float2(-2.0, 4.0), float2(-4.0, -2.0), float2(2.0, -4.0) };
 // Share of the non-grass ground that is forest floor (litter); the rest is bare soil.
 float gf_litter(float cover) {
     return smoothstep(0.05, 0.35, cover);

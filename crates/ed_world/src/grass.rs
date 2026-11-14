@@ -513,11 +513,29 @@ pub fn gf_grass(v: f32, cover: f32, dither: f32) -> f32 {
 /// Shares with the gaps of a sparse canopy as grassland: a 10 m cell classed as trees whose
 /// canopy covers only part of it has grass between the crowns (wood pasture, larch meadows),
 /// not bare forest floor. Where nothing grows trees (`cover` ~0) the shares stay: rock, sand
-/// and built ground stay bare (terrain_common.slang `gf_understorey`).
+/// and built ground stay bare (terrain_common.slang `gf_understorey`). The grove's thin fringe
+/// is shaped by [`gf_fringe_mask`], not here.
 pub fn gf_understorey(mut s: [f32; 4], cover: f32) -> [f32; 4] {
     let gap = (1.0 - s.iter().sum::<f32>() - cover).max(0.0);
-    s[0] += gap * smoothstep(0.03, 0.15, cover);
+    s[0] += gap * smoothstep(0.002, 0.02, cover);
     s
+}
+
+/// The understorey fringe's patch threshold 0.15..0.85 (patches of ~1 and ~2 m,
+/// terrain_common.slang `gf_fringe`).
+pub fn gf_fringe(x: f32, y: f32) -> f32 {
+    let n = 0.6 * gf_noise2(x, y, 4.0, 13)[0] + 0.4 * gf_noise(x, y, 2.0, 15);
+    0.15 + 0.7 * smoothstep(0.25, 0.75, n)
+}
+
+/// How much of the grass a sparse canopy's gaps grow at its fringe (0..1): over the soft
+/// cover's thin edge (~0.003..0.1, several metres) grass thins into the bare ground as a soft,
+/// patchy blend (threshold `fringe`), not one line along a cover contour. Land cover that is
+/// grassland itself (`shares` before [`gf_understorey`]) is never thinned.
+pub fn gf_fringe_mask(shares: [f32; 4], cover: f32, fringe: f32) -> f32 {
+    let u = smoothstep(0.003, 0.1, cover);
+    let m = smoothstep(fringe - 0.2, fringe + 0.2, u);
+    m.max(smoothstep(0.05, 0.3, shares.iter().sum::<f32>()))
 }
 
 /// Share of the ground that is not grass which is forest floor (litter), the rest bare soil.
@@ -537,6 +555,20 @@ pub fn gf_lookup(d: DVec3) -> DVec3 {
     let (f, x, y) = face_metres(d, ed_geo::WGS84_A);
     let w = gf_warp(x.rem_euclid(FACE_PERIOD_M) as f32, y.rem_euclid(FACE_PERIOD_M) as f32);
     face_dir(f, x + w[0] as f64, y + w[1] as f64, ed_geo::WGS84_A)
+}
+
+/// Offsets (face metres) of the canopy-cover taps around the [`gf_lookup`] point: the cover that
+/// decides grass, litter and soil is the mean of the centre and these four (a ~9 m box), so a
+/// grove's steep canopy fringe ramps over metres (terrain_common.slang `GF_SOFT`).
+pub const GF_SOFT: [[f32; 2]; 4] = [[4.0, 2.0], [-2.0, 4.0], [-4.0, -2.0], [2.0, -4.0]];
+
+/// The five cover lookup points of `d`: [`gf_lookup`] and its [`GF_SOFT`] taps.
+pub fn gf_lookups(d: DVec3) -> [DVec3; 5] {
+    let (f, x, y) = face_metres(d, ed_geo::WGS84_A);
+    let w = gf_warp(x.rem_euclid(FACE_PERIOD_M) as f32, y.rem_euclid(FACE_PERIOD_M) as f32);
+    let (cx, cy) = (x + w[0] as f64, y + w[1] as f64);
+    let o = |k: usize| face_dir(f, cx + GF_SOFT[k][0] as f64, cy + GF_SOFT[k][1] as f64, ed_geo::WGS84_A);
+    [face_dir(f, cx, cy, ed_geo::WGS84_A), o(0), o(1), o(2), o(3)]
 }
 
 /// Clumps of node `id` (level 14..=20) whose rank is under `keep_min`. `type_at(d)` is the grass
@@ -789,7 +821,7 @@ pub fn type_from_ground(g: &GroundSample, cl: &Climate, d: DVec3) -> Option<(u8,
     }
     let (_, x, y) = gf_xy(d);
     let wts = niche_weights(gf_understorey(shares, c.cover), c.alt_m, cl.aridity, cl.temp_sl);
-    let gp = gf_grass(wts.iter().sum(), c.cover, gf_dither(x, y));
+    let gp = gf_grass(wts.iter().sum(), c.cover, gf_dither(x, y)) * gf_fringe_mask(shares, c.cover, gf_fringe(x, y));
     if gp < 0.02 {
         return None;
     }

@@ -1,3 +1,13 @@
+## 2026-11-14: Grass: soft, lobed bare-to-grass edges
+
+- Owner: hard line between bare gravel and grass (oasis near 31.139,-4.025). Cause: with zero land-cover shares
+  all grass came from `gf_understorey`, and four thresholds turned the steep canopy fringe into a 0-to-1 step.
+  Fix, mirrored CPU/GPU: gentler understorey ramp; new `gf_fringe_mask` (4 m + 2 m noise fringe, never thins
+  real grassland shares) applied after the rule chain; canopy cover averaged over 5 taps within 4.5 m near the
+  camera; carpet layers use a 0.6 height-blend window. Edge is now lobed with a 1-3 m fade, blades match.
+  gpu_frame ms (oasis): top-down 8 m 12.02->12.59, 25 m 12.75->13.79, eye 15.68->13.26 (within noise
+  11.9-14.1). 485 tests pass. Open: still a continuous boundary rather than scattered islands up close.
+
 ## 2026-11-14: Grass: natural land-cover edges, blades wherever ground is green, mixed meadows
 
 - Owner after G4: square forest edges, green ground with no grass (Blue Ridge), grass in straight rows and

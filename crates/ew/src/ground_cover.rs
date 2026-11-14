@@ -146,7 +146,20 @@ pub(crate) fn sampler(pages: &PageSet) -> impl Fn(DVec3) -> Option<GroundSample>
             None => (cp, gp, (u, v)),
         };
         let shares = gp.as_ref().map(|g| ground_shares(g, u, v));
-        Some(GroundSample { canopy: CanopySample::from_page(cp, u, v, alt as f32, 0.3), slope_cos, shares })
+        // Cover: the mean over the lookup and its soft taps (`gf_lookups`), as on the terrain.
+        let mut canopy = CanopySample::from_page(cp, u, v, alt as f32, 0.3);
+        for &t in &ed_world::grass::gf_lookups(d)[1..] {
+            let tid = NodeId::from_unit(body, t, PAGE_LEVEL);
+            canopy.cover += match pages.get(&tid) {
+                Some((_, tcp, _)) => {
+                    let (tu, tv) = tid.local_uv(t);
+                    tcp.bilinear(tu, tv)[0]
+                }
+                None => cp.bilinear(u, v)[0],
+            };
+        }
+        canopy.cover *= 0.2;
+        Some(GroundSample { canopy, slope_cos, shares })
     }
 }
 

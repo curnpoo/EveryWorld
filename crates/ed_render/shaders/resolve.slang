@@ -252,6 +252,7 @@ struct TCarpet {
     float v;            // the rule table's grass weight (share of the sample, ed_world grass `niche_weights` sum)
     float dither;       // gf_dither (faded to 0.5 where its patches are under a pixel)
     float edge;         // gf_grass edge half-width (0.18 near, wider far: no sub-pixel dither)
+    float mask;         // gf_fringe_mask: grass of a sparse canopy thinned over its fringe
     float2 cover;       // smooth (warped land-cover page) canopy cover, its data share
     float tall;         // tallness of the grass mix (0..1, the floor darkening under blades)
     float3 grass_gain;  // carpet colour / the terrain grass layer's mean
@@ -278,6 +279,7 @@ TCarpet t_carpet(FrameData* f, uint pool, TerrainDraw d, float2 g, float2 gw, fl
     o.v = 0.0;
     o.dither = 0.5;
     o.edge = 0.18;
+    o.mask = 1.0;
     o.cover = cover;
     o.tall = 0.0;
     o.grass_gain = float3(1.0);
@@ -293,7 +295,9 @@ TCarpet t_carpet(FrameData* f, uint pool, TerrainDraw d, float2 g, float2 gw, fl
     float4 hd1 = t[b + 1u];
     float4 hd2 = t[b + 2u];
     float4 hd3 = t[b + 3u];
-    float4 sh = gf_understorey(t_ground_lc(pool, d, gw), cover.x);
+    float4 sh0 = t_ground_lc(pool, d, gw);
+    float4 sh = gf_understorey(sh0, cover.x);
+    o.mask = gf_fringe_mask(sh0, cover.x, far < 1.0 ? lerp(gf_fringe(w), 0.5, far) : 0.5);
     float2 cl = t_climate(d, g);
     float temp = cl.y - 0.0065 * max(h, 0.0);
     float3 cc = float3(0.0);
@@ -442,7 +446,7 @@ TSurf terrain_material(FrameData* f, TerrainMat m, TerrainDraw d, float3 n, floa
         // the vegetated ground is grass where blades grow, else forest floor under canopy and
         // bare soil in the open. Where the canopy page has no data the procedural forest rules.
         float cov = lerp(forest_rule, gc.cover.x, gc.cover.y);
-        float gg = gf_grass_e(gc.v, cov, gc.dither, gc.edge);
+        float gg = gf_grass_e(gc.v, cov, gc.dither, gc.edge) * gc.mask;
         float lit = gf_litter(cov);
         float vs = wt[L_GRASS] + wt[L_FOREST];
         wt[L_GRASS] = vs * gg;
@@ -510,7 +514,10 @@ TSurf terrain_material(FrameData* f, TerrainMat m, TerrainDraw d, float3 n, floa
     float total = 0.0;
     [ForceUnroll]
     for (uint k = 0; k < T_LAYERS; k++) {
-        wt[k] = wt[k] > 0.0 ? max(wt[k] - (best - 0.35), 0.0) : 0.0;
+        // Grass, forest floor and soil mix over a wider window: their edge is a blend with the
+        // displacement showing gravel through thinning grass, not a switch along one contour.
+        bool carpet = gc.on && (k == L_GRASS || k == L_FOREST || k == L_SOIL);
+        wt[k] = wt[k] > 0.0 ? max(wt[k] - (best - (carpet ? 0.6 : 0.35)), 0.0) : 0.0;
         total += wt[k];
     }
     // Pass 2: blend; normals only for the layers that survived, and only near.
@@ -1074,6 +1081,7 @@ float4 terrain_pixel<let TR : int>(FrameData* f, FsOut i, uint2 vis, float3 dir)
     gc.v = 0.0;
     gc.dither = 0.5;
     gc.edge = 0.18;
+    gc.mask = 1.0;
     gc.cover = float2(0.0);
     gc.tall = 0.0;
     gc.grass_gain = float3(1.0);
@@ -1085,10 +1093,26 @@ float4 terrain_pixel<let TR : int>(FrameData* f, FsOut i, uint2 vis, float3 dir)
         float far = smoothstep(0.75, 3.0, length(p) * pa / sqrt(max(abs(dot(vd, up)), 0.05)));
         float2 gw = g + gf_warp_f(w0, far < 1.0) / cell_m0;
         float2 cov = float2(0.0);
+        // Cover: the mean over the lookup and its GF_SOFT taps (the blades' cover too), so a
+        // grove's steep canopy fringe ramps over metres; the centre only where pixels span metres.
         if (d.anc.y != 0u) {
             cov = t_canopy_bilin(pool, d.anc.y, t_lc_sample(d, gw)).xw;
+            if (far < 1.0) {
+                [ForceUnroll]
+                for (uint k = 0; k < 4u; k++) {
+                    cov.x += t_canopy_bilin(pool, d.anc.y, t_lc_sample(d, gw + GF_SOFT[k] / cell_m0)).x;
+                }
+                cov.x *= 0.2;
+            }
         } else if (trees && asuint(d.tex.z) != 0u) {
             cov = t_canopy_bilin(pool, asuint(d.tex.z), gw * float(T_PAGE_STRIDE)).xw;
+            if (far < 1.0) {
+                [ForceUnroll]
+                for (uint k = 0; k < 4u; k++) {
+                    cov.x += t_canopy_bilin(pool, asuint(d.tex.z), (gw + GF_SOFT[k] / cell_m0) * float(T_PAGE_STRIDE)).x;
+                }
+                cov.x *= 0.2;
+            }
         }
         gc = t_carpet(f, pool, d, g, gw, w0, far, h, cov);
     }
