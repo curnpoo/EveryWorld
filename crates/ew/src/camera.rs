@@ -93,6 +93,8 @@ pub enum PathKind {
     BlueRidge,
     /// Synthetic rolling hills for judging grass ([`crate::terrain::GRASSLAB`]).
     GrassLab,
+    /// A catalogue place or any lat/lon ([`crate::terrain::parse_place`]): index into its request table.
+    Place(u16),
 }
 
 impl PathKind {
@@ -102,6 +104,7 @@ impl PathKind {
             PathKind::Zermatt => Some(&crate::terrain::ZERMATT),
             PathKind::BlueRidge => Some(&crate::terrain::BLUE_RIDGE),
             PathKind::GrassLab => Some(&crate::terrain::GRASSLAB),
+            PathKind::Place(i) => Some(crate::terrain::requested(i)),
             _ => None,
         }
     }
@@ -142,7 +145,7 @@ impl ScriptedPath {
                 Pose::from_camera(&Camera::look_at(pos, focus))
             }
             PathKind::Proving => crate::proving::path_pose(step as f64 / 60.0 * speed),
-            PathKind::Zermatt | PathKind::BlueRidge | PathKind::GrassLab => crate::terrain::path_pose(kind.place().expect("terrain path"), step as f64 / 60.0 * speed),
+            PathKind::Zermatt | PathKind::BlueRidge | PathKind::GrassLab | PathKind::Place(_) => crate::terrain::path_pose(kind.place().expect("terrain path"), step as f64 / 60.0 * speed),
         }
     }
 

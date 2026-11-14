@@ -287,7 +287,7 @@ impl Play {
         let t0 = Instant::now();
         let root = crate::terrain::cache_root();
         let mut world = TerrainWorld::new(&root, place);
-        if world.source().zooms().is_empty() {
+        if world.source().zooms().is_empty() && !world.source().is_online() {
             return Err(format!("no Mapterhorn tiles under {} (set EARTHDROP_CACHE to an absolute .earthdrop-cache path)", root.display()));
         }
         r.set_terrain(dev, Some(world.provider(dev).map_err(|e| format!("terrain provider: {e}"))?));
@@ -843,7 +843,7 @@ struct App {
 }
 
 pub fn run(args: Args) -> Result<(), String> {
-    let place = args.play.and_then(|p| p.place()).ok_or("--play: expected zermatt|blueridge")?;
+    let place = args.play.and_then(|p| p.place()).ok_or("--play: expected a place")?;
     let dev = ed_gpu::create_device(ed_gpu::default_backend(), &DeviceDesc { validation: args.validation, frames_in_flight: args.frames_in_flight })
         .map_err(|e| format!("device: {e}"))?;
     println!("ew: {}", crate::caps_line(dev.caps()));

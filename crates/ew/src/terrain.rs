@@ -2,8 +2,8 @@
 //! `ed_planet` selection each frame and the renderer's terrain provider, all in one local frame
 //! ([`Anchor`]: render x = east, y = up, z = -north at a point on the ellipsoid).
 //!
-//! * Source: [`CacheSource`] serves Mapterhorn tiles from the cache only (offline, never
-//!   downloads). A zoom that is not on disk is resampled from what is: finer zooms from the
+//! * Source: [`CacheSource`] serves Mapterhorn tiles from the cache; the app's
+//!   [`CacheSource::for_app`] also fetches missing ones (Mapterhorn only) unless `EW_OFFLINE=1`. A zoom that is not on disk is resampled from what is: finer zooms from the
 //!   finest cached ancestor (bilinear upsampling), coarser zooms from the coarsest cached zoom
 //!   (point-sampled). No data at all is 0 m. A pure function of the cache contents.
 //! * Pages: [`ed_data::node::node_heights`] (the production lattice rule, `d * r(d)`), built
@@ -50,6 +50,92 @@ pub const BLUE_RIDGE: Place = Place { name: "blueridge", lat: 35.660, lon: -82.3
 /// A synthetic rolling-hills place on the Swiss plateau for judging grass (no real data: heights
 /// come from [`hills_height`], see [`CacheSource::hills`]). Looks about 400 m north at ground height.
 pub const GRASSLAB: Place = Place { name: "grasslab", lat: 47.05, lon: 7.60, ground_m: 520.0, agl_m: 30.0, rise_m: 300.0, look: (47.05 + 400.0 / 110_574.0, 7.60, 520.0) };
+
+/// A catalogue place whose ground height is read from the elevation data when it is first used
+/// (see [`resolve_place`]). `look` is (lat, lon, metres above the ground there).
+pub struct PlaceDef {
+    pub name: &'static str,
+    pub lat: f64,
+    pub lon: f64,
+    pub agl_m: f64,
+    pub rise_m: f64,
+    pub look: (f64, f64, f64),
+}
+
+/// Real places for judging grass, trees and ground in other biomes (`--play NAME`, `--path NAME`).
+/// Heights come from the elevation data at load time; fetched into the cache unless `EW_OFFLINE=1`.
+pub const PLACES: &[PlaceDef] = &[
+    // Erg Chebbi (Morocco): sand desert, dunes to the north-west.
+    PlaceDef { name: "dunes", lat: 31.15, lon: -3.99, agl_m: 2.0, rise_m: 300.0, look: (31.17, -4.01, 60.0) },
+    // Tucson Mountains (Arizona): saguaro desert scrub, ridge to the west.
+    PlaceDef { name: "sonoran", lat: 32.25, lon: -111.17, agl_m: 2.0, rise_m: 300.0, look: (32.25, -111.215, 150.0) },
+    // Arenal (Costa Rica): rainforest hills, volcano to the north-west.
+    PlaceDef { name: "jungle", lat: 10.43, lon: -84.74, agl_m: 2.0, rise_m: 300.0, look: (10.463, -84.703, 50.0) },
+    // Everglades (Florida): sawgrass wetland, flat.
+    PlaceDef { name: "everglades", lat: 25.75, lon: -80.85, agl_m: 2.0, rise_m: 300.0, look: (25.76, -80.85, 2.0) },
+    // Toolik Lake (Alaska): tundra, the Brooks Range to the south.
+    PlaceDef { name: "tundra", lat: 68.63, lon: -149.60, agl_m: 2.0, rise_m: 300.0, look: (68.58, -149.60, 600.0) },
+    // Alpe di Siusi (Dolomites): alpine meadow, Sciliar to the north-west.
+    PlaceDef { name: "siusi", lat: 46.54, lon: 11.62, agl_m: 2.0, rise_m: 300.0, look: (46.53, 11.60, 200.0) },
+    // Flint Hills (Kansas): tallgrass prairie, rolling.
+    PlaceDef { name: "prairie", lat: 38.60, lon: -96.50, agl_m: 2.0, rise_m: 300.0, look: (38.61, -96.50, 5.0) },
+    // Central Iowa: cropland, flat.
+    PlaceDef { name: "iowa", lat: 41.95, lon: -93.65, agl_m: 2.0, rise_m: 300.0, look: (42.01, -93.60, 3.0) },
+    // Cades Cove (Great Smoky Mountains): meadow, forested ridges around.
+    PlaceDef { name: "smokies", lat: 35.60, lon: -83.80, agl_m: 2.0, rise_m: 300.0, look: (35.59, -83.78, 150.0) },
+];
+
+/// What `--play` and `--path` take besides the fixed paths: a [`PLACES`] name or `LAT,LON`.
+/// Pure parsing (no I/O); returns the index into the request table ([`requested`]).
+pub fn parse_place(spec: &str) -> Result<u16, String> {
+    let def = if let Some(d) = PLACES.iter().find(|d| d.name == spec) {
+        (spec.to_string(), d.lat, d.lon, d.agl_m, d.rise_m, Some(d.look))
+    } else {
+        let v: Vec<f64> = spec.split(',').map(|t| t.trim().parse::<f64>()).collect::<Result<_, _>>().map_err(|_| unknown_place(spec))?;
+        match v[..] {
+            [lat, lon] if (-85.0..=85.0).contains(&lat) && (-180.0..=180.0).contains(&lon) => (format!("{lat:.4},{lon:.4}"), lat, lon, 2.0, 300.0, None),
+            _ => return Err(unknown_place(spec)),
+        }
+    };
+    let mut r = REQUESTS.lock().unwrap();
+    if let Some(i) = r.iter().position(|e| e.0 == def.0) {
+        return Ok(i as u16);
+    }
+    r.push(def);
+    Ok((r.len() - 1) as u16)
+}
+
+fn unknown_place(spec: &str) -> String {
+    let names: Vec<&str> = PLACES.iter().map(|d| d.name).collect();
+    format!("unknown place {spec:?}: expected zermatt|blueridge|grasslab|{}|LAT,LON", names.join("|"))
+}
+
+type Request = (String, f64, f64, f64, f64, Option<(f64, f64, f64)>);
+static REQUESTS: Mutex<Vec<Request>> = Mutex::new(Vec::new());
+static RESOLVED: Mutex<BTreeMap<u16, &'static Place>> = Mutex::new(BTreeMap::new());
+
+/// The [`Place`] of a parsed request, its ground height read from the elevation data (fetched
+/// into the cache unless offline) on first use. A point with no elevation data is at 0 m.
+/// A `LAT,LON` place looks 600 m north at ground height.
+pub fn requested(index: u16) -> &'static Place {
+    if let Some(p) = RESOLVED.lock().unwrap().get(&index) {
+        return p;
+    }
+    let (name, lat, lon, agl_m, rise_m, look) = REQUESTS.lock().unwrap()[index as usize].clone();
+    let src = CacheSource::for_app(cache_root());
+    let ground_m = src.height(lat, lon).unwrap_or(0.0);
+    let look = match look {
+        Some((la, lo, up)) => (la, lo, src.height(la, lo).unwrap_or(ground_m) + up),
+        None => {
+            let la = lat + 600.0 / 110_574.0;
+            (la, lon, src.height(la, lon).unwrap_or(ground_m))
+        }
+    };
+    let name: &'static str = Box::leak(name.into_boxed_str());
+    let place: &'static Place = Box::leak(Box::new(Place { name, lat, lon, ground_m, agl_m, rise_m, look }));
+    eprintln!("ew: place {name}: ground {ground_m:.1} m, look height {:.1} m", look.2);
+    *RESOLVED.lock().unwrap().entry(index).or_insert(place)
+}
 
 /// Height (m) of the grass-lab hills at a lat/lon: 520 m plus 0 to ~50 m of smooth rolling relief
 /// (four octaves of seeded egg-crate sines, wavelengths 85 to 800 m), damped to flat within ~60 m
@@ -150,6 +236,8 @@ pub struct CacheSource {
     coarse: BTreeSet<(u32, u32)>,
     /// Synthetic grass-lab heights ([`hills_height`]) instead of the disk cache.
     hills: bool,
+    /// Missing Mapterhorn tiles are fetched into the cache ([`CacheSource::for_app`]).
+    online: bool,
 }
 
 impl CacheSource {
@@ -157,7 +245,7 @@ impl CacheSource {
     pub fn hills(root: impl Into<PathBuf>) -> CacheSource {
         ed_data::http::set_offline(true);
         let root = root.into();
-        CacheSource { cache: DiskCache::new(root.clone()), root, tiles: Mutex::new(BTreeMap::new()), on_disk: Mutex::new(BTreeMap::new()), zooms: vec![14], coarse: BTreeSet::new(), hills: true }
+        CacheSource { cache: DiskCache::new(root.clone()), root, tiles: Mutex::new(BTreeMap::new()), on_disk: Mutex::new(BTreeMap::new()), zooms: vec![14], coarse: BTreeSet::new(), hills: true, online: false }
     }
 
     /// A hills tile: every pixel centre through [`hills_height`].
@@ -174,6 +262,20 @@ impl CacheSource {
             }
         }
         Raster { size, heights }
+    }
+
+    /// The app's source: fetches missing Mapterhorn tiles into the cache unless `EW_OFFLINE=1`
+    /// (then the same as [`CacheSource::new`]). Tests and harnesses use `new` (never online).
+    pub fn for_app(root: impl Into<PathBuf>) -> CacheSource {
+        let root = root.into();
+        if ed_data::http::offline() {
+            return CacheSource::new(root);
+        }
+        CacheSource { cache: DiskCache::new(root.clone()), root, tiles: Mutex::new(BTreeMap::new()), on_disk: Mutex::new(BTreeMap::new()), zooms: vec![], coarse: BTreeSet::new(), hills: false, online: true }
+    }
+
+    pub fn is_online(&self) -> bool {
+        self.online
     }
 
     pub fn new(root: impl Into<PathBuf>) -> CacheSource {
@@ -194,7 +296,7 @@ impl CacheSource {
                 }
             }
         }
-        CacheSource { cache: DiskCache::new(root.clone()), root, tiles: Mutex::new(BTreeMap::new()), on_disk: Mutex::new(BTreeMap::new()), zooms, coarse, hills: false }
+        CacheSource { cache: DiskCache::new(root.clone()), root, tiles: Mutex::new(BTreeMap::new()), on_disk: Mutex::new(BTreeMap::new()), zooms, coarse, hills: false, online: false }
     }
 
     /// Cached zooms (ascending); empty when the cache has no Mapterhorn tiles.
@@ -206,6 +308,14 @@ impl CacheSource {
     fn disk(&self, z: u8, x: u32, y: u32) -> Option<Arc<Raster>> {
         cell(&self.on_disk, (z, x, y))
             .get_or_init(|| {
+                if self.online {
+                    // Mapterhorn only (no unregistered Terrarium fallback); cache first.
+                    return ed_data::elevation::fetch_mapterhorn(&self.cache, ed_geo::tile::TileId::new(z, x, y))
+                        .map_err(|e| eprintln!("ew: mapterhorn {z}/{x}/{y}: {e}"))
+                        .ok()
+                        .flatten()
+                        .map(|t| Arc::new(Raster { size: t.size, heights: t.heights }));
+                }
                 let path = self.root.join(format!("mapterhorn/{}/{z}/{x}/{y}.webp", ed_data::DATA_VERSION));
                 if path.exists() { ElevationSource { cache: &self.cache }.elevation_tile(z, x, y) } else { None }
             })
@@ -289,7 +399,8 @@ impl CacheSource {
         if self.hills {
             return Some(hills_height(lat, lon));
         }
-        for &z in self.zooms.iter().rev() {
+        let zs: Vec<u8> = if self.online { vec![14, 12, 10, 8, 6] } else { self.zooms.iter().rev().copied().collect() };
+        for z in zs {
             let n = (1u64 << z) as f64;
             let latr = lat.clamp(-ed_geo::tile::MAX_LAT, ed_geo::tile::MAX_LAT).to_radians();
             let gx = (lon + 180.0) / 360.0 * n;
@@ -314,6 +425,20 @@ impl CacheSource {
     fn build_tile(&self, z: u8, x: u32, y: u32) -> Option<Arc<Raster>> {
         if self.hills {
             return Some(Arc::new(Self::hills_tile(z, x, y)));
+        }
+        if self.online {
+            // Exact tile when Mapterhorn has it, else upsampled from the nearest coarser one.
+            if z <= ed_data::elevation::MAX_ZOOM {
+                if let Some(t) = self.disk(z, x, y) {
+                    return Some(t);
+                }
+            }
+            let top = z.min(ed_data::elevation::MAX_ZOOM + 1).saturating_sub(1);
+            return (0..=top).rev().find_map(|zs| {
+                let sh = z - zs;
+                let a = self.disk(zs, x >> sh, y >> sh)?;
+                Some(Arc::new(self.resample(z, x, y, zs, a.size)))
+            });
         }
         let on_disk = if self.zooms.contains(&z) { self.disk(z, x, y) } else { None };
         on_disk.or_else(|| {
@@ -493,7 +618,7 @@ impl TerrainWorld {
             canopy_cache: trees_far.on().then(|| Arc::new(ed_data::DiskCache::new(cache))),
             canopy_built: (0, 0.0),
             grass_lab: place.name == GRASSLAB.name,
-            src: Arc::new(if place.name == GRASSLAB.name { CacheSource::hills(cache) } else { CacheSource::new(cache) }),
+            src: Arc::new(if place.name == GRASSLAB.name { CacheSource::hills(cache) } else { CacheSource::for_app(cache) }),
             sel: Selection::default(),
             loader: None,
             eye: DVec3::ZERO,

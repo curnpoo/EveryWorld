@@ -138,6 +138,19 @@ pub fn fetch(cache: &DiskCache, id: TileId) -> anyhow::Result<HeightTile> {
     HeightTile::decode_terrarium(id, &bytes)
 }
 
+/// Mapterhorn only (Copernicus GLO-30 and national models; registry YELLOW), through the cache.
+/// No Terrarium fallback: the AWS Terrarium composite is not in the data registry, so scenes
+/// that fetch from the network use this. `None` = Mapterhorn has no tile there (cached as empty).
+pub fn fetch_mapterhorn(cache: &DiskCache, id: TileId) -> anyhow::Result<Option<HeightTile>> {
+    anyhow::ensure!(id.z <= MAX_ZOOM, "zoom above {MAX_ZOOM}");
+    let key = format!("mapterhorn/{}/{}.webp", crate::DATA_VERSION, id.path());
+    let bytes = cache.get_or_fetch(&key, None, || Ok(crate::http::get_bytes_opt(&format!("{MAPTERHORN_URL}/{}.webp", id.path()))?.unwrap_or_default()))?;
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(HeightTile::decode_terrarium_webp(id, &bytes)?))
+}
+
 /// Download `id`'s elevation bytes into the cache without decoding them.
 /// Run on an IO thread so a later [`fetch`] is a disk read. Mirrors
 /// [`fetch`]'s source order (Mapterhorn, then AWS Terrarium).

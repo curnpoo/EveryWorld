@@ -1,3 +1,19 @@
+## 2026-11-14: Nine biome test places; play anywhere by LAT,LON; online fetch
+
+- `ew/src/terrain.rs` `PLACES`: dunes (Erg Chebbi 31.17,-4.01), sonoran (Tucson Mts 32.25,-111.215),
+  jungle (Arenal slope 10.43,-84.74), everglades (25.76,-80.85), tundra (Toolik 68.58,-149.60),
+  siusi (Alpe di Siusi 46.53,11.60), prairie (Flint Hills 38.61,-96.50), iowa (41.95,-93.65),
+  smokies (Cades Cove 35.59,-83.78). `--play` and `--path` take any of these, the old ones, or `LAT,LON`.
+- Online: with `EW_OFFLINE` unset, terrain fetches Mapterhorn tiles through the disk cache
+  (`ed_data::elevation::fetch_mapterhorn`, no Terrarium fallback: Terrarium is not in the registry).
+  Sources read: Mapterhorn/GLO-30 (YELLOW), WorldCover (GREEN), ETH canopy height (GREEN). Tests stay offline.
+- Cache 3.5 GB -> 5.8 GB; most of it is a one-off global ETH coarse canopy sweep (~90 min, ~1.3 GB) on the first run.
+- gpu_frame, 1600x900 path run mean (ms): dunes 7.2, sonoran 7.9, jungle 22.7, everglades 8.9, tundra 6.9,
+  siusi 11.1, prairie 12.0, iowa 9.1, smokies 13.3.
+- Shows the G2 gap plainly: trees follow real canopy data everywhere, but dunes and Sonoran render as green
+  meadow because grass type and ground colour do not read land cover yet (`docs/plans/grass.md` G2-G4).
+- Tests: 380 passed (+1 place parsing).
+
 ## 2026-11-14: Trees and grass stay loaded all around; alpine meadow; far-fill knob (off)
 
 Owner: "when i look around fast there are missing tiles of trees", and a lot of pop-in while

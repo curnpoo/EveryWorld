@@ -9,8 +9,9 @@ ew: EveryWorld engine shell (Phase 1, M4)
 USAGE:
   ew [OPTIONS]                 open a window in the proving ground (fly camera)
   ew --headless [OPTIONS]      render offscreen, no window, write PNG + CSV + summary
-  ew --play zermatt|blueridge|grasslab  walk on real terrain (window, third-person character; tiles
-                               from EARTHDROP_CACHE, an absolute path, offline)
+  ew --play PLACE              walk on real terrain (window, third-person character; tiles
+                               from EARTHDROP_CACHE, an absolute path; missing ones are
+                               fetched and cached unless EW_OFFLINE=1)
 
 OPTIONS:
   --width W, --height H        output size in pixels (default 1280x720)
@@ -21,15 +22,19 @@ OPTIONS:
   --out DIR                    headless output directory (default target/headless)
   --path orbit|static|proving  headless camera path (default orbit; proving implies
                                --scene proving)
-  --play zermatt|blueridge|grasslab     windowed: walk there (W A S D walk, Shift run, Space jump,
+  --play PLACE                 windowed: walk there (W A S D walk, Shift run, Space jump,
                                mouse looks, wheel zooms, V vsync, Esc quits).
                                EW_AUTOWALK=S walks S seconds by itself, writes
                                play_start.png / play_end.png to --out and exits
   --character robot|solarcat   --play: the player character (default robot: the alpha's
                                procedural robot; solarcat: the authored skinned character).
                                C puts the car 4 m ahead of the robot
-  --path zermatt|blueridge|grasslab     headless real terrain from EARTHDROP_CACHE (offline; no
-                               scene loaded): ground level, then a climb
+  --path PLACE                 headless real terrain from EARTHDROP_CACHE (missing tiles are
+                               fetched and cached unless EW_OFFLINE=1; no scene loaded):
+                               ground level, then a climb
+  PLACE                        zermatt|blueridge|grasslab (synthetic hills), a catalogue name
+                               (dunes sonoran jungle everglades tundra siusi prairie iowa
+                               smokies), or LAT,LON for any point (2 m eye, looks 600 m north)
   --scene test|proving         what to load (windowed default proving; headless default
                                test, or proving with --path proving)
   --speed X                    camera path speed multiplier (default 1)
@@ -309,7 +314,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Option<Args>, Str
                     Some("zermatt") => PathKind::Zermatt,
                     Some("blueridge") => PathKind::BlueRidge,
                     Some("grasslab") => PathKind::GrassLab,
-                    v => return Err(format!("--play: expected zermatt|blueridge|grasslab, got {v:?}")),
+                    Some(v) => PathKind::Place(crate::terrain::parse_place(v).map_err(|e| format!("--play: {e}"))?),
+                    None => return Err("--play needs a place".into()),
                 })
             }
             "--character" => {
@@ -327,7 +333,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Option<Args>, Str
                     Some("zermatt") => PathKind::Zermatt,
                     Some("blueridge") => PathKind::BlueRidge,
                     Some("grasslab") => PathKind::GrassLab,
-                    v => return Err(format!("--path: expected orbit|static|proving|zermatt|blueridge|grasslab, got {v:?}")),
+                    Some(v) => PathKind::Place(crate::terrain::parse_place(v).map_err(|e| format!("--path: orbit|static|proving or {e}"))?),
+                    None => return Err("--path needs a value".into()),
                 }
             }
             other => return Err(format!("unknown argument {other:?} (see --help)")),
@@ -337,7 +344,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Option<Args>, Str
         return Err("--width and --height must be > 0".into());
     }
     if a.play.is_some() && a.headless {
-        return Err("--play opens a window; for headless terrain use --path zermatt|blueridge|grasslab".into());
+        return Err("--play opens a window; for headless terrain use --path NAME".into());
     }
     Ok(Some(a))
 }
@@ -368,6 +375,16 @@ mod tests {
         assert_eq!(p("--scene test").unwrap().unwrap().scene(), SceneKind::Test);
         assert!(p("--lod-fade 64").is_err());
         assert!(p("--scene moon").is_err());
+    }
+
+    #[test]
+    fn parses_catalogue_and_latlon_places() {
+        let a = p("--path dunes").unwrap().unwrap().path;
+        assert!(matches!(a, PathKind::Place(_)));
+        assert_eq!(p("--path dunes").unwrap().unwrap().path, a);
+        assert!(matches!(p("--play 12.5,-3.25").unwrap().unwrap().play, Some(PathKind::Place(_))));
+        assert!(p("--path atlantis").is_err());
+        assert!(p("--path 95,0").is_err());
     }
 
     #[test]
