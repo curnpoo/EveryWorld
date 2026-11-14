@@ -74,7 +74,7 @@ struct GrassData {
     float4 lod;             // x: full-density radius r0 (m), y: range (m), z: fewest blades, w: most widening
     float4 look;            // x: shading normal blend to the ground normal (near), y: fewest blades far, z: floor fall start (m, 0 off), w: narrowest blade (px, 0 off)
     float4 far;             // x: far clump spread (0..1), y: most far height growth, z: far mean colour (0..1), w: shadow distance (m, 0: cascade 0)
-    float4 under;           // x: terrain tint darkening under the blades (0..1), y: tint brightness noise (0..1), z: 1 the tint modulates the ground (a gain, style E), w: unused
+    float4 under;           // x: terrain tint darkening under the blades (0..1), y: tint brightness noise (0..1), z: 1 the tint modulates the ground (a gain, style E), w: far fill (share of the kept-clump gap far blades cover, 0 off)
 };
 
 // Grass shells and the terrain's grass tint (styles C and D; src/terrain.rs `ShellGrass`,
@@ -768,6 +768,13 @@ GrassBlade grass_blade(FrameData* f, GrassClump c, GrassType ty, float3 node, ui
     // Roots a little under the ground (short grass less, or it never shows).
     o.p0 = base + off - up * min(0.03, 0.1 * hc);
     float h = hc * (1.0 - 0.35 * rad) * lerp(0.72, 1.12, grass_rand(s2)) * grass_grow(f, d);
+    // Far short grass keeps a visible height (1.5 px, at most 3x its own) where the view grazes
+    // the field, so far meadows show texture instead of ending where blades go sub-pixel.
+    if (f.grass.under.w > 0.0) {
+        float px_m = d * 2.0 / max(f.proj.y * f.proj.w, 1.0);
+        float gz = 1.0 - smoothstep(0.15, 0.45, abs(dot(base / max(d, 1e-3), up)));
+        h = max(h, min(1.5 * px_m, 3.0 * h) * gz * smoothstep(2.0 * f.grass.lod.x, 4.0 * f.grass.lod.x, d));
+    }
     float grow = saturate(cnt - float(k)) * keep * fade;
     o.h = (k < uint(blades) && (c.hw & 0xFFFFu) != 0u) ? h * grow : 0.0;
     // Lean: the clump's shared direction, outwards from its centre, and a little of its own.
@@ -808,6 +815,14 @@ GrassBlade grass_blade(FrameData* f, GrassClump c, GrassType ty, float3 node, ui
     float3 sd = cross(up, lh);
     o.side = normalize(sd * cos(tw2) + lh * sin(tw2));
     o.w = ty.a.z * wscale * lerp(0.8, 1.2, grass_rand(s1 ^ 0x55u));
+    // Far fill: as clumps thin, survivors widen to cover the gap the dropped clumps leave
+    // (kept clumps ~0.6 / sqrt(keep) m apart), so a far field keeps its coverage and reads as
+    // thick tufts, not a sparse lattice of thin blades.
+    // Only where the view grazes the field (blades stand against each other); seen from above,
+    // wide far blades read as specks over the carpet.
+    float gap = 0.6 * rsqrt(max(lod.y, 1e-4));
+    float graze = 1.0 - smoothstep(0.15, 0.45, abs(dot(base / max(d, 1e-3), up)));
+    o.w = max(o.w, f.grass.under.w * graze * (1.0 - lod.y) * gap / max(cnt, 1.0) * lerp(0.8, 1.2, grass_rand(s1 ^ 0x55u)));
     // Never narrower than `px_min` pixels of the view (far blades stay solid, not sub-pixel).
     o.w = max(o.w, f.grass.look.w * d * 2.0 / max(f.proj.y * f.proj.w, 1.0));
     o.head = ty.mid.w;

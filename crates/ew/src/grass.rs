@@ -127,6 +127,7 @@ pub fn config_from_env(style: Style) -> GrassConfig {
         under: env_f32("EW_GRASS_UNDER", d.under).clamp(0.0, 0.95),
         noise: env_f32("EW_GRASS_NOISE", d.noise).clamp(0.0, 1.0),
         modulate: std::env::var("EW_GRASS_TINT_MOD").map_or(d.modulate, |v| v != "0"),
+        fill: env_f32("EW_GRASS_FILL", d.fill).clamp(0.0, 4.0),
     }
 }
 
@@ -149,6 +150,7 @@ pub const E_DEFAULTS: GrassConfig = GrassConfig {
     under: 0.45,
     noise: 0.5,
     modulate: true,
+    fill: 0.0,
 };
 
 /// The node-tier rule of a renderer config (the GPU's `grass_lod`).
@@ -182,6 +184,8 @@ pub struct GrassStats {
     pub nodes: usize,
     pub clumps: usize,
     pub pending: usize,
+    /// Load-set nodes (in cone or near, within range) not resident this frame.
+    pub holes: usize,
     pub gen_ms: f64,
     pub gen_nodes: usize,
     pub place_ms: f64,
@@ -200,6 +204,8 @@ pub struct Grass {
     uploaded: bool,
     apply_ms: f64,
     style: Style,
+    residency: bool,
+    resident_cap: usize,
     shells: Option<Shells>,
     pub stats: GrassStats,
 }
@@ -362,6 +368,8 @@ impl Grass {
             uploaded: false,
             apply_ms: std::env::var("EW_GRASS_APPLY_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1.5),
             style,
+            residency: std::env::var("EW_RESIDENCY").map_or(true, |v| v != "0"),
+            resident_cap: std::env::var("EW_GRASS_RESIDENT").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
             shells: style.shells().then(|| Shells { config: shell_config_from_env(style), have: None, building: None }),
             stats: GrassStats::default(),
         }
@@ -373,20 +381,25 @@ impl Grass {
         TIERS.iter().rev().copied().find(|t| *t >= need).unwrap_or(1.0)
     }
 
-    /// Wanted nodes and their keep tier.
-    fn wanted(&self, wd: &TerrainWorld, tv: &TreeView, camera: &Camera, viewport: [u32; 2]) -> BTreeMap<NodeId, f32> {
+    /// The load set (near, or in the view cone, within range) with keep tiers; the extra nodes in
+    /// range out of the cone; the keep map (both plus a 10% hysteresis band; value = cosine of
+    /// the angle to the view direction). Residency off: keep = load, no extras.
+    fn wanted(&self, wd: &TerrainWorld, tv: &TreeView, camera: &Camera, viewport: [u32; 2]) -> (BTreeMap<NodeId, f32>, BTreeMap<NodeId, f32>, BTreeMap<NodeId, f64>) {
         let body = &wd.anchor.body;
         let range = self.config.range as f64;
+        let slack = if self.residency { 1.1 } else { 1.0 };
         let cd = wd.anchor.render_to_body(camera.position).normalize();
         let c0 = NodeId::from_unit(body.id, cd, gr::NODE_LEVEL);
         let gh = (tv.ground)(cd).unwrap_or(0.0);
         let size = (body.point(c0.neighbour(1, 0).centre().normalize(), gh) - body.point(c0.centre().normalize(), gh)).length();
         let half = size * 0.75;
-        let n = (range / size).ceil() as i32 + 1;
+        let n = (range * slack / size).ceil() as i32 + 1;
         let fwd = camera.forward().as_dvec3();
         let aspect = viewport[0] as f64 / viewport[1].max(1) as f64;
         let half_diag = ((camera.fov_y as f64 * 0.5).tan() * (1.0 + aspect * aspect).sqrt()).atan();
-        let mut out = BTreeMap::new();
+        let mut load = BTreeMap::new();
+        let mut extra = BTreeMap::new();
+        let mut keep = BTreeMap::new();
         for dy in -n..=n {
             for dx in -n..=n {
                 let id = c0.neighbour(dx, dy);
@@ -395,16 +408,25 @@ impl Grass {
                 let to = p - camera.position;
                 let dist = to.length();
                 let dmin = (dist - half).max(0.0);
-                if dmin > range {
+                if dmin > range * slack {
                     continue;
                 }
-                let cone = to.normalize_or_zero().dot(fwd) > (half_diag + (half / dist.max(1.0)).atan()).min(std::f64::consts::PI).cos();
+                let cosv = to.normalize_or_zero().dot(fwd);
+                if dmin > range {
+                    keep.insert(id, cosv);
+                    continue;
+                }
+                let cone = cosv > (half_diag + (half / dist.max(1.0)).atan()).min(std::f64::consts::PI).cos();
                 if dmin < NEAR_M || cone {
-                    out.insert(id, self.tier_for(dmin));
+                    load.insert(id, self.tier_for(dmin));
+                    keep.insert(id, cosv);
+                } else if self.residency {
+                    extra.insert(id, self.tier_for(dmin));
+                    keep.insert(id, cosv);
                 }
             }
         }
-        out
+        (load, extra, keep)
     }
 
     fn release(&mut self, r: &mut Renderer, dev: &dyn ed_gpu::Device, id: NodeId) -> Result<(), String> {
@@ -431,25 +453,59 @@ impl Grass {
             r.set_grass_config(Some(self.config));
             self.uploaded = true;
         }
-        let wanted = self.wanted(wd, tv, camera, viewport);
-        let gone: Vec<NodeId> = self.nodes.iter().filter(|(id, e)| wanted.get(id).is_none_or(|k| *k * 8.0 < e.keep && !settle)).map(|(id, _)| *id).collect();
+        let (wanted, extra, keep) = self.wanted(wd, tv, camera, viewport);
+        // Residency cap: `EW_GRASS_RESIDENT` (default 3x the load set, min 64), and under the
+        // renderer's node table.
+        let cap = if self.resident_cap > 0 { self.resident_cap } else { (wanted.len() * 3).max(64) }.min(3500);
+        let mut gone: Vec<NodeId> = self
+            .nodes
+            .iter()
+            .filter(|(id, e)| {
+                let tier = wanted.get(id).or(extra.get(id));
+                match tier {
+                    Some(k) => *k * 8.0 < e.keep && !settle,
+                    None => !keep.contains_key(id),
+                }
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        if self.residency && self.nodes.len() > gone.len() + cap {
+            let gs: std::collections::BTreeSet<NodeId> = gone.iter().copied().collect();
+            let mut cand: Vec<(f64, NodeId)> = self.nodes.keys().copied().filter(|id| !gs.contains(id) && keep.contains_key(id) && !wanted.contains_key(id)).map(|id| (keep[&id], id)).collect();
+            cand.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+            let over = self.nodes.len() - gone.len() - cap;
+            gone.extend(cand.into_iter().take(over).map(|(_, id)| id));
+        }
         for id in gone {
             self.release(r, dev, id)?;
         }
-        self.requested.retain(|id, _| wanted.contains_key(id));
-        self.ready.retain(|id, _| wanted.contains_key(id));
+        self.requested.retain(|id, _| keep.contains_key(id));
+        self.ready.retain(|id, _| keep.contains_key(id));
         // Request: missing nodes and nodes needing a denser tier, nearest first.
         let eye = wd.anchor.render_to_body(camera.position).normalize();
         let mut new: Vec<(f64, NodeId, f32)> = Vec::new();
-        for (&id, &keep) in &wanted {
+        // Load set first; the out-of-cone nodes only once it is resident and nothing is pending
+        // (a few per frame, nearest first, under the cap and the clump buffer's 3/4 mark).
+        let load_done = self.requested.is_empty() && self.ready.is_empty() && wanted.keys().all(|id| self.nodes.contains_key(id));
+        let full = r.grass_clumps() as usize * 4 > ed_render::grass::MAX_GRASS_CLUMPS as usize * 3;
+        let room = if load_done && !full { cap.saturating_sub(self.nodes.len()).min(4) } else { 0 };
+        let extras: Vec<(NodeId, f32)> = if room > 0 { extra.iter().map(|(a, b)| (*a, *b)).collect() } else { Vec::new() };
+        let mut cands: Vec<(NodeId, f32, bool)> = wanted.iter().map(|(a, b)| (*a, *b, false)).collect();
+        cands.extend(extras.into_iter().map(|(a, b)| (a, b, true)));
+        let mut extra_new: Vec<(f64, NodeId, f32)> = Vec::new();
+        for (id, keep, is_extra) in cands {
             let have = self.nodes.get(&id).map(|e| e.keep);
             let asked = self.requested.get(&id).copied().or(self.ready.get(&id).map(|d| d.keep));
             if have.is_some_and(|k| k >= keep) || asked.is_some_and(|k| k >= keep) {
                 continue;
             }
-            new.push((id.centre().normalize().angle_between(eye), id, keep));
+            let item = (id.centre().normalize().angle_between(eye), id, keep);
+            if is_extra { extra_new.push(item) } else { new.push(item) }
         }
         new.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        extra_new.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        extra_new.truncate(room);
+        new.extend(extra_new);
         for (_, id, keep) in new {
             let mut pages = PageSet::new();
             if !wd.grass_lab {
@@ -501,6 +557,7 @@ impl Grass {
         }
         self.stats.place_ms += tp.elapsed().as_secs_f64() * 1e3;
         self.stats.nodes = self.nodes.len();
+        self.stats.holes = wanted.keys().filter(|id| !self.nodes.contains_key(id)).count();
         self.stats.clumps = r.grass_clumps() as usize;
         self.stats.pending = self.requested.len() + self.ready.len();
         self.stats.last_ms = t0.elapsed().as_secs_f64() * 1e3;

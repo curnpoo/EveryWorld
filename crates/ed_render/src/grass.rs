@@ -86,11 +86,14 @@ pub struct GrassConfig {
     pub noise: f32,
     /// The terrain tint is a gain on the textured ground (style E), not a lerp to the carpet.
     pub modulate: bool,
+    /// Far blades widen to fill this share of the gap between kept clumps (coverage holds as
+    /// clumps thin; 0: off).
+    pub fill: f32,
 }
 
 impl Default for GrassConfig {
     fn default() -> Self {
-        Self { r0: 14.0, range: 110.0, bmin: 5.0, width_max: 5.0, shadows: true, up_blend: 0.3, wind: true, bfar: 5.0, dfar: 0.0, px_min: 0.0, spread: 0.0, grow: 0.0, mean: 0.0, shadow_m: 0.0, under: 0.0, noise: 0.0, modulate: false }
+        Self { r0: 14.0, range: 110.0, bmin: 5.0, width_max: 5.0, shadows: true, up_blend: 0.3, wind: true, bfar: 5.0, dfar: 0.0, px_min: 0.0, spread: 0.0, grow: 0.0, mean: 0.0, shadow_m: 0.0, under: 0.0, noise: 0.0, modulate: false, fill: 0.0 }
     }
 }
 
@@ -240,7 +243,7 @@ impl GrassStore {
         }
         w[2] = self.slots();
         w[3] = if w[2] > 0 { 1 | if c.shadows { 2 } else { 0 } | if c.wind { 4 } else { 0 } } else { 0 };
-        let f = [c.r0, c.range, c.bmin, c.width_max, c.up_blend, c.bfar, c.dfar, c.px_min, c.spread, c.grow, c.mean, c.shadow_m, c.under, c.noise, if c.modulate { 1.0 } else { 0.0 }, 0.0];
+        let f = [c.r0, c.range, c.bmin, c.width_max, c.up_blend, c.bfar, c.dfar, c.px_min, c.spread, c.grow, c.mean, c.shadow_m, c.under, c.noise, if c.modulate { 1.0 } else { 0.0 }, c.fill];
         for (i, x) in f.iter().enumerate() {
             w[4 + i] = x.to_bits();
         }

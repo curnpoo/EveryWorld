@@ -211,7 +211,16 @@ pub fn run(args: &Args) -> Result<Report, String> {
     if flyout.is_some() {
         std::fs::create_dir_all(&args.out).map_err(|e| format!("{}: {e}", args.out.display()))?;
     }
+    // `EW_SPIN=<deg/s>`: yaw the ground camera continuously and stream asynchronously at 60 fps
+    // (streaming-hole gate: `streaming holes` line); otherwise every wanted node settles each frame.
+    let spin: f64 = std::env::var("EW_SPIN").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    let spinning = spin != 0.0;
+    let (mut holes_t, mut holes_g, mut holes_n) = ((0usize, 0usize), (0usize, 0usize), 0usize);
+    let mut late = (0usize, 0usize);
     for i in 0..frames {
+        if spinning {
+            std::thread::sleep(std::time::Duration::from_millis(16));
+        }
         // Camera (scripted path; game mode: the follow camera) and the session's fixed step.
         let alpha = fixed.run(fixed.dt(), &mut path, |_| ());
         let path_cam = match (args.camera, args.ground.zip(place).zip(world.as_ref())) {
@@ -225,7 +234,7 @@ pub fn run(args: &Args) -> Result<Report, String> {
                     Some((a, b)) => a * (b / a).powf(i as f64 / (frames - 1).max(1) as f64),
                     None => g[4],
                 };
-                crate::terrain::ground_pose(pl, g[0], g[1], g[2], g[3], base + agl).camera()
+                crate::terrain::ground_pose(pl, g[0], g[1], g[2] + spin * i as f64 / 60.0, g[3], base + agl).camera()
             }
             _ => path.interpolated(alpha),
         };
@@ -268,7 +277,16 @@ pub fn run(args: &Args) -> Result<Report, String> {
             terrain_ms += tw.elapsed().as_secs_f64() * 1e3;
             if let Some(nt) = &mut near {
                 let tt = Instant::now();
-                nt.update(wd, &mut renderer, &*dev, &camera, [w, h], i as f64 / 60.0, true)?;
+                nt.update(wd, &mut renderer, &*dev, &camera, [w, h], i as f64 / 60.0, !spinning)?;
+                if spinning && i >= 60 {
+                    let (ht, hg) = (nt.stats.holes, nt.grass.as_ref().map_or(0, |g| g.stats.holes));
+                    holes_t = (holes_t.0 + ht, holes_t.1.max(ht));
+                    holes_g = (holes_g.0 + hg, holes_g.1.max(hg));
+                    holes_n += 1;
+                    if i >= 300 {
+                        late = (late.0.max(ht), late.1.max(hg));
+                    }
+                }
                 trees_ms += tt.elapsed().as_secs_f64() * 1e3;
                 if i + 1 == frames {
                     let s = nt.stats;
@@ -278,6 +296,10 @@ pub fn run(args: &Args) -> Result<Report, String> {
                         s.nodes, s.instances, t[0], t[1], t[2], t[3], nt.handoff_m, s.bank_meshes, s.bank_bytes as f64 / 1048576.0, s.bank_ms, s.pages_ms, s.stand_ms, s.stand_nodes,
                         s.stand_ms / s.stand_nodes.max(1) as f64, s.apply_ms, trees_ms
                     );
+                    if spinning {
+                        let n = holes_n.max(1) as f64;
+                        println!("streaming holes: trees mean {:.2} max {}, grass mean {:.2} max {} (frames >= 300: trees max {}, grass max {})", holes_t.0 as f64 / n, holes_t.1, holes_g.0 as f64 / n, holes_g.1, late.0, late.1);
+                    }
                     if let Some(g) = &nt.ground {
                         let g = g.stats;
                         println!(

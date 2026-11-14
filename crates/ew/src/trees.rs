@@ -367,6 +367,8 @@ const SLICE: usize = 3000;
 /// Near-tree counters (headless report).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NearStats {
+    /// Load-set nodes (in cone, in range) not resident this frame.
+    pub holes: usize,
     pub nodes: usize,
     pub instances: usize,
     pub bank_meshes: usize,
@@ -407,6 +409,10 @@ pub struct NearTrees {
     apply_nodes: usize,
     /// Threads the background build may use (half the cores: the main thread keeps its own).
     worker_threads: usize,
+    /// Keep out-of-cone nodes resident (`EW_RESIDENCY=0`: release them at once).
+    residency: bool,
+    /// `EW_TREES_RESIDENT`: node cap (0: 3x the load set, min 64).
+    resident_cap: usize,
     apply_ms: f64,
     bank_keys: usize,
     atlas: Option<TextureHandle>,
@@ -485,6 +491,8 @@ impl NearTrees {
             building: None,
             ready: BTreeMap::new(),
             prep: BTreeMap::new(),
+            residency: std::env::var("EW_RESIDENCY").map_or(true, |v| v != "0"),
+            resident_cap: env_num("EW_TREES_RESIDENT", 0usize),
             worker_threads: env_num("EW_TREES_THREADS", (std::thread::available_parallelism().map_or(8, |t| t.get()) / 2).max(1)),
             apply_nodes: env_num("EW_TREES_APPLY", 2usize).max(1),
             apply_ms: env_num("EW_TREES_APPLY_MS", 2.0f64),
@@ -525,9 +533,11 @@ impl NearTrees {
         ed_render::RendererDesc { max_instances: 1 << 20, max_vertices: 1 << 23, max_indices: 1 << 24, max_meshes: 1024, max_nodes: 4000, ..Default::default() }
     }
 
-    /// The level-14 nodes that should hold trees for `camera`: inside the hand-off distance, all
-    /// around near the camera and inside the view cone farther out.
-    fn wanted(&self, wd: &TerrainWorld, camera: &Camera, viewport: [u32; 2]) -> (BTreeSet<NodeId>, f64) {
+    /// The level-14 nodes for `camera`: the load set (inside the hand-off distance, all around
+    /// near the camera and inside the view cone farther out), the extra nodes in range out of
+    /// the cone, and the keep map (those plus a 10% hysteresis band; value = cosine of the angle
+    /// to the view direction). Residency off: keep = load, no extras.
+    fn wanted(&self, wd: &TerrainWorld, camera: &Camera, viewport: [u32; 2]) -> (BTreeSet<NodeId>, BTreeSet<NodeId>, BTreeMap<NodeId, f64>, f64) {
         let body = &wd.anchor.body;
         let ppr = viewport[1] as f64 * 0.5 / (camera.fov_y as f64 * 0.5).tan();
         let handoff_px = if self.imp { bank::IMP_OUT_PX.0 } else { bank::HANDOFF_PX };
@@ -537,11 +547,15 @@ impl NearTrees {
         let gh = wd.ground(camera.position).unwrap_or(0.0);
         let c0 = NodeId::from_unit(body.id, cd, NODE_LEVEL);
         let size = (body.point(c0.neighbour(1, 0).centre().normalize(), gh) - body.point(c0.centre().normalize(), gh)).length();
-        let n = (handoff / size).ceil() as i32 + 1;
+        let slack = if self.residency { 1.1 } else { 1.0 };
+        let n = (handoff * slack / size).ceil() as i32 + 1;
         let fwd = camera.forward().as_dvec3();
         let aspect = viewport[0] as f64 / viewport[1] as f64;
         let half_diag = ((camera.fov_y as f64 * 0.5).tan() * (1.0 + aspect * aspect).sqrt()).atan();
-        let mut out = BTreeSet::new();
+        let range = handoff + size * 0.75;
+        let mut load = BTreeSet::new();
+        let mut extra = BTreeSet::new();
+        let mut keep = BTreeMap::new();
         for dy in -n..=n {
             for dx in -n..=n {
                 let id = c0.neighbour(dx, dy);
@@ -551,17 +565,26 @@ impl NearTrees {
                 let p = wd.anchor.body_to_render(body.point(d, self.ground_at(wd, d).unwrap_or(gh)));
                 let to = p - camera.position;
                 let dist = to.length();
-                if dist > handoff + size * 0.75 {
+                if dist > range * slack {
+                    continue;
+                }
+                let cosv = to.normalize_or_zero().dot(fwd);
+                if dist > range {
+                    keep.insert(id, cosv);
                     continue;
                 }
                 let near = dist < KEEP_ALL_M + size * 0.75;
-                let cone = to.normalize_or_zero().dot(fwd) > (half_diag + (size * 0.75 / dist.max(1.0)).atan()).min(std::f64::consts::PI).cos();
+                let cone = cosv > (half_diag + (size * 0.75 / dist.max(1.0)).atan()).min(std::f64::consts::PI).cos();
                 if near || cone {
-                    out.insert(id);
+                    load.insert(id);
+                    keep.insert(id, cosv);
+                } else if self.residency {
+                    extra.insert(id);
+                    keep.insert(id, cosv);
                 }
             }
         }
-        (out, handoff)
+        (load, extra, keep, handoff)
     }
 
     /// Uploads bank entries for `keys`: the worker's prepared ones, else built here (blocking).
@@ -843,10 +866,21 @@ impl NearTrees {
         let rows = ed_world::season::gpu_rows();
         r.set_season(self.season.map(|c| ed_render::SeasonParams { phase_day: ed_world::season::phase_day(c.day, c.rate) as f32, autumn_gain: ed_world::season::AUTUMN_GAIN as f32, far_rows: ed_world::season::far_rows(), rows: &rows }));
         let ppr = viewport[1] as f64 * 0.5 / (camera.fov_y as f64 * 0.5).tan();
-        let (wanted, handoff) = self.wanted(wd, camera, viewport);
+        let (wanted, extra, keep, handoff) = self.wanted(wd, camera, viewport);
         self.handoff_m = handoff;
-        // Leave: nodes out of range release their instances, impostors and node slot.
-        let gone: Vec<NodeId> = self.nodes.keys().copied().filter(|id| !wanted.contains(id)).collect();
+        // Residency cap: `EW_TREES_RESIDENT` (default 3x the load set, min 64), never more than
+        // the renderer's node table holds.
+        let cap = if self.resident_cap > 0 { self.resident_cap } else { (wanted.len() * 3).max(64) }.min(3500);
+        // Leave: nodes out of the keep set (range + 10%) release their instances, impostors and
+        // node slot; over the cap, the out-of-load nodes farthest from the view direction go first.
+        let mut gone: Vec<NodeId> = self.nodes.keys().copied().filter(|id| !keep.contains_key(id)).collect();
+        if self.residency && self.nodes.len() - gone.len() > cap {
+            let mut cand: Vec<(f64, NodeId)> = self.nodes.keys().copied().filter(|id| keep.contains_key(id) && !wanted.contains(id)).map(|id| (keep[&id], id)).collect();
+            cand.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+            let over = self.nodes.len() - gone.len() - cap;
+            gone.extend(cand.into_iter().take(over).map(|(_, id)| id));
+        }
+        let gone_set: BTreeSet<NodeId> = gone.iter().copied().collect();
         for id in gone {
             let e = self.nodes.remove(&id).expect("listed");
             self.forget_instances(&e.stand);
@@ -858,11 +892,11 @@ impl NearTrees {
             }
             self.free_slots.push(e.slot);
         }
-        if self.building.as_ref().is_some_and(|b| !wanted.contains(&b.id)) {
+        if self.building.as_ref().is_some_and(|b| !keep.contains_key(&b.id) || gone_set.contains(&b.id)) {
             self.building = None;
         }
-        self.ready.retain(|id, _| wanted.contains(id));
-        self.requested.retain(|id| wanted.contains(id));
+        self.ready.retain(|id, _| keep.contains_key(id) && !gone_set.contains(id));
+        self.requested.retain(|id| keep.contains_key(id) && !gone_set.contains(id));
         let t_start = Instant::now();
         let ms_left = |t0: &Instant, budget: f64| settle || t0.elapsed().as_secs_f64() * 1e3 < budget;
         // Resident nodes: mesh instances come and go with the camera (impostors stay). Gaining
@@ -909,15 +943,31 @@ impl NearTrees {
             self.worker = Some(spawn_worker(wd.source_arc(), self.cache.clone(), self.pages.clone(), self.imp, self.imp_tier, self.bank.keys().copied().collect()));
         }
         let mut new: Vec<NodeId> = wanted.iter().copied().filter(|id| !self.nodes.contains_key(id) && !self.requested.contains(id)).collect();
+        let eye = wd.anchor.render_to_body(camera.position).normalize();
         if !new.is_empty() {
-            let eye = wd.anchor.render_to_body(camera.position).normalize();
             new.sort_by_key(|id| ((id.centre().angle_between(eye) * 1e9) as u64, *id));
             self.requested.extend(new.iter().copied());
             let w = self.worker.as_ref().expect("worker");
-            *w.wanted.lock().unwrap() = wanted.clone();
+            *w.wanted.lock().unwrap() = keep.keys().copied().collect();
             w.jobs.send((new, if settle { usize::MAX } else { CHUNK }, if settle { usize::MAX } else { self.worker_threads })).map_err(|_| "near-trees worker stopped".to_string())?;
-        } else if let Some(w) = &self.worker {
-            *w.wanted.lock().unwrap() = wanted.clone();
+        } else {
+            // Load set resident and nothing pending: warm the out-of-cone nodes in range, nearest
+            // first, a few at a time (turning then finds them ready). Stops at the cap or when a
+            // renderer buffer is three quarters full.
+            let load_done = self.requested.is_empty() && self.building.is_none() && wanted.iter().all(|id| self.nodes.contains_key(id));
+            let room = cap.saturating_sub(self.nodes.len());
+            let full = self.stats.instances * 4 > (1usize << 20) * 3 || r.impostor_trees() as usize * 4 > ed_render::impostor::MAX_IMPOSTOR_TREES as usize * 3 || r.grass_clumps() as usize * 4 > ed_render::grass::MAX_GRASS_CLUMPS as usize * 3;
+            let mut more: Vec<NodeId> = if load_done && !full && room > 0 { extra.iter().copied().filter(|id| !self.nodes.contains_key(id) && !self.requested.contains(id)).collect() } else { Vec::new() };
+            more.sort_by_key(|id| ((id.centre().angle_between(eye) * 1e9) as u64, *id));
+            more.truncate(room.min(self.worker_threads.max(1) * 2));
+            if let Some(w) = &self.worker {
+                *w.wanted.lock().unwrap() = keep.keys().copied().collect();
+            }
+            if !more.is_empty() {
+                self.requested.extend(more.iter().copied());
+                let w = self.worker.as_ref().expect("worker");
+                w.jobs.send((more, CHUNK, self.worker_threads)).map_err(|_| "near-trees worker stopped".to_string())?;
+            }
         }
         // Collect finished stands (settle: wait for every request).
         loop {
@@ -999,6 +1049,7 @@ impl NearTrees {
         self.stats.instances = self.nodes.values().map(|e| e.instances.len()).sum();
         self.stats.imp_trees = self.nodes.values().filter(|e| e.imp.is_some()).map(|e| e.trees.len()).sum();
         self.stats.nodes = self.nodes.len();
+        self.stats.holes = wanted.iter().filter(|id| self.nodes.get(id).is_none_or(|e| e.building)).count();
         if let Some(mut g) = self.ground.take() {
             let res = {
                 let ground = |d: DVec3| self.ground_at(wd, d);

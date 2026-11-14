@@ -436,7 +436,7 @@ pub fn type_from_ground(g: &GroundSample, cl: &Climate) -> Option<(u8, f32)> {
     }
     let kind = if cl.aridity < 0.35 {
         LONG
-    } else if c.alt_m > 1900.0 {
+    } else if c.alt_m > 2600.0 {
         LAWN
     } else {
         MEADOW

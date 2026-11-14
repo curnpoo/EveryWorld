@@ -1501,6 +1501,15 @@ GrassBlade_0 grass_blade_0(FrameData_natural_0 device* f_7, const GrassClump_0 t
     float _S183 = hc_0 * (1.0f - 0.34999999403953552f * rad_0) * mix(0.72000002861022949f, 1.1200000047683716f, grass_rand_0(s2_1));
     float _S184 = grass_grow_0(f_7, d_11);
     float h_4 = _S183 * _S184;
+    float h_5;
+    if(((float4((&f_7->grass_0)->under_0) ).w) > 0.0f)
+    {
+        h_5 = max(h_4, min(1.5f * (d_11 * 2.0f / max((float4(f_7->proj_0) ).y * (float4(f_7->proj_0) ).w, 1.0f)), 3.0f * h_4) * (1.0f - smoothstep(0.15000000596046448f, 0.44999998807907104f, abs(dot(base_1 / float3(max(d_11, 0.0010000000474974513f)) , up_8)))) * smoothstep(2.0f * (float4((&f_7->grass_0)->lod_0) ).x, 4.0f * (float4((&f_7->grass_0)->lod_0) ).x, d_11));
+    }
+    else
+    {
+        h_5 = h_4;
+    }
     float grow_0 = saturate(_S177 - float(k_7)) * keep_1 * fade_1;
     bool _S185;
     if(k_7 < uint(blades_2))
@@ -1511,16 +1520,15 @@ GrassBlade_0 grass_blade_0(FrameData_natural_0 device* f_7, const GrassClump_0 t
     {
         _S185 = false;
     }
-    float _S186;
     if(_S185)
     {
-        _S186 = h_4 * grow_0;
+        h_5 = h_5 * grow_0;
     }
     else
     {
-        _S186 = 0.0f;
+        h_5 = 0.0f;
     }
-    (&o_3)->h_3 = _S186;
+    (&o_3)->h_3 = h_5;
     float ca_0 = grass_rand_0(grass_hash_0(_S180 + 29U)) * 6.2831854820251465f;
     float3 cdir_0 = fa_0 * float3(cos(ca_0))  + rt_0 * float3(sin(ca_0)) ;
     float3 radial_0;
@@ -1543,8 +1551,8 @@ GrassBlade_0 grass_blade_0(FrameData_natural_0 device* f_7, const GrassClump_0 t
     {
         ld_1 = fa_0;
     }
-    float4 _S187 = float4(ty_1->b_0) ;
-    float lean_0 = _S187.y * mix(0.30000001192092896f, 1.0f, grass_rand_0(s4_0));
+    float4 _S186 = float4(ty_1->b_0) ;
+    float lean_0 = _S186.y * mix(0.30000001192092896f, 1.0f, grass_rand_0(s4_0));
     float3 tipv_0 = up_8 * float3(cos(lean_0))  + ld_1 * float3(sin(lean_0)) ;
     WindData_natural_0 wn_0 = f_7->wind_1;
     if((((uint4((&f_7->grass_0)->bufs_2) ).w) & 4U) != 0U)
@@ -1558,39 +1566,39 @@ GrassBlade_0 grass_blade_0(FrameData_natural_0 device* f_7, const GrassClump_0 t
     float3 tipv_1;
     if(_S185)
     {
-        float4 _S188 = float4(wn_0.wind_0) ;
-        float2 _S189 = _S188.xz;
-        float speed_1 = length(_S189);
+        float4 _S187 = float4(wn_0.wind_0) ;
+        float2 _S188 = _S187.xz;
+        float speed_1 = length(_S188);
         float2 wd_2;
         if(speed_1 > 0.0010000000474974513f)
         {
-            wd_2 = _S189 / float2(speed_1) ;
+            wd_2 = _S188 / float2(speed_1) ;
         }
         else
         {
             wd_2 = float2(0.0f, 0.0f);
         }
-        float4 _S190 = float4(wn_0.gust_0) ;
-        float2 _S191 = base_1.xz;
-        float _S192 = dot(_S191, wd_2);
-        float g_4 = 0.5f + 0.5f * sin((_S190.x + _S192 / max(_S190.y, 1.0f)) * 6.2831854820251465f);
-        float tw_0 = _S188.w;
-        float _S193 = wd_2.y;
-        float _S194 = wd_2.x;
-        float _S195 = grass_rand_0(s5_0);
-        float _S196 = 1.0f - _S187.z;
-        float3 wv_0 = float3(_S194, 0.0f, _S193);
-        tipv_1 = normalize(tipv_0 + (wv_0 - up_8 * float3(dot(wv_0, up_8)) ) * float3(clamp(speed_1 * 0.059999998658895493f * _S196 * (0.34999999403953552f + 0.89999997615814209f * (g_4 * g_4 * g_4 * _S190.z) + 0.69999998807907104f * (0.5f + 0.5f * sin(_S192 * 0.89999997615814209f - tw_0 * (1.2000000476837158f + 0.25f * speed_1) + 0.60000002384185791f * sin(dot(_S191, float2(- _S193, _S194)) * 0.34999999403953552f)))) + 0.039999999105930328f * _S196 * sin(tw_0 * (5.0f + 3.0f * _S195) + _S195 * 40.0f) * min(speed_1 * 0.20000000298023224f, 1.0f), -0.30000001192092896f, 1.3999999761581421f)) );
+        float4 _S189 = float4(wn_0.gust_0) ;
+        float2 _S190 = base_1.xz;
+        float _S191 = dot(_S190, wd_2);
+        float g_4 = 0.5f + 0.5f * sin((_S189.x + _S191 / max(_S189.y, 1.0f)) * 6.2831854820251465f);
+        float tw_0 = _S187.w;
+        float _S192 = wd_2.y;
+        float _S193 = wd_2.x;
+        float _S194 = grass_rand_0(s5_0);
+        float _S195 = 1.0f - _S186.z;
+        float3 wv_0 = float3(_S193, 0.0f, _S192);
+        tipv_1 = normalize(tipv_0 + (wv_0 - up_8 * float3(dot(wv_0, up_8)) ) * float3(clamp(speed_1 * 0.059999998658895493f * _S195 * (0.34999999403953552f + 0.89999997615814209f * (g_4 * g_4 * g_4 * _S189.z) + 0.69999998807907104f * (0.5f + 0.5f * sin(_S191 * 0.89999997615814209f - tw_0 * (1.2000000476837158f + 0.25f * speed_1) + 0.60000002384185791f * sin(dot(_S190, float2(- _S192, _S193)) * 0.34999999403953552f)))) + 0.039999999105930328f * _S195 * sin(tw_0 * (5.0f + 3.0f * _S194) + _S194 * 40.0f) * min(speed_1 * 0.20000000298023224f, 1.0f), -0.30000001192092896f, 1.3999999761581421f)) );
     }
     else
     {
         tipv_1 = tipv_0;
     }
-    float3 _S197 = (&o_3)->p0_0 + tipv_1 * float3(((&o_3)->h_3 * (1.0f - 0.18000000715255737f * saturate(1.0f - dot(tipv_1, up_8))))) ;
-    (&o_3)->p2_0 = _S197;
-    float3 across_0 = _S197 - (&o_3)->p0_0 - up_8 * float3(dot(_S197 - (&o_3)->p0_0, up_8)) ;
-    float curve_0 = _S187.w;
-    (&o_3)->p1_0 = (&o_3)->p0_0 + up_8 * float3((max(dot(_S197 - (&o_3)->p0_0, up_8), 0.25f * (&o_3)->h_3) * mix(0.60000002384185791f, 1.0499999523162842f, curve_0)))  + across_0 * float3(mix(0.5f, 0.05000000074505806f, curve_0)) ;
+    float3 _S196 = (&o_3)->p0_0 + tipv_1 * float3(((&o_3)->h_3 * (1.0f - 0.18000000715255737f * saturate(1.0f - dot(tipv_1, up_8))))) ;
+    (&o_3)->p2_0 = _S196;
+    float3 across_0 = _S196 - (&o_3)->p0_0 - up_8 * float3(dot(_S196 - (&o_3)->p0_0, up_8)) ;
+    float curve_0 = _S186.w;
+    (&o_3)->p1_0 = (&o_3)->p0_0 + up_8 * float3((max(dot(_S196 - (&o_3)->p0_0, up_8), 0.25f * (&o_3)->h_3) * mix(0.60000002384185791f, 1.0499999523162842f, curve_0)))  + across_0 * float3(mix(0.5f, 0.05000000074505806f, curve_0)) ;
     float3 lh_0;
     if((dot(across_0, across_0)) > 9.99999993922529029e-09f)
     {
@@ -1602,7 +1610,8 @@ GrassBlade_0 grass_blade_0(FrameData_natural_0 device* f_7, const GrassClump_0 t
     }
     float tw2_0 = (grass_rand_0(s5_0) - 0.5f) * 1.1000000238418579f;
     (&o_3)->side_0 = normalize(cross(up_8, lh_0) * float3(cos(tw2_0))  + lh_0 * float3(sin(tw2_0)) );
-    (&o_3)->w_8 = max(_S174.z * _S179 * mix(0.80000001192092896f, 1.2000000476837158f, grass_rand_0(s1_1 ^ 85U)), (float4((&f_7->grass_0)->look_0) ).w * d_11 * 2.0f / max((float4(f_7->proj_0) ).y * (float4(f_7->proj_0) ).w, 1.0f));
+    float _S197 = mix(0.80000001192092896f, 1.2000000476837158f, grass_rand_0(s1_1 ^ 85U));
+    (&o_3)->w_8 = max(max(_S174.z * _S179 * _S197, (float4((&f_7->grass_0)->under_0) ).w * (1.0f - smoothstep(0.15000000596046448f, 0.44999998807907104f, abs(dot(base_1 / float3(max(d_11, 0.0010000000474974513f)) , up_8)))) * (1.0f - _S178) * (0.60000002384185791f * rsqrt(max(_S178, 9.9999997473787516e-05f))) / max(_S177, 1.0f) * _S197), (float4((&f_7->grass_0)->look_0) ).w * d_11 * 2.0f / max((float4(f_7->proj_0) ).y * (float4(f_7->proj_0) ).w, 1.0f));
     (&o_3)->head_0 = (float4(ty_1->mid_0) ).w;
     (&o_3)->head_w_0 = (float4(ty_1->tip_0) ).w;
     (&o_3)->shade_1 = mix(0.81999999284744263f, 1.1499999761581421f, grass_rand_0(s4_0 ^ 51U));

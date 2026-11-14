@@ -1,3 +1,31 @@
+## 2026-11-14: Trees and grass stay loaded all around; alpine meadow; far-fill knob (off)
+
+Owner: "when i look around fast there are missing tiles of trees", and a lot of pop-in while
+moving. Tree nodes past 450 m (and grass past 30 m) were wanted only inside the view cone and
+released the moment they left it, so every turn rebuilt them. `crates/ew/src/trees.rs` and
+`grass.rs` now split the load set (near plus cone, first) from the keep set (all around within
+range, released past 1.1x it). Out-of-cone nodes load once the view is resident, under a cap
+(`EW_TREES_RESIDENT`, `EW_GRASS_RESIDENT`, default 3x the load set, stopping at 3/4 of each
+renderer buffer). `EW_RESIDENCY=0` restores the old rule. Headless `EW_SPIN=deg/s` yaws a
+`--ground` camera and the log prints `streaming holes`.
+
+Zermatt valley, spin 90 deg/s, 900 frames, 1600x900 (off -> on):
+- Tree holes after the first turn: max 4 -> 0.
+- Grass holes mean: 320 -> 182. About 250 load nodes never place in either run: grass needs the
+  node's fine height and canopy page, which only exists near the camera. Per-node ground pages
+  (`docs/plans/grass.md` G2) remove that floor.
+- gpu_frame: 15.13 -> 16.03 ms.
+- Tree instances: 229k -> 566k.
+
+Real-place grass: alpine meadow up to 2600 m (was lawn above 1900 m). Zermatt's meadows were
+5 cm lawn, whose blades vanish by about 100 m; that was the "grass ends" the owner saw.
+Zermatt valley gpu_frame 34.0 -> 30.1 ms (2560x1440).
+
+Far fill (G1, `EW_GRASS_FILL`, default 0): survivors of clump thinning widen to cover the gap,
+only where the view grazes the field, plus a 1.5 px height floor. The owner judged it "the wrong
+colour and very sparse", so it stays off until the far colour and density are fixed. Lab o150:
++3.4 ms with the fill on at a 1.5 km range.
+
 ## 2026-11-13: Grass colour reaches 2 km; terrain contrast floor 0.7
 
 Owner: the colour-patch change flattened contrast, and the terrain colours still cut off with
