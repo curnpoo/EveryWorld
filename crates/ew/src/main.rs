@@ -15,6 +15,8 @@ fn main() -> ExitCode {
         }
     };
     ew::content::set_extra_packs(&args.extra_packs);
+    // Keep the data cache under EW_CACHE_GB (default 20; 0 = no cap), least recently used first.
+    ed_data::cache::prune_in_background(ew::terrain::cache_root());
     if args.sim_route {
         return match ew::route::run(&args.packs, &args.layers) {
             Ok(r) => {
