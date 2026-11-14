@@ -295,7 +295,7 @@ fn build_pages(cap: usize, src: &CacheSource, cache: &DiskCache, pages: &Mutex<P
     let slots: Vec<OnceLock<Page>> = (0..need.len()).map(|_| OnceLock::new()).collect();
     par_for(cap, need.len(), |k| {
         let hp = ed_data::node::node_heights(src, need[k]);
-        let cp = build_canopy(cache, need[k], &hp);
+        let cp = build_canopy(src, cache, need[k], &hp);
         let _ = slots[k].set(cp.map(|cp| (Arc::new(hp), cp)));
     });
     let mut pg = pages.lock().unwrap();

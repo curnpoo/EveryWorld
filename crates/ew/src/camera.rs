@@ -91,6 +91,8 @@ pub enum PathKind {
     Zermatt,
     /// Real terrain: the Black Mountains (Blue Ridge) toward Mount Mitchell, then a climb.
     BlueRidge,
+    /// Synthetic rolling hills for judging grass ([`crate::terrain::GRASSLAB`]).
+    GrassLab,
 }
 
 impl PathKind {
@@ -99,6 +101,7 @@ impl PathKind {
         match self {
             PathKind::Zermatt => Some(&crate::terrain::ZERMATT),
             PathKind::BlueRidge => Some(&crate::terrain::BLUE_RIDGE),
+            PathKind::GrassLab => Some(&crate::terrain::GRASSLAB),
             _ => None,
         }
     }
@@ -139,7 +142,7 @@ impl ScriptedPath {
                 Pose::from_camera(&Camera::look_at(pos, focus))
             }
             PathKind::Proving => crate::proving::path_pose(step as f64 / 60.0 * speed),
-            PathKind::Zermatt | PathKind::BlueRidge => crate::terrain::path_pose(kind.place().expect("terrain path"), step as f64 / 60.0 * speed),
+            PathKind::Zermatt | PathKind::BlueRidge | PathKind::GrassLab => crate::terrain::path_pose(kind.place().expect("terrain path"), step as f64 / 60.0 * speed),
         }
     }
 

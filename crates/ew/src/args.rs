@@ -9,7 +9,7 @@ ew: EveryWorld engine shell (Phase 1, M4)
 USAGE:
   ew [OPTIONS]                 open a window in the proving ground (fly camera)
   ew --headless [OPTIONS]      render offscreen, no window, write PNG + CSV + summary
-  ew --play zermatt|blueridge  walk on real terrain (window, third-person character; tiles
+  ew --play zermatt|blueridge|grasslab  walk on real terrain (window, third-person character; tiles
                                from EARTHDROP_CACHE, an absolute path, offline)
 
 OPTIONS:
@@ -21,14 +21,14 @@ OPTIONS:
   --out DIR                    headless output directory (default target/headless)
   --path orbit|static|proving  headless camera path (default orbit; proving implies
                                --scene proving)
-  --play zermatt|blueridge     windowed: walk there (W A S D walk, Shift run, Space jump,
+  --play zermatt|blueridge|grasslab     windowed: walk there (W A S D walk, Shift run, Space jump,
                                mouse looks, wheel zooms, V vsync, Esc quits).
                                EW_AUTOWALK=S walks S seconds by itself, writes
                                play_start.png / play_end.png to --out and exits
   --character robot|solarcat   --play: the player character (default robot: the alpha's
                                procedural robot; solarcat: the authored skinned character).
                                C puts the car 4 m ahead of the robot
-  --path zermatt|blueridge     headless real terrain from EARTHDROP_CACHE (offline; no
+  --path zermatt|blueridge|grasslab     headless real terrain from EARTHDROP_CACHE (offline; no
                                scene loaded): ground level, then a climb
   --scene test|proving         what to load (windowed default proving; headless default
                                test, or proving with --path proving)
@@ -308,7 +308,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Option<Args>, Str
                 a.play = Some(match it.next().as_deref() {
                     Some("zermatt") => PathKind::Zermatt,
                     Some("blueridge") => PathKind::BlueRidge,
-                    v => return Err(format!("--play: expected zermatt|blueridge, got {v:?}")),
+                    Some("grasslab") => PathKind::GrassLab,
+                    v => return Err(format!("--play: expected zermatt|blueridge|grasslab, got {v:?}")),
                 })
             }
             "--character" => {
@@ -325,7 +326,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Option<Args>, Str
                     Some("proving") => PathKind::Proving,
                     Some("zermatt") => PathKind::Zermatt,
                     Some("blueridge") => PathKind::BlueRidge,
-                    v => return Err(format!("--path: expected orbit|static|proving|zermatt|blueridge, got {v:?}")),
+                    Some("grasslab") => PathKind::GrassLab,
+                    v => return Err(format!("--path: expected orbit|static|proving|zermatt|blueridge|grasslab, got {v:?}")),
                 }
             }
             other => return Err(format!("unknown argument {other:?} (see --help)")),
@@ -335,7 +337,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Option<Args>, Str
         return Err("--width and --height must be > 0".into());
     }
     if a.play.is_some() && a.headless {
-        return Err("--play opens a window; for headless terrain use --path zermatt|blueridge".into());
+        return Err("--play opens a window; for headless terrain use --path zermatt|blueridge|grasslab".into());
     }
     Ok(Some(a))
 }
@@ -366,6 +368,12 @@ mod tests {
         assert_eq!(p("--scene test").unwrap().unwrap().scene(), SceneKind::Test);
         assert!(p("--lod-fade 64").is_err());
         assert!(p("--scene moon").is_err());
+    }
+
+    #[test]
+    fn parses_grasslab() {
+        assert_eq!(p("--play grasslab").unwrap().unwrap().play, Some(PathKind::GrassLab));
+        assert_eq!(p("--path grasslab").unwrap().unwrap().path, PathKind::GrassLab);
     }
 
     #[test]

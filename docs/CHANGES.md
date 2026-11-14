@@ -1,3 +1,16 @@
+## 2026-11-13: Grass lab — synthetic rolling hills for judging grass
+
+`ew --play grasslab` / `--path grasslab`: a synthetic place on the Swiss plateau (47.05, 7.60).
+Heights are a pure function of lat/lon (`ew/src/terrain.rs` `hills_height`: four sine octaves,
+85-800 m wavelengths, 0-50 m relief, flat within 60 m of the anchor), served by
+`CacheSource::hills` at every zoom, so the lab needs no cached data. Its canopy pages say
+"data present, no cover", otherwise the shader's procedural forest fallback paints dark
+canopy on 8-18 degree slopes. `tools/grass_lab.sh OUT_DIR` shoots four cameras (eye 1.7 m,
+down 2 m, 30 m, 150 m) at 2560x1440 with gpu_frame per camera and a contact sheet. With the
+current G7 ground cover, gpu_frame: eye 18.7, down 22.8, o30 16.5, o150 15.5 ms (10.8, 14.8,
+15.1, 15.4 with the cover not drawing). Open: a crease near the anchor seen from 30 m, fine
+ripple banding in the ground shading from above.
+
 ## 2026-11-13: Trees perf pass, step 2 — impostors from 60 px, gullies filled
 
 `ed_world/src/trees/bank.rs`: `T1_PX` 40 -> 60 (mesh trees hand off to impostors earlier),

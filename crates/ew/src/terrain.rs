@@ -47,6 +47,32 @@ pub const ZERMATT: Place = Place { name: "zermatt", lat: 46.0207, lon: 7.7491, g
 /// across the ridges toward Mount Mitchell (the cached Mapterhorn z14 block).
 pub const BLUE_RIDGE: Place = Place { name: "blueridge", lat: 35.660, lon: -82.360, ground_m: 814.0, agl_m: 450.0, rise_m: 4000.0, look: (35.7650, -82.2652, 1500.0) };
 
+/// A synthetic rolling-hills place on the Swiss plateau for judging grass (no real data: heights
+/// come from [`hills_height`], see [`CacheSource::hills`]). Looks about 400 m north at ground height.
+pub const GRASSLAB: Place = Place { name: "grasslab", lat: 47.05, lon: 7.60, ground_m: 520.0, agl_m: 30.0, rise_m: 300.0, look: (47.05 + 400.0 / 110_574.0, 7.60, 520.0) };
+
+/// Height (m) of the grass-lab hills at a lat/lon: 520 m plus 0 to ~50 m of smooth rolling relief
+/// (four octaves of seeded egg-crate sines, wavelengths 85 to 800 m), damped to flat within ~60 m
+/// of the anchor and easing in by ~260 m. A pure function of the point, so every zoom agrees.
+pub fn hills_height(lat: f64, lon: f64) -> f64 {
+    let x = (lon - GRASSLAB.lon) * GRASSLAB.lat.to_radians().cos() * 111_320.0;
+    let y = (lat - GRASSLAB.lat) * 110_574.0;
+    // (wavelength m, amplitude m, heading rad, phase a, phase b): fixed constants, no RNG.
+    const OCT: [(f64, f64, f64, f64, f64); 4] = [(800.0, 14.0, 0.35, 0.7, 2.1), (330.0, 7.0, 1.2, 4.0, 0.3), (140.0, 2.5, 2.4, 1.9, 5.2), (85.0, 1.0, 0.8, 3.3, 1.1)];
+    let mut sum = 0.0;
+    let mut amp = 0.0;
+    for (wl, a, th, pa, pb) in OCT {
+        let k = std::f64::consts::TAU / wl;
+        let (s, c) = th.sin_cos();
+        let (u, v) = (x * c + y * s, -x * s + y * c);
+        sum += a * (k * u + pa).sin() * (k * 1.3 * v + pb).sin();
+        amp += a;
+    }
+    let t = (((x * x + y * y).sqrt() - 60.0) / 200.0).clamp(0.0, 1.0);
+    let mask = t * t * (3.0 - 2.0 * t);
+    GRASSLAB.ground_m + mask * (amp + sum)
+}
+
 /// Length of a terrain path at speed 1 (s): 2 s hold, then the climb.
 pub const PATH_SECONDS: f64 = 10.0;
 /// Screenshot times on a terrain path (s).
@@ -122,9 +148,34 @@ pub struct CacheSource {
     /// Cached zoom levels (ascending) and, for the coarsest, every tile on disk.
     zooms: Vec<u8>,
     coarse: BTreeSet<(u32, u32)>,
+    /// Synthetic grass-lab heights ([`hills_height`]) instead of the disk cache.
+    hills: bool,
 }
 
 impl CacheSource {
+    /// The synthetic rolling-hills source: heights are a pure function of each pixel's lat/lon.
+    pub fn hills(root: impl Into<PathBuf>) -> CacheSource {
+        ed_data::http::set_offline(true);
+        let root = root.into();
+        CacheSource { cache: DiskCache::new(root.clone()), root, tiles: Mutex::new(BTreeMap::new()), on_disk: Mutex::new(BTreeMap::new()), zooms: vec![14], coarse: BTreeSet::new(), hills: true }
+    }
+
+    /// A hills tile: every pixel centre through [`hills_height`].
+    fn hills_tile(z: u8, x: u32, y: u32) -> Raster {
+        let size = 512;
+        let n = (1u64 << z) as f64;
+        let mut heights = Vec::with_capacity(size * size);
+        for py in 0..size {
+            let my = std::f64::consts::PI * (1.0 - 2.0 * (y as f64 + (py as f64 + 0.5) / size as f64) / n);
+            let lat = my.sinh().atan().to_degrees();
+            for px in 0..size {
+                let lon = (x as f64 + (px as f64 + 0.5) / size as f64) / n * 360.0 - 180.0;
+                heights.push(hills_height(lat, lon) as f32);
+            }
+        }
+        Raster { size, heights }
+    }
+
     pub fn new(root: impl Into<PathBuf>) -> CacheSource {
         ed_data::http::set_offline(true);
         let root = root.into();
@@ -143,7 +194,7 @@ impl CacheSource {
                 }
             }
         }
-        CacheSource { cache: DiskCache::new(root.clone()), root, tiles: Mutex::new(BTreeMap::new()), on_disk: Mutex::new(BTreeMap::new()), zooms, coarse }
+        CacheSource { cache: DiskCache::new(root.clone()), root, tiles: Mutex::new(BTreeMap::new()), on_disk: Mutex::new(BTreeMap::new()), zooms, coarse, hills: false }
     }
 
     /// Cached zooms (ascending); empty when the cache has no Mapterhorn tiles.
@@ -235,6 +286,9 @@ impl CacheSource {
 
     /// Height (m) at lat/lon from the finest cached zoom that has it.
     pub fn height(&self, lat: f64, lon: f64) -> Option<f64> {
+        if self.hills {
+            return Some(hills_height(lat, lon));
+        }
         for &z in self.zooms.iter().rev() {
             let n = (1u64 << z) as f64;
             let latr = lat.clamp(-ed_geo::tile::MAX_LAT, ed_geo::tile::MAX_LAT).to_radians();
@@ -258,6 +312,9 @@ impl SourceView for CacheSource {
 
 impl CacheSource {
     fn build_tile(&self, z: u8, x: u32, y: u32) -> Option<Arc<Raster>> {
+        if self.hills {
+            return Some(Arc::new(Self::hills_tile(z, x, y)));
+        }
         let on_disk = if self.zooms.contains(&z) { self.disk(z, x, y) } else { None };
         on_disk.or_else(|| {
             let &zmin = self.zooms.first()?;
@@ -329,9 +386,17 @@ impl Residency for PageStore {
 /// the node's own heights. `None` = no page, drawn with the old procedural forest: no source data
 /// was read (offline, uncached), or the node is all sea. A land node with real data but no trees
 /// still gets a page (zero cover, data share 3): "no forest here" is authoritative.
-pub fn build_canopy(cache: &ed_data::DiskCache, id: NodeId, heights: &HeightPage) -> Option<Arc<CanopyPage>> {
-    let src = ed_data::node::RealCanopySource { cache };
-    let page = ed_data::node::node_canopy(&src, id, &|i, j| heights.height(i, j) as f64);
+///
+/// On the synthetic grass-lab hills the source is "data present, no cover" (grass, height 0), so
+/// the shader's procedural forest fallback never fires there.
+pub fn build_canopy(heights_src: &CacheSource, cache: &ed_data::DiskCache, id: NodeId, heights: &HeightPage) -> Option<Arc<CanopyPage>> {
+    let page = if heights_src.hills {
+        let src = ed_data::node::SyntheticCanopy { cover: Box::new(|_, _| (ed_data::worldcover::GRASS, 0, 0)), height: Box::new(|_, _| Some(0.0)) };
+        ed_data::node::node_canopy(&src, id, &|i, j| heights.height(i, j) as f64)
+    } else {
+        let src = ed_data::node::RealCanopySource { cache };
+        ed_data::node::node_canopy(&src, id, &|i, j| heights.height(i, j) as f64)
+    };
     let data = page.samples.iter().any(|s| s[3] >> 6 > 0);
     let land = (0..ed_planet::PAGE_N * ed_planet::PAGE_N).any(|k| heights.height(k % ed_planet::PAGE_N, k / ed_planet::PAGE_N) > 0.5);
     (data && land).then(|| Arc::new(page))
@@ -369,7 +434,7 @@ impl Loader {
                         break;
                     }
                     if let Some(cache) = &canopy
-                        && tx.send(Built::Canopy(id, build_canopy(cache, id, &page))).is_err()
+                        && tx.send(Built::Canopy(id, build_canopy(&src, cache, id, &page))).is_err()
                     {
                         break;
                     }
@@ -425,7 +490,7 @@ impl TerrainWorld {
             trees_far,
             canopy_cache: trees_far.on().then(|| Arc::new(ed_data::DiskCache::new(cache))),
             canopy_built: (0, 0.0),
-            src: Arc::new(CacheSource::new(cache)),
+            src: Arc::new(if place.name == GRASSLAB.name { CacheSource::hills(cache) } else { CacheSource::new(cache) }),
             sel: Selection::default(),
             loader: None,
             eye: DVec3::ZERO,
@@ -488,7 +553,7 @@ impl TerrainWorld {
                     for (k, &id) in ids.iter().enumerate() {
                         let page = ed_data::node::node_heights(src, id);
                         let t = std::time::Instant::now();
-                        let cp = canopy.map(|cache| build_canopy(cache, id, &page));
+                        let cp = canopy.map(|cache| build_canopy(src, cache, id, &page));
                         let _ = slots[c * chunk + k].set((page, cp, t.elapsed().as_secs_f64() * 1e3));
                     }
                 });
@@ -694,6 +759,40 @@ mod tests {
             let p1 = path_pose(&place, PATH_SECONDS);
             assert!(p1.position.y > p0.position.y + place.rise_m * 0.9);
         }
+    }
+
+    #[test]
+    fn grasslab_hills_are_deterministic_continuous_and_bounded() {
+        let a = CacheSource::hills(".");
+        let z = 16u8;
+        let ti = ed_geo::tile::TileId::containing(GRASSLAB.lat + 500.0 / 110_574.0, GRASSLAB.lon + 300.0 / 76_000.0, z);
+        let (x, y) = (ti.x, ti.y);
+        let t0 = CacheSource::hills_tile(z, x, y);
+        assert_eq!(t0.heights.iter().flat_map(|h| h.to_bits().to_le_bytes()).collect::<Vec<_>>(), CacheSource::hills_tile(z, x, y).heights.iter().flat_map(|h| h.to_bits().to_le_bytes()).collect::<Vec<_>>());
+        // Neighbouring tiles: last column of one next to the first column of the next (rows align).
+        let t1 = CacheSource::hills_tile(z, x + 1, y);
+        let n = t0.size;
+        for py in (0..n).step_by(7) {
+            let d = (t0.heights[py * n + n - 1] - t1.heights[py * n]).abs();
+            assert!(d < 0.5, "x edge row {py}: {d}");
+        }
+        let t2 = CacheSource::hills_tile(z, x, y + 1);
+        for px in (0..n).step_by(7) {
+            let d = (t0.heights[(n - 1) * n + px] - t2.heights[px]).abs();
+            assert!(d < 0.5, "y edge col {px}: {d}");
+        }
+        // Relief 0..80 m over the base, around the anchor; flat at the anchor; zooms agree.
+        let (mut lo, mut hi) = (f64::MAX, f64::MIN);
+        for i in 0..80 {
+            for j in 0..80 {
+                let h = hills_height(GRASSLAB.lat + (i as f64 - 40.0) * 5e-5 * 4.0, GRASSLAB.lon + (j as f64 - 40.0) * 7e-5 * 4.0) - GRASSLAB.ground_m;
+                lo = lo.min(h);
+                hi = hi.max(h);
+            }
+        }
+        assert!(lo >= -1e-9 && hi <= 80.0 && hi > 5.0, "{lo} {hi}");
+        assert!((hills_height(GRASSLAB.lat, GRASSLAB.lon) - GRASSLAB.ground_m).abs() < 1e-9);
+        assert_eq!(a.height(GRASSLAB.lat, GRASSLAB.lon), Some(hills_height(GRASSLAB.lat, GRASSLAB.lon)));
     }
 
     #[test]
