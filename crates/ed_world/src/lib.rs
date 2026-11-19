@@ -15,6 +15,7 @@ pub mod biome;
 pub mod bparts;
 pub mod buildings;
 pub mod cliffs;
+pub mod cloudscape;
 pub mod clouds;
 pub mod detail_normal;
 pub mod farshadow;

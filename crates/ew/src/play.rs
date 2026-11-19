@@ -231,6 +231,9 @@ pub struct Play {
     pub slip_max: f32,
     /// Near trees (`EW_TREES_NEAR`, default on): built off the main thread, applied under a budget.
     pub near: Option<crate::trees::NearTrees>,
+    /// Clouds (`EW_WEATHER`, `EW_CLOUDS=0` off): noise baked on a worker, words every frame.
+    #[cfg(feature = "clouds")]
+    pub sky: crate::clouds::Sky,
     pub steps: u64,
     /// The car (sim and drawing), whether the character is in it, its camera, a pending E.
     pub car: Option<CarSim>,
@@ -410,6 +413,8 @@ impl Play {
             sync_loads: 0,
             far_warned: false,
             near: None,
+            #[cfg(feature = "clouds")]
+            sky: crate::clouds::Sky::new(false),
             slip_max: 0.0,
             steps: 0,
             car,
@@ -1104,6 +1109,8 @@ impl App {
                 }
             }
         }
+        #[cfg(feature = "clouds")]
+        play.sky.update(renderer, dev, camera.position, play.fixed.steps() as f64 / 60.0);
         let upd_ms = t_upd.elapsed().as_secs_f64() * 1e3;
         let tf = Instant::now();
         if let Err(e) = renderer.flush_uploads(dev) {

@@ -27,6 +27,8 @@ mod alloc;
 pub mod grass;
 pub mod impostor;
 pub mod atmosphere;
+#[cfg(feature = "clouds")]
+pub mod clouds;
 pub mod atmosphere_model;
 pub mod graph;
 mod gpu;
@@ -49,6 +51,8 @@ use gpu::{FD_LIGHT, FD_PARAMS, FD_PLANES, FD_PROJ, FD_SUN_DIR, FD_VIEWPORT, FRAM
 use graph::{FrameGraph, FrameTimings, GraphError, PassKind, TextureInfo, TransientPool};
 use provider::{CullStats, DiscreteLod, GeometryProvider, LodConfig, LodPipelines, MeshRecord, Ring, ShadowTargets, SharedInputs, VisTargets};
 pub use atmosphere::AtmosphereSettings;
+#[cfg(feature = "clouds")]
+pub use clouds::{CloudNoise, CloudSettings, NoiseTexture};
 pub use light::{LightingSettings, Sky};
 use scene::{InstanceDesc, InstancePools, MAX_LODS, Material, MaterialId, MeshAsset, MeshId, SkinId, SkinnedMeshAsset, TextureAsset, TextureHandle};
 use shaders::{Built, Module, ShaderSet, ShaderSources};
@@ -394,6 +398,8 @@ struct Pipelines {
     skin: ComputePipelineId,
     ao: ComputePipelineId,
     atmos: atmosphere::AtmosPipes,
+    #[cfg(feature = "clouds")]
+    clouds: clouds::CloudPipes,
     overlay_vs: ShaderId,
     overlay_fs: ShaderId,
     /// Overlay pipelines (lines, triangles) per output format, created on first use.
@@ -437,9 +443,22 @@ impl Pipelines {
         let skin = b.compute(dev, src, Module::Skin, "skin", [SKIN_GROUP, 1, 1])?;
         let ao = b.compute(dev, src, Module::Ao, "ao_main", [8, 8, 1])?;
         let atmos = atmosphere::AtmosPipes::build(dev, src, b)?;
+        #[cfg(feature = "clouds")]
+        let clouds = clouds::CloudPipes::build(dev, src, b)?;
         let overlay_vs = b.shader(dev, src, Module::Overlay, "overlay vs", ShaderStage::Vertex, "vs_overlay")?;
         let overlay_fs = b.shader(dev, src, Module::Overlay, "overlay fs", ShaderStage::Fragment, "fs_overlay")?;
-        Ok(Self { built: std::mem::take(b), resolve, resolve_terrain, resolve_trees, tonemap_vs, tonemap_fs, tonemap: Vec::new(), pick, pop, skin, ao, atmos, overlay_vs, overlay_fs, overlay: Vec::new() })
+        Ok(Self { built: std::mem::take(b), resolve, resolve_terrain, resolve_trees, tonemap_vs, tonemap_fs, tonemap: Vec::new(),
+            pick,
+            pop,
+            skin,
+            ao,
+            atmos,
+            #[cfg(feature = "clouds")]
+            clouds,
+            overlay_vs,
+            overlay_fs,
+            overlay: Vec::new(),
+        })
     }
     fn destroy(mut self, dev: &dyn Device) {
         for (_, p) in self.tonemap.drain(..) {
@@ -591,6 +610,9 @@ pub struct Renderer {
     sky_cache: Option<((Sky, [f32; 6]), [[f32; 4]; 9])>,
     /// Physically based atmosphere (Phase 2 W5): its tables and the "atmos" pass.
     atmos: atmosphere::Atmosphere,
+    /// Volumetric clouds (Phase 2 item 5): noise, per-view history, the three passes.
+    #[cfg(feature = "clouds")]
+    clouds: clouds::Clouds,
 }
 
 /// One view slot's state: per-frame buffers (filled once per frame per view), the pick ring
@@ -716,6 +738,8 @@ impl Renderer {
             lut,
             sky_cache: None,
             atmos: atmosphere::Atmosphere::new(AtmosphereSettings::from_env()),
+            #[cfg(feature = "clouds")]
+            clouds: clouds::Clouds::new(clouds::CloudSettings::from_env()),
         })
     }
 
@@ -1394,6 +1418,8 @@ impl Renderer {
         }
         if scene {
             self.atmos.prepare(dev, si, cam.position, sky.sun_dir, &lighting, &mut fd)?;
+            #[cfg(feature = "clouds")]
+            self.clouds.prepare(dev, si, w, h, cam.position, vpm)?;
         }
         if ao_on && self.views[si].ao.as_ref().map(|a| (a.2, a.3)) != Some((ao_w, ao_h)) {
             if let Some((a, b, _, _)) = self.views[si].ao.take() {
@@ -1434,6 +1460,8 @@ impl Renderer {
         let lut_bi = self.lut.bindless.0;
         let mut ao_imports = None;
         let mut atmos_frame = None;
+        #[cfg(feature = "clouds")]
+        let mut cloud_frame = None;
         let mut imports = Vec::new();
         let mut imports_tail: Vec<graph::Res> = Vec::new();
         let mut skin_here = false;
@@ -1578,6 +1606,11 @@ impl Renderer {
                     ctx.enc.set_draw_constants(&c);
                     ctx.enc.draw(0..3, 0..1);
                 });
+            // Clouds over the resolved scene (sky and ground), before tonemap.
+            #[cfg(feature = "clouds")]
+            {
+                cloud_frame = self.clouds.record(&mut g, si, (fd_res, self.views[si].frame_data.bindless.0), depth, hdr, self.sampler.1.0, &self.pipes.clouds);
+            }
             if let Some(rb) = params.vis_readback {
                 let rb_res = g.import_buffer("vis readback", rb, ResourceState::Undefined, None);
                 let pitch = VIS_FORMAT.copy_row_pitch(w);
@@ -1719,6 +1752,10 @@ impl Renderer {
         if let Some(a) = atmos_frame {
             self.atmos.finish(&plan, a);
         }
+        #[cfg(feature = "clouds")]
+        if let Some(c) = cloud_frame {
+            self.clouds.finish(&plan, c);
+        }
         if let Some(&ov) = imports_tail.first() {
             self.overlay_buf.state = plan.final_states[ov.index()];
         }
@@ -1770,6 +1807,31 @@ impl Renderer {
     }
     pub fn set_atmosphere(&mut self, a: AtmosphereSettings) {
         self.atmos.settings = a;
+    }
+
+    /// Uploads the cloud noise (`ed_world::cloudscape::noise`, f16 bytes with mips). Call once,
+    /// outside a frame; the textures are readable from the next frame.
+    #[cfg(feature = "clouds")]
+    pub fn set_cloud_noise(&mut self, dev: &dyn Device, n: &CloudNoise) -> Result<(), ed_gpu::Error> {
+        let ids = self.clouds.set_noise(dev, n)?;
+        self.new_textures.extend(ids);
+        Ok(())
+    }
+
+    /// This frame's cloud words (`ed_world::cloudscape::gpu::cloud_words`); `None`: no clouds.
+    #[cfg(feature = "clouds")]
+    pub fn set_clouds(&mut self, words: Option<Vec<u32>>) {
+        self.clouds.set_words(words);
+    }
+
+    /// Cloud switches (`EW_CLOUDS=0` turns them off).
+    #[cfg(feature = "clouds")]
+    pub fn cloud_settings(&self) -> CloudSettings {
+        self.clouds.settings
+    }
+    #[cfg(feature = "clouds")]
+    pub fn set_cloud_settings(&mut self, c: CloudSettings) {
+        self.clouds.settings = c;
     }
 
     /// GPU culling counters of the latest finished frame.
@@ -1924,6 +1986,8 @@ impl Renderer {
         }
         self.pipes.destroy(dev);
         self.atmos.destroy(dev);
+        #[cfg(feature = "clouds")]
+        self.clouds.destroy(dev);
     }
 }
 

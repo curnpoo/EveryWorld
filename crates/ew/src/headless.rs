@@ -73,6 +73,9 @@ pub fn run(args: &Args) -> Result<Report, String> {
     };
     // Near trees (trees G4; `EW_TREES_NEAR=0` off, `EW_WIND=0` still).
     let mut near = world.as_ref().filter(|_| near_trees).map(|_| crate::trees::NearTrees::new(&crate::terrain::cache_root()));
+    // Clouds (EW_WEATHER): the noise is baked before the first frame, so captures are deterministic.
+    #[cfg(feature = "clouds")]
+    let mut sky = crate::clouds::Sky::new(true);
     if let Some(n) = near.as_mut() {
         n.set_date(args.season_day());
     }
@@ -351,6 +354,8 @@ pub fn run(args: &Args) -> Result<Report, String> {
             target: ViewTarget { texture: target, format: OUT_FORMAT, width: w, height: h, initial: ResourceState::Undefined, final_state: None },
             flags: Default::default(),
         };
+        #[cfg(feature = "clouds")]
+        sky.update(&mut renderer, &*dev, camera.position, i as f64 / 60.0);
         let shot = shots.iter().find(|s| s.1 == i).map(|s| s.2);
         let last = i + 1 == frames;
         let params = FrameParams {

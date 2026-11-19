@@ -1,3 +1,28 @@
+## 2026-11-19: Clouds: layered, weather-driven volumetric field, CPU reference, GPU pass (feature `clouds`)
+
+- `ed_world::cloudscape` (design `plans/clouds.md`): `CloudWeather` (the climate sim's contract: humidity x3,
+  instability, dew-point spread, fronts, winds x3, precipitation; 9 presets, `lerp`, `with_surface_wind`) ->
+  three layers (low cumulus/stratocumulus with LCL bases, mid altocumulus/altostratus, high cirrus) + drifting
+  thunderstorm cells with a life cycle, anvils and rain shafts. Density: drifting, crossfading weather map with a
+  coverage quantile table, radial presence + dome profile (flat bases, domed tops), Perlin-Worley shape, Worley/
+  Perlin detail faded by distance. Lighting: jittered light march, dual-lobe HG, 4 multi-scatter octaves, powder,
+  sky/ground ambient through two-stream diffuse transmittance. Noise is f16 (3D 128^3 + 64^3, 2D 512^2, mips),
+  baked in ~2.4 s (4 cores, release).
+- `ed_render/examples/cloud_preview.rs`: the look reference, same maths on the CPU under the real atmosphere
+  tables and `alpha_tonemap`; `CLOUD_DEBUG=transmittance|sun|ambient`.
+- Artifacts found in the previews and fixed at the source: stride-grid contour ripples (jitter now spans a
+  stride), see-through hairlines (back-up rewound past the previous cloud; `light::Stepper`, test fails on the
+  old rule), 8-bit terraces (f16), noise moire (octaves >= 2.7 texels/cell), light-march banding (jittered
+  light steps), far stipple (fine steps in envelopes).
+- GPU: `shaders/clouds.slang` (half-res checkerboard march, temporal reprojection, depth-aware premultiplied
+  composite with aerial perspective and ground shadow), `ed_render::clouds`, `ew::clouds::Sky` in play and
+  headless (`EW_WEATHER`, `EW_CLOUDS=0`, `EW_CLOUDS_DEBUG`, `EW_CLOUDS_STEPS`). Behind the `clouds` feature:
+  not compiled by slangc and not run on a GPU yet (no slangc or GPU in the session). Type-checked with
+  placeholder outputs (removed). No frame-time numbers yet: measure before enabling by default.
+- Tests: 40 in `cloudscape` (coverage calibration, flat bases, drift, evolution without pops, storms, curved
+  shells, energy-conserving steps, stepper invariants, f32/f64 uv parity, shader constant parity), 2 in
+  `ed_render::clouds`, 1 in `ew::clouds`.
+
 ## 2026-11-14: Grass: soft, lobed bare-to-grass edges
 
 - Owner: hard line between bare gravel and grass (oasis near 31.139,-4.025). Cause: with zero land-cover shares

@@ -592,6 +592,7 @@ dependencies = [
  "ed_gpu",
  "ed_pack",
  "ed_planet",
+ "ed_world",
  "glam",
  "png",
 ]

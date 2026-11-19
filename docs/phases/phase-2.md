@@ -329,7 +329,9 @@ possible before buildings and roads (Phase 3). Changes:
    `../plans/trees.md`; the owner's decisions are `../DECISIONS.md` O3.
 3. Sun VSM and the far height term (W13a/b), which fixes the near-ground streaks.
 4. Atmosphere reference iteration.
-5. Volumetric clouds: a design pass first.
+5. Volumetric clouds: a design pass first. Design, field, lighting and CPU reference landed
+   2026-11-19 (`../plans/clouds.md`); the GPU pass is behind the `clouds` feature until its
+   shaders are generated and measured.
 6. Satellite imagery.
 7. AgX and MetalFX (W14).
 8. Globe pack, loader and tile server, editor E2 (W7, W8, W11, W12).

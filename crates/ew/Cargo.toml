@@ -10,6 +10,8 @@ workspace = true
 [features]
 # Vulkan backend passthrough (P1-D22, off by default); pick it at run time with ED_GPU_BACKEND=vulkan.
 vulkan = ["ed_gpu/vulkan", "ed_render/vulkan", "ed_editor/vulkan"]
+# Volumetric clouds in every world (ed_render/clouds; needs the generated clouds shaders).
+clouds = ["ed_render/clouds"]
 
 [dependencies]
 ed_geo = { path = "../ed_geo" }

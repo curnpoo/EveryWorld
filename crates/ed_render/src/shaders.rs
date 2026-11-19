@@ -39,6 +39,9 @@ pub struct ShaderSources {
     pub hzb: String,
     pub vis: String,
     pub overlay: String,
+    /// Volumetric clouds (`clouds.slang`, feature `clouds` until its outputs are generated).
+    #[cfg(feature = "clouds")]
+    pub clouds: String,
 }
 
 /// A renderer shader module (one `.slang` file with entry points).
@@ -54,10 +57,12 @@ pub(crate) enum Module {
     Overlay,
     Ao,
     Atmos,
+    #[cfg(feature = "clouds")]
+    Clouds,
 }
 
 impl Module {
-    const ALL: [Module; 10] = [
+    const ALL: &'static [Module] = &[
         Module::Resolve,
         Module::Tonemap,
         Module::Debug,
@@ -68,6 +73,8 @@ impl Module {
         Module::Overlay,
         Module::Ao,
         Module::Atmos,
+        #[cfg(feature = "clouds")]
+        Module::Clouds,
     ];
 
     /// File stem in `shaders/` (and of the generated outputs).
@@ -83,6 +90,8 @@ impl Module {
             Module::Overlay => "overlay",
             Module::Ao => "ao",
             Module::Atmos => "atmos_tables",
+            #[cfg(feature = "clouds")]
+            Module::Clouds => "clouds",
         }
     }
 
@@ -98,6 +107,8 @@ impl Module {
             Module::Overlay => &s.overlay,
             Module::Ao => &s.ao,
             Module::Atmos => &s.atmos_tables,
+            #[cfg(feature = "clouds")]
+            Module::Clouds => &s.clouds,
         }
     }
 }
@@ -105,7 +116,7 @@ impl Module {
 impl ShaderSources {
     /// File names in a shader directory, in field order (after `abi`, which lives in ed_gpu:
     /// see [`Self::abi_path`]).
-    pub const FILES: [&'static str; 14] = [
+    pub const FILES: &'static [&'static str] = &[
         "common.slang",
         "lighting.slang",
         "atmos.slang",
@@ -120,6 +131,8 @@ impl ShaderSources {
         "hzb.slang",
         "visibility.slang",
         "overlay.slang",
+        #[cfg(feature = "clouds")]
+        "clouds.slang",
     ];
 
     /// The sources compiled into the crate.
@@ -140,6 +153,8 @@ impl ShaderSources {
             hzb: include_str!("../shaders/hzb.slang").into(),
             vis: include_str!("../shaders/visibility.slang").into(),
             overlay: include_str!("../shaders/overlay.slang").into(),
+            #[cfg(feature = "clouds")]
+            clouds: include_str!("../shaders/clouds.slang").into(),
         }
     }
 
@@ -167,6 +182,8 @@ impl ShaderSources {
             hzb: r("hzb.slang")?,
             vis: r("visibility.slang")?,
             overlay: r("overlay.slang")?,
+            #[cfg(feature = "clouds")]
+            clouds: r("clouds.slang")?,
         })
     }
 
@@ -200,10 +217,14 @@ pub(crate) struct ShaderSet {
 macro_rules! builtin_set {
     ($( $module:ident $stem:literal [$($entry:literal),*] ),* $(,)?) => {
         fn builtin_set() -> ShaderSet {
-            ShaderSet {
+            #[allow(unused_mut)]
+            let mut set = ShaderSet {
                 msl: vec![$( (Module::$module, Cow::Borrowed(include_str!(concat!("../shaders/gen/msl/", $stem, ".metal")))) ),*],
                 spirv: vec![$($( (Module::$module, $entry.to_string(), words(include_bytes!(concat!("../shaders/gen/spv/", $stem, ".", $entry, ".spv")))) ),*),*],
-            }
+            };
+            #[cfg(feature = "clouds")]
+            clouds_set(&mut set);
+            set
         }
     };
 }
@@ -220,6 +241,22 @@ builtin_set! {
     Overlay "overlay" ["vs_overlay", "fs_overlay"],
     Ao "ao" ["ao_main"],
     Atmos "atmos_tables" ["atmos_transmittance", "atmos_multiscatter", "atmos_skyview", "atmos_ap", "atmos_sh_partial", "atmos_sh_final"],
+}
+
+/// The cloud module's generated outputs. Behind the `clouds` feature until
+/// `tools/shaders/build.sh` has produced them (`gen/msl/clouds.metal`,
+/// `gen/spv/clouds.<entry>.spv`); a build with the feature and without them fails here.
+#[cfg(feature = "clouds")]
+fn clouds_set(set: &mut ShaderSet) {
+    set.msl.push((Module::Clouds, Cow::Borrowed(include_str!("../shaders/gen/msl/clouds.metal"))));
+    for (entry, bytes) in [
+        ("clouds_march", &include_bytes!("../shaders/gen/spv/clouds.clouds_march.spv")[..]),
+        ("clouds_temporal", &include_bytes!("../shaders/gen/spv/clouds.clouds_temporal.spv")[..]),
+        ("vs_clouds", &include_bytes!("../shaders/gen/spv/clouds.vs_clouds.spv")[..]),
+        ("fs_clouds_composite", &include_bytes!("../shaders/gen/spv/clouds.fs_clouds_composite.spv")[..]),
+    ] {
+        set.spirv.push((Module::Clouds, entry.to_string(), words(bytes)));
+    }
 }
 
 fn words(bytes: &[u8]) -> Vec<u32> {
@@ -245,7 +282,7 @@ impl ShaderSet {
             msl: Vec::new(),
             spirv: Vec::new(),
         };
-        for m in Module::ALL {
+        for &m in Module::ALL {
             let file = format!("{}.slang", m.stem());
             // `shader_abi.slang` here overrides the built-in copy compile() writes first.
             let o = ed_gpu::slang::compile(
@@ -381,7 +418,7 @@ mod tests {
             src
         );
         let set = builtin_set();
-        for m in Module::ALL {
+        for &m in Module::ALL {
             for (entry, _) in ed_gpu::slang::entry_points(m.source(&src)) {
                 assert!(
                     set.code(Backend::Vulkan, m, &entry).is_ok(),
